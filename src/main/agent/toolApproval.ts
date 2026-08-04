@@ -100,10 +100,11 @@ export type AuthorizeResult = { allowed: true } | { allowed: false; reason: stri
 type AskDecision = ToolApprovalDecision | 'timeout'
 
 export type ToolApprovalGate = {
-  authorize(
-    call: { id: string; name: string; arguments: string },
-    _attribution?: Record<string, never>
-  ): Promise<AuthorizeResult>
+  authorize(call: {
+    id: string
+    name: string
+    arguments: string
+  }): Promise<AuthorizeResult>
 }
 
 export type ApprovalGateOptions = {
@@ -217,7 +218,6 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
         name: call.name,
         summary: summarizeToolArgs(call.name, call.arguments),
         argsPreview: call.arguments.slice(0, 4000),
-        // True when the tool is not approval-exempt (mutating tools, web_fetch, MCP).
         mutating: !isApprovalExemptTool(call.name)
       }
 

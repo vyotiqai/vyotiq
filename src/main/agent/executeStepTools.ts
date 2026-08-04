@@ -204,7 +204,7 @@ async function runSingleTool(
         (call.name === 'generate_image' || call.name === 'edit_image') &&
         (agentMode === 'ask' || agentMode === 'plan')
       if (!dryRunImage) {
-        const verdict = await ctx.approval.authorize(call, {})
+        const verdict = await ctx.approval.authorize(call)
         if (!verdict.allowed) {
           const toolMsg: ChatMessage = {
             role: 'tool',

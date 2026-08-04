@@ -39,11 +39,7 @@ export const TurnSummary = memo(function TurnSummary({
   )
 
   const phaseLabel = activity ? formatRunActivityLabel(activity) : 'Working'
-
-  // Expanded and collapsed both use phaseLabel when activity is known — otherwise
-  // the timeline says generic Working while tools/approval already show the phase.
-  const activeLabel = phaseLabel
-  const activeText = turnDuration ? `${activeLabel} · ${turnDuration}` : activeLabel
+  const activeText = turnDuration ? `${phaseLabel} · ${turnDuration}` : phaseLabel
 
   const doneLabel = turnDuration ? `Worked for ${turnDuration}` : 'Worked'
   const accessibleName = active
@@ -61,18 +57,12 @@ export const TurnSummary = memo(function TurnSummary({
       onClick={onToggle}
     >
       {active ? (
-        activeLabel ? (
-          <>
-            <TextShimmer className="shrink-0">{activeLabel}</TextShimmer>
-            {turnDuration ? (
-              <span className="shrink-0 tabular-nums">· {turnDuration}</span>
-            ) : null}
-          </>
-        ) : (
-          <span className="shrink-0 tabular-nums opacity-0" aria-hidden>
-            ·
-          </span>
-        )
+        <>
+          <TextShimmer className="shrink-0">{phaseLabel}</TextShimmer>
+          {turnDuration ? (
+            <span className="shrink-0 tabular-nums">· {turnDuration}</span>
+          ) : null}
+        </>
       ) : (
         <span className="shrink-0 tabular-nums">{doneLabel}</span>
       )}

@@ -62,10 +62,7 @@ export function resolveAgentQuestion(response: AgentQuestionResponse): boolean {
   const entry = pending.get(response.requestId)
   if (!entry) return false
   if (entry.runId !== response.runId) return false
-  // Validate against the asked form — drop unknown ids, trim/cap values.
-  // An empty sanitized list is the skip/dismiss path and is allowed through.
   const answers = sanitizeQuestionAnswers(entry.request.questions, response.answers)
-  // Resolve through the stored settle path so waiters are cleared.
   entry.resolve(answers)
   return true
 }
@@ -134,8 +131,6 @@ export function askQuestionThroughRenderer(
       cancel(abortQuestionError())
     }
     function onTimeout(): void {
-      // Mirror tool-approval auto-deny: resolve (do not throw) so the tool
-      // returns a structured failure instead of an unexpected exception.
       settle([])
     }
     if (signal.aborted) {
