@@ -60,6 +60,8 @@ describe('memory store', () => {
     )
     // Whitelist validation still wins over missing-file checks
     expect(() => toolMemoryRead(dir, 'other.md')).toThrow(/path must be/)
+    expect(() => toolMemoryRead(dir, 'notes/bad name.md')).toThrow(/safe characters/)
+    expect(() => toolMemoryRead(dir, 'notes/../index.md')).toThrow(/Invalid/)
   })
 
   it('keeps reads side-effect-free when no memory exists', () => {

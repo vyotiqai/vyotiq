@@ -20,6 +20,7 @@ export function toolMemoryList(workspace: string): string {
 export function toolMemoryRead(workspace: string, pathArg: string): string {
   const cleaned = pathArg.trim().replace(/^[/\\]+/, '')
   if (!cleaned) throw new Error('path is required')
+  if (cleaned.includes('..')) throw new Error('Invalid memory path')
   // Allow index.md, state.md, notes/foo.md
   if (
     cleaned !== 'index.md' &&
@@ -27,6 +28,12 @@ export function toolMemoryRead(workspace: string, pathArg: string): string {
     !cleaned.startsWith('notes/')
   ) {
     throw new Error('path must be index.md, state.md, or notes/<name>.md')
+  }
+  if (cleaned.startsWith('notes/')) {
+    const noteName = cleaned.slice('notes/'.length)
+    if (!noteName || !/^[a-zA-Z0-9._-]+\.md$/.test(noteName)) {
+      throw new Error('note files must be notes/<name>.md with safe characters')
+    }
   }
   return readMemoryFile(workspace, cleaned)
 }

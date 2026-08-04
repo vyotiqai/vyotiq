@@ -402,7 +402,7 @@ describe('runAgent context overflow', () => {
     expect(streamChat).not.toHaveBeenCalled()
   })
 
-  it('does not adopt an overflow retry whose trim watermark cannot persist', async () => {
+  it('ends the step instead of streaming when an overflow-retry trim watermark cannot persist', async () => {
     saveCompactionFails.value = true
     let assembleCall = 0
     assembleContext.mockImplementation(async (input: { messages: unknown[] }) => {
@@ -430,22 +430,16 @@ describe('runAgent context overflow', () => {
         compaction: null
       }
     })
-    // Snapshot at call time: the loop reuses the live messages array, so reading
-    // mock.calls after the run would include the assistant reply appended later.
-    let firstStreamMessages: Array<{ role: string; content: string }> | undefined
-    streamChat.mockImplementation(async function* (request: {
-      messages: Array<{ role: string; content: string }>
-    }): AsyncGenerator<StreamChunk> {
-      firstStreamMessages ??= request.messages.map((m) => ({ ...m }))
-      yield { type: 'text', text: 'streamed with original context' }
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'should not stream' }
       yield { type: 'done', stopReason: 'stop' }
     })
 
     const events = await collect('overflow-retry-watermark-fail', workspace)
 
-    expect(streamChat).toHaveBeenCalledTimes(1)
-    expect(firstStreamMessages).toMatchObject([{ role: 'user', content: 'do the thing' }])
-    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+    expect(streamChat).not.toHaveBeenCalled()
+    expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
+    expect(events.some((e) => e.type === 'text_delta')).toBe(false)
   })
 })
 

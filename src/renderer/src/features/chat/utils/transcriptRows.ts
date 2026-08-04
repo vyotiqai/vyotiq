@@ -333,8 +333,12 @@ export function stabilizeTranscriptRows(
     // Streaming rows always re-derive: a fingerprint collision must not freeze
     // live content onto a stale row object. Mirror text `streaming` for thinking.
     const live =
-      (row.kind === 'text' || row.kind === 'thinking') &&
-      (row.item.streaming === true || row.item.thinkingStreaming === true)
+      ((row.kind === 'text' || row.kind === 'thinking') &&
+        (row.item.streaming === true || row.item.thinkingStreaming === true)) ||
+      ((row.kind === 'activity' || row.kind === 'card') &&
+        (row.kind === 'activity'
+          ? row.tools.some((t) => t.tool.status === 'running')
+          : row.item.tool.status === 'running'))
     if (
       !live &&
       prior &&

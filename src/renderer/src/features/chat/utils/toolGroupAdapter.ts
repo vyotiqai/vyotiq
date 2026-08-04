@@ -116,9 +116,25 @@ function groupLabels(
     }
     if (specific.running !== 'Running' && specific.done !== 'Done') return specific
   }
-  return tools.every((tool) => tool.category === first.category)
-    ? categoryLabels(first.category)
-    : compositeMixedLabels(tools)
+  if (tools.every((tool) => tool.category === first.category)) {
+    // Same category (e.g. glob+grep): join per-tool verbs, not the generic category label.
+    const unique = [...new Set(names.filter(Boolean))]
+    if (unique.length > 0) {
+      const runningParts = unique.map((n) => toolLabel(n, 'running').toLowerCase())
+      const doneParts = unique.map((n) => toolLabel(n, 'done').toLowerCase())
+      if (
+        runningParts.every((p) => p !== 'running') &&
+        doneParts.every((p) => p !== 'done')
+      ) {
+        return {
+          running: joinComposite(runningParts),
+          done: joinComposite(doneParts)
+        }
+      }
+    }
+    return categoryLabels(first.category)
+  }
+  return compositeMixedLabels(tools)
 }
 
 function toolSubtitle(tool: UiToolRow): string {

@@ -1,5 +1,5 @@
 import { extname, posix } from 'path'
-import type { AgentInteractionMode } from '../../../shared/ipc'
+import type { AgentInteractionMode, Settings } from '../../../shared/ipc'
 import { getWriteCheckpoint } from '../checkpoints'
 import {
   applyImagePreset,
@@ -127,6 +127,8 @@ export async function toolEditImage(
     runDir?: string
     skipWriteCheckpoint?: boolean
     onProgress?: ImageToolProgress
+    /** Invoke-snapshotted settings; falls back to live resolve when omitted. */
+    settings?: Settings
   }
 ): Promise<GenerateImageToolResult> {
   const prompt = args.prompt?.trim()
@@ -144,7 +146,7 @@ export async function toolEditImage(
     }
   }
 
-  const settings = resolveImageToolSettings(workspaceRoot)
+  const settings = resolveImageToolSettings(workspaceRoot, options.settings)
   const customBase = { customOpenAiBaseUrl: settings.customOpenAiBaseUrl }
   const firstRef = normalizeWorkspaceRelPath(refPaths[0]!)
   const explicitPath = typeof args.path === 'string' && args.path.trim() ? args.path.trim() : null

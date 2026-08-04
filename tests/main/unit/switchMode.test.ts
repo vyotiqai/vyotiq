@@ -65,6 +65,26 @@ describe('switch_mode', () => {
     expect(events[0]).toMatchObject({ type: 'mode_changed', runId: 'run-1', mode: 'agent' })
   })
 
+  it('fails execute when setAgentMode is not wired', async () => {
+    const events: { type: string; mode?: string }[] = []
+    const result = await executeTool(
+      'switch_mode',
+      JSON.stringify({ mode: 'agent' }),
+      '/ws',
+      new AbortController().signal,
+      {
+        runId: 'run-1',
+        toolCallId: 'tc-1',
+        getAgentMode: () => 'ask',
+        emitAgentEvent: (ev) => events.push(ev),
+        autoModeSwitch: true
+      }
+    )
+    expect(result.ok).toBe(false)
+    expect(result.content).toMatch(/setAgentMode is not wired/i)
+    expect(events).toHaveLength(0)
+  })
+
   it('fails execute when autoModeSwitch is off', async () => {
     getSettings.mockReturnValue({ ...DEFAULT_SETTINGS, autoModeSwitch: false })
     let mode: 'ask' | 'plan' | 'agent' = 'ask'

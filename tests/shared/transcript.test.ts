@@ -534,6 +534,58 @@ describe('applyEventTimestamps', () => {
     }
   })
 
+  it('prefers the last tool_result ok flag when duplicates exist for one toolCallId', () => {
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }]
+      },
+      { role: 'tool', toolCallId: 'c1', toolName: 'read', content: 'ok' }
+    ])
+    const enriched = applyEventTimestamps(items, [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: {
+          type: 'tool_start',
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          summary: 'a.ts'
+        }
+      },
+      {
+        at: '2026-07-24T12:00:01.000Z',
+        event: {
+          type: 'tool_result',
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          summary: 'a.ts',
+          ok: false,
+          content: 'first fail'
+        }
+      },
+      {
+        at: '2026-07-24T12:00:02.000Z',
+        event: {
+          type: 'tool_result',
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          summary: 'a.ts',
+          ok: true,
+          content: 'retry ok'
+        }
+      }
+    ])
+    const tool = enriched.find((i) => i.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') {
+      expect(tool.tool.status).toBe('done')
+    }
+  })
+
   it('matches tool_start timestamps by toolCallId, not row order', () => {
     const items = messagesToUiItems([
       {

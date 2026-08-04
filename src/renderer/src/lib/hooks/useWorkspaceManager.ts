@@ -70,6 +70,13 @@ const ORPHAN_DELTA_TYPES = new Set<AgentEvent['type']>(['text_delta', 'thinking_
 const ORPHAN_CRITICAL_TYPES = new Set<AgentEvent['type']>([
   'tool_start',
   'tool_result',
+  'tool_call_delta',
+  'assistant_message',
+  'thinking_done',
+  'follow_up_queued',
+  'follow_up_applied',
+  'terminal_output_delta',
+  'stream_reset',
   'status',
   'writes_checkpoint',
   'incomplete',
@@ -95,6 +102,30 @@ function coalesceOldestOrphanUsage(buffered: AgentEvent[]): boolean {
       buffered.splice(dropIdx, 1)
       return true
     }
+  }
+  return false
+}
+
+/**
+ * Under orphan backpressure, fold oldest tool_call_delta into a later delta for
+ * the same toolCallId (arguments concatenate like the live stream path).
+ */
+function coalesceOldestOrphanToolCallDelta(buffered: AgentEvent[]): boolean {
+  const dropIdx = buffered.findIndex((ev) => ev.type === 'tool_call_delta')
+  if (dropIdx < 0) return false
+  const victim = buffered[dropIdx]!
+  if (victim.type !== 'tool_call_delta') return false
+  for (let i = dropIdx + 1; i < buffered.length; i++) {
+    const next = buffered[i]!
+    if (next.type !== 'tool_call_delta') continue
+    if (next.toolCallId !== victim.toolCallId) continue
+    buffered[i] = {
+      ...next,
+      argumentsDelta: victim.argumentsDelta + next.argumentsDelta,
+      ...(victim.name && !next.name ? { name: victim.name } : {})
+    }
+    buffered.splice(dropIdx, 1)
+    return true
   }
   return false
 }
@@ -492,6 +523,8 @@ export function useWorkspaceManager() {
     if (buffered.length >= ORPHAN_EVENT_BUFFER_MAX) {
       if (coalesceOldestOrphanDelta(buffered)) {
         // Folded older stream delta into a later one.
+      } else if (coalesceOldestOrphanToolCallDelta(buffered)) {
+        // Folded older tool_call_delta into a later same-id delta.
       } else if (coalesceOldestOrphanUsage(buffered)) {
         // Dropped an older usage event; a newer same-type meter remains.
       } else {

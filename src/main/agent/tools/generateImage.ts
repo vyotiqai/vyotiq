@@ -27,7 +27,11 @@ import { DEFAULT_IMAGE_MODELS } from '../providers/imageGen/types'
 export const GENERATED_IMAGE_DIR = '.vyotiq/generated'
 
 /** Merge global settings with workspace override (same pattern as agent loop). */
-export function resolveImageToolSettings(workspacePath: string): Settings {
+export function resolveImageToolSettings(
+  workspacePath: string,
+  snapshot?: Settings
+): Settings {
+  if (snapshot) return snapshot
   const globalSettings = getSettings()
   const override = findWorkspaceSettingsOverride(readWorkspacesState(), workspacePath)
   const effective = resolveEffectiveSettings(globalSettings, override)
@@ -213,6 +217,8 @@ export async function toolGenerateImage(
     runDir?: string
     skipWriteCheckpoint?: boolean
     onProgress?: ImageToolProgress
+    /** Invoke-snapshotted settings; falls back to live resolve when omitted. */
+    settings?: Settings
   }
 ): Promise<GenerateImageToolResult> {
   const prompt = args.prompt?.trim()
@@ -220,7 +226,7 @@ export async function toolGenerateImage(
     return { ok: false, summary: 'error', content: 'generate_image requires a non-empty prompt' }
   }
 
-  const settings = resolveImageToolSettings(workspaceRoot)
+  const settings = resolveImageToolSettings(workspaceRoot, options.settings)
   const customBase = { customOpenAiBaseUrl: settings.customOpenAiBaseUrl }
   const outputFormat = normalizeOutputFormat(args.output_format) ?? args.output_format
   const preferredMime = outputFormat ? extForMime(mimeGuess(outputFormat)) : undefined

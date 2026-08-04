@@ -105,7 +105,7 @@ export const RunStatusSchema = z.object({
   invokeId: z.number().int().min(1).optional(),
   /** Last Ask / Plan / Agent mode for this run (survives resume). */
   mode: AgentInteractionModeSchema.optional(),
-  /** Consecutive all-failure tool steps — restored across invokes. */
+  /** Consecutive all-failure tool steps within the current invoke (reset on each chatStart). */
   consecutiveToolFailureSteps: z.number().int().min(0).optional()
 })
 export type RunStatus = z.infer<typeof RunStatusSchema>

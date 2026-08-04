@@ -857,6 +857,9 @@ export async function interruptOrphanRuns(workspacePaths: string[]): Promise<num
         // partial reads after GPU crash / slow disk.
         await flushEventAppends(dir)
         await flushStatusWrites(dir)
+        // Async read after flush — sync loadEvents uses Atomics.wait on the main
+        // thread and can time out while the append chain is still settling.
+        const events = await loadEventsAsync(dir, name)
         // Keep receipt.json aligned with status after crash/orphan cancel
         // (loop finally normally writes this; orphans never reach finally).
         writeRunReceiptBestEffort({
@@ -864,7 +867,7 @@ export async function interruptOrphanRuns(workspacePaths: string[]): Promise<num
           runId: name,
           loadStatus,
           loadMessages: () => loadMessages(workspacePath, name),
-          loadEvents: (d) => loadEvents(d, name),
+          loadEvents: () => events,
           readContract
         })
         count += 1

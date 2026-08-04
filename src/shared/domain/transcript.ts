@@ -609,7 +609,7 @@ function toolResultOk(events: PersistedEvent[]): Map<string, boolean> {
     if (!isAgentEvent(row.event)) continue
     if (row.event.type !== 'tool_result') continue
     const id = row.event.toolCallId
-    if (!id || out.has(id)) continue
+    if (!id) continue
     out.set(id, row.event.ok)
   }
   return out

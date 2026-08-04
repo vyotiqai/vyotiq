@@ -1272,6 +1272,15 @@ export async function* runAgent(input: {
               // assembleContext return is used via `assembled` below — rebind by continuing
               // with Object.assign onto a let binding. Use system from retry.
               Object.assign(assembled, retry)
+            } else {
+              // Same fail-closed rule as the normal trim path above: do not stream
+              // with an unadopted shrink or the original oversize context.
+              yield* flushWriteCheckpoint()
+              const message = 'Failed to persist context compaction'
+              yield { type: 'status', runId, invokeId, status: 'error' }
+              writeStatus({ status: 'error', error: message })
+              appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+              return
             }
           } else {
             const overflowEv: AgentEvent = {
@@ -2109,6 +2118,7 @@ export async function* runAgent(input: {
         autoModeSwitch: settings.autoModeSwitch,
         terminalShell: settings.terminalShell,
         diagnosticsCommand: settings.diagnosticsCommand,
+        imageToolSettings: settings,
         runEnabledMcpIds,
         mcpToolPolicies,
         stepMcpToolNames,

@@ -784,7 +784,10 @@ const UI_SUSPEND_ALLOWED_EVENTS = new Set<AgentEvent['type']>([
   'status',
   'error',
   'incomplete',
-  'mode_changed'
+  'mode_changed',
+  // Live tool chrome — not persisted; dropping loses output with no disk backfill.
+  'terminal_output_delta',
+  'tool_progress'
 ])
 
 export type CreateChatStreamControllerOptions = {
@@ -1757,6 +1760,22 @@ export function createChatStreamController(
               updatedAt: new Date().toISOString()
             }
           })
+        } else {
+          // Seed a minimal meter so early step_usage is not discarded before context_usage.
+          patch({
+            contextUsage: {
+              step: event.step,
+              used: 0,
+              estimatedTokens: 0,
+              window: 0,
+              contentWindow: 0,
+              compactionTrigger: 0,
+              source: 'estimate',
+              layers: { system: 0, history: 0, tools: 0, buffer: 0 },
+              stepUsage: usageTotals,
+              updatedAt: new Date().toISOString()
+            }
+          })
         }
       }
     } else if (event.type === 'context_usage') {
@@ -1778,7 +1797,10 @@ export function createChatStreamController(
         // stale terminal was already dropped. Otherwise — a reattached run, or a
         // replay with no stamp — fall back to the turn sequence.
         const attributed = event.invokeId != null && event.invokeId === activeInvokeId
-        if (!attributed) {
+        if (attributed) {
+          // Duplicate terminal for the same invoke (e.g. error + status:error) — finalize once.
+          if (ignoreStreamEvents && completedTurnSeq >= turnSeq) return
+        } else {
           if (turnSeq > 0 && completedTurnSeq >= turnSeq) return
           if (
             completedTurnSeq > 0 &&
@@ -2317,6 +2339,15 @@ export function createChatStreamController(
   }
 
   const syncFromDisk = async (id: string): Promise<boolean> => {
+    if (closedRuns.has(id) || disposed) return false
+    // Brief listActiveRuns misses must not force idle while main is still streaming.
+    if (window.vyotiq?.listActiveRuns) {
+      const active = await window.vyotiq.listActiveRuns()
+      if (active.ok && active.data.some((entry) => entry.runId === id)) {
+        return false
+      }
+    }
+    if (closedRuns.has(id) || disposed) return false
     if (!window.vyotiq?.loadRun) return false
     const res = await window.vyotiq.loadRun(workspacePath, id)
     if (!res.ok) {
@@ -2327,6 +2358,14 @@ export function createChatStreamController(
       })
       return false
     }
+    // Re-check after awaits — run may have resumed / re-registered.
+    if (window.vyotiq?.listActiveRuns) {
+      const active = await window.vyotiq.listActiveRuns()
+      if (active.ok && active.data.some((entry) => entry.runId === id)) {
+        return false
+      }
+    }
+    if (closedRuns.has(id) || disposed) return false
     let events: PersistedEvent[] = []
     let eventsLoadError: string | null = null
     if (window.vyotiq.loadRunEvents) {
@@ -2420,7 +2459,8 @@ export function createChatStreamController(
       }
       return
     }
-    clearPendingFollowUps(true)
+    // Do not clear follow-ups before cancel succeeds — a failed cancel would
+    // drop UI rows while main still holds the queue.
     const res = await window.vyotiq.chatCancel(id)
     if (!res.ok) {
       logger.warn('chatCancel failed', {
@@ -2429,7 +2469,11 @@ export function createChatStreamController(
         err: toLogErr(res.error)
       })
       await recoverAfterCancelFailure(id, res.error)
+      return
     }
+    // Successful cancel: terminal status clears follow-ups; clear optimistically
+    // only after main accepted cancel so a failed cancel cannot lose UI state.
+    clearPendingFollowUps(true)
   }
 
   const reset = (): void => {
@@ -2537,34 +2581,47 @@ export function createChatStreamController(
             }
           })
         : state.pendingFollowUps
-    patch({
-      runId: id,
-      running: true,
-      pendingRun: false,
-      runStartedAt: state.runStartedAt ?? Date.now(),
-      error: null,
-      pendingFollowUps: hydratedPending
-    })
-    if (state.items.length > 0) {
-      let events: PersistedEvent[] = []
-      if (window.vyotiq?.loadRunEvents) {
-        const eventsRes = await window.vyotiq.loadRunEvents(workspacePath, id)
-        if (closedRuns.has(id) || disposed) return
-        if (eventsRes.ok) events = eventsRes.data
-      }
-      if (events.length > 0) {
-        patch({ items: applyEventTimestamps(state.items, events) })
-      }
+
+    if (!window.vyotiq?.loadRun) {
+      patch({
+        runId: id,
+        running: true,
+        pendingRun: false,
+        runStartedAt: state.runStartedAt ?? Date.now(),
+        error: null,
+        pendingFollowUps: hydratedPending
+      })
       return
     }
-    if (!window.vyotiq?.loadRun) return
     const res = await window.vyotiq.loadRun(workspacePath, id)
     if (closedRuns.has(id) || disposed) return
+    // TOCTOU: run may have finished while we loaded disk.
+    if (window.vyotiq?.listActiveRuns) {
+      const active = await window.vyotiq.listActiveRuns()
+      if (!active.ok || !active.data.some((entry) => entry.runId === id)) {
+        await syncFromDisk(id)
+        return
+      }
+      const live = active.data.find((entry) => entry.runId === id)
+      if (live?.invokeId != null) activeInvokeId = live.invokeId
+      if (live?.pendingFollowUps) {
+        pendingFromMain = live.pendingFollowUps
+      }
+    }
     if (!res.ok) {
       logger.warn('reattachActiveRun loadRun failed', {
         scope: 'chat',
         correlationId: id,
         err: toLogErr(res.error)
+      })
+      // Still mark running if list said live — live events will catch up.
+      patch({
+        runId: id,
+        running: true,
+        pendingRun: false,
+        runStartedAt: state.runStartedAt ?? Date.now(),
+        error: null,
+        pendingFollowUps: hydratedPending
       })
       return
     }
@@ -2576,14 +2633,52 @@ export function createChatStreamController(
       if (eventsRes.ok) events = eventsRes.data
       else eventsLoadError = eventsRes.error
     }
+    // Final active check before committing running:true + hydrate.
+    if (window.vyotiq?.listActiveRuns) {
+      const active = await window.vyotiq.listActiveRuns()
+      if (!active.ok || !active.data.some((entry) => entry.runId === id)) {
+        await syncFromDisk(id)
+        return
+      }
+    }
     const kept = messagesForNextTurn(res.data.messages)
     const mode = modeFromPersisted(events)
     if (mode) onAgentModeChange?.(mode)
-    patch({
-      ...hydrateFromDisk(kept, events, dismissedErrorMessage),
-      pendingFollowUps: hydratedPending,
-      ...(eventsLoadError ? { error: eventsLoadError } : {})
-    })
+    const refreshedPending: PendingFollowUpState[] =
+      pendingFromMain.length > 0
+        ? pendingFromMain.map((entry) => {
+            const local = state.pendingFollowUps.find((p) => p.id === entry.id)
+            return {
+              id: entry.id,
+              itemId: local?.itemId ?? `followup-${entry.id}`,
+              preview: local?.preview ?? entry.preview
+            }
+          })
+        : hydratedPending
+    // Empty transcript: full hydrate. Existing items: refresh messages + timestamps
+    // without clobbering live rows that arrived during the load await.
+    if (state.items.length === 0) {
+      patch({
+        ...hydrateFromDisk(kept, events, dismissedErrorMessage),
+        runId: id,
+        running: true,
+        pendingRun: false,
+        runStartedAt: state.runStartedAt ?? Date.now(),
+        error: eventsLoadError,
+        pendingFollowUps: refreshedPending
+      })
+    } else {
+      patch({
+        runId: id,
+        running: true,
+        pendingRun: false,
+        runStartedAt: state.runStartedAt ?? Date.now(),
+        error: eventsLoadError,
+        pendingFollowUps: refreshedPending,
+        messages: kept,
+        ...(events.length > 0 ? { items: applyEventTimestamps(state.items, events) } : {})
+      })
+    }
   }
 
   const setToolExpanded = (toolCallId: string, expanded: boolean): void => {

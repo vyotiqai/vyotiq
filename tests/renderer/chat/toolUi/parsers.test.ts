@@ -309,6 +309,17 @@ describe('browser parsers', () => {
     expect(data.target).toBe('https://example.com')
     expect(data.message).toContain('Navigated to')
   })
+
+  it('parses browser_wait_for_url match as target', () => {
+    const data = parseBrowserActionData(
+      tool({
+        name: 'browser_wait_for_url',
+        argsPreview: JSON.stringify({ match: 'example.com/ready' }),
+        status: 'running'
+      })
+    )
+    expect(data.target).toBe('example.com/ready')
+  })
 })
 
 describe('diagnostics parser', () => {

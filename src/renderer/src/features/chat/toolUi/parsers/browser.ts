@@ -139,6 +139,7 @@ export function parseBrowserActionData(tool: UiToolRow): BrowserActionParsed {
   const message = (tool.content ?? '').trim()
   let target = ''
   if (typeof args?.url === 'string' && args.url.trim()) target = args.url.trim()
+  else if (typeof args?.match === 'string' && args.match.trim()) target = args.match.trim()
   else if (typeof args?.selector === 'string' && args.selector.trim()) target = args.selector.trim()
   else if (typeof args?.ref === 'string' && args.ref.trim()) target = args.ref.trim()
   else if (typeof args?.key === 'string' && args.key.trim()) target = args.key.trim()

@@ -51,6 +51,7 @@ import type {
   AgentInteractionMode,
   AgentQuestionAnswer,
   AgentQuestionRequest,
+  Settings,
   TerminalShell
 } from '../../../shared/ipc'
 import { basename, join } from 'path'
@@ -95,6 +96,11 @@ export type ToolExecutionContext = {
   terminalShell?: TerminalShell
   /** Snapshot of settings.diagnosticsCommand for this invoke (not live mid-run). */
   diagnosticsCommand?: string
+  /**
+   * Invoke-snapshotted settings for image tools (provider/model/base URL).
+   * Prefer over live getSettings() so mid-run settings edits cannot change the invoke.
+   */
+  imageToolSettings?: Settings
   /** Emit live agent events (e.g. mode_changed) while a tool is running. */
   emitAgentEvent?: (event: AgentEvent) => void
   /** Overridable in tests; defaults to renderer IPC round trip. */
@@ -1025,7 +1031,14 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       return toolFail('switch_mode', 'mode', 'mode must be ask, plan, or agent')
     }
     const previous = resolveAgentMode(context)
-    await context.setAgentMode?.(mode)
+    if (!context.setAgentMode) {
+      return toolFail(
+        'switch_mode',
+        'mode',
+        'Mode switch unavailable: setAgentMode is not wired for this invoke.'
+      )
+    }
+    await context.setAgentMode(mode)
     if (context.runId) {
       context.emitAgentEvent?.({ type: 'mode_changed', runId: context.runId, mode })
     }
@@ -1269,7 +1282,8 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         signal,
         runDir: context.runDir,
         skipWriteCheckpoint: context.skipWriteCheckpoint,
-        onProgress: context.onProgress
+        onProgress: context.onProgress,
+        settings: context.imageToolSettings
       }
     )
     throwIfAborted(signal)
@@ -1325,7 +1339,8 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
         signal,
         runDir: context.runDir,
         skipWriteCheckpoint: context.skipWriteCheckpoint,
-        onProgress: context.onProgress
+        onProgress: context.onProgress,
+        settings: context.imageToolSettings
       }
     )
     throwIfAborted(signal)

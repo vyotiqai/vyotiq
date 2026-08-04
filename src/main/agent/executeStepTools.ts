@@ -1,4 +1,4 @@
-import type { AgentEvent, AgentInteractionMode, ChatMessage } from '../../shared/ipc'
+import type { AgentEvent, AgentInteractionMode, ChatMessage, Settings } from '../../shared/ipc'
 import { isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
@@ -54,6 +54,8 @@ export type ToolStepContext = {
   terminalShell?: TerminalShell
   /** Snapshot of settings.diagnosticsCommand for this invoke. */
   diagnosticsCommand?: string
+  /** Invoke-snapshotted settings for image tools. */
+  imageToolSettings?: Settings
   /** Streams events while a tool is still running (e.g. image progress). */
   emitLiveEvent?: (ev: AgentEvent) => void
   /**
@@ -252,6 +254,7 @@ async function runSingleTool(
       autoModeSwitch: ctx.autoModeSwitch,
       terminalShell: ctx.terminalShell,
       diagnosticsCommand: ctx.diagnosticsCommand,
+      imageToolSettings: ctx.imageToolSettings,
       emitAgentEvent: ctx.emitLiveEvent,
       runEnabledMcpIds: ctx.runEnabledMcpIds,
       mcpToolPolicies: ctx.mcpToolPolicies,

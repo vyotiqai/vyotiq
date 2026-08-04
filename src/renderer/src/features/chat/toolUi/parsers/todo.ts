@@ -3,6 +3,7 @@ import type { UiToolRow } from '@shared/transcript'
 export type TodoStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled'
 
 export type TodoItem = {
+  id?: string
   status: TodoStatus
   content: string
 }
