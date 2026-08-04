@@ -126,21 +126,30 @@ describe('migrateLegacySessions', () => {
     expect(readWorkspacesState().legacySessionsMigrated).toBe(true)
   })
 
-  it('flags needsWorkspaceForMigration when no workspace target exists', () => {
+  it('falls back to the home workspace when openPaths are missing on disk', () => {
     seedWorkspacesJson({ openPaths: [join(userData, 'no-such-workspace')] })
     seedLegacySession('run-a', VALID_STATUS)
     seedLegacySession('run-b', VALID_STATUS)
 
     const result = migrateLegacySessions()
 
-    expect(result).toEqual({ migrated: 0, needsWorkspaceForMigration: true, pendingMigrationCount: 2 })
-    expect(existsSync(join(userData, 'sessions', 'run-a', 'status.json'))).toBe(true)
-    expect(existsSync(join(userData, 'sessions', 'run-b', 'status.json'))).toBe(true)
+    expect(result.migrated).toBe(2)
+    expect(result.needsWorkspaceForMigration).toBe(false)
+    expect(result.pendingMigrationCount).toBe(0)
+    expect(existsSync(join(userData, 'sessions', 'run-a'))).toBe(false)
+    expect(existsSync(join(userData, 'sessions', 'run-b'))).toBe(false)
 
     const state = readWorkspacesState()
-    expect(state.needsWorkspaceForMigration).toBe(true)
-    expect(state.pendingMigrationCount).toBe(2)
-    expect(state.legacySessionsMigrated).toBe(false)
+    expect(state.openPaths).toHaveLength(1)
+    expect(existsSync(state.openPaths[0]!)).toBe(true)
+    expect(existsSync(join(workspaceSessionsRoot(state.openPaths[0]!), 'run-a', 'status.json'))).toBe(
+      true
+    )
+    expect(existsSync(join(workspaceSessionsRoot(state.openPaths[0]!), 'run-b', 'status.json'))).toBe(
+      true
+    )
+    expect(state.legacySessionsMigrated).toBe(true)
+    expect(state.needsWorkspaceForMigration).toBe(false)
   })
 
   it('marks migration complete when there are no legacy sessions', () => {

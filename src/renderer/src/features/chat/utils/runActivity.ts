@@ -58,18 +58,14 @@ function toolPhaseFromActivity(row: Extract<TranscriptRow, { kind: 'activity' }>
 }
 
 /**
- * Live turn-summary label. Collapsed turns need the specific phase; expanded
- * turns already show thinking/tools/writing inline — avoid duplicating chrome.
+ * Live turn-summary label. Always use the specific phase so collapsed and
+ * expanded chrome stay aligned with aria-live announcements.
  */
 export function turnSummaryActiveLabel(
   activity: RunActivityPhase | null | undefined,
-  collapsed: boolean
+  _collapsed: boolean
 ): string {
-  const phaseLabel = activity ? formatRunActivityLabel(activity) : 'Working'
-  if (collapsed) return phaseLabel
-  const kind = activity?.kind
-  if (kind === 'planning' || kind === 'working' || kind == null) return phaseLabel
-  return 'Working'
+  return activity ? formatRunActivityLabel(activity) : 'Working'
 }
 
 export function formatRunActivityLabel(phase: RunActivityPhase): string {

@@ -129,12 +129,15 @@ export const ToolGroup = memo(function ToolGroup({
   }, [nestedTools])
 
   const [localOverride, setLocalOverride] = useState<boolean | null>(null)
-  // While tools are still running, keep the group open even if the user collapsed it.
-  const expanded = isPending
-    ? true
-    : (groupExpanded ?? localOverride ?? live)
+  // Honor explicit persisted collapse even while pending; otherwise auto-open
+  // for the first live appearance (groupExpanded/localOverride unset).
+  const expanded =
+    groupExpanded !== undefined
+      ? groupExpanded
+      : isPending
+        ? true
+        : (localOverride ?? live)
   const toggle = (): void => {
-    if (isPending) return
     const next = !expanded
     if (onGroupToggle) onGroupToggle(next)
     else setLocalOverride(next)
@@ -194,13 +197,12 @@ export const ToolGroup = memo(function ToolGroup({
       toolProgress: item.toolProgress
     })
     const defaultExpanded = toolDefaultExpanded(item.tool.name, item.tool.status, live)
-    // toolExpanded wins; otherwise keep running/live bodies open even when
-    // groupExpanded is false. Idle tools still honor persisted groupExpanded.
-    // File reads never auto-open via live — only explicit expand / groupExpanded.
+    // toolExpanded / localOverride win. Explicit groupExpanded (incl. false) is
+    // honored even while running; otherwise use the tool's default expand.
     const isToolExpanded =
       item.toolExpanded ??
       localOverride ??
-      (defaultExpanded || (groupExpanded ?? false))
+      (groupExpanded !== undefined ? groupExpanded : defaultExpanded)
     const toggleSingle = (): void => {
       if (!hasBody) return
       const next = !isToolExpanded

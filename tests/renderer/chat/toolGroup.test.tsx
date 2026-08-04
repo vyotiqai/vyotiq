@@ -270,12 +270,12 @@ describe('ToolGroup', () => {
     expect(screen.getAllByText(/TODO/).length).toBe(1)
   })
 
-  it('auto-expands a lone running tool even when groupExpanded is false', () => {
+  it('honors persisted groupExpanded=false while a tool is still running', () => {
     const tools = [toolItem('t1', 'terminal', 'npm test', 'running')]
     tools[0]!.tool.content = 'live output'
     tools[0]!.groupExpanded = false
     render(<ToolGroup tools={tools} groupExpanded={false} />)
-    expect(screen.getByText('live output')).toBeTruthy()
+    expect(screen.queryByText('live output')).toBeNull()
   })
 
   it('honors persisted groupExpanded for a lone idle tool', () => {

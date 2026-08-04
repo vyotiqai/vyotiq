@@ -33,6 +33,8 @@ export const HARNESS_EVAL_TESTS = [
   'tests/main/unit/toolsSchema.test.ts',
   'tests/main/unit/modePolicy.test.ts',
   'tests/main/unit/loopPolicy.test.ts',
+  'tests/main/unit/agentLoopSafety.test.ts',
+  'tests/main/unit/loopPolicySafety.test.ts',
   'tests/main/unit/runReceipt.test.ts',
   'tests/main/unit/harnessReview.test.ts',
   'tests/main/unit/harnessApply.test.ts',

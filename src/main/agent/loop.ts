@@ -83,6 +83,7 @@ import {
   hasPendingFollowUps,
   isCurrentInvoke,
   markRunTurnComplete,
+  peekFollowUps,
   registerRunAbort,
   tryBeginRunClosing,
   resetActiveRunsForTests,
@@ -261,6 +262,29 @@ function* applyDrainedFollowUps(
   }
   appendEvent(runDir, ev)
   yield ev
+}
+
+/** Notify UI and clear queued follow-ups that will never be applied. */
+function* dropPendingFollowUps(
+  runId: string,
+  runDir: string | null | undefined,
+  reason: string
+): Generator<AgentEvent> {
+  const pending = peekFollowUps(runId)
+  if (pending.length === 0) {
+    clearFollowUps(runId)
+    return
+  }
+  const ids = pending.map((entry) => entry.id)
+  clearFollowUps(runId)
+  const dropped: AgentEvent = {
+    type: 'follow_up_dropped',
+    runId,
+    ids,
+    reason
+  }
+  if (runDir) appendEvent(runDir, dropped)
+  yield dropped
 }
 
 /**
@@ -944,6 +968,7 @@ export async function* runAgent(input: {
         reason: stop.reason,
         step
       })
+      yield* dropPendingFollowUps(runId, runDir, stop.reason)
       yield* flushWriteCheckpoint()
       yield { type: 'error', runId, invokeId, message: stop.message, code: 'LOOP_SAFETY' }
       yield { type: 'status', runId, invokeId, status: 'error' }
@@ -996,9 +1021,9 @@ export async function* runAgent(input: {
         return
       }
       step++
-      const stepCapStop = loopStopDecision({ step, consecutiveToolFailureSteps, identicalStepStreak })
-      if (stepCapStop) {
-        yield* stopForLoopSafety(stepCapStop)
+      const loopSafetyStop = loopStopDecision({ step, consecutiveToolFailureSteps, identicalStepStreak })
+      if (loopSafetyStop) {
+        yield* stopForLoopSafety(loopSafetyStop)
         return
       }
       const stepSoftAbort = new AbortController()
@@ -1113,6 +1138,24 @@ export async function* runAgent(input: {
             createdAt: new Date().toISOString(),
             tokenEstimate: assembled.estimatedTokens,
             foldedMessages: nextFolded
+          }
+        }
+      } else if (assembled.contextShrunk && droppedThisStep === 0) {
+        // In-message stubs (tool trim / thinking drop) keep message count but
+        // still need a durable watermark so the working set is adopted.
+        if (compaction) {
+          compactionWithWatermark = {
+            ...compaction,
+            foldedMessages: foldedMessages,
+            wireTrimApplied: true
+          }
+        } else {
+          compactionWithWatermark = {
+            summary: CONTEXT_TRIM_WATERMARK_SUMMARY,
+            createdAt: new Date().toISOString(),
+            tokenEstimate: assembled.estimatedTokens,
+            foldedMessages: foldedMessages,
+            wireTrimApplied: true
           }
         }
       }
@@ -1847,6 +1890,38 @@ export async function* runAgent(input: {
 
       // Mid-stream steer: keep the turn alive, flush partial output, then inject.
       if (streamSteered) {
+        const steeredCalls = dedupeToolCalls(toolCalls)
+        if (steeredCalls.length > 0) {
+          const stepFingerprint = stepToolCallsFingerprint(steeredCalls)
+          identicalStepStreak = nextIdenticalStepStreak(
+            lastStepFingerprint,
+            identicalStepStreak,
+            stepFingerprint
+          )
+          lastStepFingerprint = stepFingerprint
+          const repeatStop = loopStopDecision({
+            step,
+            consecutiveToolFailureSteps,
+            identicalStepStreak
+          })
+          if (repeatStop) {
+            yield* flushPartialAssistant(
+              runId,
+              runDir,
+              messages,
+              assistantText,
+              thinkingText,
+              stepReasoningState,
+              steeredCalls,
+              'interrupted'
+            )
+            yield* stopForLoopSafety(repeatStop)
+            return
+          }
+        } else {
+          identicalStepStreak = 0
+          lastStepFingerprint = ''
+        }
         yield* flushPartialAssistant(
           runId,
           runDir,
@@ -1886,6 +1961,9 @@ export async function* runAgent(input: {
           yield* stopForLoopSafety(repeatStop)
           return
         }
+      } else {
+        identicalStepStreak = 0
+        lastStepFingerprint = ''
       }
 
       if (uniqueToolCalls.length === 0) {
@@ -2219,6 +2297,25 @@ export async function* runAgent(input: {
         messages.push(toolMsg)
       }
 
+      if (uniqueToolCalls.length > 0) {
+        if (toolOutcome.stepToolsOk) {
+          consecutiveToolFailureSteps = 0
+          writeStatus({ consecutiveToolFailureSteps: 0 })
+        } else {
+          consecutiveToolFailureSteps++
+          writeStatus({ consecutiveToolFailureSteps })
+        }
+        const failureStop = loopStopDecision({
+          step,
+          consecutiveToolFailureSteps,
+          identicalStepStreak
+        })
+        if (failureStop) {
+          yield* stopForLoopSafety(failureStop)
+          return
+        }
+      }
+
       if (
         !controller.signal.aborted &&
         (toolsSteered || hasPendingFollowUps(runId))
@@ -2251,25 +2348,6 @@ export async function* runAgent(input: {
           return
         }
         continue
-      }
-
-      if (uniqueToolCalls.length > 0) {
-        if (toolOutcome.stepToolsOk) {
-          consecutiveToolFailureSteps = 0
-          writeStatus({ consecutiveToolFailureSteps: 0 })
-        } else {
-          consecutiveToolFailureSteps++
-          writeStatus({ consecutiveToolFailureSteps })
-        }
-        const failureStop = loopStopDecision({
-          step,
-          consecutiveToolFailureSteps,
-          identicalStepStreak
-        })
-        if (failureStop) {
-          yield* stopForLoopSafety(failureStop)
-          return
-        }
       }
 
       await persistInterimReceipt()
@@ -2308,7 +2386,7 @@ export async function* runAgent(input: {
         err
       })
       markRunTurnComplete(runId, invokeId)
-      clearFollowUps(runId)
+      yield* dropPendingFollowUps(runId, runDir, 'agent_loop')
       yield { type: 'error', runId, invokeId, message, code: 'AGENT_LOOP' }
       yield* flushWriteCheckpoint()
       yield { type: 'status', runId, invokeId, status: 'error' }

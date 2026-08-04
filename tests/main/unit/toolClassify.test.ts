@@ -66,19 +66,21 @@ describe('tool classify', () => {
     }
   })
 
-  it('treats mcp_list_tools as parallel-safe and approval-exempt', () => {
+  it('treats mcp_list_tools as parallel-safe but not approval-exempt', () => {
     expect(isParallelSafeTool('mcp_list_tools')).toBe(true)
-    expect(isApprovalExemptTool('mcp_list_tools')).toBe(true)
+    expect(isApprovalExemptTool('mcp_list_tools')).toBe(false)
+    expect(isToolGated('mcp_list_tools', 'mutating', new Set(), [])).toBe(true)
   })
 
-  it('treats request_mcp_tools and release_mcp_tools as serial and approval-exempt', () => {
+  it('treats request_mcp_tools and release_mcp_tools as serial and gated', () => {
     for (const name of ['request_mcp_tools', 'release_mcp_tools']) {
       expect(isParallelSafeTool(name)).toBe(false)
-      expect(isApprovalExemptTool(name)).toBe(true)
+      expect(isApprovalExemptTool(name)).toBe(false)
+      expect(isToolGated(name, 'mutating', new Set(), [])).toBe(true)
     }
   })
 
-  it('treats MCP resource/prompt built-ins as serial and approval-exempt', () => {
+  it('treats MCP resource/prompt built-ins as serial and gated', () => {
     for (const name of [
       'mcp_list_resources',
       'mcp_read_resource',
@@ -86,7 +88,8 @@ describe('tool classify', () => {
       'mcp_get_prompt'
     ]) {
       expect(isParallelSafeTool(name)).toBe(false)
-      expect(isApprovalExemptTool(name)).toBe(true)
+      expect(isApprovalExemptTool(name)).toBe(false)
+      expect(isToolGated(name, 'mutating', new Set(), [])).toBe(true)
     }
   })
 

@@ -41,7 +41,13 @@ export const CompactionRecordSchema = z.object({
    * run stops re-summarizing the same prefix on every step. Older records
    * predate the field, so it stays optional.
    */
-  foldedMessages: z.number().int().min(0).optional()
+  foldedMessages: z.number().int().min(0).optional(),
+  /**
+   * True when context shrunk via in-message stubs (tool trim / thinking drop)
+   * without dropping message count. Lets resume re-apply wire trims and lets
+   * the loop adopt the stubbed working set.
+   */
+  wireTrimApplied: z.boolean().optional()
 })
 export type CompactionRecord = z.infer<typeof CompactionRecordSchema>
 

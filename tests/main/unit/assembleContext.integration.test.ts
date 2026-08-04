@@ -304,4 +304,82 @@ describe('assembleContext integration', () => {
     const secondStable = second.system.slice(0, second.system.indexOf('## Session'))
     expect(firstStable).toBe(secondStable)
   })
+
+  it('forces compaction trim when provider input is near trigger and above estimate', async () => {
+    const history: import('@shared/ipc').ChatMessage[] = [{ role: 'user', content: 'start' }]
+    for (let i = 0; i < 8; i++) {
+      history.push({
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: `tc${i}`, name: 'read', arguments: '{}' }]
+      })
+      history.push({
+        role: 'tool',
+        toolCallId: `tc${i}`,
+        toolName: 'read',
+        content: `BODY${i}-`.repeat(200)
+      })
+    }
+    const smallModel = { ...model, contextWindow: 20_000 }
+    // trigger ≈ contentWindow(17000)*0.7 = 11900; provider ≥ 0.85*trigger and ≫ estimate.
+    const withProvider = await assembleContext({
+      harness: 'harness',
+      messages: history,
+      workspacePath: null,
+      goal: 'hi',
+      model: smallModel,
+      toolsJsonEstimate: 100,
+      lastUsage: { inputTokens: 11_000 },
+      providerId: 'ollama',
+      provider: mockProvider,
+      signal: new AbortController().signal,
+      keepRecentTurns: 20
+    })
+    expect(withProvider.contextShrunk).toBe(true)
+    const cleared = withProvider.messages.filter(
+      (m) => m.role === 'tool' && String(m.content).includes('[cleared]')
+    )
+    expect(cleared.length).toBeGreaterThan(0)
+  })
+
+  it('re-applies wire tool stubs when prior compaction has wireTrimApplied', async () => {
+    const { CONTEXT_TRIM_WATERMARK_SUMMARY } = await import('@main/agent/context/types')
+    const history: import('@shared/ipc').ChatMessage[] = [{ role: 'user', content: 'start' }]
+    for (let i = 0; i < 6; i++) {
+      history.push({
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: `w${i}`, name: 'read', arguments: '{}' }]
+      })
+      history.push({
+        role: 'tool',
+        toolCallId: `w${i}`,
+        toolName: 'read',
+        content: `FULL_BODY_${i}_`.repeat(80)
+      })
+    }
+    const result = await assembleContext({
+      harness: 'harness',
+      messages: history,
+      workspacePath: null,
+      goal: 'hi',
+      model,
+      toolsJsonEstimate: 50,
+      priorCompaction: {
+        summary: CONTEXT_TRIM_WATERMARK_SUMMARY,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        tokenEstimate: 100,
+        wireTrimApplied: true
+      },
+      providerId: 'ollama',
+      provider: mockProvider,
+      signal: new AbortController().signal
+    })
+    const toolContents = result.messages
+      .filter((m) => m.role === 'tool')
+      .map((m) => String(m.content ?? ''))
+    expect(toolContents.length).toBe(6)
+    expect(toolContents.slice(0, 3).every((c) => c === '[cleared]')).toBe(true)
+    expect(toolContents.slice(3).every((c) => c.includes('FULL_BODY_'))).toBe(true)
+  })
 })

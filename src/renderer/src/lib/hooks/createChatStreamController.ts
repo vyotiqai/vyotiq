@@ -1748,6 +1748,17 @@ export function createChatStreamController(
         pendingFollowUps: nextPending,
         ...(nextMessages !== state.messages ? { messages: nextMessages } : {})
       })
+    } else if (event.type === 'follow_up_dropped') {
+      const dropped = new Set(event.ids)
+      const unappliedItemIds = new Set(
+        state.pendingFollowUps.filter((entry) => dropped.has(entry.id)).map((entry) => entry.itemId)
+      )
+      patch({
+        pendingFollowUps: state.pendingFollowUps.filter((entry) => !dropped.has(entry.id)),
+        ...(unappliedItemIds.size > 0
+          ? { items: state.items.filter((item) => !unappliedItemIds.has(item.id)) }
+          : {})
+      })
     } else if (event.type === 'step_usage') {
       const usage = stepUsageFromEvent(event)
       if (usage) {

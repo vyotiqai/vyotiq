@@ -435,6 +435,14 @@ describe('ipc schemas', () => {
         messages: [{ role: 'user', content: 'steer' }]
       }).ids
     ).toEqual(['fu-1'])
+    expect(
+      AgentEventSchema.parse({
+        type: 'follow_up_dropped',
+        runId: 'r1',
+        ids: ['fu-1'],
+        reason: 'identical_step_streak'
+      }).reason
+    ).toBe('identical_step_streak')
     expect(WindowMaximizedChangedSchema.parse(true)).toBe(true)
     expect(LoadRunRequestSchema.parse({ workspacePath: '/ws', runId: 'r1' })).toEqual({
       workspacePath: '/ws',

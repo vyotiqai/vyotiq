@@ -174,7 +174,7 @@ describe('MCP resource/prompt built-ins', () => {
     expect(result.content).toMatch(/not enabled for this workspace run/i)
   })
 
-  it('treats MCP resource/prompt tools as serial and approval-exempt', () => {
+  it('treats MCP resource/prompt tools as serial and approval-gated', () => {
     for (const name of [
       'mcp_list_resources',
       'mcp_read_resource',
@@ -182,7 +182,7 @@ describe('MCP resource/prompt built-ins', () => {
       'mcp_get_prompt'
     ]) {
       expect(isParallelSafeTool(name)).toBe(false)
-      expect(isApprovalExemptTool(name)).toBe(true)
+      expect(isApprovalExemptTool(name)).toBe(false)
       expect(isBuiltinAllowedInMode('ask', name)).toBe(true)
     }
   })

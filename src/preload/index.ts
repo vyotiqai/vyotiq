@@ -81,17 +81,12 @@ const api: VyotiqApi = {
     const listener = (_: IpcRendererEvent, raw: unknown): void => {
       const parsed = AgentQuestionRequestSchema.safeParse(raw)
       if (!parsed.success) {
-        console.warn('[vyotiq] Invalid question request dropped', parsed.error.issues[0]?.message)
-        // The agent loop is parked on this request — dismiss it so a malformed
-        // payload cannot freeze the run until the 15-minute timeout.
-        const rec = raw as { requestId?: unknown; runId?: unknown } | null
-        if (typeof rec?.requestId === 'string' && typeof rec?.runId === 'string') {
-          void ipcRenderer.invoke(IPC.agentQuestionResponse, {
-            requestId: rec.requestId,
-            runId: rec.runId,
-            answers: []
-          })
-        }
+        console.warn(
+          '[vyotiq] Invalid question request dropped',
+          parsed.error.issues[0]?.message
+        )
+        // Do not auto-dismiss: empty answers can look like a user skip. Main-side
+        // ask_question wait times out (~15m) if the payload never validates.
         return
       }
       handler(parsed.data)

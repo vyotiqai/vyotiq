@@ -8,6 +8,7 @@ import type {
 import { isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
+import { scrubString } from '../../shared/utils/scrub'
 import { isApprovalExemptTool } from './tools/classify'
 import { streamSignalFor } from './runRegistry'
 
@@ -217,7 +218,7 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
         toolCallId: call.id,
         name: call.name,
         summary: summarizeToolArgs(call.name, call.arguments),
-        argsPreview: call.arguments.slice(0, 4000),
+        argsPreview: scrubString(call.arguments.slice(0, 4000)),
         mutating: !isApprovalExemptTool(call.name)
       }
 

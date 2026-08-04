@@ -87,4 +87,65 @@ describe('assembleContext overflow compaction', () => {
     expect(wireText).not.toContain(foldedMarker)
     expect(wireText).toContain(keptMarker)
   })
+
+  it('keeps recent turns when overflow compaction LLM fails', async () => {
+    compactMessages.mockReset()
+    compactMessages.mockResolvedValue(null)
+
+    const { assembleContext } = await import('@main/agent/context/assemble')
+
+    const foldedMarker = 'OVERFLOW_FAIL_FOLDED_MARKER_AAA'
+    const keptMarker = 'OVERFLOW_FAIL_KEPT_MARKER_BBB'
+    const history: import('@shared/ipc').ChatMessage[] = []
+    for (let i = 0; i < 40; i++) {
+      history.push({
+        role: i % 2 === 0 ? 'user' : 'assistant',
+        content: `${foldedMarker} turn ${i} ${'x'.repeat(800)}`
+      })
+    }
+    for (let i = 0; i < 4; i++) {
+      history.push({
+        role: 'user',
+        content: `${keptMarker} user ${i}`
+      })
+      history.push({
+        role: 'assistant',
+        content: `${keptMarker} assistant ${i}`
+      })
+    }
+
+    const result = await assembleContext({
+      harness: 'harness',
+      messages: history,
+      workspacePath: null,
+      goal: 'hi',
+      model: {
+        id: 'test',
+        inputModalities: ['text'],
+        outputModalities: ['text'],
+        supportsTools: true,
+        supportsVision: false,
+        contextWindow: 8_000
+      },
+      toolsJsonEstimate: 20_000,
+      providerId: 'ollama',
+      provider: mockProvider,
+      signal: new AbortController().signal,
+      keepRecentTurns: 4
+    })
+
+    expect(compactMessages).toHaveBeenCalled()
+    expect(result.compaction).toBeNull()
+    expect(result.contextShrunk).toBe(true)
+    const wireText = result.messages.map((m) => String(m.content ?? '')).join('\n')
+    expect(wireText).not.toContain(foldedMarker)
+    expect(wireText).toContain(keptMarker)
+
+    compactMessages.mockReset()
+    compactMessages.mockResolvedValue({
+      summary: 'OVERFLOW_FOLD_SUMMARY_XYZ',
+      createdAt: '2026-08-02T00:00:00.000Z',
+      tokenEstimate: 50
+    })
+  })
 })

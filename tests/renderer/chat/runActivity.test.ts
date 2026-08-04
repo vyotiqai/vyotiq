@@ -153,11 +153,12 @@ describe('turnSummaryActiveLabel', () => {
     )
   })
 
-  it('falls back to Working when expanded and work chrome is visible', () => {
-    expect(turnSummaryActiveLabel({ kind: 'thinking' }, false)).toBe('Working')
+  it('keeps specific phase when expanded', () => {
+    expect(turnSummaryActiveLabel({ kind: 'thinking' }, false)).toBe('Thinking')
     expect(turnSummaryActiveLabel({ kind: 'tool', label: 'Reading', detail: '2 files' }, false)).toBe(
-      'Working'
+      'Reading 2 files'
     )
+    expect(turnSummaryActiveLabel({ kind: 'awaiting_approval' }, false)).toBe('Awaiting approval')
   })
 
   it('keeps Planning when expanded before the first work row', () => {

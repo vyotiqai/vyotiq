@@ -75,6 +75,7 @@ const ORPHAN_CRITICAL_TYPES = new Set<AgentEvent['type']>([
   'thinking_done',
   'follow_up_queued',
   'follow_up_applied',
+  'follow_up_dropped',
   'terminal_output_delta',
   'stream_reset',
   'status',

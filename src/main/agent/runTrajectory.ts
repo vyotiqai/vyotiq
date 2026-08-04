@@ -132,11 +132,17 @@ export function buildTrajectoryFromEvents(
         break
       }
       case 'follow_up_queued':
-      case 'follow_up_applied': {
+      case 'follow_up_applied':
+      case 'follow_up_dropped': {
         rows.push({
           at,
           step: lastStep,
-          kind: ev.type === 'follow_up_queued' ? 'follow_up_queued' : 'follow_up_applied'
+          kind:
+            ev.type === 'follow_up_queued'
+              ? 'follow_up_queued'
+              : ev.type === 'follow_up_applied'
+                ? 'follow_up_applied'
+                : 'follow_up_dropped'
         })
         break
       }

@@ -766,10 +766,7 @@ export function ChatView({
     model,
     running,
     disabled: !hasWorkspace,
-    hasTranscript: liveItems.some(
-      (item) =>
-        (item.kind === 'message' && item.role === 'assistant') || item.kind === 'tool'
-    ),
+    hasTranscript: hasItems,
     hasWorkspace,
     ollamaBaseUrl,
     customOpenAiBaseUrl,

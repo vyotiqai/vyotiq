@@ -15,7 +15,7 @@ import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
-import { formatProviderHttpError } from './httpErrors'
+import { formatProviderHttpError, scrubProviderErrorText } from './httpErrors'
 import { streamGeminiInteractions } from './geminiInteractions'
 import { resolveSystemZones, volatileSessionMessage } from './systemZones'
 
@@ -329,12 +329,14 @@ export const geminiProvider: LlmProvider = {
     for await (const event of iterateSseJson(res, req.signal, drops)) {
       if (event.error) {
         const errObj = event.error as { message?: string } | string
-        const message =
+        const raw =
           typeof errObj === 'string' ? errObj : (errObj.message ?? 'Gemini stream error')
+        const message = scrubProviderErrorText(raw)
         logProviderFailure('gemini', 'stream', {})
         yield {
           type: 'error',
-          error: message
+          error: message,
+          errorCode: 'PROVIDER_STREAM'
         }
         return
       }

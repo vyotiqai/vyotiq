@@ -363,6 +363,13 @@ const AgentEventUnionSchema = z.discriminatedUnion('type', [
     ...eventBase,
     ids: z.array(z.string().min(1)).min(1),
     messages: z.array(ChatMessageSchema).min(1)
+  }),
+  z.object({
+    /** Queued mid-run follow-ups discarded because the turn ended without applying them. */
+    type: z.literal('follow_up_dropped'),
+    ...eventBase,
+    ids: z.array(z.string().min(1)).min(1),
+    reason: z.string().min(1)
   })
 ])
 

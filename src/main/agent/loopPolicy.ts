@@ -400,7 +400,7 @@ export function nextIdenticalStepStreak(
   return fingerprint === prevFingerprint ? prevStreak + 1 : 1
 }
 
-/** Central loop-safety decision, checked per step in both agent loops. */
+/** Central loop-safety decision for consecutive tool-failure / identical tool-step streaks. */
 export function loopStopDecision(state: {
   /** Progress metadata only — not a stop condition. */
   step: number
@@ -416,7 +416,7 @@ export function loopStopDecision(state: {
   if (state.identicalStepStreak >= MAX_IDENTICAL_STEP_STREAK) {
     return {
       reason: 'identical_step_streak',
-      message: `Stopped after the same tool call(s) repeated ${state.identicalStepStreak} steps in a row (likely a loop). Change approach, or start a new chat with fresh context.`
+      message: `Stopped after the same tool call(s) repeated ${state.identicalStepStreak} consecutive tool steps in a row (likely a loop). Change approach, or start a new chat with fresh context.`
     }
   }
   return undefined

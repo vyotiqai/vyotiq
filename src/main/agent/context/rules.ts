@@ -1,5 +1,5 @@
 import { readdir, readFile, stat } from 'fs/promises'
-import { existsSync, statSync, type Dirent } from 'fs'
+import { existsSync, readdirSync, statSync, type Dirent } from 'fs'
 import { join, relative, sep } from 'path'
 
 /**
@@ -46,15 +46,53 @@ function fingerprintFor(workspacePath: string): string {
       parts.push(`${name}:?`)
     }
   }
-  for (const { dir } of RULE_DIRS) {
+  for (const { dir, extensions } of RULE_DIRS) {
     const p = join(workspacePath, dir)
     try {
-      parts.push(existsSync(p) ? `${dir}:${statSync(p).mtimeMs}` : `${dir}:-`)
+      if (!existsSync(p)) {
+        parts.push(`${dir}:-`)
+        continue
+      }
+      parts.push(`${dir}:${statSync(p).mtimeMs}`)
+      parts.push(`${dir}:files:${maxRuleFileMtimeMs(p, extensions, 0)}`)
     } catch {
       parts.push(`${dir}:?`)
     }
   }
   return parts.join('|')
+}
+
+/** Max mtime across a bounded rules walk so nested file edits bust the cache. */
+function maxRuleFileMtimeMs(
+  dirPath: string,
+  extensions: string[],
+  depth: number
+): number {
+  if (depth > MAX_DIR_DEPTH) return 0
+  let max = 0
+  let entries: Dirent[]
+  try {
+    entries = readdirSync(dirPath, { withFileTypes: true })
+  } catch {
+    return 0
+  }
+  let seen = 0
+  for (const entry of entries) {
+    if (seen >= MAX_RULE_FILES) break
+    const full = join(dirPath, entry.name)
+    if (entry.isDirectory()) {
+      max = Math.max(max, maxRuleFileMtimeMs(full, extensions, depth + 1))
+      continue
+    }
+    if (!extensions.some((ext) => entry.name.toLowerCase().endsWith(ext))) continue
+    seen++
+    try {
+      max = Math.max(max, statSync(full).mtimeMs)
+    } catch {
+      /* skip */
+    }
+  }
+  return max
 }
 
 /**

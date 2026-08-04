@@ -219,6 +219,15 @@ function workspaceFingerprint(workspacePath: string): string {
       parts.push('git:?')
     }
   }
+  // Index mtime moves on staged/working-tree changes that HEAD alone misses.
+  const gitIndex = join(workspacePath, '.git', 'index')
+  if (existsSync(gitIndex)) {
+    try {
+      parts.push(`git-index:${statSync(gitIndex).mtimeMs}`)
+    } catch {
+      parts.push('git-index:?')
+    }
+  }
   return parts.join('|')
 }
 

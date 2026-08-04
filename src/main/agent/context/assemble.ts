@@ -273,26 +273,30 @@ function buildVolatileSystem(parts: {
   compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
   loopHint?: string
+  model: ModelInfo
 }): string {
   const sections: string[] = []
   const mw = Math.floor(parts.budgets.memoryWorkspace / 3)
   const envCap = Math.max(200, Math.floor(parts.budgets.system * 0.15))
+  const hintCap = Math.floor(mw * 0.5)
 
   // Session env and workspace snapshot are data, not instructions.
   if (parts.sessionEnv?.trim()) {
-    sections.push(capText(parts.sessionEnv.trim(), envCap))
+    sections.push(capToTokenBudget(parts.sessionEnv.trim(), envCap, parts.model))
   }
   if (parts.workspace.trim()) {
-    sections.push(capText(parts.workspace, mw))
+    sections.push(capToTokenBudget(parts.workspace, mw, parts.model))
   }
   if (parts.loopHint?.trim()) {
-    sections.push(`## Run notice\n${capText(parts.loopHint.trim(), Math.floor(mw * 0.5))}`)
+    sections.push(
+      `## Run notice\n${capToTokenBudget(parts.loopHint.trim(), hintCap, parts.model)}`
+    )
   }
   if (parts.memoryIndex.trim()) {
-    sections.push(`## Memory index\n${capText(parts.memoryIndex, mw)}`)
+    sections.push(`## Memory index\n${capToTokenBudget(parts.memoryIndex, mw, parts.model)}`)
   }
   if (parts.memoryState.trim()) {
-    sections.push(`## Memory state\n${capText(parts.memoryState, mw)}`)
+    sections.push(`## Memory state\n${capToTokenBudget(parts.memoryState, mw, parts.model)}`)
   }
   if (parts.compaction?.summary && !isTrimWatermarkCompaction(parts.compaction)) {
     sections.push(
@@ -300,7 +304,7 @@ function buildVolatileSystem(parts: {
         '## Prior session summary',
         // Summaries accumulate across compact, so this needs a cap like every
         // other section or it can crowd out the harness it sits beside.
-        capText(parts.compaction.summary, mw)
+        capToTokenBudget(parts.compaction.summary, mw, parts.model)
       ].join('\n')
     )
   }
@@ -349,7 +353,8 @@ function buildSystemZones(parts: {
     sessionEnv: parts.sessionEnv,
     compaction: parts.compaction,
     budgets: parts.budgets,
-    loopHint: parts.loopHint
+    loopHint: parts.loopHint,
+    model: parts.model
   })
   const system = !volatile ? stable : !stable ? volatile : `${stable}\n\n${volatile}`
   return { stable, volatile, system }
@@ -403,6 +408,15 @@ function resolveUsedTokens(
   trigger: number
 ): number {
   const providerHint = lastUsage?.inputTokens
+  // Provider bill already near the trigger and well above the local estimate —
+  // trust the provider so we do not defer compaction behind the 1.1× blend cap.
+  if (
+    providerHint !== undefined &&
+    providerHint >= trigger * 0.85 &&
+    providerHint > estimated * 1.15
+  ) {
+    return Math.max(providerHint, trigger)
+  }
   // Prefer local estimate only when the provider hint looks inflated *and*
   // is still below the compaction trigger. If the provider already reports
   // at/over trigger, trust it so we do not defer compaction.
@@ -457,6 +471,14 @@ export async function assembleContext(
   messages = stripUnsupportedModalitiesFromMessages(messages, wireCapsFromModel(input.model))
   let compaction = input.priorCompaction ?? null
   let contextShrunk = false
+
+  // Resume after a stub-only shrink: durable history still has full tool bodies.
+  // Re-apply the wire trim before estimates so we do not re-inflate and re-trim.
+  if (compaction?.wireTrimApplied) {
+    const beforeWire = wireContentChars(messages)
+    messages = trimToolResults(messages, KEEP_LAST_TOOL_RESULTS)
+    if (wireContentChars(messages) !== beforeWire) contextShrunk = true
+  }
 
   const estimateStarted = perfNow()
   const systemParts = {
@@ -691,6 +713,24 @@ export async function assembleContext(
             // Drop the folded prefix — mirror trigger-path `messages = keptForBoundary`.
             messages = keptForOverflow
             compaction = record
+            contextShrunk = true
+            zones = buildSystemZones({
+              ...systemParts,
+              compaction
+            })
+            layers = await computeLayers(
+              zones.system,
+              messages,
+              input.toolsJsonEstimate,
+              input.model,
+              budgets
+            )
+            estimated = totalFromLayers(layers)
+          } else {
+            // Summarize failed — keep recent turns and shrink so the next step does
+            // not re-invoke the same compaction LLM call. The loop persists a trim
+            // watermark from contextShrunk + dropped count.
+            messages = keptForOverflow
             contextShrunk = true
             zones = buildSystemZones({
               ...systemParts,

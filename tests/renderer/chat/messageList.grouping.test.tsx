@@ -104,7 +104,10 @@ describe('MessageList', () => {
     ]
     rerender(<MessageList items={liveItems} running />)
 
-    const toggles = screen.getAllByRole('button', { name: /Read(?:ing)? 2 files/i })
+    // Exclude TurnSummary buttons that now mirror the same phase label when expanded.
+    const toggles = screen
+      .getAllByRole('button', { name: /Read(?:ing)? 2 files/i })
+      .filter((btn) => !/turn work/i.test(btn.getAttribute('aria-label') ?? btn.textContent ?? ''))
     expect(toggles).toHaveLength(2)
     expect(toggles[0]!.getAttribute('aria-expanded')).toBe('false')
     expect(toggles[1]!.getAttribute('aria-expanded')).toBe('true')
@@ -126,5 +129,48 @@ describe('MessageList', () => {
     render(<MessageList items={items} />)
 
     expect(screen.queryByRole('time')).toBeNull()
+  })
+
+  it('hides turn work when collapsed but keeps approval cards visible', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u-1', role: 'user', content: 'Edit the file' },
+      {
+        kind: 'message',
+        id: 'a-1',
+        role: 'assistant',
+        content: '',
+        thinking: 'Planning the edit…',
+        thinkingStreaming: false
+      },
+      {
+        kind: 'tool',
+        id: 'edit-1',
+        tool: {
+          id: 'edit-1',
+          name: 'edit',
+          summary: 'src/a.ts',
+          status: 'running',
+          argsPreview: '{"path":"src/a.ts"}'
+        },
+        approval: {
+          requestId: 'apr-1',
+          toolName: 'edit',
+          summary: 'src/a.ts',
+          argsPreview: '{"path":"src/a.ts"}',
+          mutating: true
+        },
+        groupTiming: { startedAt: 1_000 }
+      }
+    ]
+
+    render(<MessageList items={items} collapsedTurns={new Set([0])} running />)
+
+    expect(screen.queryByText('Planning the edit…')).toBeNull()
+    // Approval card stays interactive while the turn is collapsed.
+    expect(screen.getByRole('button', { name: 'Allow once' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Awaiting approval$/i })).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: /^Awaiting approval$/i }).getAttribute('aria-expanded')
+    ).toBe('false')
   })
 })

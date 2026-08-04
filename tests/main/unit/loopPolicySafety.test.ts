@@ -67,7 +67,7 @@ describe('loop safety policy', () => {
       identicalStepStreak: MAX_IDENTICAL_STEP_STREAK
     })
     expect(stop?.reason).toBe('identical_step_streak')
-    expect(stop?.message).toMatch(/same tool call/i)
+    expect(stop?.message).toMatch(/consecutive tool steps/i)
     expect(
       loopStopDecision({
         step: 9,

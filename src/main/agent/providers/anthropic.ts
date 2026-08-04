@@ -16,7 +16,7 @@ import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
 import { logProviderFailure } from './log'
 import { fetchWithRetry } from './fetchWithRetry'
-import { formatProviderHttpError } from './httpErrors'
+import { formatProviderHttpError, scrubProviderErrorText } from './httpErrors'
 import { anthropicThinkingBlocksFromMessage, anthropicThinkingFields } from './thinkingPolicy'
 import { volatileSessionMessage } from './systemZones'
 
@@ -638,11 +638,12 @@ export const anthropicProvider: LlmProvider = {
       }
       if (type === 'error') {
         const errObj = event.error as { message?: string } | undefined
-        const message = errObj?.message ?? 'Anthropic stream error'
+        const message = scrubProviderErrorText(errObj?.message ?? 'Anthropic stream error')
         logProviderFailure('anthropic', 'stream', {})
         yield {
           type: 'error',
-          error: message
+          error: message,
+          errorCode: 'PROVIDER_STREAM'
         }
         return
       }
