@@ -53,6 +53,11 @@ function isTerminalPatch(patch: Partial<RunStatus>): boolean {
   return Boolean(patch.status && TERMINAL_STATUSES.has(patch.status))
 }
 
+/** Step ticks are forensic checkpoints — do not debounce behind events.jsonl. */
+function shouldFlushImmediately(patch: Partial<RunStatus>): boolean {
+  return isTerminalPatch(patch) || patch.step !== undefined
+}
+
 /** Meaningful enough to refresh the run list (not every step tick). */
 function shouldInvalidateList(patch: Partial<RunStatus>): boolean {
   if (isTerminalPatch(patch)) return true
@@ -160,8 +165,9 @@ function ensurePending(dir: string): Pending {
 }
 
 /**
- * Merge a status patch. Step ticks coalesce for STATUS_FLUSH_MS; terminal statuses
- * flush immediately. List-runs cache invalidates only on meaningful changes.
+ * Merge a status patch. Non-step fields coalesce for STATUS_FLUSH_MS; step ticks
+ * and terminal statuses flush immediately. List-runs cache invalidates only on
+ * meaningful changes.
  */
 export function enqueueStatusPatch(dir: string, patch: Partial<RunStatus>): void {
   const entry = ensurePending(dir)
@@ -171,7 +177,7 @@ export function enqueueStatusPatch(dir: string, patch: Partial<RunStatus>): void
   entry.patch = { ...entry.patch, ...patch }
   if (shouldInvalidateList(patch)) entry.invalidateList = true
 
-  if (isTerminalPatch(patch)) {
+  if (shouldFlushImmediately(patch)) {
     void flushDir(dir).catch(() => {
       // flushDir logs and re-merges pending patches
     })

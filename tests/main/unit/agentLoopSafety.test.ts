@@ -204,4 +204,48 @@ describe('runAgent LOOP_SAFETY integration', () => {
     expect(persisted).toContain('"code":"LOOP_SAFETY"')
     expect(persisted).toContain('"status":"error"')
   })
+
+  it('does not re-emit LOOP_SAFETY on a follow-up invoke after failure streak stop', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      yield {
+        type: 'tool_call',
+        toolCall: { id: `c${call}`, name: 'read', arguments: `{"path":"f${call}.ts"}` }
+      }
+      yield { type: 'done', stopReason: 'tool_calls' }
+    })
+    executeTool.mockResolvedValue({ ok: false, summary: 'file', content: 'boom: read failed' })
+
+    const runId = 'safety-follow-up-invoke'
+    await collect(runId, workspace)
+
+    streamChat.mockClear()
+    executeTool.mockClear()
+    executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'recovered' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+
+    const followUpEvents: CapturedEvent[] = []
+    for await (const ev of runAgent({
+      runId,
+      incremental: true,
+      newMessages: [{ role: 'user', content: 'try again' }],
+      workspacePath: workspace,
+      resume: true
+    })) {
+      followUpEvents.push(ev as CapturedEvent)
+    }
+    expect(followUpEvents.some((e) => e.type === 'error' && e.code === 'LOOP_SAFETY')).toBe(false)
+
+    const persisted = readFileSync(join(resolveRunDir(workspace, runId), 'events.jsonl'), 'utf8')
+    const loopSafetyLines = persisted
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line).event)
+      .filter((event) => event?.code === 'LOOP_SAFETY')
+    expect(loopSafetyLines).toHaveLength(1)
+  })
 })

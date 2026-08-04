@@ -19,7 +19,9 @@ vi.mock('fs/promises', async (importOriginal) => {
 import {
   enqueueEventAppend,
   flushEventAppends,
-  resetEventAppendQueueForTests
+  blockUntilEventAppendsFlushed,
+  resetEventAppendQueueForTests,
+  takeEventAppendFailureNotice
 } from '@main/agent/eventAppendQueue'
 
 describe('eventAppendQueue', () => {
@@ -54,5 +56,31 @@ describe('eventAppendQueue', () => {
 
     enqueueEventAppend(dir, { type: 'status', status: 'running' })
     await expect(flushEventAppends(dir)).rejects.toThrow('append failed')
+  })
+
+  it('exposes the first mid-run append failure as a consumable notice', async () => {
+    appendFileMock.mockRejectedValueOnce(new Error('disk full'))
+
+    enqueueEventAppend(dir, { type: 'status', status: 'running' })
+    await flushEventAppends(dir).catch(() => undefined)
+
+    const notice = takeEventAppendFailureNotice(dir)
+    expect(notice?.message).toBe('disk full')
+    expect(takeEventAppendFailureNotice(dir)).toBeUndefined()
+  })
+
+  it('blockUntilEventAppendsFlushed returns false on timeout', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    appendFileMock.mockImplementationOnce(async () => gate)
+
+    enqueueEventAppend(dir, { type: 'status', status: 'running' })
+    const flushed = blockUntilEventAppendsFlushed(dir, 50)
+    expect(flushed).toBe(false)
+
+    release()
+    await flushEventAppends(dir)
   })
 })

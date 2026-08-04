@@ -8,7 +8,7 @@ import {
   flushEventAppends
 } from './eventAppendQueue'
 import { enqueueMessageAppend, flushMessageAppends, takeMessageAppendFailureNotice } from './messageAppendQueue'
-import { enqueueStatusPatch, writeStatusImmediate } from './statusWriteQueue'
+import { enqueueStatusPatch, flushStatusWrites, writeStatusImmediate } from './statusWriteQueue'
 import { getCachedListRuns, invalidateListRunsCache } from './runListCache'
 import {
   ChatMessageSchema,
@@ -32,7 +32,7 @@ import { isActive } from './runRegistry'
 import { CompactionRecordSchema, type CompactionRecord } from './context/types'
 import { writeRunReceiptBestEffort } from './runReceipt'
 
-export { flushEventAppends } from './eventAppendQueue'
+export { flushEventAppends, takeEventAppendFailureNotice } from './eventAppendQueue'
 export { flushMessageAppends, takeMessageAppendFailureNotice } from './messageAppendQueue'
 export { flushStatusWrites } from './statusWriteQueue'
 
@@ -552,7 +552,7 @@ export function loadEvents(
   if (!flushed) {
     // One more wait — sync callers (receipts/trajectory) should prefer a late
     // complete read over a partial tail after a busy append chain.
-    flushed = blockUntilEventAppendsFlushed(dir, 3000)
+    flushed = blockUntilEventAppendsFlushed(dir, 5000)
     if (!flushed) {
       logger.warn('Loading events.jsonl after flush timeout; recent events may be missing', {
         scope: 'state',
@@ -819,7 +819,6 @@ function patchInterruptedTodoMessage(dir: string): void {
  */
 export async function interruptOrphanRuns(workspacePaths: string[]): Promise<number> {
   let count = 0
-  const eventFlushDirs: string[] = []
   for (const workspacePath of workspacePaths) {
     const runs = workspaceSessionsRoot(workspacePath)
     if (!existsSync(runs)) continue
@@ -854,6 +853,10 @@ export async function interruptOrphanRuns(workspacePaths: string[]): Promise<num
           runId: name,
           ...(parsed.data.invokeId != null ? { invokeId: parsed.data.invokeId } : {})
         })
+        // Drain pending appends before sync receipt load — avoids flush-timeout
+        // partial reads after GPU crash / slow disk.
+        await flushEventAppends(dir)
+        await flushStatusWrites(dir)
         // Keep receipt.json aligned with status after crash/orphan cancel
         // (loop finally normally writes this; orphans never reach finally).
         writeRunReceiptBestEffort({
@@ -864,15 +867,11 @@ export async function interruptOrphanRuns(workspacePaths: string[]): Promise<num
           loadEvents: (d) => loadEvents(d, name),
           readContract
         })
-        eventFlushDirs.push(dir)
         count += 1
       } catch {
         // skip
       }
     }
-  }
-  if (eventFlushDirs.length > 0) {
-    await Promise.all(eventFlushDirs.map((dir) => flushEventAppends(dir)))
   }
   return count
 }

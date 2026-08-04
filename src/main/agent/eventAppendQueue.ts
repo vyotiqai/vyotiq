@@ -9,14 +9,25 @@ const EVENTS_FILE_KEEP_BYTES = 1024 * 1024
 /** Per-run-dir serialized append chain — ordered, non-blocking, single-writer safe. */
 const appendChains = new Map<string, Promise<void>>()
 const lastErrors = new Map<string, Error>()
+/** First mid-run append failure per dir that has not yet been consumed as a notice. */
+const pendingNotices = new Map<string, Error>()
 
 function recordAppendError(dir: string, err: unknown): void {
-  lastErrors.set(dir, err instanceof Error ? err : new Error(String(err)))
+  const error = err instanceof Error ? err : new Error(String(err))
+  lastErrors.set(dir, error)
+  if (!pendingNotices.has(dir)) pendingNotices.set(dir, error)
 }
 
 function takeAppendError(dir: string): Error | undefined {
   const err = lastErrors.get(dir)
   if (err) lastErrors.delete(dir)
+  return err
+}
+
+/** Consume the first unread mid-run append failure for a run dir, if any. */
+export function takeEventAppendFailureNotice(dir: string): Error | undefined {
+  const err = pendingNotices.get(dir)
+  if (err) pendingNotices.delete(dir)
   return err
 }
 
@@ -111,7 +122,7 @@ export async function flushEventAppends(dir?: string): Promise<void> {
  * Returns false when the wait timed out (caller should treat events as possibly stale).
  * Times out instead of hanging forever when the chain never settles.
  */
-export function blockUntilEventAppendsFlushed(dir: string, timeoutMs = 2000): boolean {
+export function blockUntilEventAppendsFlushed(dir: string, timeoutMs = 3000): boolean {
   const chain = appendChains.get(dir)
   if (!chain) {
     throwIfAppendError(dir)
@@ -152,4 +163,5 @@ export function appendChainSizeForTests(): number {
 export function resetEventAppendQueueForTests(): void {
   appendChains.clear()
   lastErrors.clear()
+  pendingNotices.clear()
 }

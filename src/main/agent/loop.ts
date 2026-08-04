@@ -109,6 +109,7 @@ import {
   updateStatus,
   flushEventAppends,
   flushMessageAppends,
+  takeEventAppendFailureNotice,
   takeMessageAppendFailureNotice,
   flushStatusWrites,
   loadMessagesAsync
@@ -287,6 +288,30 @@ function* emitMessageAppendFailureNotice(
 }
 
 /**
+ * Surface the first mid-run events.jsonl append failure as a run error event.
+ * @returns true when a failure was emitted (caller should stop the run).
+ */
+function* emitEventAppendFailureNotice(
+  runId: string,
+  runDir: string,
+  invokeId: number
+): Generator<AgentEvent, boolean> {
+  const err = takeEventAppendFailureNotice(runDir)
+  if (!err) return false
+  const message = `Failed to persist a run event: ${formatError(err)}`
+  logger.error(message, {
+    scope: 'agent',
+    code: 'PERSIST',
+    correlationId: runId,
+    err
+  })
+  const ev: AgentEvent = { type: 'error', runId, invokeId, message, code: 'PERSIST' }
+  appendEvent(runDir, ev)
+  yield ev
+  return true
+}
+
+/**
  * Persist whatever the model streamed before the step was interrupted, plus stubs
  * for tool calls that never ran. Without this the transcript loses text the user
  * already watched arrive, because assistant messages are only written on a
@@ -386,15 +411,19 @@ export async function* runAgent(input: {
   /** Last step that flushed an interim receipt.json (start writes at step 0). */
   let lastReceiptPersistedStep = 0
   const RECEIPT_PERSIST_EVERY_STEPS = 5
-  const persistInterimReceipt = async (force = false): Promise<void> => {
+  const flushStepArtifacts = async (): Promise<void> => {
     if (!runDir || !isCurrentInvoke(runId, invokeId)) return
-    if (!force && step - lastReceiptPersistedStep < RECEIPT_PERSIST_EVERY_STEPS) return
     try {
       await flushEventAppends(runDir)
       await flushStatusWrites(runDir)
     } catch {
       // Best-effort — final receipt still runs in finally.
     }
+  }
+  const persistInterimReceipt = async (force = false): Promise<void> => {
+    if (!runDir || !isCurrentInvoke(runId, invokeId)) return
+    await flushStepArtifacts()
+    if (!force && step - lastReceiptPersistedStep < RECEIPT_PERSIST_EVERY_STEPS) return
     writeRunReceiptBestEffort({
       runDir,
       runId,
@@ -473,7 +502,14 @@ export async function* runAgent(input: {
       await flushMessageAppends(runDir)
     }
 
-    writeStatus({ status: 'running', mode: agentMode, invokeId, error: undefined })
+    // Fresh invoke — do not inherit a prior LOOP_SAFETY failure streak.
+    writeStatus({
+      status: 'running',
+      mode: agentMode,
+      invokeId,
+      error: undefined,
+      consecutiveToolFailureSteps: 0
+    })
     beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
 
     if (agentMode === 'plan') {
@@ -893,11 +929,14 @@ export async function* runAgent(input: {
 
     await refreshMcpToolsForStep()
     yield* flushPendingMcpOmittedNotice()
-    let consecutiveToolFailureSteps = loadStatus(runDir)?.consecutiveToolFailureSteps ?? 0
+    let consecutiveToolFailureSteps = 0
     /** Last executed step's tool fingerprint + repeat streak (runaway-loop guard). */
     let lastStepFingerprint = ''
     let identicalStepStreak = 0
+    let loopSafetyEmitted = false
     const stopForLoopSafety = function* (stop: LoopStop): Generator<AgentEvent, void, unknown> {
+      if (loopSafetyEmitted) return
+      loopSafetyEmitted = true
       logger.warn('Stopping run: loop safety limit reached', {
         scope: 'agent',
         code: 'LOOP_SAFETY',
@@ -935,9 +974,22 @@ export async function* runAgent(input: {
       } catch {
         // Failure is recorded for emitMessageAppendFailureNotice below.
       }
+      try {
+        await flushEventAppends(runDir)
+      } catch {
+        // Failure is recorded for emitEventAppendFailureNotice below.
+      }
       if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
         yield* flushWriteCheckpoint()
         const message = 'Failed to persist a chat message'
+        yield { type: 'status', runId, invokeId, status: 'error' }
+        writeStatus({ status: 'error', error: message })
+        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+        return
+      }
+      if (yield* emitEventAppendFailureNotice(runId, runDir, invokeId)) {
+        yield* flushWriteCheckpoint()
+        const message = 'Failed to persist a run event'
         yield { type: 'status', runId, invokeId, status: 'error' }
         writeStatus({ status: 'error', error: message })
         appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
@@ -1065,6 +1117,8 @@ export async function* runAgent(input: {
         }
       }
       const { saved: watermarkSaved, event: compactionEv } = emitCompaction(compactionWithWatermark)
+      // compactionCountThisRun tracks LLM summary compactions only — emergency
+      // trim watermarks shrink messages without emitting a compaction event.
       if (compactionEv) {
         compactionCountThisRun++
         yield compactionEv
@@ -1981,6 +2035,21 @@ export async function* runAgent(input: {
         appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
         return
       }
+      try {
+        await flushEventAppends(runDir)
+      } catch {
+        // Failure is recorded for emitEventAppendFailureNotice below.
+      }
+      if (yield* emitEventAppendFailureNotice(runId, runDir, invokeId)) {
+        yield* flushWriteCheckpoint()
+        yield { type: 'status', runId, invokeId, status: 'error' }
+        writeStatus({
+          status: 'error',
+          error: 'Failed to persist run event before tool execution'
+        })
+        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+        return
+      }
       if (thinkingText && !thinkingDoneEmitted) {
         thinkingDoneEmitted = true
         const thinkingDoneEv: AgentEvent = {
@@ -2107,9 +2176,22 @@ export async function* runAgent(input: {
         } catch {
           // Failure is recorded for emitMessageAppendFailureNotice below.
         }
+        try {
+          await flushEventAppends(runDir)
+        } catch {
+          // Failure is recorded for emitEventAppendFailureNotice below.
+        }
         if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
           yield* flushWriteCheckpoint()
           const message = 'Failed to persist a chat message'
+          yield { type: 'status', runId, invokeId, status: 'error' }
+          writeStatus({ status: 'error', error: message })
+          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+          return
+        }
+        if (yield* emitEventAppendFailureNotice(runId, runDir, invokeId)) {
+          yield* flushWriteCheckpoint()
+          const message = 'Failed to persist a run event'
           yield { type: 'status', runId, invokeId, status: 'error' }
           writeStatus({ status: 'error', error: message })
           appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
@@ -2137,9 +2219,22 @@ export async function* runAgent(input: {
         } catch {
           // Failure is recorded for emitMessageAppendFailureNotice below.
         }
+        try {
+          await flushEventAppends(runDir)
+        } catch {
+          // Failure is recorded for emitEventAppendFailureNotice below.
+        }
         if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
           yield* flushWriteCheckpoint()
           const message = 'Failed to persist a chat message'
+          yield { type: 'status', runId, invokeId, status: 'error' }
+          writeStatus({ status: 'error', error: message })
+          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+          return
+        }
+        if (yield* emitEventAppendFailureNotice(runId, runDir, invokeId)) {
+          yield* flushWriteCheckpoint()
+          const message = 'Failed to persist a run event'
           yield { type: 'status', runId, invokeId, status: 'error' }
           writeStatus({ status: 'error', error: message })
           appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
