@@ -25,7 +25,7 @@ describe('TurnSummary', () => {
       />
     )
 
-    expect(screen.getByRole('button', { name: /Collapse turn work, Thinking · 3s/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Collapse turn work, Working · 3s/i })).toBeTruthy()
     expect(document.querySelector('.vy-text-shimmer--active')).toBeTruthy()
   })
 
@@ -136,7 +136,7 @@ describe('TurnSummary', () => {
       />
     )
 
-    expect(screen.getByRole('button', { name: /Collapse turn work, Thinking$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Collapse turn work, Working$/i })).toBeTruthy()
   })
 
   it('shows Writing when expanded while the closing answer streams', () => {
@@ -153,7 +153,7 @@ describe('TurnSummary', () => {
       />
     )
 
-    expect(screen.getByRole('button', { name: /Collapse turn work, Writing · 3s/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Collapse turn work, Working · 3s/i })).toBeTruthy()
   })
 
   it('shows Awaiting approval when expanded during approval', () => {
@@ -171,7 +171,7 @@ describe('TurnSummary', () => {
     )
 
     expect(
-      screen.getByRole('button', { name: /Collapse turn work, Awaiting approval$/i })
+      screen.getByRole('button', { name: /Collapse turn work, Working$/i })
     ).toBeTruthy()
   })
 

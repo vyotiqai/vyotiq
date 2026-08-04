@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deriveRunActivity, formatRunActivityLabel } from '@renderer/features/chat/utils/runActivity'
+import { deriveRunActivity, formatRunActivityLabel, turnSummaryActiveLabel } from '@renderer/features/chat/utils/runActivity'
 import type { TranscriptRow } from '@renderer/features/chat/utils/transcriptRows'
 
 function thinkingRow(thinkingStreaming: boolean): TranscriptRow {
@@ -143,6 +143,25 @@ describe('deriveRunActivity', () => {
 
   it('reports working as the active-turn fallback between steps', () => {
     expect(deriveRunActivity([])).toEqual({ kind: 'working' })
+  })
+})
+
+describe('turnSummaryActiveLabel', () => {
+  it('keeps specific phase when collapsed', () => {
+    expect(turnSummaryActiveLabel({ kind: 'tool', label: 'Reading', detail: 'a.ts' }, true)).toBe(
+      'Reading a.ts'
+    )
+  })
+
+  it('falls back to Working when expanded and work chrome is visible', () => {
+    expect(turnSummaryActiveLabel({ kind: 'thinking' }, false)).toBe('Working')
+    expect(turnSummaryActiveLabel({ kind: 'tool', label: 'Reading', detail: '2 files' }, false)).toBe(
+      'Working'
+    )
+  })
+
+  it('keeps Planning when expanded before the first work row', () => {
+    expect(turnSummaryActiveLabel({ kind: 'planning' }, false)).toBe('Planning')
   })
 })
 

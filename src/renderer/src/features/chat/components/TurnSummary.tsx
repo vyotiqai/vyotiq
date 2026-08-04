@@ -4,7 +4,7 @@ import { cn } from '@renderer/lib/ui'
 import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
 import { formatElapsed } from '@shared/utils/timeFormat'
 import type { TurnSpan } from '../utils/transcriptRows'
-import { formatRunActivityLabel } from '../utils/runActivity'
+import { turnSummaryActiveLabel } from '../utils/runActivity'
 import { TextShimmer } from './TextShimmer'
 
 /** Below this the duration is noise; the turn was effectively instant. */
@@ -38,7 +38,7 @@ export const TurnSummary = memo(function TurnSummary({
     [turnElapsedMs]
   )
 
-  const phaseLabel = activity ? formatRunActivityLabel(activity) : 'Working'
+  const phaseLabel = turnSummaryActiveLabel(activity, collapsed)
   const activeText = turnDuration ? `${phaseLabel} · ${turnDuration}` : phaseLabel
 
   const doneLabel = turnDuration ? `Worked for ${turnDuration}` : 'Worked'

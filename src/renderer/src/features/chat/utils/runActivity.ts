@@ -57,6 +57,21 @@ function toolPhaseFromActivity(row: Extract<TranscriptRow, { kind: 'activity' }>
   }
 }
 
+/**
+ * Live turn-summary label. Collapsed turns need the specific phase; expanded
+ * turns already show thinking/tools/writing inline — avoid duplicating chrome.
+ */
+export function turnSummaryActiveLabel(
+  activity: RunActivityPhase | null | undefined,
+  collapsed: boolean
+): string {
+  const phaseLabel = activity ? formatRunActivityLabel(activity) : 'Working'
+  if (collapsed) return phaseLabel
+  const kind = activity?.kind
+  if (kind === 'planning' || kind === 'working' || kind == null) return phaseLabel
+  return 'Working'
+}
+
 export function formatRunActivityLabel(phase: RunActivityPhase): string {
   switch (phase.kind) {
     case 'planning':
