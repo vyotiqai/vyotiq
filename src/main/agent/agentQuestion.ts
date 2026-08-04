@@ -1,0 +1,177 @@
+import type {
+  AgentQuestionAnswer,
+  AgentQuestionRequest,
+  AgentQuestionResponse
+} from '../../shared/ipc'
+import { logger } from '../../shared/logger'
+import { sanitizeQuestionAnswers } from '../../shared/utils/agentQuestionForm'
+
+export type QuestionSender = (request: AgentQuestionRequest) => void
+
+/** Default wait for user answers before auto-denying (15 minutes). */
+export const AGENT_QUESTION_TIMEOUT_MS = 900_000
+
+/** Debug heartbeat while a question is parked waiting for the user. */
+export const AGENT_QUESTION_HEARTBEAT_MS = 60_000
+
+/** One sender per run: question prompts belong to the window that started it. */
+const senders = new Map<string, QuestionSender>()
+const pending = new Map<
+  string,
+  {
+    resolve: (answers: AgentQuestionAnswer[]) => void
+    /** Clears timeout/abort listeners then rejects — used by cancelPendingQuestions. */
+    cancel: (err: Error) => void
+    runId: string
+    invokeId?: number
+    request: AgentQuestionRequest
+  }
+>()
+
+function abortQuestionError(): Error {
+  const err = new Error('Aborted')
+  err.name = 'AbortError'
+  return err
+}
+
+/**
+ * Register (or replace) the window that receives question prompts for a run.
+ * Re-pushes any still-pending questions so a remounted renderer can show cards.
+ */
+export function registerQuestionSender(runId: string, sender: QuestionSender): () => void {
+  senders.set(runId, sender)
+  for (const entry of pending.values()) {
+    if (entry.runId === runId) sender(entry.request)
+  }
+  return () => {
+    if (senders.get(runId) === sender) senders.delete(runId)
+  }
+}
+
+/** Pending question payloads still waiting on the user for this run. */
+export function listPendingAgentQuestions(runId: string): AgentQuestionRequest[] {
+  const out: AgentQuestionRequest[] = []
+  for (const entry of pending.values()) {
+    if (entry.runId === runId) out.push(entry.request)
+  }
+  return out
+}
+
+/** Returns false when the request is unknown or runId does not match. */
+export function resolveAgentQuestion(response: AgentQuestionResponse): boolean {
+  const entry = pending.get(response.requestId)
+  if (!entry) return false
+  if (entry.runId !== response.runId) return false
+  // Validate against the asked form — drop unknown ids, trim/cap values.
+  // An empty sanitized list is the skip/dismiss path and is allowed through.
+  const answers = sanitizeQuestionAnswers(entry.request.questions, response.answers)
+  // Resolve through the stored settle path so waiters are cleared.
+  entry.resolve(answers)
+  return true
+}
+
+/**
+ * Cancelling a run must not leave question prompts waiting forever.
+ * When `invokeId` is set, only that turn's prompts are cleared.
+ */
+export function cancelPendingQuestions(runId: string, invokeId?: number): void {
+  for (const [, entry] of pending) {
+    if (entry.runId !== runId) continue
+    if (invokeId !== undefined && entry.invokeId !== invokeId) continue
+    entry.cancel(abortQuestionError())
+  }
+}
+
+export function askQuestionThroughRenderer(
+  request: AgentQuestionRequest,
+  signal: AbortSignal,
+  invokeId?: number
+): Promise<AgentQuestionAnswer[]> {
+  const sender = senders.get(request.runId)
+  if (!sender) {
+    logger.warn('Agent question required but no window is listening', {
+      scope: 'agent',
+      code: 'AGENT_QUESTION',
+      correlationId: request.runId
+    })
+    return Promise.reject(
+      new Error(
+        'ask_question requires an app window but none is listening. Reopen Vyotiq and retry.'
+      )
+    )
+  }
+
+  return new Promise<AgentQuestionAnswer[]>((resolve, reject) => {
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+    let heartbeatId: ReturnType<typeof setInterval> | undefined
+    let settled = false
+    const clearWaiters = (): void => {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId)
+        timeoutId = undefined
+      }
+      if (heartbeatId !== undefined) {
+        clearInterval(heartbeatId)
+        heartbeatId = undefined
+      }
+      signal.removeEventListener('abort', onAbort)
+    }
+    const settle = (answers: AgentQuestionAnswer[]): void => {
+      if (settled || !pending.has(request.requestId)) return
+      settled = true
+      pending.delete(request.requestId)
+      clearWaiters()
+      resolve(answers)
+    }
+    const cancel = (err: Error): void => {
+      if (settled || !pending.has(request.requestId)) return
+      settled = true
+      pending.delete(request.requestId)
+      clearWaiters()
+      reject(err)
+    }
+    function onAbort(): void {
+      cancel(abortQuestionError())
+    }
+    function onTimeout(): void {
+      // Mirror tool-approval auto-deny: resolve (do not throw) so the tool
+      // returns a structured failure instead of an unexpected exception.
+      settle([])
+    }
+    if (signal.aborted) {
+      reject(abortQuestionError())
+      return
+    }
+    pending.set(request.requestId, {
+      resolve: settle,
+      cancel,
+      runId: request.runId,
+      invokeId,
+      request
+    })
+    signal.addEventListener('abort', onAbort, { once: true })
+    timeoutId = setTimeout(onTimeout, AGENT_QUESTION_TIMEOUT_MS)
+    logger.info('Agent question waiting for user', {
+      scope: 'agent',
+      code: 'AGENT_QUESTION_WAIT',
+      correlationId: request.runId,
+      id: request.requestId
+    })
+    heartbeatId = setInterval(() => {
+      if (!pending.has(request.requestId)) return
+      logger.debug('Agent question still waiting', {
+        scope: 'agent',
+        code: 'AGENT_QUESTION_WAIT',
+        correlationId: request.runId,
+        id: request.requestId
+      })
+    }, AGENT_QUESTION_HEARTBEAT_MS)
+    sender(request)
+  })
+}
+
+/** Test helper — wipe senders and pending prompts between cases. */
+export function resetAgentQuestionForTests(): void {
+  senders.clear()
+  pending.clear()
+}
