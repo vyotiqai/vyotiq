@@ -1140,8 +1140,13 @@ const READ_ARG_ALIASES: Record<string, string> = {
   maxChars: 'limit'
 }
 
+/** Models often send `path` instead of schema `include` (AppData a2c9: 4× TOOL_ARGS). */
+const GREP_ARG_ALIASES: Record<string, string> = {
+  path: 'include'
+}
+
 /**
- * Strip unknown keys (strict schemas reject them) and apply proven read aliases
+ * Strip unknown keys (strict schemas reject them) and apply proven read/grep aliases
  * before validation. Does not invent required fields.
  */
 function coerceToolArgsForValidate(name: string, parsed: unknown): unknown {
@@ -1150,6 +1155,12 @@ function coerceToolArgsForValidate(name: string, parsed: unknown): unknown {
 
   if (name === 'read') {
     for (const [alias, canonical] of Object.entries(READ_ARG_ALIASES)) {
+      if (obj[canonical] == null && obj[alias] != null) {
+        obj[canonical] = obj[alias]
+      }
+    }
+  } else if (name === 'grep') {
+    for (const [alias, canonical] of Object.entries(GREP_ARG_ALIASES)) {
       if (obj[canonical] == null && obj[alias] != null) {
         obj[canonical] = obj[alias]
       }

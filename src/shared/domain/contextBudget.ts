@@ -85,6 +85,23 @@ export function compactionTriggerFromRaw(
   return Math.min(ratioTrigger, softCap)
 }
 
+/**
+ * Local BPE undercounts provider wire size (AppData aa84/a2c9: est ~62k vs
+ * provider ~76k on a 64k soft trigger). Fire when estimate reaches this
+ * fraction of the trigger so we compact before the oversized request.
+ */
+export const COMPACTION_ESTIMATE_TRIGGER_RATIO = 0.9
+
+/** True when blended used tokens or local estimate cross the soft trigger (with headroom). */
+export function crossesCompactionTrigger(
+  used: number,
+  estimated: number,
+  trigger: number
+): boolean {
+  const estimateFloor = Math.floor(trigger * COMPACTION_ESTIMATE_TRIGGER_RATIO)
+  return used >= trigger || estimated >= trigger || estimated >= estimateFloor
+}
+
 /** Tools-layer budget after applying the soft schema-tax ceiling. */
 export function toolsBudgetFromRaw(
   window: number,

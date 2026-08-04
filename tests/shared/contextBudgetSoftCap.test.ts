@@ -3,6 +3,7 @@ import {
   COMPACTION_SOFT_CAP_TOKENS,
   TOOLS_SOFT_CAP_TOKENS,
   compactionTriggerFromRaw,
+  crossesCompactionTrigger,
   toolsBudgetFromRaw
 } from '../../src/shared/domain/contextBudget'
 
@@ -18,6 +19,16 @@ describe('compactionTriggerFromRaw soft cap', () => {
     const expected = Math.floor(Math.floor(64_000 * 0.85) * 0.7)
     expect(expected).toBeLessThan(COMPACTION_SOFT_CAP_TOKENS)
     expect(trigger).toBe(expected)
+  })
+})
+
+describe('crossesCompactionTrigger estimate headroom', () => {
+  it('fires when estimate is under trigger but within 90% headroom (AppData undercount)', () => {
+    const trigger = 64_000
+    // aa84 step 33: estimate 62146, provider later 76443 — must compact before send
+    expect(crossesCompactionTrigger(30_781, 62_146, trigger)).toBe(true)
+    expect(crossesCompactionTrigger(30_781, 50_000, trigger)).toBe(false)
+    expect(crossesCompactionTrigger(64_000, 50_000, trigger)).toBe(true)
   })
 })
 

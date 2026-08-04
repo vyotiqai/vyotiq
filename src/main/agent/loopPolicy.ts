@@ -251,8 +251,8 @@ export function inspectPathsFromToolCall(
     return path ? [path] : []
   }
   if (name === 'grep') {
-    // Schema/executor only accept `include` (not `path`); ignore hallucinated path args.
-    const raw = args.include
+    // Canonical `include`; coerce also maps hallucinated `path` → include before validate.
+    const raw = typeof args.include === 'string' ? args.include : args.path
     if (typeof raw === 'string' && isConcreteWorkspacePath(raw)) {
       return [normalizeWorkspaceRelPath(raw)]
     }

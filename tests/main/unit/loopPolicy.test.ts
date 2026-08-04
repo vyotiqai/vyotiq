@@ -45,6 +45,8 @@ describe('loopPolicy', () => {
     const known = new Set<string>()
     applyToolCallToKnownPaths(known, 'grep', { pattern: 'foo', include: 'src/a.ts' }, true)
     expect(known.has('src/a.ts')).toBe(true)
+    applyToolCallToKnownPaths(known, 'grep', { pattern: 'bar', path: 'src/c.ts' }, true)
+    expect(known.has('src/c.ts')).toBe(true)
     applyToolCallToKnownPaths(known, 'glob', { pattern: 'src/**/*.ts' }, true)
     expect(known.has('src/**/*.ts')).toBe(false)
     applyToolCallToKnownPaths(known, 'glob', { pattern: 'src/b.ts' }, true)

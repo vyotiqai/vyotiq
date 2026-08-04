@@ -2,6 +2,7 @@ import type { ChatMessage, ModelInfo } from '../../../shared/ipc'
 import { contentToText, flattenFileParts } from '../../../shared/ipc'
 import type { LlmProvider } from '../providers/types'
 import { anthropicNativeOptions } from './anthropicContext'
+import { crossesCompactionTrigger } from '../../../shared/domain/contextBudget'
 import { allocateBudget, compactionTriggerTokens, contentWindow } from './budget'
 import { compactMessages, preserveRecentMessagesAsync } from './compact'
 import {
@@ -496,7 +497,7 @@ export async function assembleContext(
   const trigger = compactionTriggerTokens(input.model, triggerRatio)
   let used = resolveUsedTokens(estimated, input.lastUsage, trigger)
 
-  if (used >= trigger || estimated >= trigger) {
+  if (crossesCompactionTrigger(used, estimated, trigger)) {
     // Cheap trim first — clear ephemeral tool bodies only (durable tools excluded).
     const beforeCheap = messages.length
     // Stub-only trims keep message count; compare wire content so the loop's
@@ -521,7 +522,7 @@ export async function assembleContext(
     estimated = totalFromLayers(layers)
     used = contextShrunk ? estimated : resolveUsedTokens(estimated, input.lastUsage, trigger)
 
-    if (used >= trigger || estimated >= trigger) {
+    if (crossesCompactionTrigger(used, estimated, trigger)) {
       const keptForBoundary = await preserveRecentMessagesAsync(
         messages,
         keepRecent,

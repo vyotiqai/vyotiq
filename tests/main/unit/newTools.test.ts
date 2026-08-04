@@ -303,6 +303,34 @@ describe('tool arg bounds', () => {
     if (result.ok) expect(result.data.path).toBe('canonical.ts')
   })
 
+  it('aliases grep path to include and strips junk keys', () => {
+    const result = validateToolArgs(
+      'grep',
+      JSON.stringify({
+        pattern: 'agent',
+        path: 'src/context_engine/cli.py',
+        caseSensitive: false,
+        expected_params: true
+      })
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.pattern).toBe('agent')
+      expect(result.data.include).toBe('src/context_engine/cli.py')
+      expect(result.data).not.toHaveProperty('path')
+      expect(result.data).not.toHaveProperty('expected_params')
+    }
+  })
+
+  it('keeps canonical grep include over path alias', () => {
+    const result = validateToolArgs(
+      'grep',
+      JSON.stringify({ pattern: 'x', include: 'src/a.ts', path: 'src/b.ts' })
+    )
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.data.include).toBe('src/a.ts')
+  })
+
   it('clarifies ask_question type errors', () => {
     const result = validateToolArgs(
       'ask_question',

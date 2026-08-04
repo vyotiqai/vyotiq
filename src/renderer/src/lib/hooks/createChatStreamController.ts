@@ -1641,11 +1641,12 @@ export function createChatStreamController(
     } else if (event.type === 'error') {
       lastRunErrorMessage = event.message
       dismissedErrorMessage = null
-      logger.warn('Agent run error', {
+      // Put detail in the log line — AppError sanitize strips message from `err`.
+      logger.warn(`Agent run error: ${event.message}`, {
         scope: 'chat',
         correlationId: event.runId,
         code: agentErrorCode(event),
-        err: toLogErr(event.message)
+        err: event.message
       })
       patch({
         error: event.message
@@ -1921,7 +1922,8 @@ export function createChatStreamController(
     )
     if (!res.ok) {
       awaitingRun = false
-      logger.error('chatStart failed', { scope: 'chat', err: res.error })
+      // Detail in the log line — string `err` keeps scrubbed text; AppError would not.
+      logger.error(`chatStart failed: ${res.error}`, { scope: 'chat', err: res.error })
       patch({
         error: res.error,
         running: false,
