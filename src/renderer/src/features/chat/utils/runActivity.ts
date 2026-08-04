@@ -1,0 +1,150 @@
+import { getToolHeaderMeta } from '../toolUi'
+import { truncateText } from '../toolUi/parsers/common'
+import { mapToolGroupProps } from './toolGroupAdapter'
+import type { TranscriptRow } from './transcriptRows'
+
+export type RunActivityPhase =
+  | { kind: 'planning' }
+  | { kind: 'working' }
+  | { kind: 'thinking' }
+  | { kind: 'writing' }
+  | { kind: 'awaiting_approval' }
+  | { kind: 'awaiting_question' }
+  | { kind: 'tool'; label: string; detail?: string }
+
+/** Match tool-group subtitle truncation so timeline detail agrees with chrome. */
+const MAX_DETAIL_CHARS = 80
+
+function truncateDetail(text: string | undefined): string | undefined {
+  if (!text) return undefined
+  const trimmed = text.trim()
+  if (!trimmed) return undefined
+  return truncateText(trimmed, MAX_DETAIL_CHARS)
+}
+
+function toolPhaseFromCard(row: Extract<TranscriptRow, { kind: 'card' }>): RunActivityPhase {
+  const meta = getToolHeaderMeta(row.item.tool, {
+    toolProgress: row.item.toolProgress
+  })
+  return {
+    kind: 'tool',
+    label: meta.verb,
+    detail: truncateDetail(meta.target)
+  }
+}
+
+function toolPhaseFromActivity(row: Extract<TranscriptRow, { kind: 'activity' }>): RunActivityPhase {
+  const uiTools = row.tools.map((item) => item.tool)
+  const props = mapToolGroupProps(uiTools, {})
+  const runningTools = row.tools.filter((item) => item.tool.status === 'running')
+
+  if (props.singleTool && runningTools[0]) {
+    const runningTool = runningTools[0]
+    const meta = getToolHeaderMeta(runningTool.tool, {
+      toolProgress: runningTool.toolProgress
+    })
+    return {
+      kind: 'tool',
+      label: props.runningLabel,
+      detail: truncateDetail(meta.target)
+    }
+  }
+
+  return {
+    kind: 'tool',
+    label: props.runningLabel,
+    detail: truncateDetail(props.summary)
+  }
+}
+
+export function formatRunActivityLabel(phase: RunActivityPhase): string {
+  switch (phase.kind) {
+    case 'planning':
+      return 'Planning'
+    case 'working':
+      return 'Working'
+    case 'thinking':
+      return 'Thinking'
+    case 'writing':
+      return 'Writing'
+    case 'awaiting_approval':
+      return 'Awaiting approval'
+    case 'awaiting_question':
+      return 'Awaiting answer'
+    case 'tool':
+      return phase.detail ? `${phase.label} ${phase.detail}` : phase.label
+    default: {
+      const _exhaustive: never = phase
+      return _exhaustive
+    }
+  }
+}
+
+function lastActiveRow(
+  turnRows: TranscriptRow[],
+  matches: (row: TranscriptRow) => boolean
+): TranscriptRow | undefined {
+  for (let index = turnRows.length - 1; index >= 0; index -= 1) {
+    const row = turnRows[index]!
+    if (matches(row)) return row
+  }
+  return undefined
+}
+
+/**
+ * Derive what the agent is doing right now within an active turn.
+ * Priority: approval/question → prominent tool → compact tools → writing → thinking → planning/working.
+ * Gates beat running parents so nested Allow/Deny / Submit match the timeline label.
+ * Within each tier, prefer the latest row so live work beats earlier steps.
+ */
+export function deriveRunActivity(
+  turnRows: TranscriptRow[],
+  pendingRun?: boolean,
+  opts?: { hiddenThinkingStreaming?: boolean }
+): RunActivityPhase {
+  // Both gates may be pending at once (e.g. a parent question plus a nested
+  // approval) — surface the most recent one so the label matches what the
+  // user is being asked right now.
+  const pendingApproval = lastActiveRow(turnRows, (row) => row.kind === 'approval')
+  const pendingQuestion = lastActiveRow(turnRows, (row) => row.kind === 'question')
+  if (pendingApproval && pendingQuestion) {
+    const approvalIndex = turnRows.lastIndexOf(pendingApproval)
+    const questionIndex = turnRows.lastIndexOf(pendingQuestion)
+    return questionIndex >= approvalIndex
+      ? { kind: 'awaiting_question' }
+      : { kind: 'awaiting_approval' }
+  }
+  if (pendingApproval) return { kind: 'awaiting_approval' }
+  if (pendingQuestion) return { kind: 'awaiting_question' }
+
+  const runningCard = lastActiveRow(
+    turnRows,
+    (row) => row.kind === 'card' && row.item.tool.status === 'running'
+  )
+  if (runningCard?.kind === 'card') return toolPhaseFromCard(runningCard)
+
+  const runningActivity = lastActiveRow(
+    turnRows,
+    (row) => row.kind === 'activity' && row.tools.some((item) => item.tool.status === 'running')
+  )
+  if (runningActivity?.kind === 'activity') return toolPhaseFromActivity(runningActivity)
+
+  const streamingText = lastActiveRow(
+    turnRows,
+    (row) => row.kind === 'text' && row.item.streaming === true
+  )
+  if (streamingText) return { kind: 'writing' }
+
+  const streamingThinking = lastActiveRow(
+    turnRows,
+    (row) => row.kind === 'thinking' && row.item.thinkingStreaming === true
+  )
+  if (streamingThinking || opts?.hiddenThinkingStreaming) return { kind: 'thinking' }
+
+  if (pendingRun) {
+    // Between agent steps the turn already has work rows; keep "Working", not "Planning".
+    return turnRows.length === 0 ? { kind: 'planning' } : { kind: 'working' }
+  }
+
+  return { kind: 'working' }
+}

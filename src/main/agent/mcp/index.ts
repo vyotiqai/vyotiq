@@ -1,0 +1,1074 @@
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
+import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
+import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import type { McpServer } from '../../../shared/ipc'
+import type { McpServerStatus } from '../../../shared/ipc'
+import type { ToolDefinition } from '../providers/types'
+import { logger } from '../../../shared/logger'
+import { mcpToolSummary } from '../../../shared/toolSummary'
+import type { ToolResult } from '../tools'
+import { sanitizedTerminalEnv } from '../tools/terminal'
+import {
+  getMcpAuthToken,
+  hasMcpAuthToken,
+  hasMcpOAuthState,
+  hasStoredMcpOAuthBlob,
+  setMcpAuthToken,
+  clearMcpOAuthState
+} from '../../settings/secrets'
+import { getSettings, setSettings, enqueueSettingsMutation, REDACTED_VALUE } from '../../settings/settings'
+import {
+  getBearerToken,
+  headersWithoutAuthorization,
+  withBearerToken
+} from '../../../shared/utils/mcpAuth'
+import { invalidateSlashCommandsCache } from '../slashCommands/listCache'
+import {
+  beginMcpOAuthCallback,
+  cancelMcpOAuthCallback,
+  createMcpOAuthProvider
+} from './oauth'
+import { resolveEffectiveMcpServers } from '../../marketplace/resolve'
+import { sanitizeMcpManifestEnv } from '../../marketplace/sanitizeMcpEnv'
+import {
+  gitMcpNotARepoMessage,
+  isGitMcpNotARepoError,
+  isGitMcpServer,
+  withCompatibleUvxArgs,
+  withWorkspaceRepositoryArgs
+} from './uvxCompat'
+import { isGitRepo } from '../../git/git'
+import { AppError, formatError, isAbortError, mcpConnectErrorCode } from '../../../shared/errors'
+import { assertPublicUrl } from '../tools/webFetch'
+
+export {
+  gitMcpNotARepoMessage,
+  isGitMcpNotARepoError,
+  isGitMcpServer,
+  withCompatibleUvxArgs,
+  withWorkspaceRepositoryArgs,
+  hasUvxMcpWithConstraint
+} from './uvxCompat'
+
+/** Workspace root for stdio MCP cwd / `--repository` rewrite (git MCP). */
+let mcpStdioWorkspacePath: string | null = null
+
+/**
+ * Set the workspace used when spawning stdio MCP servers. Changing the path
+ * disconnects existing stdio sessions so the next sync reconnects with the
+ * correct cwd/repository.
+ */
+export function setMcpStdioWorkspace(workspacePath: string | null | undefined): void {
+  const next = workspacePath?.trim() || null
+  if (next === mcpStdioWorkspacePath) return
+  mcpStdioWorkspacePath = next
+  // Bust sync fingerprint so reconnect picks up new cwd/args.
+  lastSyncedServersFp = ''
+  for (const [id, session] of sessions) {
+    if (session.transport instanceof StdioClientTransport) {
+      void disconnectMcpServer(id).catch(() => undefined)
+    }
+  }
+}
+
+export function getMcpStdioWorkspace(): string | null {
+  return mcpStdioWorkspacePath
+}
+
+/** Scrubbed base env + optional user-configured MCP server.env overlays. */
+export function buildMcpChildEnv(
+  serverEnv?: Record<string, string>,
+  source: NodeJS.ProcessEnv = process.env
+): Record<string, string> {
+  const env: Record<string, string> = { ...sanitizedTerminalEnv(source) }
+  const safeOverlay = sanitizeMcpManifestEnv(serverEnv)
+  for (const [key, value] of Object.entries(safeOverlay ?? {})) {
+    // Never inject IPC redaction placeholders into the child process.
+    if (typeof value !== 'string' || value === REDACTED_VALUE) continue
+    env[key] = value
+  }
+  // Official Python MCP servers on Windows often hang/garble without UTF-8 stdio.
+  // Apply after overlay so a redacted PYTHONIOENCODING cannot overwrite the default.
+  if (process.platform === 'win32' && !env.PYTHONIOENCODING) {
+    env.PYTHONIOENCODING = 'utf-8'
+  }
+  return env
+}
+
+export const MCP_TOOL_PREFIX = 'mcp__'
+
+export function mcpToolName(serverId: string, toolName: string): string {
+  return `${MCP_TOOL_PREFIX}${serverId}__${toolName}`
+}
+
+export function parseMcpToolName(
+  name: string
+): { serverId: string; toolName: string } | null {
+  if (!name.startsWith(MCP_TOOL_PREFIX)) return null
+  const rest = name.slice(MCP_TOOL_PREFIX.length)
+  const sep = rest.indexOf('__')
+  if (sep <= 0) return null
+  return { serverId: rest.slice(0, sep), toolName: rest.slice(sep + 2) }
+}
+
+type McpResourceSummary = {
+  uri: string
+  name?: string
+  description?: string
+  mimeType?: string
+}
+
+type McpPromptSummary = {
+  name: string
+  description?: string
+  arguments?: Array<{ name: string; description?: string; required?: boolean }>
+}
+
+type McpSession = {
+  client: Client
+  transport: Transport
+  tools: ToolDefinition[]
+  resources?: McpResourceSummary[]
+  prompts?: McpPromptSummary[]
+}
+
+export type McpResourceEntry = McpResourceSummary & { serverId: string }
+export type McpPromptEntry = McpPromptSummary & { serverId: string }
+
+const MCP_CONTENT_CAP = 100_000
+
+async function probeResourcesAndPrompts(client: Client): Promise<{
+  resources: McpResourceSummary[]
+  prompts: McpPromptSummary[]
+}> {
+  const resources: McpResourceSummary[] = []
+  const prompts: McpPromptSummary[] = []
+  const caps = client.getServerCapabilities()
+  if (caps?.resources) {
+    try {
+      const listed = await client.listResources()
+      for (const resource of listed.resources ?? []) {
+        resources.push({
+          uri: resource.uri,
+          name: resource.name,
+          description: resource.description,
+          mimeType: resource.mimeType
+        })
+      }
+    } catch {
+      // Server may advertise resources but fail list — ignore on connect.
+    }
+  }
+  if (caps?.prompts) {
+    try {
+      const listed = await client.listPrompts()
+      for (const prompt of listed.prompts ?? []) {
+        prompts.push({
+          name: prompt.name,
+          description: prompt.description,
+          arguments: prompt.arguments
+        })
+      }
+    } catch {
+      // Server may advertise prompts but fail list — ignore on connect.
+    }
+  }
+  return { resources, prompts }
+}
+
+function resolveTargetServerIds(
+  serverId: string | undefined,
+  enabledIds?: ReadonlySet<string>
+): string[] {
+  let ids = [...sessions.keys()].sort()
+  if (enabledIds) ids = ids.filter((id) => enabledIds.has(id))
+  if (serverId?.trim()) {
+    const want = serverId.trim().toLowerCase()
+    ids = ids.filter((id) => id.toLowerCase() === want)
+  }
+  return ids
+}
+
+export function assertMcpServerAccess(
+  serverId: string,
+  enabledIds?: ReadonlySet<string>
+): { ok: true; session: McpSession } | { ok: false; error: string } {
+  const session = sessions.get(serverId)
+  if (!session) {
+    return { ok: false, error: `MCP server not connected: ${serverId}` }
+  }
+  if (enabledIds && !enabledIds.has(serverId)) {
+    return {
+      ok: false,
+      error: `MCP server "${serverId}" is not enabled for this workspace run`
+    }
+  }
+  return { ok: true, session }
+}
+
+function formatResourceContents(
+  contents: Array<{ type?: string; text?: string; blob?: string; mimeType?: string }>
+): string {
+  return contents
+    .map((part) => {
+      if (part.type === 'text' && part.text) return part.text
+      if (part.blob) {
+        return `[binary blob mime=${part.mimeType ?? 'unknown'} base64 len=${part.blob.length}]`
+      }
+      return JSON.stringify(part)
+    })
+    .join('\n')
+    .slice(0, MCP_CONTENT_CAP)
+}
+
+function formatPromptMessages(
+  messages: Array<{ role?: string; content?: { type?: string; text?: string } | string }>
+): string {
+  return messages
+    .map((message) => {
+      const role = message.role ?? 'unknown'
+      const content = message.content
+      if (typeof content === 'string') return `${role}: ${content}`
+      if (content?.type === 'text' && content.text) return `${role}: ${content.text}`
+      return `${role}: ${JSON.stringify(content)}`
+    })
+    .join('\n\n')
+    .slice(0, MCP_CONTENT_CAP)
+}
+
+const sessions = new Map<string, McpSession>()
+const connectErrors = new Map<string, string>()
+const sessionConfigKeys = new Map<string, string>()
+const mcpReadOnlyHints = new Map<string, boolean>()
+/** Full MCP tool name → definition (kept in sync with `sessions`). */
+const toolsByName = new Map<string, ToolDefinition>()
+
+function rebuildToolsByNameIndex(): void {
+  toolsByName.clear()
+  for (const session of sessions.values()) {
+    for (const tool of session.tools) {
+      toolsByName.set(tool.name, tool)
+    }
+  }
+}
+
+/** Skip re-attempting a failed connect with the same config until cooldown expires. */
+const CONNECT_RETRY_COOLDOWN_MS = 60_000
+type ConnectFailure = { at: number; configKey: string }
+const connectFailures = new Map<string, ConnectFailure>()
+
+/** In-flight connect promises — concurrent callers for the same id share one attempt. */
+const connecting = new Map<string, Promise<void>>()
+
+/** Serialize syncMcpServers so overlapping IPC/startup callers cannot race reconnects. */
+let syncChain: Promise<void> = Promise.resolve()
+/** Fingerprint of the last successfully synced payload — skip syncChain when unchanged. */
+let lastSyncedServersFp: string | null = null
+let lastSyncInflight: Promise<void> | null = null
+
+/** True only when the MCP server declared readOnlyHint for this tool. */
+export function getMcpReadOnlyHint(name: string): boolean | undefined {
+  return mcpReadOnlyHints.get(name)
+}
+
+function sortedRecordEntries(record?: Record<string, string>): Array<[string, string]> {
+  const env = record ?? {}
+  return Object.keys(env)
+    .sort()
+    .map((key) => [key, env[key] ?? ''] as const)
+}
+
+/** Stable fingerprint of connection-relevant MCP server fields. */
+export function mcpServerConfigKey(
+  server: Pick<McpServer, 'transport' | 'command' | 'args' | 'env' | 'url' | 'headers'> & {
+    id?: string
+  }
+): string {
+  const transport = server.transport ?? 'stdio'
+  // Auth secrets only apply to remote transports; skip for stdio (also keeps unit tests
+  // that don't mock Electron from touching safeStorage).
+  const authPresent =
+    server.id && (transport === 'http' || transport === 'sse')
+      ? hasMcpAuthToken(server.id) || hasStoredMcpOAuthBlob(server.id)
+      : false
+  const launchArgs = withWorkspaceRepositoryArgs(
+    withCompatibleUvxArgs(server.command, server.args),
+    transport === 'stdio' ? mcpStdioWorkspacePath : null
+  )
+  return JSON.stringify({
+    transport,
+    command: server.command ?? '',
+    // Fingerprint the launch args we actually use so repairing `--with mcp<2`
+    // in settings does not thrash reconnects against older stored args.
+    args: launchArgs,
+    cwd: transport === 'stdio' ? mcpStdioWorkspacePath ?? '' : '',
+    env: sortedRecordEntries(server.env),
+    url: server.url ?? '',
+    // Never fingerprint secret token values — only presence + non-auth headers.
+    headers: sortedRecordEntries(headersWithoutAuthorization(server.headers)),
+    authPresent
+  })
+}
+
+/**
+ * Resolve request headers for remote MCP: non-secret headers from settings plus
+ * Bearer token from OS secure storage (wins over any leftover Authorization).
+ */
+export function resolveMcpRequestHeaders(
+  server: Pick<McpServer, 'id' | 'headers'>
+): Record<string, string> | undefined {
+  const base = headersWithoutAuthorization(server.headers)
+  const token = getMcpAuthToken(server.id)
+  if (token) return withBearerToken(base, token)
+  return base && Object.keys(base).length > 0 ? base : undefined
+}
+
+/**
+ * If settings still hold a plaintext Bearer token, migrate it into safeStorage
+ * and return headers with Authorization removed. Throws if safeStorage cannot store the secret.
+ */
+export function migratePlaintextMcpBearer(
+  server: McpServer
+): { server: McpServer; migrated: boolean } {
+  const bearer = getBearerToken(server.headers)
+  if (!bearer) return { server, migrated: false }
+  if (!hasMcpAuthToken(server.id)) {
+    setMcpAuthToken(server.id, bearer)
+  }
+  const nextHeaders = headersWithoutAuthorization(server.headers)
+  return {
+    server: { ...server, headers: nextHeaders },
+    migrated: true
+  }
+}
+
+export function validateMcpServers(servers: McpServer[]): string | null {
+  const seen = new Set<string>()
+  for (const server of servers) {
+    if (server.id.includes('__')) {
+      return `MCP server id must not contain "__": ${server.id}`
+    }
+    if (seen.has(server.id)) return `Duplicate MCP server id: ${server.id}`
+    seen.add(server.id)
+  }
+  return null
+}
+
+export function getMcpServerStatus(servers: McpServer[]): McpServerStatus[] {
+  return servers.map((server) => {
+    const error = connectErrors.get(server.id)
+    return {
+      id: server.id,
+      name: server.name,
+      enabled: server.enabled,
+      connected: sessions.has(server.id),
+      toolCount: sessions.get(server.id)?.tools.length ?? 0,
+      hasAuthToken: hasMcpAuthToken(server.id) || hasMcpOAuthState(server.id),
+      ...(error ? { error } : {})
+    }
+  })
+}
+
+export async function refreshMcpServers(servers: McpServer[]): Promise<McpServerStatus[]> {
+  // Force reconnect so dead stdio/HTTP sessions are recovered (sync alone skips existing entries).
+  connectFailures.clear()
+  for (const id of [...sessions.keys()]) {
+    await disconnectMcpServer(id)
+  }
+  await syncMcpServers(servers)
+  return getMcpServerStatus(servers)
+}
+
+async function createTransport(
+  server: McpServer,
+  opts?: { authProvider?: ReturnType<typeof createMcpOAuthProvider> }
+): Promise<Transport> {
+  const transport = server.transport ?? 'stdio'
+  if (transport === 'stdio') {
+    const command = (server.command ?? '').trim()
+    if (!command) throw new Error(`MCP server ${server.id}: command required for stdio`)
+    const env = buildMcpChildEnv(server.env)
+    const cwd = mcpStdioWorkspacePath ?? undefined
+    const args = withWorkspaceRepositoryArgs(
+      withCompatibleUvxArgs(command, server.args),
+      mcpStdioWorkspacePath
+    )
+    return new StdioClientTransport({
+      command,
+      args,
+      env,
+      ...(cwd ? { cwd } : {})
+    })
+  }
+
+  const urlRaw = (server.url ?? '').trim()
+  if (!urlRaw) throw new Error(`MCP server ${server.id}: url required for ${transport}`)
+  // Same SSRF posture as web_fetch / catalog — remote MCP is public HTTP(S) only.
+  // Local MCP uses stdio; no product exception for loopback HTTP/SSE.
+  const url = await assertPublicUrl(urlRaw)
+
+  // Static Bearer takes precedence. With OAuth authProvider, do not set Authorization
+  // via requestInit (SDK docs: headers + authProvider conflict).
+  if (opts?.authProvider) {
+    const base = headersWithoutAuthorization(server.headers)
+    const requestInit = base && Object.keys(base).length > 0 ? { headers: base } : undefined
+    if (transport === 'http') {
+      return new StreamableHTTPClientTransport(url, {
+        requestInit,
+        authProvider: opts.authProvider
+      })
+    }
+    return new SSEClientTransport(url, {
+      requestInit,
+      authProvider: opts.authProvider
+    })
+  }
+
+  const headers = resolveMcpRequestHeaders(server)
+  const requestInit = headers ? { headers } : undefined
+
+  if (transport === 'http') {
+    return new StreamableHTTPClientTransport(url, { requestInit })
+  }
+  return new SSEClientTransport(url, { requestInit })
+}
+
+type PendingMcpConnection = { client: Client; transport: Transport }
+
+async function closePendingConnection(connection: PendingMcpConnection): Promise<void> {
+  try {
+    await connection.client.close()
+  } catch {
+    try {
+      await connection.transport.close()
+    } catch {
+      // ignore cleanup failures
+    }
+  }
+}
+
+async function connectWithOptionalOAuth(
+  server: McpServer,
+  track: (connection: PendingMcpConnection) => void
+): Promise<{
+  client: Client
+  transport: Transport
+}> {
+  const transportKind = server.transport ?? 'stdio'
+  if (transportKind === 'stdio' || hasMcpAuthToken(server.id)) {
+    const transport = await createTransport(server)
+    const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
+    track({ client, transport })
+    await client.connect(transport)
+    return { client, transport }
+  }
+
+  // Prefer stored OAuth tokens via authProvider; otherwise try unauthenticated first.
+  if (hasMcpOAuthState(server.id)) {
+    return connectRemoteWithOAuth(server, track)
+  }
+
+  const transport = await createTransport(server)
+  const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
+  const connection = { client, transport }
+  track(connection)
+  try {
+    await client.connect(transport)
+    return connection
+  } catch (err) {
+    if (!(err instanceof UnauthorizedError)) throw err
+    await closePendingConnection(connection)
+    logger.info('MCP server requires OAuth — starting browser flow', {
+      scope: 'mcp',
+      serverId: server.id
+    })
+    return connectRemoteWithOAuth(server, track)
+  }
+}
+
+async function connectRemoteWithOAuth(
+  server: McpServer,
+  track: (connection: PendingMcpConnection) => void
+): Promise<{
+  client: Client
+  transport: Transport
+}> {
+  const { redirectUrl, waitForCode } = await beginMcpOAuthCallback(server.id)
+  const authProvider = createMcpOAuthProvider(server.id, redirectUrl)
+  const transport = await createTransport(server, { authProvider })
+  const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
+  track({ client, transport })
+
+  try {
+    await client.connect(transport)
+    cancelMcpOAuthCallback(server.id)
+    return { client, transport }
+  } catch (err) {
+    if (!(err instanceof UnauthorizedError)) {
+      cancelMcpOAuthCallback(server.id)
+      try {
+        await client.close()
+      } catch {
+        // ignore
+      }
+      throw err
+    }
+
+    logger.info('MCP OAuth required — waiting for browser callback', {
+      scope: 'mcp',
+      serverId: server.id
+    })
+    try {
+      const code = await waitForCode()
+      if ('finishAuth' in transport && typeof transport.finishAuth === 'function') {
+        await (
+          transport as StreamableHTTPClientTransport | SSEClientTransport
+        ).finishAuth(code)
+      }
+      try {
+        await client.close()
+      } catch {
+        // ignore
+      }
+      const transport2 = await createTransport(server, { authProvider })
+      const client2 = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
+      track({ client: client2, transport: transport2 })
+      await client2.connect(transport2)
+      return { client: client2, transport: transport2 }
+    } catch (oauthErr) {
+      cancelMcpOAuthCallback(server.id)
+      try {
+        await client.close()
+      } catch {
+        // ignore
+      }
+      throw oauthErr
+    }
+  }
+}
+
+export async function connectMcpServer(server: McpServer): Promise<void> {
+  if (sessions.has(server.id)) return
+  const inflight = connecting.get(server.id)
+  if (inflight) {
+    await inflight
+    return
+  }
+
+  const attempt = (async () => {
+    // OAuth browser flow may take minutes; non-OAuth still fails fast via server errors.
+    const CONNECT_TIMEOUT_MS = 120_000
+    const connectAbort = AbortSignal.timeout(CONNECT_TIMEOUT_MS)
+    const pending = new Set<PendingMcpConnection>()
+    let connected: { client: Client; transport: Transport }
+    try {
+      connected = await Promise.race([
+        connectWithOptionalOAuth(server, (connection) => pending.add(connection)),
+        new Promise<never>((_, reject) => {
+          connectAbort.addEventListener(
+            'abort',
+            () =>
+              reject(
+                new Error(
+                  `MCP connect timed out after ${CONNECT_TIMEOUT_MS / 1000}s (${server.id})`
+                )
+              ),
+            { once: true }
+          )
+        })
+      ])
+    } catch (err) {
+      const failure = err instanceof Error ? err : new Error('MCP connection failed')
+      cancelMcpOAuthCallback(server.id, failure)
+      await Promise.all([...pending].map(closePendingConnection))
+      throw err
+    }
+
+    // Another concurrent path may have won while we were connecting.
+    if (sessions.has(server.id)) {
+      try {
+        await connected.client.close()
+      } catch {
+        // ignore
+      }
+      return
+    }
+
+    const { client, transport } = connected
+    const listed = await client.listTools()
+    const tools: ToolDefinition[] = (listed.tools ?? []).map((t) => {
+      const fullName = mcpToolName(server.id, t.name)
+      mcpReadOnlyHints.set(fullName, t.annotations?.readOnlyHint === true)
+      return {
+        name: fullName,
+        description: t.description ?? `MCP tool ${t.name} (${server.name})`,
+        parameters: (t.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} }
+      }
+    })
+    const { resources, prompts } = await probeResourcesAndPrompts(client)
+    // If the server is still in the effective settings map, drop the session when
+    // it was disabled or reconfigured mid-connect. Servers not in the map (explicit
+    // connectMcpServer / unit fixtures) keep the just-established session.
+    const desired = resolveEffectiveMcpServers().find((s) => s.id === server.id)
+    if (
+      desired &&
+      (!desired.enabled || mcpServerConfigKey(desired) !== mcpServerConfigKey(server))
+    ) {
+      try {
+        await client.close()
+      } catch {
+        // ignore
+      }
+      return
+    }
+    sessions.set(server.id, { client, transport, tools, resources, prompts })
+    rebuildToolsByNameIndex()
+    sessionConfigKeys.set(server.id, mcpServerConfigKey(server))
+    connectErrors.delete(server.id)
+    logger.info('MCP server connected', {
+      scope: 'mcp',
+      serverId: server.id,
+      transport: server.transport ?? 'stdio',
+      toolCount: tools.length,
+      resourceCount: resources.length,
+      promptCount: prompts.length
+    })
+  })()
+
+  connecting.set(server.id, attempt)
+  try {
+    await attempt
+  } finally {
+    if (connecting.get(server.id) === attempt) connecting.delete(server.id)
+  }
+}
+
+/** Force re-auth for a remote MCP server (clears OAuth tokens and reconnects). */
+export async function startMcpOAuth(serverId: string): Promise<void> {
+  const id = serverId.trim()
+  if (!id) throw new Error('MCP server id is required')
+  clearMcpOAuthState(id)
+  await disconnectMcpServer(id)
+  const servers = resolveEffectiveMcpServers()
+  const server = servers.find((s) => s.id === id)
+  if (!server) throw new Error(`MCP server not found: ${id}`)
+  if ((server.transport ?? 'stdio') === 'stdio') {
+    throw new Error('OAuth is only supported for HTTP/SSE MCP servers')
+  }
+  if (!server.enabled) throw new Error('Enable the MCP server before starting OAuth')
+  await connectMcpServer(server)
+}
+
+export async function disconnectMcpServer(serverId: string): Promise<void> {
+  const session = sessions.get(serverId)
+  if (!session) return
+  try {
+    await session.client.close()
+  } catch {
+    // ignore
+  }
+  for (const tool of session.tools) {
+    mcpReadOnlyHints.delete(tool.name)
+  }
+  sessions.delete(serverId)
+  rebuildToolsByNameIndex()
+  sessionConfigKeys.delete(serverId)
+  connectErrors.delete(serverId)
+}
+
+export async function syncMcpServers(
+  servers: McpServer[],
+  opts?: { forceRetryFailures?: boolean }
+): Promise<void> {
+  if (opts?.forceRetryFailures) {
+    for (const server of servers) {
+      if (!server.enabled) continue
+      if (sessions.has(server.id)) continue
+      if (!connectErrors.has(server.id)) continue
+      // Permanent preflight failures (non-git workspace) — do not clear cooldown.
+      if (isGitMcpNotARepoError(connectErrors.get(server.id))) continue
+      connectFailures.delete(server.id)
+    }
+    // Bust fingerprint so a prior failed sync does not early-return.
+    if (
+      servers.some(
+        (s) =>
+          s.enabled &&
+          !sessions.has(s.id) &&
+          connectErrors.has(s.id) &&
+          !isGitMcpNotARepoError(connectErrors.get(s.id))
+      )
+    ) {
+      lastSyncedServersFp = ''
+    }
+  }
+  const fp = servers
+    .map((s) => `${s.id}:${s.enabled ? 1 : 0}:${mcpServerConfigKey(s)}`)
+    .sort()
+    .join('|')
+  if (fp === lastSyncedServersFp) {
+    if (lastSyncInflight) await lastSyncInflight
+    return
+  }
+  const run = syncChain.then(() => syncMcpServersUnlocked(servers))
+  // Keep the chain alive even when a sync rejects so later callers still queue.
+  syncChain = run.then(
+    () => undefined,
+    () => undefined
+  )
+  lastSyncInflight = run.then(
+    () => {
+      lastSyncedServersFp = fp
+    },
+    () => undefined
+  )
+  await run
+}
+
+async function syncMcpServersUnlocked(servers: McpServer[]): Promise<void> {
+  const duplicateError = validateMcpServers(servers)
+  if (duplicateError) {
+    throw new Error(duplicateError)
+  }
+
+  // Migrate any leftover plaintext Bearer tokens into OS secure storage.
+  let migratedAny = false
+  const migratedServers = servers.map((server) => {
+    const { server: next, migrated } = migratePlaintextMcpBearer(server)
+    if (migrated) migratedAny = true
+    return next
+  })
+  if (migratedAny) {
+    try {
+      const settings = getSettings()
+      const byId = new Map(migratedServers.map((s) => [s.id, s]))
+      const nextList = (settings.mcpServers ?? []).map((s) => byId.get(s.id) ?? s)
+      // Also strip Authorization from any server we migrated that is in settings.
+      for (const s of migratedServers) {
+        if (!byId.has(s.id)) continue
+        const idx = nextList.findIndex((x) => x.id === s.id)
+        if (idx >= 0) nextList[idx] = s
+      }
+      void enqueueSettingsMutation(() => setSettings({ mcpServers: nextList }))
+    } catch (err) {
+      logger.warn('Failed to persist migrated MCP auth headers', { scope: 'mcp', err })
+    }
+  }
+
+  const enabled = migratedServers.filter((s) => s.enabled)
+  const enabledIds = new Set(enabled.map((s) => s.id))
+  for (const id of [...sessions.keys()]) {
+    if (!enabledIds.has(id)) await disconnectMcpServer(id)
+  }
+  for (const server of enabled) {
+    const configKey = mcpServerConfigKey(server)
+    const connectedKey = sessionConfigKeys.get(server.id)
+    if (sessions.has(server.id) && connectedKey !== configKey) {
+      await disconnectMcpServer(server.id)
+      connectFailures.delete(server.id)
+    }
+    if (!sessions.has(server.id)) {
+      // Cheap preflight: do not spawn mcp-server-git when the workspace has no .git.
+      // Re-checked every sync so git init later can connect without waiting out cooldown.
+      if (isGitMcpServer(server) && mcpStdioWorkspacePath) {
+        if (!isGitRepo(mcpStdioWorkspacePath)) {
+          const message = gitMcpNotARepoMessage(mcpStdioWorkspacePath)
+          const prior = connectErrors.get(server.id)
+          connectErrors.set(server.id, message)
+          // Record failure so forceRetryFailures skips permanent errors; cooldown is
+          // bypassed on the next sync once isGitRepo becomes true (cleared below).
+          connectFailures.set(server.id, { at: Date.now(), configKey })
+          if (prior !== message) {
+            logger.warn('MCP connect skipped — workspace is not a Git repository', {
+              scope: 'mcp',
+              serverId: server.id,
+              reason: message
+            })
+          }
+          continue
+        }
+        if (isGitMcpNotARepoError(connectErrors.get(server.id))) {
+          connectFailures.delete(server.id)
+          connectErrors.delete(server.id)
+        }
+      }
+      const priorFail = connectFailures.get(server.id)
+      if (
+        priorFail &&
+        priorFail.configKey === configKey &&
+        Date.now() - priorFail.at < CONNECT_RETRY_COOLDOWN_MS
+      ) {
+        // Keep the last error visible; avoid hammering broken launches (e.g. every agent step).
+        continue
+      }
+      try {
+        await connectMcpServer(server)
+        connectFailures.delete(server.id)
+      } catch (err) {
+        const message = formatError(err)
+        const code = mcpConnectErrorCode(err)
+        connectErrors.set(server.id, message)
+        connectFailures.set(server.id, { at: Date.now(), configKey })
+        const logged = new AppError(message, {
+          code,
+          severity: 'warn',
+          retriable: !isGitMcpNotARepoError(message),
+          cause: err instanceof Error ? err : undefined
+        })
+        logger.warn('MCP connect failed', {
+          scope: 'mcp',
+          serverId: server.id,
+          code,
+          reason: message,
+          err: logged
+        })
+      }
+    }
+  }
+  // MCP tools/status feed /mcp slash availability — bust the 5s list cache.
+  invalidateSlashCommandsCache()
+}
+
+export function listMcpToolDefinitions(): ToolDefinition[] {
+  const out: ToolDefinition[] = []
+  for (const session of sessions.values()) {
+    out.push(...session.tools)
+  }
+  return out
+}
+
+export async function listMcpResources(
+  serverId?: string,
+  enabledIds?: ReadonlySet<string>,
+  signal?: AbortSignal
+): Promise<McpResourceEntry[]> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  const targetIds = resolveTargetServerIds(serverId, enabledIds)
+  const out: McpResourceEntry[] = []
+  for (const id of targetIds) {
+    const session = sessions.get(id)
+    if (!session) continue
+    try {
+      const listed = await session.client.listResources(undefined, { signal })
+      for (const resource of listed.resources ?? []) {
+        out.push({
+          serverId: id,
+          uri: resource.uri,
+          name: resource.name,
+          description: resource.description,
+          mimeType: resource.mimeType
+        })
+      }
+    } catch (err) {
+      if (signal?.aborted || isAbortError(err)) throw err
+      for (const resource of session.resources ?? []) {
+        out.push({ serverId: id, ...resource })
+      }
+    }
+  }
+  return out
+}
+
+export async function readMcpResource(
+  serverId: string,
+  uri: string,
+  signal: AbortSignal,
+  enabledIds?: ReadonlySet<string>
+): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+  const access = assertMcpServerAccess(serverId, enabledIds)
+  if (!access.ok) return access
+  try {
+    const result = await access.session.client.readResource({ uri }, { signal })
+    const text = formatResourceContents(
+      (result.contents ?? []) as Array<{
+        type?: string
+        text?: string
+        blob?: string
+        mimeType?: string
+      }>
+    )
+    return { ok: true, content: text || '(empty)' }
+  } catch (err) {
+    if (signal.aborted || isAbortError(err)) throw err
+    connectErrors.set(serverId, formatError(err))
+    await disconnectMcpServer(serverId)
+    return { ok: false, error: formatError(err) }
+  }
+}
+
+export async function listMcpPrompts(
+  serverId?: string,
+  enabledIds?: ReadonlySet<string>,
+  signal?: AbortSignal
+): Promise<McpPromptEntry[]> {
+  if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+  const targetIds = resolveTargetServerIds(serverId, enabledIds)
+  const out: McpPromptEntry[] = []
+  for (const id of targetIds) {
+    const session = sessions.get(id)
+    if (!session) continue
+    try {
+      const listed = await session.client.listPrompts(undefined, { signal })
+      for (const prompt of listed.prompts ?? []) {
+        out.push({
+          serverId: id,
+          name: prompt.name,
+          description: prompt.description,
+          arguments: prompt.arguments
+        })
+      }
+    } catch (err) {
+      if (signal?.aborted || isAbortError(err)) throw err
+      for (const prompt of session.prompts ?? []) {
+        out.push({ serverId: id, ...prompt })
+      }
+    }
+  }
+  return out
+}
+
+export async function getMcpPrompt(
+  serverId: string,
+  name: string,
+  promptArgs: Record<string, string> | undefined,
+  signal: AbortSignal,
+  enabledIds?: ReadonlySet<string>
+): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+  const access = assertMcpServerAccess(serverId, enabledIds)
+  if (!access.ok) return access
+  try {
+    const result = await access.session.client.getPrompt(
+      { name, arguments: promptArgs },
+      { signal }
+    )
+    const header = result.description ? `${result.description}\n\n` : ''
+    const body = formatPromptMessages(
+      (result.messages ?? []) as Array<{
+        role?: string
+        content?: { type?: string; text?: string } | string
+      }>
+    )
+    return { ok: true, content: (header + body).trim() || '(empty)' }
+  } catch (err) {
+    if (signal.aborted || isAbortError(err)) throw err
+    connectErrors.set(serverId, formatError(err))
+    await disconnectMcpServer(serverId)
+    return { ok: false, error: formatError(err) }
+  }
+}
+
+export function getMcpToolDefinition(fullName: string): ToolDefinition | undefined {
+  return toolsByName.get(fullName)
+}
+
+export async function invokeMcpTool(
+  serverId: string,
+  toolName: string,
+  args: Record<string, unknown>,
+  signal: AbortSignal,
+  fullToolName?: string,
+  enabledIds?: ReadonlySet<string>
+): Promise<ToolResult> {
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+  const summary = mcpToolSummary(toolName, args)
+  const access = assertMcpServerAccess(serverId, enabledIds)
+  if (!access.ok) {
+    return { ok: false, summary, content: access.error }
+  }
+  const session = access.session
+  try {
+    const result = await session.client.callTool(
+      { name: toolName, arguments: args },
+      undefined,
+      { signal }
+    )
+    const text = (result.content as Array<{ type?: string; text?: string }>)
+      .map((c) => (c.type === 'text' ? c.text ?? '' : JSON.stringify(c)))
+      .join('\n')
+    const ok = result.isError !== true
+    const prefix = ok ? '' : `[MCP ${fullToolName ?? toolName} error]\n`
+    const content = (prefix + (text || '(empty)')).slice(0, 100_000)
+    return { ok, summary, content }
+  } catch (err) {
+    if (signal.aborted || isAbortError(err)) {
+      throw new DOMException('Aborted', 'AbortError')
+    }
+    const message = formatError(err)
+    const transient =
+      /timeout|ETIMEDOUT|ECONNRESET|socket hang up/i.test(message)
+    if (transient) {
+      // Keep the session; model can retry. Permanent protocol errors still drop it.
+      connectErrors.set(serverId, message)
+      return {
+        ok: false,
+        summary,
+        content: `MCP invoke failed on "${serverId}" (session kept for retry): ${message}`
+      }
+    }
+    connectErrors.set(serverId, message)
+    await disconnectMcpServer(serverId)
+    return {
+      ok: false,
+      summary,
+      content: `MCP invoke failed on "${serverId}" (disconnected; will reconnect on next sync): ${message}`
+    }
+  }
+}
+
+export async function shutdownMcpServers(): Promise<void> {
+  for (const id of [...sessions.keys()]) {
+    await disconnectMcpServer(id)
+  }
+}
+
+/** Test helper */
+export function resetMcpSessionsForTests(): void {
+  sessions.clear()
+  connectErrors.clear()
+  sessionConfigKeys.clear()
+  mcpReadOnlyHints.clear()
+  connectFailures.clear()
+  connecting.clear()
+  syncChain = Promise.resolve()
+  lastSyncedServersFp = null
+  lastSyncInflight = null
+  mcpStdioWorkspacePath = null
+}
+
+/** Test helper — register MCP readOnlyHint values without a live server. */
+export function setMcpReadOnlyHintsForTests(hints: Record<string, boolean>): void {
+  for (const [name, readOnly] of Object.entries(hints)) {
+    mcpReadOnlyHints.set(name, readOnly)
+  }
+}
+
+/** Test helper — connected MCP server ids. */
+export function listConnectedMcpServerIdsForTests(): string[] {
+  return [...sessions.keys()]
+}
+
+/** Test helper — register a mock MCP session without a live transport. */
+export function registerMcpSessionForTests(
+  serverId: string,
+  client: Pick<
+    Client,
+    | 'listTools'
+    | 'listResources'
+    | 'readResource'
+    | 'listPrompts'
+    | 'getPrompt'
+    | 'getServerCapabilities'
+    | 'close'
+  >
+): void {
+  sessions.set(serverId, {
+    client: client as Client,
+    transport: {} as Transport,
+    tools: []
+  })
+}

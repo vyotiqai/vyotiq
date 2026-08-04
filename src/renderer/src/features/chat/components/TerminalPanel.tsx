@@ -1,0 +1,457 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Terminal, type ITheme } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import { WebLinksAddon } from '@xterm/addon-web-links'
+import '@xterm/xterm/css/xterm.css'
+import { cn, IconButton, Tooltip } from '@renderer/lib/ui'
+import { Icon } from '@renderer/lib/icons'
+import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
+import type { PtySessionInfo } from '@shared/ipc'
+import { prunePtyOutputBuffers } from '@shared/utils/ptyOutputBuffer'
+import { getPtyOutputBuffers, ensurePtyOutputBufferListener } from './ptyOutputBuffers'
+import { EmptyPanel } from './PanelChrome'
+
+ensurePtyOutputBufferListener()
+
+function readCssColor(varName: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  const value = getComputedStyle(document.documentElement).getPropertyValue(varName).trim()
+  return value || fallback
+}
+
+function readTerminalTheme(): ITheme {
+  return {
+    background: readCssColor('--vy-bg', '#000000'),
+    foreground: readCssColor('--vy-fg', '#f5f5f5'),
+    cursor: readCssColor('--vy-fg', '#f5f5f5'),
+    selectionBackground: readCssColor('--vy-surface-2', '#262626'),
+    black: readCssColor('--vy-bg', '#000000'),
+    brightBlack: readCssColor('--vy-gray-400', '#525252')
+  }
+}
+
+/** One xterm host bound to a PTY session id. */
+function PtySessionView({
+  sessionId,
+  workspacePath,
+  visible
+}: {
+  sessionId: string
+  workspacePath: string
+  /** When false (CSS-hidden dock tab), do not steal composer focus. */
+  visible: boolean
+}) {
+  const hostRef = useRef<HTMLDivElement>(null)
+  const termRef = useRef<Terminal | null>(null)
+  const fitRef = useRef<FitAddon | null>(null)
+  const visibleRef = useRef(visible)
+  visibleRef.current = visible
+
+  useEffect(() => {
+    const el = hostRef.current
+    if (!el) return undefined
+
+    const term = new Terminal({
+      convertEol: true,
+      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontSize: 12,
+      theme: readTerminalTheme()
+    })
+    const fit = new FitAddon()
+    term.loadAddon(fit)
+    term.loadAddon(new WebLinksAddon())
+    term.open(el)
+    termRef.current = term
+    fitRef.current = fit
+    const buffers = getPtyOutputBuffers()
+    const buffered = buffers.get(sessionId)
+    if (buffered) term.write(buffered)
+    // Only focus when this dock tab is the visible one — mounting while
+    // CSS-hidden (auto-open + another panel active) must not steal composer focus.
+    if (visibleRef.current) term.focus()
+
+    const applyFit = (): void => {
+      if (!visibleRef.current) return
+      if (el.clientWidth < 2 || el.clientHeight < 2) return
+      try {
+        fit.fit()
+        if (term.cols >= 2 && term.rows >= 2) {
+          void window.vyotiq?.ptyResize?.(sessionId, term.cols, term.rows, workspacePath)
+        }
+      } catch {
+        /* ignore */
+      }
+    }
+
+    const onData = term.onData((data) => {
+      void window.vyotiq?.ptyWrite?.(sessionId, data, workspacePath)
+    })
+
+    const unsubData = window.vyotiq?.onPtyData?.(({ id, data }) => {
+      if (id !== sessionId) return
+      term.write(data)
+    })
+    const unsubExit = window.vyotiq?.onPtyExit?.(({ id }) => {
+      if (id !== sessionId) return
+      term.writeln('\r\n[process exited]')
+    })
+
+    const ro =
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => applyFit()) : null
+    ro?.observe(el)
+
+    const themeObserver = new MutationObserver(() => {
+      term.options.theme = readTerminalTheme()
+    })
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['data-theme']
+    })
+
+    applyFit()
+
+    return () => {
+      onData.dispose()
+      unsubData?.()
+      unsubExit?.()
+      ro?.disconnect()
+      themeObserver.disconnect()
+      termRef.current = null
+      fitRef.current = null
+      term.dispose()
+    }
+  }, [sessionId, workspacePath])
+
+  useEffect(() => {
+    if (!visible) return
+    const term = termRef.current
+    const fit = fitRef.current
+    const el = hostRef.current
+    if (!term || !fit || !el) return
+    // Double rAF: CSS-hidden → visible layout may not have final size on the first frame.
+    let cancelled = false
+    const frame1 = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (cancelled) return
+        try {
+          if (el.clientWidth >= 2 && el.clientHeight >= 2) {
+            fit.fit()
+            if (term.cols >= 2 && term.rows >= 2) {
+              void window.vyotiq?.ptyResize?.(sessionId, term.cols, term.rows, workspacePath)
+            }
+          }
+          term.focus()
+        } catch {
+          /* ignore */
+        }
+      })
+    })
+    return () => {
+      cancelled = true
+      cancelAnimationFrame(frame1)
+    }
+  }, [visible, sessionId, workspacePath])
+
+  return <div ref={hostRef} className="h-full w-full bg-bg" data-pty-host />
+}
+
+/**
+ * Interactive user PTY terminal panel (VS Code–style).
+ * Agent `terminal` tool output stays in the chat transcript — this dock is not
+ * wired to agent tools and must not auto-open on agent activity.
+ */
+export function TerminalPanel({
+  className,
+  workspacePath,
+  visible = true,
+  onSessionsChange,
+  onActiveSessionChange
+}: {
+  className?: string
+  workspacePath?: string | null
+  /** False while the terminal dock tab is CSS-hidden. */
+  visible?: boolean
+  onSessionsChange?: (sessions: PtySessionInfo[]) => void
+  onActiveSessionChange?: (session: PtySessionInfo | null) => void
+}) {
+  const [sessions, setSessions] = useState<PtySessionInfo[]>([])
+  const listSeqRef = useRef(0)
+  const [activeId, setActiveId] = useState<string | null>(null)
+  /** Second pane session id for side-by-side split; null = single pane. */
+  const [splitId, setSplitId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  /** Gate auto-create until ptyList has returned (avoids duplicate sessions on remount). */
+  const [listReady, setListReady] = useState(false)
+  const autoCreateAttemptedRef = useRef(false)
+  /** After the user closes the last session, do not immediately spawn another. */
+  const suppressAutoCreateRef = useRef(false)
+  const onSessionsChangeRef = useRef(onSessionsChange)
+  onSessionsChangeRef.current = onSessionsChange
+  const onActiveSessionChangeRef = useRef(onActiveSessionChange)
+  onActiveSessionChangeRef.current = onActiveSessionChange
+
+  const usingPipeFallback = sessions.some((s) => s.backend === 'pipe')
+  const activeSession = sessions.find((s) => s.id === activeId) ?? null
+
+  useEffect(() => {
+    onActiveSessionChangeRef.current?.(activeSession)
+  }, [activeSession])
+
+  const refreshList = useCallback(async () => {
+    const seq = ++listSeqRef.current
+    if (!window.vyotiq?.ptyList) {
+      if (seq !== listSeqRef.current) return
+      setError('Terminal IPC unavailable.')
+      setListReady(true)
+      return
+    }
+    const boundWorkspace = workspacePath
+    const res = await window.vyotiq.ptyList(boundWorkspace ?? undefined)
+    if (seq !== listSeqRef.current) return
+    if (!res.ok) {
+      setError(res.error)
+      setListReady(true)
+      return
+    }
+    // Keep prior create/IPC errors visible when the list is empty so a failed
+    // auto-create is not silently replaced by the empty-state copy alone.
+    if (res.data.length > 0) setError(null)
+    prunePtyOutputBuffers(
+      getPtyOutputBuffers(),
+      res.data.map((s) => s.id)
+    )
+    setSessions(res.data)
+    onSessionsChangeRef.current?.(res.data)
+    setActiveId((cur) => {
+      if (cur && res.data.some((s) => s.id === cur)) return cur
+      return res.data[0]?.id ?? null
+    })
+    setSplitId((cur) => {
+      if (!cur) return null
+      if (!res.data.some((s) => s.id === cur)) return null
+      return cur
+    })
+    setListReady(true)
+  }, [workspacePath])
+
+  const createSession = useCallback(async (): Promise<string | null> => {
+    if (!workspacePath) {
+      setError('Open a workspace to start a terminal.')
+      return null
+    }
+    if (!window.vyotiq?.ptyCreate) {
+      setError('Terminal IPC unavailable.')
+      return null
+    }
+    setError(null)
+    suppressAutoCreateRef.current = false
+    const res = await window.vyotiq.ptyCreate({ workspacePath, cols: 80, rows: 24 })
+    if (!res.ok) {
+      setError(res.error || 'Failed to create terminal session.')
+      return null
+    }
+    await refreshList()
+    setActiveId(res.data.id)
+    return res.data.id
+  }, [workspacePath, refreshList])
+
+  const killSession = useCallback(
+    async (id: string) => {
+      if (sessions.length <= 1) {
+        suppressAutoCreateRef.current = true
+      }
+      if (!workspacePath) return
+      const res = await window.vyotiq?.ptyKill?.(id, workspacePath)
+      if (res && !res.ok) setError(res.error)
+      getPtyOutputBuffers().delete(id)
+      if (splitId === id) setSplitId(null)
+      await refreshList()
+    },
+    [refreshList, sessions.length, splitId, workspacePath]
+  )
+
+  const toggleSplit = useCallback(async () => {
+    if (splitId) {
+      setSplitId(null)
+      return
+    }
+    if (!activeId) {
+      const created = await createSession()
+      if (!created) return
+      const other = await createSession()
+      if (other) {
+        setActiveId(created)
+        setSplitId(other)
+      }
+      return
+    }
+    const other = sessions.find((s) => s.id !== activeId)
+    if (other) {
+      setSplitId(other.id)
+      return
+    }
+    const created = await createSession()
+    if (created && created !== activeId) {
+      setSplitId(created)
+      setActiveId(activeId)
+    }
+  }, [splitId, activeId, sessions, createSession])
+
+  useEffect(() => {
+    autoCreateAttemptedRef.current = false
+    suppressAutoCreateRef.current = false
+    setListReady(false)
+    setSessions([])
+    setActiveId(null)
+    setSplitId(null)
+    setError(null)
+  }, [workspacePath])
+
+  useEffect(() => {
+    void refreshList()
+  }, [refreshList])
+
+  // Auto-create only when the dock tab is visible (manual open / focused tab).
+  // Scrollback for live sessions is restored from ptyOutputBuffers on remount.
+  useEffect(() => {
+    if (!visible) return
+    if (!listReady) return
+    if (sessions.length > 0) return
+    if (!workspacePath || autoCreateAttemptedRef.current || suppressAutoCreateRef.current) {
+      return
+    }
+    autoCreateAttemptedRef.current = true
+    void createSession()
+  }, [visible, listReady, sessions.length, workspacePath, createSession])
+
+  // Buffering is owned by ptyOutputBuffers.ts (survives unmount). Panel only
+  // refreshes the session list when a process exits.
+  useEffect(() => {
+    const unsubExit = window.vyotiq?.onPtyExit?.(() => {
+      void refreshList()
+    })
+    return () => {
+      unsubExit?.()
+    }
+  }, [refreshList])
+
+  return (
+    <div
+      className={cn(CHAT_RIGHT_PANEL_BODY, className)}
+      data-terminal-panel
+      role="region"
+      aria-label="Terminal panel"
+    >
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border/40 bg-bg px-1 py-0.5">
+          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
+            {sessions.map((s) => (
+              <div
+                key={s.id}
+                className={cn(
+                  'group inline-flex max-w-[8rem] items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px]',
+                  s.id === activeId
+                    ? 'bg-surface text-fg'
+                    : 'text-muted hover:bg-surface/60'
+                )}
+              >
+                <button
+                  type="button"
+                  className="min-w-0 truncate"
+                  aria-pressed={s.id === activeId}
+                  onClick={() => setActiveId(s.id)}
+                >
+                  &gt;_ {s.title}
+                  {!s.running ? ' (exited)' : ''}
+                </button>
+                <Tooltip content={`Close ${s.title}`}>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded p-0.5 opacity-0 hover:bg-surface-2 group-hover:opacity-100"
+                    aria-label={`Close ${s.title}`}
+                    onClick={() => void killSession(s.id)}
+                  >
+                    <Icon name="close" size={10} />
+                  </button>
+                </Tooltip>
+              </div>
+            ))}
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
+            <IconButton
+              icon="plus"
+              label="New terminal"
+              variant="bare"
+              size="sm"
+              className="text-muted"
+              onClick={() => void createSession()}
+            />
+            {activeSession ? (
+              <IconButton
+                icon="columns"
+                label={splitId ? 'Unsplit terminals' : 'Split terminal'}
+                variant="bare"
+                size="sm"
+                className={cn('text-muted', splitId && 'text-fg')}
+                onClick={() => void toggleSplit()}
+              />
+            ) : null}
+          </div>
+        </div>
+        {error ? (
+          <p
+            className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px] text-danger"
+            data-terminal-error
+            role="alert"
+          >
+            {error}
+          </p>
+        ) : null}
+        {usingPipeFallback ? (
+          <p className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px] text-muted">
+            Pipe shell fallback — rebuild node-pty for Electron for a full interactive PTY.
+          </p>
+        ) : null}
+        <div className="relative min-h-0 min-w-0 flex-1 bg-bg p-1">
+          {activeId && workspacePath ? (
+            splitId && splitId !== activeId ? (
+              <div className="flex h-full min-h-0 w-full gap-1">
+                <div className="min-h-0 min-w-0 flex-1">
+                  <PtySessionView
+                    sessionId={activeId}
+                    workspacePath={workspacePath}
+                    visible={visible}
+                  />
+                </div>
+                <div className="w-px shrink-0 bg-border/50" />
+                <div className="min-h-0 min-w-0 flex-1">
+                  <PtySessionView
+                    sessionId={splitId}
+                    workspacePath={workspacePath}
+                    visible={visible}
+                  />
+                </div>
+              </div>
+            ) : (
+              <PtySessionView
+                sessionId={activeId}
+                workspacePath={workspacePath}
+                visible={visible}
+              />
+            )
+          ) : (
+            <EmptyPanel
+              icon="terminal"
+              title="No terminal"
+              body={
+                workspacePath
+                  ? 'Use New terminal above to start an interactive shell.'
+                  : 'Open a workspace to start an interactive shell.'
+              }
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}

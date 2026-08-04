@@ -922,7 +922,18 @@ export function buildOpenAiCompatBody(
     const effort = coerceEffortToAllowed(req.thinking.effort, allowed)
     if (useDeepSeekThinking) {
       body.thinking = { type: 'enabled' }
-      body.reasoning_effort = normalizeEffortForDeepSeek(effort)
+      const deepSeekEffort = normalizeEffortForDeepSeek(effort)
+      body.reasoning_effort = deepSeekEffort
+      // Custom hosts (e.g. DeepInfra) need host-native reasoning enablement in
+      // addition to DeepSeek's thinking + reasoning_effort. Map max→high for the
+      // DeepInfra effort enum; keep DeepSeek top-level field as max.
+      if (providerId === 'custom') {
+        const deepInfraEffort = deepSeekEffort === 'max' ? 'high' : deepSeekEffort
+        body.reasoning = { enabled: true, effort: deepInfraEffort }
+        if (req.thinking.display !== 'omitted') {
+          body.include_reasoning = true
+        }
+      }
     } else if (opts.openRouterReasoning || providerId === 'openrouter') {
       const reasoning: Record<string, unknown> = { effort }
       if (
@@ -969,6 +980,10 @@ export function buildOpenAiCompatBody(
     }
   } else if (req.thinking?.enabled === false && useDeepSeekThinking) {
     body.thinking = { type: 'disabled' }
+    // DeepInfra: enabled:false ≡ reasoning_effort none for reasoner hosts.
+    if (providerId === 'custom') {
+      body.reasoning = { enabled: false }
+    }
   } else if (
     req.thinking?.enabled === false &&
     (opts.openRouterReasoning || providerId === 'openrouter') &&
@@ -1187,6 +1202,9 @@ export function createOpenAiCompatibleProvider(
         const contentParts = parseOpenAiCompatDeltaContent(delta?.content)
         const textContent = contentParts.text
 
+        // DeepSeek / DeepInfra: check reasoning_content and content independently
+        // every chunk (not if/else). ThinkChunks ride inside content arrays;
+        // reasoning_content / string reasoning are sibling delta fields.
         if (contentParts.reasoning) {
           noteReasoningFormat('think_chunks')
           reasoningContent += contentParts.reasoning
@@ -1194,15 +1212,14 @@ export function createOpenAiCompatibleProvider(
             thinkChunks = absorbOpenAiCompatThinkChunks(thinkChunks, contentParts.thinkChunks)
           }
           yield { type: 'thinking_delta', text: contentParts.reasoning }
-        } else {
-          const reasoningDelta =
-            (typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : undefined) ??
-            (typeof delta?.reasoning === 'string' ? delta.reasoning : undefined)
-          if (reasoningDelta) {
-            noteReasoningFormat('reasoning_content')
-            reasoningContent += reasoningDelta
-            yield { type: 'thinking_delta', text: reasoningDelta }
-          }
+        }
+        const reasoningDelta =
+          (typeof delta?.reasoning_content === 'string' ? delta.reasoning_content : undefined) ??
+          (typeof delta?.reasoning === 'string' ? delta.reasoning : undefined)
+        if (reasoningDelta) {
+          noteReasoningFormat('reasoning_content')
+          reasoningContent += reasoningDelta
+          yield { type: 'thinking_delta', text: reasoningDelta }
         }
         if (delta?.reasoning_details !== undefined) {
           reasoningDetails = delta.reasoning_details
@@ -1226,18 +1243,17 @@ export function createOpenAiCompatibleProvider(
               thinking: c.thinking?.map((p) => ({ ...p }))
             }))
           }
-        } else {
-          const messageReasoning =
-            (typeof message?.reasoning_content === 'string' ? message.reasoning_content : undefined) ??
-            (typeof message?.reasoning === 'string' ? message.reasoning : undefined)
-          if (messageReasoning) {
-            noteReasoningFormat('reasoning_content')
-            const deltaText = openAiCompatMessageReasoningDelta(messageReasoning, reasoningContent)
-            if (deltaText) {
-              yield { type: 'thinking_delta', text: deltaText }
-            }
-            reasoningContent = messageReasoning
+        }
+        const messageReasoning =
+          (typeof message?.reasoning_content === 'string' ? message.reasoning_content : undefined) ??
+          (typeof message?.reasoning === 'string' ? message.reasoning : undefined)
+        if (messageReasoning) {
+          noteReasoningFormat('reasoning_content')
+          const deltaText = openAiCompatMessageReasoningDelta(messageReasoning, reasoningContent)
+          if (deltaText) {
+            yield { type: 'thinking_delta', text: deltaText }
           }
+          reasoningContent = messageReasoning
         }
         if (message?.reasoning_details !== undefined) {
           reasoningDetails = message.reasoning_details

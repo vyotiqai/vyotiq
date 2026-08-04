@@ -1,0 +1,60 @@
+import { useMemo } from 'react'
+import { TOOL_BODY_FLOW, TOOL_BODY_INNER, TOOL_BODY_PAD } from '@renderer/lib/utils/layout'
+import type { ToolBodyProps } from '../types'
+import { parseSearchData } from '../parsers/search'
+import { Chip, TruncatedBanner } from '../primitives'
+
+export function SearchBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps) {
+  const data = useMemo(() => parseSearchData(tool), [tool])
+  const filenameHits = data.hits.filter((h) => h.isFilenameHit)
+  const contentHits = data.hits.filter((h) => !h.isFilenameHit)
+
+  return (
+    <div>
+      <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
+        {!inGroup ? <Chip>{data.query}</Chip> : null}
+        <span className="text-[10px] tabular-nums text-tertiary">
+          {data.hits.length} {data.hits.length === 1 ? 'hit' : 'hits'}
+          {data.truncated ? ' (truncated)' : ''}
+        </span>
+      </div>
+      {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
+      <div className={`${TOOL_BODY_INNER} ${TOOL_BODY_FLOW} space-y-2`}>
+        {filenameHits.length > 0 ? (
+          <section>
+            <h4 className="m-0 mb-1 text-[10px] font-medium uppercase tracking-wide text-tertiary">
+              Files
+            </h4>
+            <ul className="m-0 list-none p-0">
+              {filenameHits.map((hit) => (
+                <li key={hit.file} className="truncate font-mono text-[11px] text-fg/80">
+                  {hit.file}
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {contentHits.length > 0 ? (
+          <section>
+            <h4 className="m-0 mb-1 text-[10px] font-medium uppercase tracking-wide text-tertiary">
+              Content
+            </h4>
+            {contentHits.map((hit) => (
+              <div key={`${hit.file}:${hit.line}`} className="mb-1 font-mono text-[11px]">
+                <div className="truncate text-tertiary">
+                  {hit.file}:{hit.line}
+                </div>
+                <div className="whitespace-pre-wrap text-fg/80 [overflow-wrap:anywhere]">
+                  {hit.snippet}
+                </div>
+              </div>
+            ))}
+          </section>
+        ) : null}
+        {!data.hits.length ? (
+          <p className="m-0 text-[11px] text-tertiary">No matches</p>
+        ) : null}
+      </div>
+    </div>
+  )
+}

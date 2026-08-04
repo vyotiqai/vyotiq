@@ -1,0 +1,771 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
+
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/plus-jakarta-sans-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./assets/fonts/plus-jakarta-sans-500.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "Plus Jakarta Sans";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("./assets/fonts/plus-jakarta-sans-600.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono-400.woff2") format("woff2");
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("./assets/fonts/jetbrains-mono-500.woff2") format("woff2");
+}
+
+/*
+  Neutral grayscale design tokens (exact hex).
+  Light: Base #FFF → 950 #0A0A0A
+  Dark:  Base #000 → 950 #FAFAFA
+*/
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+
+  --vy-gray-base: #ffffff;
+  --vy-gray-50: #fafafa;
+  --vy-gray-100: #f5f5f5;
+  --vy-gray-200: #e5e5e5;
+  --vy-gray-300: #d4d4d4;
+  --vy-gray-400: #a3a3a3;
+  --vy-gray-500: #737373;
+  --vy-gray-600: #525252;
+  --vy-gray-700: #404040;
+  --vy-gray-800: #262626;
+  --vy-gray-900: #171717;
+  --vy-gray-950: #0a0a0a;
+
+  --vy-bg: var(--vy-gray-base);
+  --vy-card: var(--vy-gray-50);
+  --vy-surface: var(--vy-gray-100);
+  --vy-surface-2: var(--vy-gray-200);
+  --vy-border: var(--vy-gray-200);
+  --vy-border-strong: var(--vy-gray-300);
+  /* 600/700 (not 500/600): small muted/secondary text clears WCAG AA on white. */
+  --vy-muted: var(--vy-gray-600);
+  --vy-secondary: var(--vy-gray-700);
+  --vy-tertiary: var(--vy-gray-500);
+  --vy-fg: var(--vy-gray-900);
+  --vy-fg-strong: var(--vy-gray-950);
+  --vy-accent: var(--vy-gray-900);
+  --vy-accent-fg: var(--vy-gray-50);
+  --vy-focus: var(--vy-gray-400);
+  --vy-success: #16a34a;
+  --vy-danger: #b91c1c;
+  --vy-warning: #a16207;
+  --vy-composer: var(--vy-gray-100);
+  --vy-overlay: rgb(10 10 10 / 0.28);
+  --vy-window-close: #e81123;
+  --vy-shadow: 0 0 0 1px var(--vy-border);
+  --vy-shadow-menu: 0 0 0 1px var(--vy-border), 0 8px 24px rgb(10 10 10 / 0.08);
+  --vy-shadow-chrome: 0 8px 32px -12px rgb(10 10 10 / 0.12);
+
+  --vy-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --vy-duration: 160ms;
+  --vy-disabled-opacity: 0.45;
+  --vy-tracking: -0.01em;
+  --vy-tracking-tight: -0.012em;
+
+  --z-base: 0;
+  --z-sticky: 10;
+  --z-dropdown: 20;
+  --z-tooltip: 25;
+  --z-drawer: 30;
+  --z-skip-link: 50;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --vy-gray-base: #000000;
+  --vy-gray-50: #0a0a0a;
+  --vy-gray-100: #171717;
+  --vy-gray-200: #262626;
+  --vy-gray-300: #373737;
+  --vy-gray-400: #525252;
+  --vy-gray-500: #8a8a8a;
+  --vy-gray-600: #a3a3a3;
+  --vy-gray-700: #d4d4d4;
+  --vy-gray-800: #e5e5e5;
+  --vy-gray-900: #f5f5f5;
+  --vy-gray-950: #fafafa;
+
+  --vy-bg: var(--vy-gray-base);
+  --vy-card: var(--vy-gray-50);
+  --vy-surface: var(--vy-gray-100);
+  --vy-surface-2: var(--vy-gray-200);
+  --vy-border: var(--vy-gray-200);
+  --vy-border-strong: var(--vy-gray-300);
+  /* 600/700 (not 500/600): small muted/secondary text clears WCAG AA on black. */
+  --vy-muted: var(--vy-gray-600);
+  --vy-secondary: var(--vy-gray-700);
+  --vy-tertiary: var(--vy-gray-500);
+  --vy-fg: var(--vy-gray-900);
+  --vy-fg-strong: var(--vy-gray-950);
+  --vy-accent: var(--vy-gray-900);
+  --vy-accent-fg: var(--vy-gray-50);
+  --vy-focus: var(--vy-gray-400);
+  --vy-success: #22c55e;
+  --vy-danger: #f87171;
+  --vy-warning: #fbbf24;
+  --vy-composer: var(--vy-gray-100);
+  --vy-overlay: rgb(0 0 0 / 0.55);
+  --vy-window-close: #e81123;
+  --vy-shadow: 0 0 0 1px var(--vy-border);
+  --vy-shadow-menu: 0 0 0 1px var(--vy-border), 0 10px 28px rgb(0 0 0 / 0.45);
+  --vy-shadow-chrome: 0 8px 32px -12px rgb(0 0 0 / 0.45);
+
+  --vy-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --vy-duration: 160ms;
+  --vy-disabled-opacity: 0.45;
+  --vy-tracking: -0.01em;
+  --vy-tracking-tight: -0.012em;
+
+  --z-base: 0;
+  --z-sticky: 10;
+  --z-dropdown: 20;
+  --z-tooltip: 25;
+  --z-drawer: 30;
+  --z-skip-link: 50;
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes chrome-drop-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes slide-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-md: 14px;
+  --text-lg: 15px;
+  --text-title: 17px;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 10px;
+  --radius-pill: 999px;
+
+  --color-bg: var(--vy-bg);
+  --color-card: var(--vy-card);
+  --color-surface: var(--vy-surface);
+  --color-surface-2: var(--vy-surface-2);
+  --color-border: var(--vy-border);
+  --color-border-strong: var(--vy-border-strong);
+  --color-muted: var(--vy-muted);
+  --color-secondary: var(--vy-secondary);
+  --color-tertiary: var(--vy-tertiary);
+  --color-fg: var(--vy-fg);
+  --color-fg-strong: var(--vy-fg-strong);
+  --color-accent: var(--vy-accent);
+  --color-accent-fg: var(--vy-accent-fg);
+  --color-focus: var(--vy-focus);
+  --color-success: var(--vy-success);
+  --color-danger: var(--vy-danger);
+  --color-warning: var(--vy-warning);
+  --color-composer: var(--vy-composer);
+  --color-overlay: var(--vy-overlay);
+  --color-window-close: var(--vy-window-close);
+
+  --shadow-card: var(--vy-shadow);
+  --shadow-menu: var(--vy-shadow-menu);
+
+  --ease-vy: var(--vy-ease);
+  --default-transition-duration: var(--vy-duration);
+  --default-transition-timing-function: var(--vy-ease);
+
+  --animate-fade-in: fade-in var(--vy-duration) var(--vy-ease);
+  --animate-chrome-drop-in: chrome-drop-in var(--vy-duration) var(--vy-ease);
+  --animate-slide-in-left: slide-in-left var(--vy-duration) var(--vy-ease);
+
+  --z-index-sticky: var(--z-sticky);
+  --z-index-dropdown: var(--z-dropdown);
+  --z-index-tooltip: var(--z-tooltip);
+  --z-index-drawer: var(--z-drawer);
+  --z-index-skip-link: var(--z-skip-link);
+}
+
+@utility app-region-drag {
+  -webkit-app-region: drag;
+}
+
+@utility app-region-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+@utility overflow-anchor-auto {
+  overflow-anchor: auto;
+}
+
+@utility overflow-anchor-none {
+  overflow-anchor: none;
+}
+
+@utility vy-transition {
+  transition-property: background-color, border-color, color, opacity, box-shadow, transform;
+  transition-duration: var(--vy-duration);
+  transition-timing-function: var(--vy-ease);
+}
+
+/** Softens the cut where clamped content is truncated. */
+@utility mask-fade-bottom {
+  mask-image: linear-gradient(to bottom, black 65%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 65%, transparent 100%);
+}
+
+/** Diff rows: tint is the sole add/del cue (no inset bar / sign column). */
+@utility diff-row-add {
+  background: color-mix(in srgb, var(--color-success) 10%, transparent);
+}
+
+@utility diff-row-del {
+  background: color-mix(in srgb, var(--color-danger) 10%, transparent);
+}
+
+@utility vy-focus-ring {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+@layer base {
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  body {
+    @apply bg-bg font-sans text-sm text-fg antialiased;
+    line-height: 1.4;
+    letter-spacing: -0.006em;
+    text-rendering: optimizeLegibility;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+    color: inherit;
+  }
+
+  button {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  input:disabled,
+  textarea:disabled,
+  select:disabled {
+    cursor: not-allowed;
+  }
+
+  textarea {
+    resize: none;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: var(--color-border-strong);
+    color: var(--color-fg-strong);
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--vy-border-strong) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--vy-border-strong);
+    border: 2px solid transparent;
+    background-clip: content-box;
+    border-radius: 999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--vy-muted);
+  }
+
+  /* Sidebar chat list — full-width scrollbar (Windows overlay scrollbars are 0px wide). */
+  .sidebar-scroll {
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
+    scrollbar-width: auto;
+    scrollbar-color: var(--vy-muted) var(--vy-surface);
+  }
+
+  .sidebar-scroll::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .sidebar-scroll-x {
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--vy-muted) transparent;
+  }
+
+  .sidebar-scroll-x::-webkit-scrollbar {
+    height: 8px;
+  }
+
+  .sidebar-scroll-x::-webkit-scrollbar-thumb {
+    background-color: var(--vy-border-strong);
+    border-radius: 4px;
+  }
+
+  .sidebar-scroll-x::-webkit-scrollbar-thumb:hover {
+    background-color: var(--vy-muted);
+  }
+
+  .sidebar-scroll::-webkit-scrollbar-track {
+    background: var(--vy-surface);
+  }
+
+  .sidebar-scroll::-webkit-scrollbar-thumb {
+    background-color: var(--vy-border-strong);
+    border-radius: 6px;
+    min-height: 2.5rem;
+  }
+
+  .sidebar-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: var(--vy-muted);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html:focus-within {
+      scroll-behavior: auto;
+    }
+
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@utility sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+@utility skip-link {
+  position: absolute;
+  left: 0.75rem;
+  top: 0.5rem;
+  z-index: var(--z-skip-link);
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: var(--color-card);
+  padding: 0.4rem 0.75rem;
+  font-size: 13px;
+  color: var(--color-fg);
+  transform: translateY(-120%);
+  transition: transform var(--vy-duration) var(--vy-ease);
+
+  &:focus {
+    transform: translateY(0);
+  }
+
+  &:focus-visible {
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+}
+
+.markdown-body {
+  &> :first-child {
+    margin-top: 0;
+  }
+
+  &> :last-child {
+    margin-bottom: 0;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    margin: 0.85em 0 0.4em;
+    font-weight: 600;
+    line-height: 1.25;
+    letter-spacing: var(--vy-tracking-tight);
+    color: var(--color-fg-strong);
+  }
+
+  h1 {
+    font-size: 1.35em;
+  }
+
+  h2 {
+    font-size: 1.2em;
+  }
+
+  h3 {
+    font-size: 1.08em;
+  }
+
+  h4,
+  h5,
+  h6 {
+    font-size: 1em;
+  }
+
+  hr {
+    margin: 0.85em 0;
+    border: 0;
+    border-top: 1px solid var(--color-border);
+  }
+
+  img {
+    display: block;
+    max-width: 100%;
+    height: auto;
+    border-radius: 6px;
+  }
+
+  input[type='checkbox'] {
+    margin-right: 0.4em;
+    vertical-align: middle;
+  }
+
+  p {
+    margin: 0.5em 0;
+  }
+
+  /* Tailwind preflight strips list markers globally; restore them for prose. */
+  ul,
+  ol {
+    margin: 0.5em 0;
+    padding-left: 1.25rem;
+  }
+
+  ul {
+    list-style: disc outside;
+  }
+
+  ol {
+    list-style: decimal outside;
+  }
+
+  ul ul {
+    list-style: circle outside;
+  }
+
+  ul ul ul {
+    list-style: square outside;
+  }
+
+  li {
+    margin: 0.2em 0;
+  }
+
+  li::marker {
+    color: var(--color-tertiary);
+  }
+
+  li>ul,
+  li>ol {
+    margin: 0.2em 0;
+  }
+
+  li.task-list-item {
+    list-style: none;
+    margin-left: 0;
+  }
+
+  blockquote {
+    margin: 0.5em 0;
+    padding-left: 0.75rem;
+    border-left: 2px solid var(--color-border);
+    color: var(--color-secondary);
+  }
+
+  a {
+    color: var(--color-fg-strong);
+    text-decoration: underline;
+  }
+
+  code {
+    font-family: var(--font-mono);
+  }
+
+  pre code {
+    display: block;
+  }
+
+  .markdown-table-scroll {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  table {
+    border-collapse: collapse;
+    margin: 0;
+    width: max-content;
+    min-width: 100%;
+    font-size: 0.92em;
+  }
+
+  th,
+  td {
+    border: 1px solid var(--color-border);
+    padding: 0.35em 0.65em;
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+
+  th {
+    background: var(--color-surface);
+    color: var(--color-fg-strong);
+    font-weight: 600;
+  }
+
+  tbody tr:nth-child(even) td {
+    background: color-mix(in srgb, var(--color-surface) 55%, transparent);
+  }
+}
+
+/* Plan dock: wide tables scroll horizontally (readable cells); task lists status-only. */
+[data-plan-panel] .markdown-body {
+  h1,
+  h2,
+  h3 {
+    scroll-margin-top: 0.75rem;
+  }
+
+  h1 {
+    margin-top: 0.35em;
+  }
+
+  h2 {
+    margin-top: 1.1em;
+    padding-top: 0.15em;
+  }
+
+  /* Prefer max-content + scroll over mid-token shatter wrap. */
+  table {
+    width: max-content;
+    min-width: 100%;
+    max-width: none;
+  }
+
+  th,
+  td {
+    overflow-wrap: normal;
+    word-break: normal;
+    min-width: 5.5rem;
+  }
+
+  /* Narrow first column (# / id) when present. */
+  th:first-child,
+  td:first-child {
+    min-width: 2.75rem;
+    white-space: nowrap;
+  }
+
+  /* Status / last column: keep FIXED etc. on one line when short. */
+  th:last-child,
+  td:last-child {
+    min-width: 7rem;
+  }
+
+  td strong {
+    color: var(--color-fg-strong);
+    font-weight: 600;
+  }
+
+  input[type='checkbox'] {
+    pointer-events: none;
+    accent-color: var(--color-tertiary);
+  }
+}
+
+[data-plan-panel] .markdown-body input[type='checkbox'] {
+  /* Visual: read-only checklist status (no write-back IPC). */
+  opacity: 0.9;
+}
+
+@keyframes vy-shimmer {
+  from {
+    background-position: 100% center;
+  }
+
+  to {
+    background-position: 0% center;
+  }
+}
+
+.vy-text-shimmer {
+  display: inline-block;
+  background-size: 250% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  background-image: linear-gradient(90deg,
+      var(--vy-gray-400) 0%,
+      var(--vy-gray-400) 40%,
+      var(--vy-gray-500) 50%,
+      var(--vy-gray-400) 60%,
+      var(--vy-gray-400) 100%);
+  background-repeat: no-repeat;
+}
+
+.vy-text-shimmer--active {
+  animation: vy-shimmer var(--vy-shimmer-duration, 2s) linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .vy-text-shimmer--active {
+    animation: none;
+    color: inherit;
+    background-image: none;
+    background-clip: unset;
+    -webkit-background-clip: unset;
+  }
+}
+
+@keyframes tool-stagger-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.tool-status-morph {
+  transition-property: color, opacity;
+  transition-duration: var(--vy-duration);
+  transition-timing-function: var(--vy-ease);
+}
+
+/* Height disclosure — keep content mounted while grid rows animate 0fr ↔ 1fr. */
+.tool-expand {
+  display: grid;
+  grid-template-rows: 0fr;
+}
+
+.tool-expand[data-open='true'] {
+  grid-template-rows: 1fr;
+}
+
+.tool-expand-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tool-stagger-enter {
+    animation: tool-stagger-in 0.28s var(--vy-ease) both;
+    animation-delay: calc(min(var(--stagger-index, 0), 8) * 40ms);
+  }
+
+  .tool-body-enter {
+    animation: tool-stagger-in 0.22s var(--vy-ease) both;
+  }
+
+  .tool-expand {
+    transition: grid-template-rows var(--vy-duration) var(--vy-ease);
+  }
+}

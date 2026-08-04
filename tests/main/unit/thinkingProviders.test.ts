@@ -118,8 +118,8 @@ describe('openai compat thinking body', () => {
     )
     expect(body.thinking).toEqual({ type: 'enabled' })
     expect(body.reasoning_effort).toBe('high')
-    expect(body.include_reasoning).toBeUndefined()
-    expect(body.reasoning).toBeUndefined()
+    expect(body.reasoning).toEqual({ enabled: true, effort: 'high' })
+    expect(body.include_reasoning).toBe(true)
   })
 
   it('disables thinking on custom DeepSeek V4 when Think is off', () => {
@@ -132,6 +132,7 @@ describe('openai compat thinking body', () => {
       'custom'
     )
     expect(body.thinking).toEqual({ type: 'disabled' })
+    expect(body.reasoning).toEqual({ enabled: false })
     expect(body.reasoning_effort).toBeUndefined()
     expect(body.include_reasoning).toBeUndefined()
   })
@@ -147,6 +148,73 @@ describe('openai compat thinking body', () => {
     )
     expect(body.thinking).toEqual({ type: 'enabled' })
     expect(body.reasoning_effort).toBe('low')
+    expect(body.reasoning).toEqual({ enabled: true, effort: 'low' })
+  })
+
+  it('dual-sends DeepInfra reasoning object; maps max→high for host field', () => {
+    const body = buildOpenAiCompatBody(
+      baseReq({
+        model: 'deepseek-ai/DeepSeek-V4-Flash-0731',
+        thinking: { enabled: true, effort: 'max', display: 'summarized' }
+      }),
+      { defaultBaseUrl: 'https://api.deepinfra.com/v1/openai', allowLocal: false },
+      'custom'
+    )
+    expect(body.thinking).toEqual({ type: 'enabled' })
+    expect(body.reasoning_effort).toBe('max')
+    expect(body.reasoning).toEqual({ enabled: true, effort: 'high' })
+    expect(body.include_reasoning).toBe(true)
+  })
+
+  it('omits include_reasoning on custom DeepSeek when display is omitted', () => {
+    const body = buildOpenAiCompatBody(
+      baseReq({
+        model: 'deepseek-ai/DeepSeek-V4-Flash',
+        thinking: { enabled: true, effort: 'high', display: 'omitted' }
+      }),
+      { defaultBaseUrl: 'https://api.deepinfra.com/v1/openai' },
+      'custom'
+    )
+    expect(body.thinking).toEqual({ type: 'enabled' })
+    expect(body.reasoning_effort).toBe('high')
+    expect(body.reasoning).toEqual({ enabled: true, effort: 'high' })
+    expect(body.include_reasoning).toBeUndefined()
+  })
+
+  it('does not add DeepInfra reasoning object on first-party deepseek', () => {
+    const body = buildOpenAiCompatBody(
+      baseReq({ thinking: { enabled: true, effort: 'max', display: 'summarized' } }),
+      { defaultBaseUrl: 'https://api.deepseek.com/v1', deepseekThinking: true },
+      'deepseek'
+    )
+    expect(body.thinking).toEqual({ type: 'enabled' })
+    expect(body.reasoning_effort).toBe('max')
+    expect(body.reasoning).toBeUndefined()
+    expect(body.include_reasoning).toBeUndefined()
+  })
+
+  it('replays reasoning_content on custom DeepSeek assistant tool turns', () => {
+    const body = buildOpenAiCompatBody(
+      baseReq({
+        model: 'deepseek-ai/DeepSeek-V4-Flash-0731',
+        messages: [
+          {
+            role: 'assistant',
+            content: '',
+            thinking: 'plan steps',
+            reasoningState: { kind: 'openai_compat', reasoningContent: 'plan steps' },
+            toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+          }
+        ],
+        thinking: { enabled: true, effort: 'high', display: 'summarized' }
+      }),
+      { defaultBaseUrl: 'https://api.deepinfra.com/v1/openai' },
+      'custom'
+    )
+    const assistant = (body.messages as Array<Record<string, unknown>>).find(
+      (m) => m.role === 'assistant'
+    )
+    expect(assistant?.reasoning_content).toBe('plan steps')
   })
 
   it('omits include_reasoning for custom when display is omitted', () => {

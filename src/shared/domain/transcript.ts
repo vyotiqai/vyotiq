@@ -1,0 +1,947 @@
+import type { ChatMessage, MessageContent, PersistedEvent } from '../ipc'
+import {
+  contentAudios,
+  contentDisplayText,
+  contentFiles,
+  contentImages,
+  contentNativeFiles,
+  contentToText
+} from '../ipc'
+import { isAgentEvent } from '../utils/eventUtils'
+import { summarizeToolArgs } from '../utils/toolSummary'
+import { finalizeInterruptedTodoContent } from '../utils/todoContent'
+
+export type ToolPresentation = 'prominent' | 'compact'
+
+export type UiToolRow = {
+  id: string
+  name: string
+  summary: string
+  status: 'running' | 'done' | 'fail'
+  content?: string
+  /** Live IPC shipped a preview only; expand to lazy-load from disk. */
+  contentTruncated?: boolean
+  argsPreview?: string
+  /** Locked at first render; terminal may recompute when args arrive for read-only demotion. */
+  presentation?: ToolPresentation
+}
+
+export type UiGroupTiming = {
+  startedAt: number
+  endedAt?: number
+}
+
+/** One line of live progress from a long-running tool (e.g. image gen). */
+export type UiToolProgressEntry = {
+  kind: 'text' | 'thinking' | 'tool' | 'done'
+  text: string
+}
+
+/** A document the user attached, shown as a chip instead of its extracted text. */
+export type UiAttachment = {
+  name: string
+  mime: string
+  chars: number
+}
+
+/** A gated call the agent is parked on, waiting for the reader to answer. */
+export type UiToolApproval = {
+  requestId: string
+  toolName: string
+  summary: string
+  argsPreview: string
+  mutating: boolean
+}
+
+/** One field in a pending ask_question form. */
+export type UiAgentQuestionItem = {
+  id: string
+  prompt: string
+  type: 'single' | 'multi' | 'boolean' | 'text'
+  options?: string[]
+  allowCustom?: boolean
+}
+
+/** A structured question form the agent is waiting on in the transcript. */
+export type UiAgentQuestion = {
+  requestId: string
+  toolCallId: string
+  title?: string
+  questions: UiAgentQuestionItem[]
+}
+
+/** Structured answer payload submitted for a pending question form. */
+export type UiAgentQuestionAnswer = {
+  questionId: string
+  values: string[]
+}
+
+export type UiItem =
+  | {
+      kind: 'message'
+      id: string
+      role: 'user' | 'assistant'
+      content: string
+      images?: string[]
+      attachments?: UiAttachment[]
+      streaming?: boolean
+      thinking?: string
+      thinkingStreaming?: boolean
+      thinkingExpanded?: boolean
+      /** ISO timestamp when the message was sent or received. */
+      at?: string
+    }
+  | {
+      kind: 'tool'
+      id: string
+      tool: UiToolRow
+      groupTiming?: UiGroupTiming
+      at?: string
+      toolExpanded?: boolean
+      /**
+       * Reader's disclosure choice for the activity group this row opens. Kept on
+       * the row rather than in the component so it survives list remounts.
+       */
+      groupExpanded?: boolean
+      /** Set while this call is waiting on tool approval. */
+      approval?: UiToolApproval
+      /** Live progress lines from a long-running tool (e.g. image gen). */
+      toolProgress?: UiToolProgressEntry[]
+    }
+  | {
+      kind: 'question'
+      id: string
+      question: UiAgentQuestion
+      at?: string
+    }
+
+/** Attachment chips for a message: names and sizes only, never the quoted text. */
+export function uiAttachments(content: MessageContent): UiAttachment[] {
+  const out: UiAttachment[] = contentFiles(content).map((file) => ({
+    name: file.name,
+    mime: file.mime,
+    chars: file.text.length
+  }))
+  for (const file of contentNativeFiles(content)) {
+    out.push({
+      name: file.name,
+      mime: file.mime,
+      chars: Math.ceil((file.data.length * 3) / 4)
+    })
+  }
+  for (const audio of contentAudios(content)) {
+    out.push({
+      name: 'audio',
+      mime: audio.mime || 'audio/*',
+      chars: Math.ceil((audio.url.length * 3) / 4)
+    })
+  }
+  return out
+}
+
+/** Stable ids so reload/sync does not remount every transcript row. */
+export function messageUiId(role: 'user' | 'assistant', index: number): string {
+  return `${role}-${index}`
+}
+
+function toolContentText(content: MessageContent): string {
+  return typeof content === 'string' ? content : contentToText(content)
+}
+
+export function inferToolStatus(content: MessageContent, ok?: boolean): 'done' | 'fail' {
+  if (ok !== undefined) return ok ? 'done' : 'fail'
+  const text = toolContentText(content)
+  if (text === 'Cancelled' || text === 'Interrupted' || text === 'Stopped') return 'fail'
+  if (!text) return 'done'
+  if (/^Failed to parse tool arguments/i.test(text)) return 'fail'
+  if (/^Unknown tool:/i.test(text)) return 'fail'
+  if (/invalid args/i.test(text)) return 'fail'
+  if (/exit_code:\s*(?!0\b)\d+/i.test(text)) return 'fail'
+  return 'done'
+}
+
+type AssistantMessageItem = Extract<UiItem, { kind: 'message' }> & { role: 'assistant' }
+
+/** True when reasoning text is worth showing (not empty or placeholder punctuation). */
+export function isMeaningfulThinking(text: string | undefined): boolean {
+  if (!text) return false
+  const trimmed = text.trim()
+  if (!trimmed) return false
+  if (/^[.…,;:!?\-–—\s]+$/.test(trimmed)) return false
+  return trimmed.length >= 2
+}
+
+/**
+ * Finished stubs shorter than this render as empty padded gaps if a thinking
+ * row is emitted — keep the threshold shared by row builders and ThinkingBlock.
+ */
+export const MIN_VISIBLE_FINISHED_THINKING_CHARS = 24
+
+/** Whether a thinking row / ThinkingBlock should render for this content. */
+export function shouldRenderThinking(
+  text: string | undefined,
+  streaming?: boolean
+): boolean {
+  if (!isMeaningfulThinking(text)) return false
+  if (streaming) return true
+  return (text?.trim().length ?? 0) >= MIN_VISIBLE_FINISHED_THINKING_CHARS
+}
+
+/**
+ * Long enough that matching the reasoning means the model really did emit the
+ * same passage twice, rather than two rows happening to share a short phrase.
+ */
+const DUPLICATE_TEXT_MIN_CHARS = 40
+
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+/** Join thinking chunks and drop near-duplicate paragraphs. */
+export function mergeThinkingContent(chunks: string[]): string {
+  const seen = new Set<string>()
+  const parts: string[] = []
+
+  for (const chunk of chunks) {
+    for (const paragraph of chunk.split(/\n\n+/)) {
+      const trimmed = paragraph.trim()
+      if (!trimmed) continue
+      const key = collapseWhitespace(trimmed)
+      if (key.length >= DUPLICATE_TEXT_MIN_CHARS) {
+        if (seen.has(key)) continue
+        seen.add(key)
+      }
+      parts.push(trimmed)
+    }
+  }
+
+  return parts.join('\n\n')
+}
+
+/**
+ * Hide assistant text that only repeats the reasoning already shown beside it.
+ *
+ * Nothing else is hidden. The narration a tool loop produces between batches is
+ * the model's running commentary on its own work, and it streams in live, so
+ * suppressing it is what leaves a multi-minute turn looking like a frozen page.
+ */
+export function duplicatesReasoning(item: UiItem): boolean {
+  if (item.kind !== 'message' || item.role !== 'assistant') return false
+  const content = item.content?.trim()
+  if (!content || content.length < DUPLICATE_TEXT_MIN_CHARS) return false
+  if (!isMeaningfulThinking(item.thinking)) return false
+  const normalizedThinking = collapseWhitespace(item.thinking ?? '')
+  const normalizedContent = collapseWhitespace(content)
+  // Only hide when the answer is a verbatim prefix of reasoning — not when it
+  // merely shares a long passage somewhere inside the thinking block.
+  return normalizedThinking.startsWith(normalizedContent)
+}
+
+/** True when assistant text looks like a leaked pseudo tool call, not narration. */
+export function isToolShapedTextLeak(content: string): boolean {
+  const trimmed = content.trimStart()
+  if (!trimmed) return false
+  if (/^tool\s*(\{|[a-z_]+\b)/i.test(trimmed)) return true
+  // Whole buffer is only tool-shaped / DSML leak after scrubbing.
+  if (stripToolShapedAssistantTextForStream(content).trim() === '') {
+    if (/\btool\s*(\{|[a-z_]+\b)/i.test(trimmed)) return true
+    if (hasDsmlMarkup(trimmed)) return true
+  }
+  return false
+}
+
+/**
+ * DeepSeek DSML token. Official V4 encoding uses fullwidth U+FF5C (`｜`);
+ * screenshots of the live UI also show ASCII `|` after decode/display.
+ */
+const DSML_MARK = String.raw`(?:\uFF5C|\|)DSML(?:\uFF5C|\|)`
+
+const DSML_TOOL_CALLS_BLOCK = new RegExp(
+  String.raw`<${DSML_MARK}(?:tool_calls|function_calls)\s*>[\s\S]*?</${DSML_MARK}(?:tool_calls|function_calls)\s*>`,
+  'gi'
+)
+const DSML_INVOKE_BLOCK = new RegExp(
+  String.raw`<${DSML_MARK}invoke\b[^>]*>[\s\S]*?</${DSML_MARK}invoke\s*>`,
+  'gi'
+)
+const DSML_PARAMETER_BLOCK = new RegExp(
+  String.raw`<${DSML_MARK}parameter\b[^>]*>[\s\S]*?</${DSML_MARK}parameter\s*>`,
+  'gi'
+)
+const DSML_ANY_TAG = new RegExp(String.raw`</?${DSML_MARK}[^>\n]*>`, 'gi')
+const DSML_OPEN_RE = new RegExp(String.raw`<(/)?${DSML_MARK}`, 'i')
+
+function hasDsmlMarkup(content: string): boolean {
+  return DSML_OPEN_RE.test(content)
+}
+
+/** Remove complete DeepSeek DSML tool-call markup from assistant text. */
+export function stripDsmlToolMarkup(content: string): string {
+  if (!content || !hasDsmlMarkup(content)) return content
+  let out = content
+  // Repeat in case multiple sibling blocks appear (screenshot spam).
+  for (let n = 0; n < 32; n++) {
+    const next = out
+      .replace(DSML_TOOL_CALLS_BLOCK, '')
+      .replace(DSML_INVOKE_BLOCK, '')
+      .replace(DSML_PARAMETER_BLOCK, '')
+    if (next === out) break
+    out = next
+  }
+  out = out.replace(DSML_ANY_TAG, '')
+  return out
+}
+
+/**
+ * Drop a tool JSON blob still being streamed (no closing brace yet) and any
+ * trailing partial `tool <name> …` line at the end of the buffer.
+ */
+export function stripIncompleteToolPrefix(content: string): string {
+  if (!content) return content
+
+  let searchFrom = 0
+  let cutAt: number | null = null
+  while (searchFrom < content.length) {
+    const rest = content.slice(searchFrom)
+    const match = rest.match(/\btool\s*\{/)
+    if (!match || match.index === undefined) break
+    const start = searchFrom + match.index
+    let i = start + match[0].length
+    let depth = 1
+    while (i < content.length && depth > 0) {
+      const ch = content[i]!
+      i += 1
+      if (ch === '{') depth += 1
+      else if (ch === '}') depth -= 1
+    }
+    if (depth > 0) {
+      cutAt = start
+      break
+    }
+    searchFrom = i
+  }
+
+  if (cutAt !== null) {
+    return content.slice(0, cutAt).replace(/[ \t]*(?:\r?\n)+$/, '')
+  }
+
+  const lineMatch = content.match(/(?:^|\n)(tool\s+[a-z_]+(?:\s+\S[^\n]*)?)$/i)
+  if (lineMatch && lineMatch.index !== undefined) {
+    const start = lineMatch.index === 0 ? 0 : lineMatch.index + 1
+    return content.slice(0, start).replace(/[ \t]*(?:\r?\n)+$/, '')
+  }
+
+  // Hide a trailing bare `tool` / `tool ` prefix still being typed into the text channel.
+  const bareMatch = content.match(/(?:^|\n)(tool\s*)$/i)
+  if (bareMatch && bareMatch.index !== undefined) {
+    const start = bareMatch.index === 0 ? 0 : bareMatch.index + 1
+    return content.slice(0, start).replace(/[ \t]*(?:\r?\n)+$/, '')
+  }
+
+  // Incomplete DSML: open tag without `>`, or open tool_calls/invoke without close.
+  const dsmlStart = content.search(DSML_OPEN_RE)
+  if (dsmlStart >= 0) {
+    const fromTag = content.slice(dsmlStart)
+    const tagEnd = fromTag.indexOf('>')
+    if (tagEnd < 0) {
+      return content.slice(0, dsmlStart).replace(/[ \t]*(?:\r?\n)+$/, '')
+    }
+    const openTag = fromTag.slice(0, tagEnd + 1)
+    const isToolCalls = new RegExp(
+      String.raw`^<${DSML_MARK}(?:tool_calls|function_calls)\s*>`,
+      'i'
+    ).test(openTag)
+    const isInvoke = new RegExp(String.raw`^<${DSML_MARK}invoke\b`, 'i').test(openTag)
+    const isParameter = new RegExp(String.raw`^<${DSML_MARK}parameter\b`, 'i').test(openTag)
+    if (isToolCalls || isInvoke || isParameter) {
+      const closeRe = isToolCalls
+        ? new RegExp(String.raw`</${DSML_MARK}(?:tool_calls|function_calls)\s*>`, 'i')
+        : isInvoke
+          ? new RegExp(String.raw`</${DSML_MARK}invoke\s*>`, 'i')
+          : new RegExp(String.raw`</${DSML_MARK}parameter\s*>`, 'i')
+      if (!closeRe.test(fromTag)) {
+        return content.slice(0, dsmlStart).replace(/[ \t]*(?:\r?\n)+$/, '')
+      }
+    }
+  }
+
+  // Trailing partial DSML opener: `<｜`, `<|DS`, `<｜DSML｜inv`…
+  const partialOpen = content.search(
+    new RegExp(String.raw`<(?:/)?(?:(?:\uFF5C|\|)(?:D(?:S(?:M(?:L(?:(?:\uFF5C|\|)[^>\n]*)?)?)?)?)?)?$`, 'i')
+  )
+  if (partialOpen >= 0 && !content.slice(partialOpen).includes('>')) {
+    return content.slice(0, partialOpen).replace(/[ \t]*(?:\r?\n)+$/, '')
+  }
+
+  return content
+}
+
+function stripToolShapedAssistantTextInner(content: string, options?: { trim?: boolean }): string {
+  if (!content) return content
+  const withoutDsml = stripDsmlToolMarkup(content)
+  let result = ''
+  let i = 0
+  while (i < withoutDsml.length) {
+    const rest = withoutDsml.slice(i)
+    const jsonMatch = rest.match(/^(\s*)tool\s*\{/)
+    if (jsonMatch) {
+      i += jsonMatch[0].length
+      let depth = 1
+      while (i < withoutDsml.length && depth > 0) {
+        const ch = withoutDsml[i]!
+        i += 1
+        if (ch === '{') depth += 1
+        else if (ch === '}') depth -= 1
+      }
+      while (i < withoutDsml.length && (withoutDsml[i] === ' ' || withoutDsml[i] === '\t')) i += 1
+      if (withoutDsml[i] === '\r') i += 1
+      if (withoutDsml[i] === '\n') i += 1
+      continue
+    }
+
+    const atLineStart = i === 0 || withoutDsml[i - 1] === '\n'
+    if (atLineStart) {
+      const lineMatch = rest.match(/^tool\s+([a-z_]+)\s+(\S.+?)(?:\r?\n|$)/i)
+      if (lineMatch) {
+        i += lineMatch[0].length
+        continue
+      }
+    }
+
+    result += withoutDsml[i]!
+    i += 1
+  }
+  const collapsed = result.replace(/\n{3,}/g, '\n\n')
+  return options?.trim === false ? collapsed : collapsed.trim()
+}
+
+/**
+ * Drop model-emitted pseudo tool calls that leaked into the text channel
+ * (e.g. `tool {"edits":[...]}` or DeepSeek `<｜DSML｜tool_calls>` blocks)
+ * so they do not render as plain transcript text.
+ */
+export function stripToolShapedAssistantText(content: string): string {
+  return stripToolShapedAssistantTextInner(content, { trim: true })
+}
+
+/** Like stripToolShapedAssistantText but also hides in-progress tool blobs while streaming. */
+export function stripToolShapedAssistantTextForStream(content: string): string {
+  if (!content) return content
+  return stripToolShapedAssistantTextInner(stripIncompleteToolPrefix(content), { trim: false })
+}
+
+/** Scrub leaked tool text from any assistant rows still marked streaming. */
+export function scrubStreamingAssistantToolLeak(items: UiItem[]): UiItem[] {
+  let changed = false
+  const next = items.map((item) => {
+    if (item.kind !== 'message' || item.role !== 'assistant' || item.streaming !== true) {
+      return item
+    }
+    const content = stripToolShapedAssistantTextForStream(item.content)
+    if (content === item.content) return item
+    changed = true
+    return { ...item, content }
+  })
+  return changed ? next : items
+}
+
+/** Join adjacent reasoning chunks for one inline step. */
+export function mergeThinking(previous: string | undefined, next: string): string {
+  const before = previous?.trim() ?? ''
+  const after = next.trim()
+  if (!before) return after
+  if (!after || before.endsWith(after)) return before
+  return `${before}\n\n${after}`
+}
+
+/** Rebuild chat UI items from persisted messages (includes tool rows). */
+export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
+  const items: UiItem[] = []
+  const pendingCalls = new Map<string, { name: string; arguments: string }>()
+
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i]
+    if (m.role === 'user') {
+      const images = contentImages(m.content)
+      const attachments = uiAttachments(m.content)
+      items.push({
+        kind: 'message',
+        id: messageUiId('user', i),
+        role: 'user',
+        content: contentDisplayText(m.content),
+        images: images.length ? images : undefined,
+        attachments: attachments.length ? attachments : undefined
+      })
+      continue
+    }
+
+    if (m.role === 'assistant') {
+      const text = contentDisplayText(m.content)
+      // Each step keeps its own reasoning, right above the calls it explains.
+      // Pooling a turn's steps into one row buries the work under a wall of text.
+      if (text || m.thinking) {
+        items.push({
+          kind: 'message',
+          id: messageUiId('assistant', i),
+          role: 'assistant',
+          content: stripToolShapedAssistantText(text),
+          thinking: m.thinking
+        })
+      }
+      if (m.toolCalls?.length) {
+        for (const tc of m.toolCalls) {
+          pendingCalls.set(tc.id, { name: tc.name, arguments: tc.arguments })
+          const summary = summarizeToolArgs(tc.name, tc.arguments)
+          items.push({
+            kind: 'tool',
+            id: tc.id,
+            tool: {
+              id: tc.id,
+              name: tc.name,
+              summary,
+              status: 'running',
+              argsPreview: tc.arguments || undefined
+            }
+          })
+        }
+      }
+      continue
+    }
+
+    if (m.role === 'tool') {
+      const id = m.toolCallId ?? `tool-${i}`
+      const pending = pendingCalls.get(id)
+      const name = m.toolName ?? pending?.name ?? 'tool'
+      const summary = summarizeToolArgs(name, pending?.arguments)
+      const content = toolContentText(m.content)
+      const row: Extract<UiItem, { kind: 'tool' }> = {
+        kind: 'tool',
+        id,
+        tool: {
+          id,
+          name,
+          summary,
+          status: inferToolStatus(m.content, m.ok),
+          content,
+          contentTruncated: m.contentTruncated,
+          argsPreview: pending?.arguments || undefined
+        }
+      }
+      const existingIdx = items.findIndex((item) => item.kind === 'tool' && item.id === id)
+      if (existingIdx >= 0) {
+        items[existingIdx] = row
+      } else {
+        items.push(row)
+      }
+      pendingCalls.delete(id)
+    }
+  }
+
+  return items
+}
+
+/**
+ * Rebuild in-progress tool chrome from persisted live snapshots when messages
+ * do not yet include those tool_calls (mid-stream reattach / remount).
+ */
+export function applyPersistedLiveTools(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  if (!events.length) return items
+  const existing = new Set(
+    items.filter((item): item is Extract<UiItem, { kind: 'tool' }> => item.kind === 'tool').map((item) => item.id)
+  )
+  const live = new Map<
+    string,
+    { at: string; name: string; arguments: string; startSummary?: string }
+  >()
+
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    const event = row.event
+    if (event.type === 'stream_reset') {
+      // Drop provisional chrome from a failed stream attempt.
+      live.clear()
+      continue
+    }
+    if (event.type === 'tool_call_delta') {
+      if (existing.has(event.toolCallId)) continue
+      const current = live.get(event.toolCallId)
+      const name =
+        event.name && event.name !== 'tool' ? event.name : current?.name ?? ''
+      live.set(event.toolCallId, {
+        at: current?.at ?? row.at,
+        name,
+        arguments: `${current?.arguments ?? ''}${event.argumentsDelta}`
+      })
+      continue
+    }
+    if (event.type === 'tool_start') {
+      if (existing.has(event.toolCallId)) continue
+      const current = live.get(event.toolCallId)
+      live.set(event.toolCallId, {
+        at: current?.at ?? row.at,
+        name: event.name,
+        arguments: current?.arguments ?? '',
+        startSummary: event.summary
+      })
+    }
+  }
+
+  const extras: UiItem[] = [...live.entries()]
+    .filter(([, value]) => Boolean(value.name))
+    .map(([id, value]) => ({
+      kind: 'tool',
+      id,
+      at: value.at,
+      tool: {
+        id,
+        name: value.name,
+        summary: value.startSummary ?? summarizeToolArgs(value.name, value.arguments),
+        status: 'running',
+        argsPreview: value.arguments || undefined
+      }
+    }))
+  return extras.length ? [...items, ...extras] : items
+}
+
+function toolResultOk(events: PersistedEvent[]): Map<string, boolean> {
+  const out = new Map<string, boolean>()
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    if (row.event.type !== 'tool_result') continue
+    const id = row.event.toolCallId
+    if (!id || out.has(id)) continue
+    out.set(id, row.event.ok)
+  }
+  return out
+}
+
+function reconstructGroupTiming(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  const startById = new Map<string, string>()
+  const endById = new Map<string, string>()
+  const itemIds = new Set(
+    items.filter((item): item is Extract<UiItem, { kind: 'tool' }> => item.kind === 'tool').map((item) => item.id)
+  )
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    if (row.event.type === 'tool_start') {
+      const id = row.event.toolCallId
+      if (!id || !itemIds.has(id) || startById.has(id)) continue
+      startById.set(id, row.at)
+    }
+    if (row.event.type === 'tool_result') {
+      const id = row.event.toolCallId
+      if (!id || !itemIds.has(id) || endById.has(id)) continue
+      endById.set(id, row.at)
+    }
+  }
+
+  const out = [...items]
+  let i = 0
+  while (i < out.length) {
+    if (out[i].kind !== 'tool') {
+      i++
+      continue
+    }
+    const groupStart = i
+    while (i < out.length && out[i].kind === 'tool') i++
+    const first = out[groupStart] as Extract<UiItem, { kind: 'tool' }>
+    const last = out[i - 1] as Extract<UiItem, { kind: 'tool' }>
+    const startedAt = startById.get(first.id)
+    const endedAt = endById.get(last.id)
+    if (startedAt) {
+      const startedMs = new Date(startedAt).getTime()
+      const endedMs = endedAt ? new Date(endedAt).getTime() : undefined
+      if (!Number.isNaN(startedMs)) {
+        out[groupStart] = {
+          ...first,
+          groupTiming: {
+            startedAt: startedMs,
+            ...(endedMs !== undefined && !Number.isNaN(endedMs) ? { endedAt: endedMs } : {})
+          }
+        }
+      }
+    }
+  }
+  return out
+}
+
+/** Tail cap for live + replayed tool progress lines. */
+export const MAX_TOOL_PROGRESS_ENTRIES = 200
+
+function applyToolProgressUpdates(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  const out = [...items]
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    if (row.event.type !== 'tool_progress') continue
+    const parentToolCallId = row.event.parentToolCallId
+    const idx = out.findIndex((item) => item.kind === 'tool' && item.id === parentToolCallId)
+    if (idx < 0) continue
+    const item = out[idx]
+    if (item.kind !== 'tool') continue
+    const entries = [
+      ...(item.toolProgress ?? []),
+      { kind: row.event.kind, text: row.event.text }
+    ]
+    out[idx] = { ...item, toolProgress: entries.slice(-MAX_TOOL_PROGRESS_ENTRIES) }
+  }
+  return out
+}
+
+/** Attach ISO timestamps from persisted events.jsonl rows where available. */
+export function applyEventTimestamps(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  if (!events.length) return items
+  const itemIds = new Set(
+    items.filter((item): item is Extract<UiItem, { kind: 'tool' }> => item.kind === 'tool').map((item) => item.id)
+  )
+  const startAtById = new Map<string, string>()
+  let runStartAt: string | undefined
+  let runDoneAt: string | undefined
+  const allAssistantMessageAts: string[] = []
+  const visibleAssistantMessageAts: string[] = []
+
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    if (row.event.type === 'status') {
+      if (row.event.status === 'running' && !runStartAt) runStartAt = row.at
+      if (
+        row.event.status === 'done' ||
+        row.event.status === 'error' ||
+        row.event.status === 'cancelled'
+      ) {
+        runDoneAt = row.at
+      }
+    }
+    if (row.event.type === 'assistant_message') {
+      allAssistantMessageAts.push(row.at)
+      if (row.event.content || row.event.thinking) {
+        visibleAssistantMessageAts.push(row.at)
+      }
+    }
+    if (row.event.type !== 'tool_start') continue
+    const id = row.event.toolCallId
+    if (!id || !itemIds.has(id) || startAtById.has(id)) continue
+    startAtById.set(id, row.at)
+  }
+  const okById = toolResultOk(events)
+
+  const withMeta = items.map((item) => {
+    if (item.kind !== 'tool') return item
+    const startAt = startAtById.get(item.id)
+    const ok = okById.get(item.id)
+    const withAt = startAt ? { ...item, at: startAt } : item
+    if (ok === undefined) return withAt
+    return {
+      ...withAt,
+      tool: {
+        ...withAt.tool,
+        status: ok ? ('done' as const) : ('fail' as const)
+      }
+    }
+  })
+
+  const withTools = reconstructGroupTiming(withMeta, events)
+  const messageAtById = messageTimestampsFromEvents(withTools, {
+    runStartAt,
+    runDoneAt,
+    allAssistantMessageAts,
+    visibleAssistantMessageAts
+  })
+
+  const withMessages = withTools.map((item) => {
+    if (item.kind !== 'message') return item
+    const at = messageAtById.get(item.id)
+    return at ? { ...item, at } : item
+  })
+  return applyToolProgressUpdates(withMessages, events)
+}
+
+function messageTimestampsFromEvents(
+  items: UiItem[],
+  meta: {
+    runStartAt?: string
+    runDoneAt?: string
+    allAssistantMessageAts: string[]
+    visibleAssistantMessageAts: string[]
+  }
+): Map<string, string> {
+  const out = new Map<string, string>()
+  let assistantEventIdx = 0
+  let visibleAssistantEventIdx = 0
+  let lastTurnEndAt: string | undefined
+  let turnHasVisibleAssistant = false
+
+  for (const item of items) {
+    if (item.kind === 'message' && item.role === 'user') {
+      if (!out.has(item.id)) {
+        if (!lastTurnEndAt && meta.runStartAt) {
+          out.set(item.id, meta.runStartAt)
+        } else if (lastTurnEndAt) {
+          out.set(item.id, lastTurnEndAt)
+        }
+      }
+      turnHasVisibleAssistant = false
+      continue
+    }
+
+    if (item.kind === 'message' && item.role === 'assistant' && (item.content || item.thinking)) {
+      if (!turnHasVisibleAssistant && assistantEventIdx < meta.allAssistantMessageAts.length) {
+        assistantEventIdx += 1
+        turnHasVisibleAssistant = true
+      } else if (turnHasVisibleAssistant && assistantEventIdx < meta.allAssistantMessageAts.length) {
+        assistantEventIdx += 1
+      }
+      if (visibleAssistantEventIdx < meta.visibleAssistantMessageAts.length) {
+        out.set(item.id, meta.visibleAssistantMessageAts[visibleAssistantEventIdx]!)
+        visibleAssistantEventIdx += 1
+      }
+      if (assistantEventIdx > 0) {
+        lastTurnEndAt = meta.allAssistantMessageAts[assistantEventIdx - 1]
+      }
+      continue
+    }
+
+    if (item.kind === 'tool') {
+      if (!turnHasVisibleAssistant && assistantEventIdx < meta.allAssistantMessageAts.length) {
+        lastTurnEndAt = meta.allAssistantMessageAts[assistantEventIdx]!
+        assistantEventIdx += 1
+        turnHasVisibleAssistant = true
+      }
+    }
+  }
+
+  const assistantItems = items.filter(
+    (item): item is AssistantMessageItem =>
+      item.kind === 'message' &&
+      item.role === 'assistant' &&
+      Boolean(item.content || item.thinking)
+  )
+  for (let i = 0; i < assistantItems.length; i++) {
+    const item = assistantItems[i]!
+    if (out.has(item.id)) continue
+    if (visibleAssistantEventIdx < meta.visibleAssistantMessageAts.length) {
+      out.set(item.id, meta.visibleAssistantMessageAts[visibleAssistantEventIdx]!)
+      visibleAssistantEventIdx += 1
+      continue
+    }
+    const itemIndex = items.findIndex((entry) => entry.id === item.id)
+    const nextTool = items
+      .slice(itemIndex + 1)
+      .find((entry): entry is Extract<UiItem, { kind: 'tool' }> => entry.kind === 'tool')
+    if (nextTool?.at) {
+      out.set(item.id, nextTool.at)
+      continue
+    }
+    if (i === assistantItems.length - 1 && meta.runDoneAt) {
+      out.set(item.id, meta.runDoneAt)
+    }
+  }
+
+  return out
+}
+
+type TerminalRunStatus = 'done' | 'cancelled' | 'error'
+
+/** Last persisted run status event, if any. */
+export function lastPersistedRunStatus(
+  events: PersistedEvent[]
+): 'running' | TerminalRunStatus | null {
+  let lastAt = ''
+  let status: 'running' | TerminalRunStatus | null = null
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    if (row.event.type !== 'status') continue
+    if (row.at < lastAt) continue
+    lastAt = row.at
+    status = row.event.status
+  }
+  return status
+}
+
+function interruptedToolContent(status: TerminalRunStatus): string {
+  switch (status) {
+    case 'cancelled':
+      return 'Cancelled'
+    case 'error':
+      return 'Interrupted'
+    case 'done':
+      return 'Stopped'
+    default: {
+      const _exhaustive: never = status
+      return _exhaustive
+    }
+  }
+}
+
+function closeOpenGroupTimingsOnHydrate(items: UiItem[], endedAt: number): UiItem[] {
+  const out = [...items]
+  let index = 0
+  while (index < out.length) {
+    if (out[index]?.kind !== 'tool') {
+      index += 1
+      continue
+    }
+    const groupStart = index
+    while (index < out.length && out[index]?.kind === 'tool') index += 1
+    const first = out[groupStart]
+    if (first?.kind !== 'tool') continue
+    if (!first.groupTiming || first.groupTiming.endedAt != null) continue
+    out[groupStart] = {
+      ...first,
+      groupTiming: { startedAt: first.groupTiming.startedAt, endedAt }
+    }
+  }
+  return out
+}
+
+/**
+ * After a terminal run is reloaded from disk, close any tool rows still marked
+ * `running` because crash interrupt never wrote matching tool_result rows.
+ */
+export function finalizeHydratedTranscript(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  const lastStatus = lastPersistedRunStatus(events)
+  if (!lastStatus || lastStatus === 'running') return items
+
+  const stub = interruptedToolContent(lastStatus)
+  let endedAt = Date.now()
+  for (const row of events) {
+    if (!isAgentEvent(row.event)) continue
+    if (row.event.type !== 'status') continue
+    if (row.event.status !== lastStatus) continue
+    const ms = new Date(row.at).getTime()
+    if (!Number.isNaN(ms)) endedAt = ms
+  }
+
+  const finalized = items.map((item) => {
+    if (item.kind === 'message') {
+      if (!item.streaming && !item.thinkingStreaming) return item
+      return {
+        ...item,
+        streaming: false,
+        thinkingStreaming: false
+      }
+    }
+    if (item.kind !== 'tool') return item
+
+    let tool = item.tool
+    if (tool.status === 'running') {
+      tool = {
+        ...tool,
+        status: 'fail' as const,
+        content: tool.content ?? stub
+      }
+    }
+    if (
+      tool.name === 'todo_write' &&
+      tool.content &&
+      (lastStatus === 'cancelled' || lastStatus === 'error')
+    ) {
+      const content = finalizeInterruptedTodoContent(tool.content)
+      if (content !== tool.content) tool = { ...tool, content }
+    }
+
+    if (tool === item.tool) return item
+    return { ...item, tool }
+  })
+
+  return closeOpenGroupTimingsOnHydrate(finalized, endedAt)
+}

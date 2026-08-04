@@ -201,6 +201,19 @@ function mistralThinkingModelMatch(id: string): boolean {
   return false
 }
 
+/**
+ * Catalog `supportsThinking: false` only blocks unknown ids.
+ * Known reasoner families still allow thinking (incomplete host catalogs).
+ * Catalog true / missing do not block.
+ */
+export function catalogThinkingAllowed(
+  modelId: string,
+  supportsThinking: boolean | undefined | null
+): boolean {
+  if (supportsThinking === false) return sharedThinkingModelMatch(modelId)
+  return true
+}
+
 /** Heuristic: whether a model id likely supports extended thinking. */
 export function modelSupportsThinking(id: string, providerId?: ProviderId): boolean {
   const lower = id.toLowerCase()

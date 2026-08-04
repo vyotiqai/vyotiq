@@ -1,0 +1,43 @@
+appId: com.vyotiq.agent
+productName: Vyotiq
+directories:
+  buildResources: build
+files:
+  - '!**/.vscode/*'
+  - '!src/*'
+  - '!electron.vite.config.{js,ts,mjs,cjs}'
+  - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md}'
+  - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
+  - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+extraResources:
+  - from: resources/harness
+    to: harness
+  - from: resources/marketplace
+    to: marketplace
+asarUnpack:
+  - resources/**
+win:
+  target:
+    - nsis
+  executableName: Vyotiq
+nsis:
+  artifactName: ${productName}-${version}-setup.${ext}
+  shortcutName: ${productName}
+  uninstallDisplayName: ${productName}
+  createDesktopShortcut: always
+mac:
+  target:
+    - dmg
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  notarize: false
+dmg:
+  artifactName: ${productName}-${version}.${ext}
+linux:
+  target:
+    - AppImage
+  maintainer: vyotiq.com
+  category: Development
+appImage:
+  artifactName: ${productName}-${version}.${ext}
+npmRebuild: false

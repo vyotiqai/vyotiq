@@ -1,0 +1,17 @@
+# pnpm 11 security defaults (explicit so global ~/.config/pnpm/rc cannot drift).
+minimumReleaseAge: 1440
+nodeLinker: isolated
+
+allowBuilds:
+  electron: true
+  esbuild: true
+  electron-winstaller: true
+  node-pty: true
+
+peerDependencyRules:
+  allowedVersions:
+    eslint: '10'
+    react: '19'
+
+overrides:
+  '@sentry/core': 10.67.0

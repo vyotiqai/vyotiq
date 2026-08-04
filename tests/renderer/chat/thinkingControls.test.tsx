@@ -3,7 +3,7 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { ThinkingControls } from '@renderer/features/chat/components/composer/ThinkingControls'
+import { ThinkingControls, modelShowsThinkingControls } from '@renderer/features/chat/components/composer/ThinkingControls'
 import type { EffectiveChatSettings } from '@shared/effectiveSettings'
 
 afterEach(() => {
@@ -175,6 +175,71 @@ describe('ThinkingControls', () => {
       />
     )
     expect(container.firstChild).not.toBeNull()
+  })
+
+  it('shows Think when catalog supportsThinking is false for known DeepSeek reasoner', () => {
+    const model = 'deepseek-ai/DeepSeek-V4-Flash-0731'
+    expect(
+      modelShowsThinkingControls('custom', model, {
+        id: model,
+        inputModalities: ['text'],
+        outputModalities: ['text'],
+        supportsTools: true,
+        supportsVision: false,
+        supportsThinking: false
+      })
+    ).toBe(true)
+
+    const { container } = render(
+      <ThinkingControls
+        provider="custom"
+        model={model}
+        modelMeta={{
+          id: model,
+          inputModalities: ['text'],
+          outputModalities: ['text'],
+          supportsTools: true,
+          supportsVision: false,
+          supportsThinking: false
+        }}
+        chatSettings={{ ...chatSettings, provider: 'custom', model }}
+        onChatSettingsChange={vi.fn()}
+      />
+    )
+    expect(container.firstChild).not.toBeNull()
+    expect(thinkingButton().textContent).toMatch(/Think/)
+  })
+
+  it('hides Think when catalog supportsThinking is false for unknown model ids', () => {
+    const model = 'some-vendor/plain-chat-v1'
+    expect(
+      modelShowsThinkingControls('custom', model, {
+        id: model,
+        inputModalities: ['text'],
+        outputModalities: ['text'],
+        supportsTools: true,
+        supportsVision: false,
+        supportsThinking: false
+      })
+    ).toBe(false)
+
+    const { container } = render(
+      <ThinkingControls
+        provider="custom"
+        model={model}
+        modelMeta={{
+          id: model,
+          inputModalities: ['text'],
+          outputModalities: ['text'],
+          supportsTools: true,
+          supportsVision: false,
+          supportsThinking: false
+        }}
+        chatSettings={{ ...chatSettings, provider: 'custom', model }}
+        onChatSettingsChange={vi.fn()}
+      />
+    )
+    expect(container.firstChild).toBeNull()
   })
 
   it('shows Think when meta arrives via provider::model selection key path', () => {

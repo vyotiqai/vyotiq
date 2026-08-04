@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   anthropicUsesAdaptiveThinking,
   anthropicUsesManualThinking,
+  catalogThinkingAllowed,
   isDeepSeekNativeThinkingModel,
   modelSupportsThinking,
   thinkingApiFor,
@@ -49,6 +50,18 @@ describe('reasoning', () => {
     expect(isDeepSeekNativeThinkingModel('deepseek-v3.2')).toBe(true)
     expect(isDeepSeekNativeThinkingModel('gpt-oss-120b')).toBe(false)
     expect(isDeepSeekNativeThinkingModel('qwen3:8b')).toBe(false)
+  })
+
+  it('softens catalog supportsThinking false for known reasoner families', () => {
+    expect(
+      catalogThinkingAllowed('deepseek-ai/DeepSeek-V4-Flash-0731', false)
+    ).toBe(true)
+    expect(catalogThinkingAllowed('deepseek-v4-flash', false)).toBe(true)
+    expect(catalogThinkingAllowed('gpt-5.6', false)).toBe(true)
+    expect(catalogThinkingAllowed('llama3.2', false)).toBe(false)
+    expect(catalogThinkingAllowed('some-vendor/plain-chat', false)).toBe(false)
+    expect(catalogThinkingAllowed('llama3.2', true)).toBe(true)
+    expect(catalogThinkingAllowed('llama3.2', undefined)).toBe(true)
   })
 
   it('maps thinkingApi when catalog affirms despite heuristic miss', () => {
