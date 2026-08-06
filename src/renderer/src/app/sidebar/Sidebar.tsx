@@ -32,11 +32,8 @@ export function Sidebar({
   onOpenMarketplace,
   onOpenChat,
   onNewChat,
-  onSelectRun,
   onSelectRunInWorkspace,
-  onRenameRun,
   onRenameRunInWorkspace,
-  onDeleteRun,
   onDeleteRunInWorkspace,
   onCloseDrawer,
   onToggleSidebar,
@@ -89,6 +86,12 @@ export function Sidebar({
     if (isDrawer) onCloseDrawer()
   }
 
+  const openSettings = (): void => {
+    clearSearch()
+    onOpenSettings()
+    afterNav()
+  }
+
   const openMarketplace = (): void => {
     clearSearch()
     onOpenMarketplace()
@@ -117,7 +120,6 @@ export function Sidebar({
         <SidebarTopBar
           isDrawer={isDrawer}
           isDarwin={isDarwin}
-          view={view}
           workspaceReady={workspaceReady}
           searchRef={searchRef}
           sessionQuery={sessionQuery}
@@ -127,11 +129,6 @@ export function Sidebar({
           onNewChat={() => {
             clearSearch()
             onNewChat()
-            afterNav()
-          }}
-          onOpenSettings={() => {
-            clearSearch()
-            onOpenSettings()
             afterNav()
           }}
         />
@@ -163,18 +160,15 @@ export function Sidebar({
             onDismissRunsError={(path) => onDismissRunsError?.(path)}
             onSelectRun={(path, runId) => {
               setExpandedByPath((prev) => ({ ...prev, [path]: true }))
-              if (onSelectRunInWorkspace) onSelectRunInWorkspace(path, runId)
-              else onSelectRun(runId)
+              onSelectRunInWorkspace?.(path, runId)
               onOpenChat()
               afterNav()
             }}
             onRenameRun={(path, runId, goal) => {
-              if (onRenameRunInWorkspace) onRenameRunInWorkspace(path, runId, goal)
-              else onRenameRun(runId, goal)
+              onRenameRunInWorkspace?.(path, runId, goal)
             }}
             onDeleteRun={(path, runId) => {
-              if (onDeleteRunInWorkspace) onDeleteRunInWorkspace(path, runId)
-              else onDeleteRun(runId)
+              onDeleteRunInWorkspace?.(path, runId)
             }}
           />
         </div>
@@ -182,10 +176,18 @@ export function Sidebar({
 
       <div
         className={cn(
-          'app-region-no-drag shrink-0 border-t border-border/40',
-          isCollapsed ? 'flex justify-center p-1.5' : 'p-2'
+          'app-region-no-drag flex shrink-0 flex-col border-t border-border/40',
+          isCollapsed ? 'items-center gap-1 p-1.5' : 'gap-0.5 p-2'
         )}
       >
+        <NavItem
+          label="Settings"
+          icon="gear"
+          variant={isCollapsed ? 'icon' : 'sidebar'}
+          active={view === 'settings'}
+          current={view === 'settings'}
+          onClick={openSettings}
+        />
         <NavItem
           label="Marketplace"
           icon="marketplace"

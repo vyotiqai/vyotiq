@@ -28,6 +28,7 @@ import { ensureWorkspaceStorage, resolveRunDir, workspaceSessionsRoot } from '..
 import { isActive } from './runRegistry'
 import { CompactionRecordSchema, type CompactionRecord } from './context/types'
 import { writeRunReceiptBestEffort } from './runReceipt'
+import { RUN_LIST_CAP } from '@shared/domain/runs'
 
 export { flushEventAppends, takeEventAppendFailureNotice } from './eventAppendQueue'
 export { flushMessageAppends, takeMessageAppendFailureNotice } from './messageAppendQueue'
@@ -701,7 +702,6 @@ export async function loadEventsForRunAsync(
   return loadEventsForHydrationAsync(dir, runId, options)
 }
 
-const RUN_LIST_CAP = 30
 
 async function collectRunsFromRoot(root: string): Promise<RunSummary[]> {
   const summaries: RunSummary[] = []

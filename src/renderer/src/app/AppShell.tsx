@@ -41,11 +41,8 @@ function AppShellInner({
   onOpenMarketplace,
   onOpenChat,
   onNewChat,
-  onSelectRun,
   onSelectRunInWorkspace,
-  onRenameRun,
   onRenameRunInWorkspace,
-  onDeleteRun,
   onDeleteRunInWorkspace,
   onSwitchWorkspace,
   onCloseWorkspace,
@@ -68,11 +65,8 @@ function AppShellInner({
   onOpenMarketplace: () => void
   onOpenChat: () => void
   onNewChat: () => void
-  onSelectRun: (runId: string) => void
   onSelectRunInWorkspace?: (path: string, runId: string) => void
-  onRenameRun: (runId: string, goal: string) => void
   onRenameRunInWorkspace?: (path: string, runId: string, goal: string) => void
-  onDeleteRun: (runId: string) => void
   onDeleteRunInWorkspace?: (path: string, runId: string) => void
   onSwitchWorkspace?: (path: string) => void
   onCloseWorkspace?: (path: string) => void
@@ -267,11 +261,8 @@ function AppShellInner({
     onOpenMarketplace,
     onOpenChat,
     onNewChat,
-    onSelectRun,
     onSelectRunInWorkspace,
-    onRenameRun,
     onRenameRunInWorkspace,
-    onDeleteRun,
     onDeleteRunInWorkspace,
     onCloseDrawer: closeDrawer,
     onToggleSidebar

@@ -1,6 +1,10 @@
 import { memo, useEffect, useRef, useState } from 'react'
-import { Icon, type IconName } from '@renderer/lib/icons'
-import { cn } from '@renderer/lib/ui'
+import { IconButton, cn } from '@renderer/lib/ui'
+import {
+  SIDEBAR_ROW,
+  SIDEBAR_ROW_ACTIVE,
+  SIDEBAR_ROW_HOVER
+} from '@renderer/lib/utils/layout'
 import type { RunSummary } from '@shared/ipc'
 import { relativeTime } from '@shared/timeFormat'
 import { InlineConfirmActions } from './InlineConfirmActions'
@@ -22,40 +26,6 @@ function RunStatusDot({ status }: { status: RunSummary['status'] }) {
     )
   }
   return null
-}
-
-function RowActionButton({
-  label,
-  icon,
-  className,
-  onClick
-}: {
-  label: string
-  icon: IconName
-  className?: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      className={cn(
-        'app-region-no-drag inline-grid size-6 place-items-center rounded text-muted vy-transition hover:bg-surface hover:text-fg',
-        className
-      )}
-      aria-label={label}
-      title={label}
-      onMouseDown={(e) => {
-        e.preventDefault()
-        e.stopPropagation()
-      }}
-      onClick={(e) => {
-        e.stopPropagation()
-        onClick()
-      }}
-    >
-      <Icon name={icon} size={14} />
-    </button>
-  )
 }
 
 export const ChatRow = memo(function ChatRow({
@@ -103,11 +73,11 @@ export const ChatRow = memo(function ChatRow({
 
   if (renaming) {
     return (
-      <div role="listitem" className="px-0.5 py-0.5">
+      <div role="listitem" className="py-0.5">
         <input
           ref={inputRef}
           type="text"
-          className="app-region-no-drag w-full rounded-md border border-border bg-surface px-1.5 py-1 text-[13px] text-fg outline-none focus:vy-focus-ring"
+          className="app-region-no-drag w-full rounded-md border border-border bg-surface px-1.5 py-1 text-sm text-fg outline-none focus:vy-focus-ring"
           value={draft}
           aria-label="Rename chat"
           onChange={(e) => setDraft(e.target.value)}
@@ -128,16 +98,14 @@ export const ChatRow = memo(function ChatRow({
   return (
     <div
       role="listitem"
-      className={cn(
-        'group relative min-w-0',
-        active ? 'text-fg-strong' : 'text-fg/80'
-      )}
+      className={cn('group relative min-w-0', active ? 'text-fg-strong' : 'text-fg/80')}
     >
       <button
         type="button"
         className={cn(
-          'app-region-no-drag flex w-full min-w-0 items-center gap-1 rounded-md py-1 pl-1.5 pr-12 text-left text-[13px] leading-snug vy-transition',
-          active ? 'bg-surface' : 'hover:bg-surface/60 hover:text-fg'
+          'app-region-no-drag flex w-full min-w-0 items-center gap-1 pr-10 text-left vy-transition',
+          SIDEBAR_ROW,
+          active ? SIDEBAR_ROW_ACTIVE : SIDEBAR_ROW_HOVER
         )}
         aria-current={active ? 'true' : undefined}
         title={runTooltip(run)}
@@ -157,7 +125,7 @@ export const ChatRow = memo(function ChatRow({
 
       <div
         className={cn(
-          'app-region-no-drag absolute inset-y-1 right-1 z-10 flex items-center gap-0.5 vy-transition pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100',
+          'app-region-no-drag absolute inset-y-0 right-0 z-10 flex items-center gap-px vy-transition pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100',
           '[@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100',
           confirmingDelete && 'pointer-events-auto opacity-100'
         )}
@@ -174,19 +142,36 @@ export const ChatRow = memo(function ChatRow({
           />
         ) : (
           <>
-            <RowActionButton
-              label={`Rename ${fullLabel}`}
+            <IconButton
               icon="edit"
-              onClick={() => {
+              label={`Rename ${fullLabel}`}
+              size="xs"
+              variant="bare"
+              className="text-muted hover:text-fg"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
                 setConfirmingDelete(false)
                 setRenaming(true)
               }}
             />
-            <RowActionButton
-              label={`Delete ${fullLabel}`}
+            <IconButton
               icon="trash"
-              className="hover:text-danger"
-              onClick={() => setConfirmingDelete(true)}
+              label={`Delete ${fullLabel}`}
+              size="xs"
+              variant="bare"
+              className="text-muted hover:text-danger"
+              onMouseDown={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+              }}
+              onClick={(e) => {
+                e.stopPropagation()
+                setConfirmingDelete(true)
+              }}
             />
           </>
         )}

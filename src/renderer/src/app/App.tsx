@@ -212,25 +212,6 @@ export function App() {
     ]
   )
 
-  const loadRunIntoTab = async (runId: string): Promise<void> => {
-    if (!activeWorkspace) return
-    await loadRunTranscriptIntoTab(activeWorkspace, runId)
-  }
-
-  const onSelectRun = async (runId: string): Promise<void> => {
-    if (!activeWorkspace || !chatActions) {
-      setSettingsError('Session loading is unavailable.')
-      setView('chat')
-      return
-    }
-    openRunTab(runId)
-    const ctrl = getRunController(runId)
-    if (!ctrl || ctrl.items.length === 0) {
-      await loadRunIntoTab(runId)
-    }
-    setView('chat')
-  }
-
   const onSelectRunInWorkspace = async (path: string, runId: string): Promise<void> => {
     if (!chatActions) {
       setSettingsError('Session loading is unavailable.')
@@ -621,16 +602,6 @@ export function App() {
     }
   }
 
-  const onRenameRun = async (runId: string, goal: string): Promise<void> => {
-    if (!activeWorkspace || !window.vyotiq?.renameRun) return
-    const res = await window.vyotiq.renameRun(activeWorkspace, runId, goal)
-    if (!res.ok) {
-      setSettingsError(res.error)
-      return
-    }
-    refreshActiveRuns()
-  }
-
   const onRenameRunInWorkspace = async (
     path: string,
     runId: string,
@@ -726,9 +697,6 @@ export function App() {
         onOpenMarketplace={() => {}}
         onOpenChat={() => {}}
         onNewChat={() => {}}
-        onSelectRun={() => {}}
-        onRenameRun={() => {}}
-        onDeleteRun={() => {}}
         {...shellWorkspaceProps}
         loading
       >
@@ -760,9 +728,6 @@ export function App() {
       onOpenMarketplace={() => setView('marketplace')}
       onOpenChat={() => setView('chat')}
       onNewChat={onNewChat}
-      onSelectRun={(runId) => void onSelectRun(runId)}
-      onRenameRun={(runId, goal) => void onRenameRun(runId, goal)}
-      onDeleteRun={(runId) => void onDeleteRun(runId)}
       running={chat.running || chat.pendingRun}
       onChatStop={onChatStop}
       {...shellWorkspaceProps}

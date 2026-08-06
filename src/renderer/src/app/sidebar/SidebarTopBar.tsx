@@ -9,19 +9,16 @@ import { SidebarSearchChrome } from './SidebarSearchChrome'
 export function SidebarTopBar({
   isDrawer,
   isDarwin,
-  view,
   workspaceReady,
   searchRef,
   sessionQuery,
   disabledTitle,
   onToggleSidebar,
   onSessionQuery,
-  onNewChat,
-  onOpenSettings
+  onNewChat
 }: {
   isDrawer: boolean
   isDarwin: boolean
-  view: SidebarView
   workspaceReady: boolean
   searchRef: RefObject<HTMLInputElement | null>
   sessionQuery: string
@@ -29,7 +26,6 @@ export function SidebarTopBar({
   onToggleSidebar: () => void
   onSessionQuery: (q: string) => void
   onNewChat: () => void
-  onOpenSettings: () => void
 }) {
   const toggleLabel = isDrawer ? 'Close menu' : 'Collapse sidebar'
   const toggleTitle = isDrawer
@@ -64,10 +60,8 @@ export function SidebarTopBar({
           sessionQuery={sessionQuery}
           workspaceReady={workspaceReady}
           disabledTitle={disabledTitle}
-          view={view}
           onSessionQuery={onSessionQuery}
           onNewChat={onNewChat}
-          onOpenSettings={onOpenSettings}
         />
       </div>
     </header>

@@ -90,27 +90,3 @@ export function NavItem({
     </button>
   )
 }
-
-export function SettingsNavItem({
-  label,
-  active,
-  onClick
-}: {
-  label: string
-  active: boolean
-  onClick: () => void
-}) {
-  return (
-    <button
-      type="button"
-      className={cn(
-        'shrink-0 rounded-md px-2.5 py-[6px] text-left text-sm tracking-[var(--vy-tracking-tight)] vy-transition sm:w-full',
-        active ? 'bg-surface-2 text-fg-strong' : 'text-muted hover:bg-surface hover:text-fg'
-      )}
-      aria-current={active ? 'page' : undefined}
-      onClick={onClick}
-    >
-      {label}
-    </button>
-  )
-}

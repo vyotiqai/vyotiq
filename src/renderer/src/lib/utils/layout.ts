@@ -203,6 +203,23 @@ export const SIDEBAR_CONTAINER = '@container/sidebar'
 export const SIDEBAR_SECTION_LABEL =
   'm-0 px-2.5 text-[10px] font-medium uppercase tracking-[0.07em] text-secondary'
 
+/** Horizontal padding for sidebar list body. */
+export const SIDEBAR_PAD_X = 'px-2'
+
+/** Indent for chat rows nested under a workspace header. */
+export const SIDEBAR_INDENT = 'ml-3'
+
+/** Shared row chrome for workspace headers and chat rows. */
+export const SIDEBAR_ROW = 'rounded-md px-1.5 py-1 text-sm leading-snug'
+
+/** Active sidebar row surface. */
+export const SIDEBAR_ROW_ACTIVE = 'bg-surface text-fg-strong'
+
+/** Hover surface for sidebar rows. */
+export const SIDEBAR_ROW_HOVER = 'hover:bg-surface/70 hover:text-fg'
+
+export { RUN_LIST_CAP } from '@shared/domain/runs'
+
 /** localStorage key for desktop sidebar collapse preference. */
 export const SIDEBAR_COLLAPSED_KEY = 'vyotiq.sidebarCollapsed'
 

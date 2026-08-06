@@ -32,11 +32,8 @@ const baseProps = {
   onOpenMarketplace: vi.fn(),
   onOpenChat: vi.fn(),
   onNewChat: vi.fn(),
-  onSelectRun: vi.fn(),
   onSelectRunInWorkspace: vi.fn(),
-  onRenameRun: vi.fn(),
   onRenameRunInWorkspace: vi.fn(),
-  onDeleteRun: vi.fn(),
   onDeleteRunInWorkspace: vi.fn(),
   onSwitchWorkspace: vi.fn(),
   onCloseWorkspace: vi.fn(),
@@ -167,7 +164,7 @@ describe('AppShell', () => {
     expect(screen.queryByRole('textbox', { name: /search chats/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^new chat$/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^search chats$/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /^settings$/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /^settings$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^marketplace$/i })).toBeTruthy()
     expect(screen.queryByRole('tablist', { name: /workspaces/i })).toBeNull()
     expect(localStorage.getItem('vyotiq.sidebarCollapsed')).toBe('1')
@@ -424,6 +421,18 @@ describe('AppShell', () => {
 
     expect(screen.getByRole('alert').textContent).toContain('Failed to load chats')
     expect(screen.getAllByRole('button', { name: /fix tests/i }).length).toBeGreaterThan(0)
+  })
+
+  it('opens settings from the sidebar footer', () => {
+    const onOpenSettings = vi.fn()
+    render(
+      <AppShell {...baseProps} onOpenSettings={onOpenSettings}>
+        <p>Main content</p>
+      </AppShell>
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /^settings$/i }))
+    expect(onOpenSettings).toHaveBeenCalledTimes(1)
   })
 
   it('switches workspace when selecting a run from another workspace', () => {
