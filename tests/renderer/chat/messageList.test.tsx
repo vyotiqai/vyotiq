@@ -191,7 +191,7 @@ describe('MessageList', () => {
     }))
 
     const { rerender } = render(
-      <MessageList items={items} reserveComposerSpace dockReservePx={180} />
+      <MessageList items={items} />
     )
     const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
     expect(scroll).toBeTruthy()
@@ -220,14 +220,12 @@ describe('MessageList', () => {
         content: 'new line'
       }
     ]
-    rerender(<MessageList items={next} reserveComposerSpace dockReservePx={180} />)
+    rerender(<MessageList items={next} />)
 
     await vi.waitFor(() => {
       expect(scrollTopSet).toHaveBeenCalled()
     })
     expect(scrollTopSet).toHaveBeenCalledWith(4000)
-    expect(scroll.style.paddingBottom).toBe('180px')
-    expect(scroll.style.scrollPaddingBottom).toBe('180px')
 
     vi.unstubAllGlobals()
   })
@@ -277,8 +275,6 @@ describe('MessageList', () => {
           }
         ]}
         running
-        reserveComposerSpace
-        dockReservePx={180}
       />
     )
     const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
@@ -309,8 +305,6 @@ describe('MessageList', () => {
           }
         ]}
         running
-        reserveComposerSpace
-        dockReservePx={180}
       />
     )
 
@@ -341,8 +335,6 @@ describe('MessageList', () => {
           }
         ]}
         running
-        reserveComposerSpace
-        dockReservePx={120}
       />
     )
     const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
@@ -373,8 +365,6 @@ describe('MessageList', () => {
           }
         ]}
         running
-        reserveComposerSpace
-        dockReservePx={120}
       />
     )
 
@@ -384,13 +374,11 @@ describe('MessageList', () => {
     vi.unstubAllGlobals()
   })
 
-  it('re-follows the tail when dock reserve grows while pinned', async () => {
+  it('follows the tail when content grows while pinned', async () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'msg-1', role: 'assistant', content: 'Hello' }
     ]
-    const { rerender } = render(
-      <MessageList items={items} reserveComposerSpace dockReservePx={120} />
-    )
+    const { rerender } = render(<MessageList items={items} />)
     const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
     let scrollTop = 0
     const scrollTopSet = vi.fn((value: number) => {
@@ -403,12 +391,16 @@ describe('MessageList', () => {
       get: () => scrollTop,
       set: scrollTopSet
     })
-    scrollTop = 200
+    scrollTop = 500
 
-    rerender(<MessageList items={items} reserveComposerSpace dockReservePx={200} />)
+    const next: UiItem[] = [
+      { kind: 'message', id: 'msg-1', role: 'assistant', content: 'Hello with more content' }
+    ]
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 1200 })
+    rerender(<MessageList items={next} />)
 
     await vi.waitFor(() => {
-      expect(scrollTopSet).toHaveBeenCalledWith(900)
+      expect(scrollTopSet).toHaveBeenCalledWith(1200)
     })
   })
 
@@ -516,6 +508,72 @@ describe('MessageList', () => {
     expect(document.querySelectorAll('[data-index]')).toHaveLength(0)
     expect(screen.getByText('Line 0')).toBeTruthy()
     expect(screen.getByText('Line 179')).toBeTruthy()
+  })
+
+  it('virtualizes older rows within a single long live turn', () => {
+    class ResizeObserverStub {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+
+    const originalGbc = Element.prototype.getBoundingClientRect
+    Element.prototype.getBoundingClientRect = function getBoundingClientRect(this: Element) {
+      if (this.hasAttribute?.('data-transcript-scroll')) {
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          bottom: 800,
+          right: 720,
+          width: 720,
+          height: 800,
+          toJSON() {
+            return {}
+          }
+        } as DOMRect
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        bottom: 40,
+        right: 720,
+        width: 720,
+        height: 40,
+        toJSON() {
+          return {}
+        }
+      } as DOMRect
+    }
+
+    const prevVitest = process.env.VITEST
+    process.env.VITEST = ''
+
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u0', role: 'user', content: 'start' },
+      ...Array.from({ length: 179 }, (_, i) => ({
+        kind: 'message' as const,
+        id: `m-${i}`,
+        role: 'assistant' as const,
+        content: `Line ${i}`
+      }))
+    ]
+    render(<MessageList items={items} running />)
+    const flow = document.querySelector('[data-live-turn-flow]')
+    expect(flow).toBeTruthy()
+    expect(screen.queryByText('Line 0')).toBeNull()
+    expect(screen.queryByText('Line 50')).toBeNull()
+    const flowRows = flow?.querySelectorAll(':scope > div').length ?? 0
+    expect(flowRows).toBeGreaterThan(30)
+    expect(flowRows).toBeLessThanOrEqual(45)
+
+    process.env.VITEST = prevVitest
+    Element.prototype.getBoundingClientRect = originalGbc
+    vi.unstubAllGlobals()
   })
 
   it('stays in document flow after a live run ends (no cold virtualizer gaps)', () => {

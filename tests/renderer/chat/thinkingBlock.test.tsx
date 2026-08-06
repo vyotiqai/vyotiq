@@ -64,9 +64,14 @@ describe('ThinkingBlock', () => {
     expect(body?.className).toMatch(/max-h-\[min\(/)
   })
 
-  it('forces muted ink on markdown so reasoning does not use bright text-fg', () => {
+  it('forces muted ink on streaming reasoning body', () => {
     const { container } = render(<ThinkingBlock content="Let me reason about this." streaming />)
-    const md = container.querySelector('.markdown-body')
-    expect(md?.className).toMatch(/text-tertiary/)
+    const body = container.querySelector('.overflow-y-auto .markdown-body')
+    expect(body?.className).toMatch(/text-tertiary/)
+  })
+
+  it('uses markdown when expanded after streaming', () => {
+    const { container } = render(<ThinkingBlock content="Let me reason about this." expanded />)
+    expect(container.querySelector('.markdown-body')).toBeTruthy()
   })
 })

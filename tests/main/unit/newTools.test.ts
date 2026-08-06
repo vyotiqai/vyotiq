@@ -9,7 +9,7 @@ import { toolMultiEdit } from '@main/agent/tools/multiEdit'
 import { toolDelete } from '@main/agent/tools/deletePath'
 import { toolStrReplace } from '@main/agent/tools/strReplace'
 import { readTodos, toolTodoWrite } from '@main/agent/tools/todo'
-import { htmlToMarkdown } from '@main/agent/tools/webFetch'
+import { htmlToMarkdown, spaShellWarning, extractMainHtml } from '@main/agent/tools/webFetch'
 import { globToRegExp } from '@main/agent/tools/walk'
 import { executeTool } from '@main/agent/tools'
 import { validateToolArgs } from '@main/agent/schemas/tools'
@@ -473,5 +473,59 @@ describe('htmlToMarkdown', () => {
     expect(md).toContain('[link](https://example.test)')
     expect(md).not.toContain('evil()')
     expect(md).not.toContain('body{}')
+  })
+
+  it('strips nav chrome and empty list bullets from SPA shells', () => {
+    const hfShell =
+      '<html><body>' +
+      '<header><nav><ul><li></li><li><a href="/models">Models</a></li>' +
+      '<li><a href="/datasets">Datasets</a></li><li><a href="/spaces">Spaces</a></li></ul></nav></header>' +
+      '<main><h1>LFM2.5-2.6B-GGUF</h1><p>Compact edge model for on-device inference.</p>' +
+      '<ul><li>Q4_K_M quant</li><li>5.0 GB total</li></ul></main>' +
+      '<footer><a href="/pricing">Pricing</a></footer>' +
+      '</body></html>'
+
+    const md = htmlToMarkdown(hfShell)
+
+    expect(md).toContain('LFM2.5-2.6B-GGUF')
+    expect(md).toContain('Compact edge model')
+    expect(md).toContain('- Q4_K_M quant')
+    expect(md).not.toMatch(/^-\s*$/m)
+    expect(md).not.toContain('Models')
+    expect(md).not.toContain('Datasets')
+    expect(md).not.toContain('Pricing')
+  })
+
+  it('prefers main landmark content when present', () => {
+    const html =
+      '<div><nav>Skip me</nav><main><h2>Real title</h2><p>Body copy with enough substance to keep.</p></main></div>'
+    expect(extractMainHtml(html)).toContain('Real title')
+    expect(extractMainHtml(html)).not.toContain('Skip me')
+  })
+})
+
+describe('spaShellWarning', () => {
+  it('warns when markdown is mostly navigation labels', () => {
+    const md = [
+      '- Models',
+      '- Datasets',
+      '- Spaces',
+      '- Docs',
+      '- Enterprise',
+      '- Pricing'
+    ].join('\n')
+
+    expect(spaShellWarning(md)).toMatch(/JavaScript-rendered shell/i)
+  })
+
+  it('does not warn when substantive prose is present', () => {
+    const md = [
+      '# LiquidAI/LFM2.5-2.6B-GGUF',
+      'Compact edge model for on-device inference with 2.6B parameters.',
+      'Recommended quant: Q4_K_M (~1.6 GB download).',
+      'Use huggingface-cli download LiquidAI/LFM2.5-2.6B-GGUF --include "*.gguf"'
+    ].join('\n')
+
+    expect(spaShellWarning(md)).toBeNull()
   })
 })

@@ -277,7 +277,7 @@ describe('useChatStream', () => {
   })
 
   it('rolls back optimistic turn when chatStart fails', async () => {
-    chatStart.mockResolvedValueOnce({ ok: false, error: 'start failed' })
+    chatStart.mockResolvedValue({ ok: false, error: 'start failed' })
     const { result } = renderHook(() => useChatStream('/ws'))
 
     let ok = true
@@ -1886,7 +1886,7 @@ describe('useChatStream', () => {
     })
   })
 
-  it('drops live tool rows and streamed text on stream_reset', async () => {
+  it('drops live tool rows and clears streamed text on stream_reset', async () => {
     const { result } = renderHook(() => useChatStream('/ws'))
 
     await act(async () => {
@@ -1923,6 +1923,7 @@ describe('useChatStream', () => {
     )
     if (assistant?.kind === 'message') {
       expect(assistant.content).toBe('')
+      expect(assistant.reconnecting).toBe(true)
       expect(assistant.streaming).toBe(false)
       expect(assistant.thinkingStreaming).toBe(false)
     }

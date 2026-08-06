@@ -13,7 +13,6 @@ import { useOverlayPanel } from '@renderer/lib/hooks/useOverlayPanel'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
 import { usePersistedNumber } from '@renderer/lib/hooks/usePersistedNumber'
 import { getWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
-import type { RunSummary } from '@shared/ipc'
 import type { WorkspaceSidebarRuns } from './sidebar/types'
 import {
   SIDEBAR_COLLAPSED_KEY,
@@ -35,11 +34,7 @@ function AppShellInner({
   openWorkspaces,
   runsByWorkspacePath,
   activeRuns,
-  runs,
-  runsCapped,
-  runsError,
   onDismissRunsError,
-  activeRunId,
   sessionQuery,
   onSessionQuery,
   onOpenSettings,
@@ -66,11 +61,7 @@ function AppShellInner({
   openWorkspaces?: string[]
   runsByWorkspacePath?: Record<string, WorkspaceSidebarRuns>
   activeRuns?: { runId: string; workspacePath: string }[]
-  runs: RunSummary[]
-  runsCapped?: boolean
-  runsError?: string | null
   onDismissRunsError?: (path?: string) => void
-  activeRunId: string | null
   sessionQuery: string
   onSessionQuery: (q: string) => void
   onOpenSettings: () => void
@@ -259,11 +250,7 @@ function AppShellInner({
 
   const sidebarProps = {
     view,
-    runs,
-    runsCapped,
-    runsError,
     onDismissRunsError,
-    activeRunId,
     sessionQuery,
     searchRef,
     hasWorkspace,

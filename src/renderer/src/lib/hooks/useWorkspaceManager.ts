@@ -1398,11 +1398,29 @@ export function useWorkspaceManager() {
   )
 
   const setAgentMode = useCallback(
-    (mode: AgentInteractionMode) => {
+    (mode: AgentInteractionMode, options?: { syncOnly?: boolean }) => {
       if (!activeWorkspace) return
       const ctx = contextsRef.current[activeWorkspace]
       if (!ctx) return
       if (ctx.ui.agentMode === mode) return
+      const runId = ctx.activeRunId
+      const controller = runId ? controllersRef.current.get(runId) : undefined
+      if (
+        !options?.syncOnly &&
+        runId &&
+        controller?.running &&
+        window.vyotiq?.chatQueueMode
+      ) {
+        void window.vyotiq.chatQueueMode({ runId, mode }).then((res) => {
+          if (!res.ok) {
+            logger.warn('Failed to queue run mode on main', {
+              scope: 'chat',
+              correlationId: runId,
+              err: res.error
+            })
+          }
+        })
+      }
       const nextCtx: WorkspaceContext = {
         ...ctx,
         ui: { ...ctx.ui, agentMode: mode }
@@ -1536,8 +1554,10 @@ export function useWorkspaceManager() {
         invokeId: activeController.getInvokeId(),
         runId: activeController.runId,
         error: activeController.error,
+        errorCode: activeController.errorCode,
         runNotice: activeController.runNotice,
         incomplete: activeController.incomplete,
+        networkWait: activeController.networkWait,
         contextUsage: activeController.contextUsage,
         runStartedAt: activeController.runStartedAt,
         runTerminalTick: activeController.runTerminalTick,
@@ -1560,8 +1580,10 @@ export function useWorkspaceManager() {
         invokeId: null as number | null,
         runId: null as string | null,
         error: null as string | null,
+        errorCode: null as string | null,
         runNotice: null as string | null,
         incomplete: null as ChatStreamController['incomplete'],
+        networkWait: null as ChatStreamController['networkWait'],
         contextUsage: null,
         runStartedAt: null as number | null,
         runTerminalTick: 0,

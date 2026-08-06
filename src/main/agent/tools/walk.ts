@@ -17,7 +17,14 @@ export const IGNORED_DIRS = new Set([
   '.next',
   'coverage',
   '__pycache__',
-  '.turbo'
+  '.turbo',
+  '.venv',
+  'venv',
+  '.pytest_cache',
+  '.cache',
+  '.mypy_cache',
+  '.ruff_cache',
+  'vendor'
 ])
 
 export const TEXT_EXTS = new Set([

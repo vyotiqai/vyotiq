@@ -2,8 +2,7 @@ import { describe, expect, it, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { toolRead } from '@main/agent/tools/read'
-
+import { toolRead, READ_CONTENT_CAP } from '@main/agent/tools/read'
 describe('toolRead', () => {
   let root: string
 
@@ -60,6 +59,42 @@ describe('toolRead', () => {
   it('rejects binary files on full and line-range reads', () => {
     expect(() => toolRead(root, 'binary.dat')).toThrow(/Binary file detected/)
     expect(() => toolRead(root, 'binary.dat', { startLine: 1 })).toThrow(/Binary file detected/)
+  })
+
+  it('reads UTF-16 LE BOM text (PowerShell log pattern)', () => {
+    const utf16Path = join(root, 'utf16le.log')
+    const body = 'download started\r\nline two'
+    const buf = Buffer.alloc(2 + body.length * 2)
+    buf[0] = 0xff
+    buf[1] = 0xfe
+    for (let i = 0; i < body.length; i++) {
+      buf[2 + i * 2] = body.charCodeAt(i)
+      buf[2 + i * 2 + 1] = 0
+    }
+    writeFileSync(utf16Path, buf)
+    expect(toolRead(root, 'utf16le.log')).toBe('download started\r\nline two')
+  })
+
+  it('reads UTF-16 LE BOM text with offset/limit', () => {
+    const utf16Path = join(root, 'utf16-offset.log')
+    const body = 'download started\r\nline two'
+    const buf = Buffer.alloc(2 + body.length * 2)
+    buf[0] = 0xff
+    buf[1] = 0xfe
+    for (let i = 0; i < body.length; i++) {
+      buf[2 + i * 2] = body.charCodeAt(i)
+      buf[2 + i * 2 + 1] = 0
+    }
+    writeFileSync(utf16Path, buf)
+    const out = toolRead(root, 'utf16-offset.log', { offset: 2, limit: 20 })
+    expect(out).toContain('download')
+    expect(out).not.toContain('line two')
+  })
+
+  it('rejects oversized files on the offset/limit path', () => {
+    const bigPath = join(root, 'big-offset.txt')
+    writeFileSync(bigPath, 'x'.repeat(READ_CONTENT_CAP + 1))
+    expect(() => toolRead(root, 'big-offset.txt', { offset: 0, limit: 10 })).toThrow(/File too large/)
   })
 
   it('returns an inclusive line range with a header naming it', () => {

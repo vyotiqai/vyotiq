@@ -3,6 +3,11 @@ import { mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
+/** Windows can briefly keep handles open after marketplace IO — retry teardown. */
+function rmUserData(dir: string): void {
+  rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+}
+
 vi.mock('electron', () => ({
   app: {
     isPackaged: false,
@@ -22,7 +27,7 @@ describe('marketplace safePath', () => {
   })
 
   afterEach(() => {
-    rmSync(userData, { recursive: true, force: true })
+    rmUserData(userData)
   })
 
   it('rejects traversal in id/version segments', async () => {
@@ -188,7 +193,7 @@ describe('clearNestedPluginMcpSecrets', () => {
   })
 
   afterEach(() => {
-    rmSync(userData, { recursive: true, force: true })
+    rmUserData(userData)
   })
 
   it('does not throw or read outside the package for traversal mcp paths', async () => {

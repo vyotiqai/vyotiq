@@ -5,8 +5,12 @@ import {
   RetriableStreamError
 } from './providers/fetchWithRetry'
 
-export const MAX_STREAM_ATTEMPTS = 2
-export const STREAM_RETRY_BACKOFF_MS = 750
+export const MAX_STREAM_ATTEMPTS = 5
+export const STREAM_RETRY_BASE_MS = 1000
+export const STREAM_RETRY_MAX_MS = 8000
+
+/** @deprecated Use streamRetryBackoffMs(attempt) — kept for tests that import a scalar. */
+export const STREAM_RETRY_BACKOFF_MS = STREAM_RETRY_BASE_MS
 
 export { isRetriableNetworkError, isRetriableProviderMessage, RetriableStreamError }
 
@@ -22,7 +26,25 @@ export function shouldRetryThrownStreamError(err: unknown, attempt: number): boo
   return !isAbortError(err) && attempt < MAX_STREAM_ATTEMPTS && isRetriableStreamFailure(err)
 }
 
-export async function sleepStreamRetryBackoff(signal?: AbortSignal): Promise<void> {
+/** Full jitter over exponential backoff for attempt N (1-based). */
+export function streamRetryBackoffMs(attempt: number): number {
+  const capped = Math.min(
+    STREAM_RETRY_MAX_MS,
+    STREAM_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1)
+  )
+  return Math.round(capped / 2 + Math.random() * (capped / 2))
+}
+
+export async function sleepStreamRetryBackoff(signal?: AbortSignal, attempt = 1): Promise<void> {
+  if (process.env.VITEST === 'true') {
+    if (signal?.aborted) {
+      const err = new Error('Aborted')
+      err.name = 'AbortError'
+      throw err
+    }
+    return
+  }
+  const ms = streamRetryBackoffMs(attempt)
   if (signal?.aborted) {
     const err = new Error('Aborted')
     err.name = 'AbortError'
@@ -32,7 +54,7 @@ export async function sleepStreamRetryBackoff(signal?: AbortSignal): Promise<voi
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort)
       resolve()
-    }, STREAM_RETRY_BACKOFF_MS)
+    }, ms)
     function onAbort(): void {
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
@@ -74,8 +96,11 @@ export async function runWithStreamRetry(options: {
       }
     }
     if (retry && attempt < MAX_STREAM_ATTEMPTS) {
-      await sleepStreamRetryBackoff(options.signal)
+      await sleepStreamRetryBackoff(options.signal, attempt)
       continue
+    }
+    if (retry) {
+      throw new RetriableStreamError('Stream retries exhausted')
     }
     return
   }

@@ -8,6 +8,7 @@ import {
   CancelRunRequestSchema,
   ChatFollowUpRequestSchema,
   ChatFollowUpRemoveRequestSchema,
+  ChatQueueModeRequestSchema,
   CompactRunRequestSchema,
   UndoWritesRequestSchema,
   ResolveWritesRequestSchema,
@@ -93,6 +94,7 @@ import {
   type ChatStartResult,
   type ChatFollowUpResult,
   type ChatFollowUpRemoveResult,
+  type ChatQueueModeResult,
   type ChatMessage,
   type CompactRunResult,
   type UndoWritesResult,
@@ -210,9 +212,11 @@ import {
   markRunTurnComplete,
   enqueueFollowUp,
   removeFollowUp,
+  setPendingMode,
   getRunInvokeId,
   followUpPreview,
-  getRunWorkspace
+  getRunWorkspace,
+  takeLateWriteCheckpoint
 } from '../agent/runRegistry'
 import {
   listRuns,
@@ -271,6 +275,7 @@ import {
   getCrashDiagnosticsSnapshot
 } from '../logging/crashDiagnostics'
 import { applySentryTelemetry, isSentryBuildConfigured } from '../logging/sentry'
+import { probeNetworkOnline } from '../agent/networkMonitor'
 
 export { chatCancelResult }
 
@@ -737,6 +742,8 @@ export function registerIpc(): void {
             // mark as a safety net for abort/error paths that skip that helper.
             if (terminal) markRunTurnComplete(runId, invokeId)
           }
+          const lateCheckpoint = takeLateWriteCheckpoint(runId)
+          if (lateCheckpoint) batcher.push(lateCheckpoint)
         } catch (err) {
           if (isAbortError(err)) {
             logger.warn('Chat run aborted', {
@@ -871,6 +878,8 @@ export function registerIpc(): void {
               batcher.push(ev as AgentEvent)
               if (terminal) markRunTurnComplete(runId, invokeId)
             }
+            const lateCheckpoint = takeLateWriteCheckpoint(runId)
+            if (lateCheckpoint) batcher.push(lateCheckpoint)
           } catch (err) {
             if (isAbortError(err)) {
               logger.warn('Chat rewind run aborted', {
@@ -1012,6 +1021,9 @@ export function registerIpc(): void {
         }
         const result = enqueueFollowUp(req.runId, req.message)
         if (!result.ok) return fail(result.error)
+        if (req.mode) {
+          setPendingMode(req.runId, req.mode)
+        }
         logger.info('Chat follow-up queued', {
           scope: 'ipc',
           correlationId: req.runId,
@@ -1044,6 +1056,27 @@ export function registerIpc(): void {
         })
       } catch (err) {
         return failFrom(err, IPC.chatFollowUp)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.chatQueueMode,
+    async (event, raw): Promise<IpcResult<ChatQueueModeResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ChatQueueModeRequestSchema.parse(raw)
+        if (!isActive(req.runId)) {
+          return fail('Run is not active')
+        }
+        const workspace = getRunWorkspace(req.runId)
+        if (!workspace || !isOpenWorkspace(workspace)) {
+          return fail('Workspace is not open')
+        }
+        setPendingMode(req.runId, req.mode)
+        return ok({ queued: true as const })
+      } catch (err) {
+        return failFrom(err, IPC.chatQueueMode)
       }
     }
   )
@@ -2466,6 +2499,15 @@ export function registerIpc(): void {
       return ok(nativeTheme.shouldUseDarkColors)
     } catch (err) {
       return failFrom(err, IPC.getSystemTheme)
+    }
+  })
+
+  ipcMain.handle(IPC.networkProbe, async (event): Promise<IpcResult<boolean>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(await probeNetworkOnline())
+    } catch (err) {
+      return failFrom(err, IPC.networkProbe)
     }
   })
 }

@@ -42,6 +42,7 @@ function WorkspaceHeader({
         type="button"
         className="app-region-no-drag inline-grid size-5 place-items-center rounded vy-transition hover:bg-bg"
         aria-label={expanded ? `Collapse ${name}` : `Expand ${name}`}
+        aria-expanded={expanded}
         onClick={(e) => {
           e.stopPropagation()
           onToggle()
@@ -69,7 +70,11 @@ function WorkspaceHeader({
         onClick={onSelectWorkspace}
       >
         {hasActivity ? (
-          <span className="size-1 shrink-0 rounded-full bg-fg motion-safe:animate-pulse" aria-hidden />
+          <span
+            className="size-1 shrink-0 rounded-full bg-fg motion-safe:animate-pulse"
+            title="Active run in workspace"
+            aria-hidden
+          />
         ) : null}
         <span className="truncate font-medium">{name}</span>
       </button>
@@ -90,7 +95,7 @@ function WorkspaceHeader({
         <Tooltip content={`Close ${name}`}>
           <button
             type="button"
-            className="app-region-no-drag inline-grid size-5 place-items-center rounded text-muted opacity-0 vy-transition hover:bg-bg hover:text-danger group-hover:opacity-100 [@media(hover:none)]:opacity-100"
+            className="app-region-no-drag inline-grid size-5 place-items-center rounded text-muted opacity-0 vy-transition hover:bg-bg hover:text-danger group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"
             aria-label={`Close ${name}`}
             onClick={(e) => {
               e.stopPropagation()
@@ -162,7 +167,11 @@ export function ChatList({
           ) : null}
 
           <div className="flex flex-col gap-2 pb-0.5">
-            {workspaceGroups.map((workspace) => (
+            {workspaceGroups.map((workspace) => {
+              const searchActive = Boolean(sessionQuery.trim())
+              const globalSearchEmpty = searchActive && filteredRunsCount === 0
+
+              return (
               <div key={workspace.path} className="flex flex-col gap-1">
                 <WorkspaceHeader
                   name={workspace.label}
@@ -210,11 +219,9 @@ export function ChatList({
                         />
                       ))}
                     </div>
-                  ) : workspace.filteredRuns.length === 0 ? (
-                    <p className="m-0 ml-4 px-1 py-1 text-xs text-secondary">
-                      {sessionQuery.trim() ? 'No matching chats' : 'No chats yet'}
-                    </p>
-                  ) : (
+                  ) : workspace.filteredRuns.length === 0 && !globalSearchEmpty ? (
+                    <p className="m-0 ml-4 px-1 py-1 text-xs text-secondary">No chats yet</p>
+                  ) : workspace.filteredRuns.length > 0 ? (
                     <div className="ml-4 flex flex-col gap-2">
                       {workspace.groupedRuns.map((group) => (
                         <div key={`${workspace.path}:${group.id}`}>
@@ -237,15 +244,14 @@ export function ChatList({
                           </div>
                         </div>
                       ))}
+                      {workspace.runsCapped && !searchActive ? (
+                        <p className="m-0 px-1 py-1.5 text-[9px] text-muted">Showing 30 most recent</p>
+                      ) : null}
                     </div>
-                  )
-                ) : null}
-
-                {workspace.runsCapped && !sessionQuery.trim() ? (
-                  <p className="m-0 ml-4 px-1 py-1.5 text-[9px] text-muted">Showing 30 most recent</p>
+                  ) : null
                 ) : null}
               </div>
-            ))}
+            )})}
           </div>
         </>
       )}

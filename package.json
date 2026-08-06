@@ -2,7 +2,7 @@
   "name": "vyotiq",
   "version": "1.0.0",
   "description": "Vyotiq Agent V — lean NL harness desktop coding agent",
-  "packageManager": "pnpm@11.17.0",
+  "packageManager": "pnpm@11.20.0",
   "main": "./out/main/index.js",
   "author": "Vyotiq",
   "homepage": "https://vyotiq.com",

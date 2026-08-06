@@ -32,6 +32,7 @@ const api: VyotiqApi = {
   chatCancel: (runId) => ipcRenderer.invoke(IPC.chatCancel, { runId }),
   chatFollowUp: (payload) => ipcRenderer.invoke(IPC.chatFollowUp, payload),
   chatFollowUpRemove: (payload) => ipcRenderer.invoke(IPC.chatFollowUpRemove, payload),
+  chatQueueMode: (payload) => ipcRenderer.invoke(IPC.chatQueueMode, payload),
   chatCompact: (workspacePath, runId) =>
     ipcRenderer.invoke(IPC.chatCompact, { workspacePath, runId }),
   undoWrites: (workspacePath, runId, checkpointId) =>
@@ -244,6 +245,7 @@ const api: VyotiqApi = {
   marketplaceAckRemoteInstall: (acked) =>
     ipcRenderer.invoke(IPC.marketplaceAckRemoteInstall, { acked }),
   getSystemTheme: () => ipcRenderer.invoke(IPC.getSystemTheme),
+  probeNetwork: () => ipcRenderer.invoke(IPC.networkProbe),
   slashCommandsList: (payload) => ipcRenderer.invoke(IPC.slashCommandsList, payload ?? {}),
   slashCommandsResolve: (payload) => ipcRenderer.invoke(IPC.slashCommandsResolve, payload),
   slashCommandsCreateRule: (payload) =>

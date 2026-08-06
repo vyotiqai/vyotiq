@@ -2,7 +2,6 @@ import type { UiAgentQuestion, UiItem, UiToolApproval } from '@shared/transcript
 import {
   duplicatesReasoning,
   mergeThinkingContent,
-  MIN_VISIBLE_FINISHED_THINKING_CHARS,
   shouldRenderThinking,
   stripToolShapedAssistantText,
   stripToolShapedAssistantTextForStream
@@ -11,7 +10,6 @@ import { isProminentPresentation } from '../toolUi'
 import { collectWritingChanges } from '../toolUi/parsers/edit'
 import { parseDeleteData } from '../toolUi/parsers/delete'
 import { deriveRunActivity, type RunActivityPhase } from './runActivity'
-import { mapToolGroupProps } from './toolGroupAdapter'
 import { normalizeRelPath, WRITING_TOOLS } from './turnFileDiffs'
 
 export type { RunActivityPhase } from './runActivity'
@@ -32,6 +30,7 @@ export type TranscriptRow =
   | { kind: 'changes'; id: string; turnIndex: number; files: ChangedFile[] }
   | { kind: 'approval'; id: string; approval: UiToolApproval; turnIndex: number }
   | { kind: 'question'; id: string; question: UiAgentQuestion; turnIndex: number }
+  | { kind: 'run_error'; id: string; message: string; code?: string; turnIndex: number }
 
 export type ChangedFile = {
   path: string
@@ -46,6 +45,9 @@ export type TurnSpan = {
   active: boolean
   /** What the agent is doing while the turn is active. */
   activity?: RunActivityPhase | null
+  /** Terminal network/provider failure on this turn. */
+  failed?: boolean
+  failureLabel?: string
 }
 
 /**
@@ -82,7 +84,19 @@ function isCardTool(item: ToolItem): boolean {
  */
 export function buildTranscriptRows(
   items: UiItem[],
-  options?: { pendingRun?: boolean; running?: boolean; showThinking?: boolean }
+  options?: {
+    pendingRun?: boolean
+    running?: boolean
+    showThinking?: boolean
+    networkWait?: {
+      attempt: number
+      maxAttempts: number
+      retryInMs: number
+      code?: string
+    } | null
+    turnFailed?: boolean
+    turnFailureLabel?: string | null
+  }
 ): TranscriptRow[] {
   const rows: TranscriptRow[] = []
   let turnIndex = -1
@@ -135,6 +149,17 @@ export function buildTranscriptRows(
         kind: 'question',
         id: item.id,
         question: item.question,
+        turnIndex: Math.max(turnIndex, 0)
+      })
+      continue
+    }
+    if (item.kind === 'run_error') {
+      flush()
+      rows.push({
+        kind: 'run_error',
+        id: item.id,
+        message: item.message,
+        ...(item.code ? { code: item.code } : {}),
         turnIndex: Math.max(turnIndex, 0)
       })
       continue
@@ -211,19 +236,21 @@ export function buildTranscriptRows(
   // Turn summaries stand for the work rows, and which text row is the closing
   // answer decides what counts as work, so that has to be settled first.
   // Reasoning stays in step order (thinking → tools → thinking) — do not hoist
-  // every step into one Thought at the top of the turn.
-  return coalesceTurnWork(
-    withTurnSummaries(
-      withChangeSummaries(coalesceTodoWrites(markFinalText(rows)), {
-        pendingRun: options?.pendingRun,
-        running: options?.running
-      }),
-      {
-        pendingRun: options?.pendingRun,
-        running: options?.running,
-        hiddenThinkingStreamingTurns
-      }
-    )
+  // every step into one Thought at the top of the turn. Do not fold activity
+  // groups across thinking separators (that scrambled chronology).
+  return withTurnSummaries(
+    withChangeSummaries(coalesceTodoWrites(markFinalText(rows)), {
+      pendingRun: options?.pendingRun,
+      running: options?.running
+    }),
+    {
+      pendingRun: options?.pendingRun,
+      running: options?.running,
+      hiddenThinkingStreamingTurns,
+      networkWait: options?.networkWait,
+      turnFailed: options?.turnFailed,
+      turnFailureLabel: options?.turnFailureLabel
+    }
   )
 }
 
@@ -260,7 +287,6 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
         .map((t) => {
           const sub = t.toolProgress?.length ?? 0
           const subLast = t.toolProgress?.[t.toolProgress.length - 1]
-          const nestedSig = ''
           return [
             t.id,
             t.tool.status,
@@ -271,8 +297,7 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
             t.groupExpanded ?? '',
             t.toolExpanded ?? '',
             sub,
-            subLast ? `${subLast.kind}:${contentFingerprint(subLast.text)}` : '',
-            nestedSig
+            subLast ? `${subLast.kind}:${contentFingerprint(subLast.text)}` : ''
           ].join(':')
         })
         .join('|')}`
@@ -280,7 +305,6 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
       const t = row.item
       const sub = t.toolProgress?.length ?? 0
       const subLast = t.toolProgress?.[t.toolProgress.length - 1]
-      const nestedSig = ''
       return [
         'card',
         row.id,
@@ -291,8 +315,7 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
         t.tool.summary,
         t.toolExpanded ?? '',
         sub,
-        subLast ? `${subLast.kind}:${contentFingerprint(subLast.text)}` : '',
-        nestedSig
+        subLast ? `${subLast.kind}:${contentFingerprint(subLast.text)}` : ''
       ].join(':')
     }
     case 'changes':
@@ -310,6 +333,8 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
       ].join('\n')
       return `question:${row.id}:${q.requestId}:${shape}`
     }
+    case 'run_error':
+      return `run_error:${row.id}:${row.message}:${row.code ?? ''}`
     default: {
       const _exhaustive: never = row
       return _exhaustive
@@ -533,7 +558,12 @@ function rowTimestamps(row: TranscriptRow): { at: number | null; endedAt: number
     case 'changes':
     case 'approval':
     case 'question':
+    case 'run_error':
       return { at: null, endedAt: null }
+    default: {
+      const _exhaustive: never = row
+      return _exhaustive
+    }
   }
 }
 
@@ -552,6 +582,7 @@ function isRowActive(row: TranscriptRow): boolean {
     case 'user':
     case 'turn':
     case 'changes':
+    case 'run_error':
       return false
     default: {
       const _exhaustive: never = row
@@ -576,6 +607,14 @@ function withTurnSummaries(
     pendingRun?: boolean
     running?: boolean
     hiddenThinkingStreamingTurns?: ReadonlySet<number>
+    networkWait?: {
+      attempt: number
+      maxAttempts: number
+      retryInMs: number
+      code?: string
+    } | null
+    turnFailed?: boolean
+    turnFailureLabel?: string | null
   }
 ): TranscriptRow[] {
   const pendingRun = options?.pendingRun
@@ -634,16 +673,32 @@ function withTurnSummaries(
       const rowActive = turnRows.some(isRowActive)
       const active = isLiveTurn
       const activity = active
-        ? deriveRunActivity(turnRows, isLiveTurn && !rowActive && turnRows.length === 0, {
-            hiddenThinkingStreaming: hiddenThinkingStreamingTurns?.has(turnIndex) === true
-          })
+        ? options?.networkWait
+          ? {
+              kind: 'reconnecting' as const,
+              attempt: options.networkWait.attempt,
+              maxAttempts: options.networkWait.maxAttempts
+            }
+          : deriveRunActivity(turnRows, isLiveTurn && !rowActive && turnRows.length === 0, {
+              hiddenThinkingStreaming: hiddenThinkingStreamingTurns?.has(turnIndex) === true
+            })
         : null
+      const failed = isLastTurn && !active && options?.turnFailed === true
+      const failureLabel = failed
+        ? options?.turnFailureLabel?.trim() || 'Connection lost'
+        : undefined
 
       out.push({
         kind: 'turn',
         id: `turn:${userRow.id}`,
         turnIndex,
-        span: { startedAt, endedAt, active, activity }
+        span: {
+          startedAt,
+          endedAt,
+          active,
+          activity,
+          ...(failed ? { failed: true, failureLabel } : {})
+        }
       })
     }
 
@@ -656,86 +711,4 @@ function withTurnSummaries(
 /** Leading space a row reserves for turn separation. */
 export function rowLeadingGap(row: TranscriptRow): number {
   return row.kind === 'user' && row.turnIndex > 0 ? TURN_GAP_PX : 0
-}
-
-/**
- * Stable merge key from tool counts — ignore running vs done tense so a card
- * sandwiched between two identical lookup batches can fold into one header.
- */
-function activityGroupKey(tools: ToolItem[]): string {
-  const props = mapToolGroupProps(
-    tools.map((item) => item.tool),
-    {}
-  )
-  return props.summary || props.runningLabel
-}
-
-function isShallowWorkSeparator(row: TranscriptRow): boolean {
-  if (row.kind === 'thinking') {
-    // Live / streaming thought is not a skippable separator — coalescing would
-    // move it after the folded tool group and scramble chronological order.
-    if (row.item.thinkingStreaming) return false
-    const text = row.item.thinking?.trim() ?? ''
-    if (!text) return true
-    return text.length < MIN_VISIBLE_FINISHED_THINKING_CHARS
-  }
-  if (row.kind === 'text') {
-    return !row.item.content?.trim()
-  }
-  return false
-}
-
-function coalesceTurnWork(rows: TranscriptRow[]): TranscriptRow[] {
-  const out: TranscriptRow[] = []
-  let index = 0
-
-  while (index < rows.length) {
-    const row = rows[index]!
-    if (row.kind !== 'activity') {
-      out.push(row)
-      index += 1
-      continue
-    }
-
-    const turnIndex = row.turnIndex
-    const groupKey = activityGroupKey(row.tools)
-    let mergedTools = [...row.tools]
-    const anchorId = row.id
-    const separators: TranscriptRow[] = []
-    index += 1
-
-    while (index < rows.length && rows[index]!.turnIndex === turnIndex) {
-      while (
-        index < rows.length &&
-        rows[index]!.turnIndex === turnIndex &&
-        isShallowWorkSeparator(rows[index]!)
-      ) {
-        separators.push(rows[index]!)
-        index += 1
-      }
-      if (index >= rows.length || rows[index]!.turnIndex !== turnIndex) break
-
-      const next = rows[index]!
-      // Do not merge lookups across a sandwiched card — keep chronological order.
-      if (next.kind === 'card') break
-      if (next.kind === 'activity' && activityGroupKey(next.tools) === groupKey) {
-        mergedTools.push(...next.tools)
-        index += 1
-        continue
-      }
-      break
-    }
-
-    out.push({
-      kind: 'activity',
-      id: anchorId,
-      tools: mergedTools,
-      turnIndex
-    })
-    // Shallow separators skipped to test the merge still carry content (e.g. a
-    // short streaming thought) — emit them after the folded group, never drop.
-    out.push(...separators)
-  }
-
-  return out
 }

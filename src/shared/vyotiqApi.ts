@@ -6,6 +6,8 @@ import type {
   ChatFollowUpRemoveResult,
   ChatFollowUpRequest,
   ChatFollowUpResult,
+  ChatQueueModeRequest,
+  ChatQueueModeResult,
   ChatStartRequest,
   ChatStartResult,
   ChatRewindAndStartRequest,
@@ -97,6 +99,7 @@ export interface VyotiqApi {
   chatFollowUpRemove: (
     payload: ChatFollowUpRemoveRequest
   ) => Promise<IpcResult<ChatFollowUpRemoveResult>>
+  chatQueueMode: (payload: ChatQueueModeRequest) => Promise<IpcResult<ChatQueueModeResult>>
   chatCompact: (workspacePath: string, runId: string) => Promise<IpcResult<CompactRunResult>>
   undoWrites: (
     workspacePath: string,
@@ -353,5 +356,7 @@ export interface VyotiqApi {
     kind?: 'typecheck' | 'lint'
   }) => Promise<IpcResult<{ ok: boolean; content: string; kind: 'typecheck' | 'lint' }>>
   getSystemTheme: () => Promise<IpcResult<boolean>>
+  /** Main-process connectivity probe (1.1.1.1 HEAD) — matches agent retry logic. */
+  probeNetwork: () => Promise<IpcResult<boolean>>
   onSystemThemeChanged: (handler: (prefersDark: boolean) => void) => () => void
 }

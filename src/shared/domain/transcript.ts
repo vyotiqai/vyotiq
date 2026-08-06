@@ -88,6 +88,8 @@ export type UiItem =
       thinking?: string
       thinkingStreaming?: boolean
       thinkingExpanded?: boolean
+      /** True while the provider stream is reconnecting after a transient disconnect. */
+      reconnecting?: boolean
       /** ISO timestamp when the message was sent or received. */
       at?: string
     }
@@ -112,6 +114,14 @@ export type UiItem =
       kind: 'question'
       id: string
       question: UiAgentQuestion
+      at?: string
+    }
+  | {
+      /** Persisted run failure visible in the transcript after the banner is dismissed. */
+      kind: 'run_error'
+      id: string
+      message: string
+      code?: string
       at?: string
     }
 
@@ -458,6 +468,9 @@ export function mergeThinking(previous: string | undefined, next: string): strin
 export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
   const items: UiItem[] = []
   const pendingCalls = new Map<string, { name: string; arguments: string }>()
+  // Empty toolCallIds (legacy DeepSeek bug) are paired in message order.
+  const emptyIdQueue: string[] = []
+  let emptyIdSeq = 0
 
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]
@@ -489,14 +502,17 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
         })
       }
       if (m.toolCalls?.length) {
-        for (const tc of m.toolCalls) {
-          pendingCalls.set(tc.id, { name: tc.name, arguments: tc.arguments })
+        for (let ti = 0; ti < m.toolCalls.length; ti++) {
+          const tc = m.toolCalls[ti]!
+          const id = tc.id?.trim() || `empty-tool-${emptyIdSeq++}`
+          if (!tc.id?.trim()) emptyIdQueue.push(id)
+          pendingCalls.set(id, { name: tc.name, arguments: tc.arguments })
           const summary = summarizeToolArgs(tc.name, tc.arguments)
           items.push({
             kind: 'tool',
-            id: tc.id,
+            id,
             tool: {
-              id: tc.id,
+              id,
               name: tc.name,
               summary,
               status: 'running',
@@ -509,7 +525,8 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
     }
 
     if (m.role === 'tool') {
-      const id = m.toolCallId ?? `tool-${i}`
+      const rawId = m.toolCallId?.trim()
+      const id = rawId || emptyIdQueue.shift() || `tool-${i}`
       const pending = pendingCalls.get(id)
       const name = m.toolName ?? pending?.name ?? 'tool'
       const summary = summarizeToolArgs(name, pending?.arguments)
@@ -857,12 +874,23 @@ export function lastPersistedRunStatus(
   return status
 }
 
-function interruptedToolContent(status: TerminalRunStatus): string {
+function interruptedToolContent(
+  status: TerminalRunStatus,
+  events?: PersistedEvent[]
+): string {
+  if (status === 'error') {
+    for (let i = (events?.length ?? 0) - 1; i >= 0; i--) {
+      const event = events?.[i]?.event
+      if (!isAgentEvent(event)) continue
+      if (event.type === 'incomplete' && event.reason === 'network_interrupted') {
+        return 'Connection lost'
+      }
+    }
+    return 'Interrupted'
+  }
   switch (status) {
     case 'cancelled':
       return 'Cancelled'
-    case 'error':
-      return 'Interrupted'
     case 'done':
       return 'Stopped'
     default: {
@@ -901,7 +929,7 @@ export function finalizeHydratedTranscript(items: UiItem[], events: PersistedEve
   const lastStatus = lastPersistedRunStatus(events)
   if (!lastStatus || lastStatus === 'running') return items
 
-  const stub = interruptedToolContent(lastStatus)
+  const stub = interruptedToolContent(lastStatus, events)
   let endedAt = Date.now()
   for (const row of events) {
     if (!isAgentEvent(row.event)) continue

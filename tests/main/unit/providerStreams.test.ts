@@ -364,6 +364,33 @@ describe('DeepInfra DeepSeek dual-field SSE', () => {
       reasoningContent: 'Via alias.'
     })
   })
+
+  it('keeps a real tool call id when a later delta sends id:"" (DeepSeek AppData pattern)', async () => {
+    const { customProvider } = await import('@main/agent/providers/openai')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseBody([
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_57e537a25d04434a8489d688","type":"function","function":{"name":"web_fetch","arguments":""}}]}}]}\n\n',
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"","type":"function","function":{"arguments":"{\\"url\\":\\"https://example.com\\"}"}}]}}]}\n\n',
+          'data: {"choices":[{"finish_reason":"tool_calls"}]}\n\n'
+        ])
+      )
+    )
+
+    const chunks = await collect(customProvider.streamChat(flash0731Req({ tools: [] as never })))
+    const deltas = chunks.filter((c) => c.type === 'tool_call_delta')
+    const calls = chunks.filter((c) => c.type === 'tool_call')
+
+    expect(deltas.some((d) => d.toolCallDelta?.id === 'call_57e537a25d04434a8489d688')).toBe(true)
+    expect(deltas.every((d) => (d.toolCallDelta?.id ?? 'x') !== '')).toBe(true)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.toolCall).toMatchObject({
+      id: 'call_57e537a25d04434a8489d688',
+      name: 'web_fetch',
+      arguments: '{"url":"https://example.com"}'
+    })
+  })
 })
 
 describe('mistral ThinkChunk stream', () => {

@@ -2,6 +2,7 @@ import { resolveInsideWorkspace, assertResolvedInsideWorkspace } from '../../wor
 import { mkdirSync, readFileSync, existsSync } from 'fs'
 import { dirname } from 'path'
 import { atomicWriteFile } from '@main/storage/atomicWrite'
+import { assertWritableTextContent } from './writeGuard'
 
 function normalizeNewlines(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
@@ -185,6 +186,7 @@ export function toolEdit(
   assertResolvedInsideWorkspace(workspaceRoot, resolved)
 
   if (typeof contents === 'string') {
+    assertWritableTextContent(pathArg, contents)
     atomicWriteFile(resolved, contents)
     return `Wrote ${pathArg} (${contents.length} chars)`
   }
@@ -192,6 +194,7 @@ export function toolEdit(
   if (typeof diff === 'string' && diff.trim()) {
     const original = existsSync(resolved) ? readFileSync(resolved, 'utf8') : ''
     const next = applyUnifiedDiff(original, diff)
+    assertWritableTextContent(pathArg, next)
     atomicWriteFile(resolved, next)
     return `Applied diff to ${pathArg}`
   }

@@ -64,6 +64,29 @@ describe('executeStepToolCalls', () => {
     expect(outcome.stepToolsOk).toBe(true)
   })
 
+  it('synthesizes ids for empty tool call ids instead of failing malformed', async () => {
+    executeTool.mockImplementation(async (name: string) => {
+      return { ok: true, summary: name, content: `ok:${name}` }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    const outcome = await executeStepToolCalls(
+      [
+        { id: '', name: 'web_fetch', arguments: '{"url":"https://example.com"}' },
+        { id: '  ', name: 'read', arguments: '{"path":"a.ts"}' }
+      ],
+      ctx
+    )
+
+    expect(outcome.stepToolsOk).toBe(true)
+    expect(outcome.messages).toHaveLength(2)
+    expect(outcome.messages[0]?.toolCallId?.trim()).toBeTruthy()
+    expect(outcome.messages[1]?.toolCallId?.trim()).toBeTruthy()
+    expect(outcome.messages[0]?.toolCallId).not.toBe(outcome.messages[1]?.toolCallId)
+    expect(outcome.messages.map((m) => m.content)).toEqual(['ok:web_fetch', 'ok:read'])
+    expect(executeTool).toHaveBeenCalledTimes(2)
+  })
+
   it('runs mutating tools after read-only batches in call order', async () => {
     const order: string[] = []
     executeTool.mockImplementation(async (name: string) => {

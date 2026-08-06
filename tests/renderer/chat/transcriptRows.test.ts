@@ -623,7 +623,7 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('merges duplicate activity groups across shallow thinking separators', () => {
+  it('keeps activity batches split by finished thinking separators', () => {
     const items: UiItem[] = [
       tool('r1', 'read'),
       tool('g1', 'grep'),
@@ -631,17 +631,19 @@ describe('buildTranscriptRows', () => {
         kind: 'message',
         id: 'm1',
         role: 'assistant',
-        thinking: 'ok',
+        thinking: 'Mapping the repository tree before the next lookups.',
         content: ''
       },
       tool('r2', 'read'),
       tool('g2', 'grep')
     ]
     const rows = buildTranscriptRows(items)
+    expect(rows.map((row) => row.kind)).toEqual(['activity', 'thinking', 'activity'])
     const activities = rows.filter((row) => row.kind === 'activity')
-    expect(activities).toHaveLength(1)
-    if (activities[0]?.kind === 'activity') {
-      expect(activities[0].tools).toHaveLength(4)
+    expect(activities).toHaveLength(2)
+    if (activities[0]?.kind === 'activity' && activities[1]?.kind === 'activity') {
+      expect(activities[0].tools.map((item) => item.id)).toEqual(['r1', 'g1'])
+      expect(activities[1].tools.map((item) => item.id)).toEqual(['r2', 'g2'])
     }
   })
 

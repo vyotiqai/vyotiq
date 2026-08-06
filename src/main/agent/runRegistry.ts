@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto'
-import { contentDisplayText, type ChatMessage } from '../../shared/ipc'
+import { contentDisplayText, type AgentEvent, type AgentInteractionMode, type ChatMessage } from '../../shared/ipc'
 import { userMessageDisplayText } from '../../shared/slashCommands'
 import { cancelPendingQuestions } from './agentQuestion'
 
@@ -33,7 +33,34 @@ export type EnqueueFollowUpResult =
   | { ok: false; error: string }
 
 const active = new Map<string, RunEntry>()
+/** Composer mode queued for the next agent step (consumed by loop via takePendingMode). */
+const pendingModeByRun = new Map<string, AgentInteractionMode>()
+/** writes_checkpoint persisted in loop finally after the generator consumer ended. */
+const lateWriteCheckpointByRun = new Map<string, AgentEvent>()
 let nextInvokeId = 1
+
+/** Queue a mode switch to apply at the start of the next loop step. */
+export function setPendingMode(runId: string, mode: AgentInteractionMode): void {
+  pendingModeByRun.set(runId, mode)
+}
+
+/** Take and clear any queued mode switch for this run. */
+export function takePendingMode(runId: string): AgentInteractionMode | undefined {
+  const mode = pendingModeByRun.get(runId)
+  if (mode !== undefined) pendingModeByRun.delete(runId)
+  return mode
+}
+
+/** Loop finally may persist a checkpoint after the IPC consumer stopped yielding. */
+export function setLateWriteCheckpoint(runId: string, event: AgentEvent): void {
+  lateWriteCheckpointByRun.set(runId, event)
+}
+
+export function takeLateWriteCheckpoint(runId: string): AgentEvent | undefined {
+  const event = lateWriteCheckpointByRun.get(runId)
+  lateWriteCheckpointByRun.delete(runId)
+  return event
+}
 
 /** Register abort controller before the async loop starts so cancel works immediately. */
 export function registerRunAbort(runId: string, workspacePath: string): RunAbortHandle {
@@ -224,6 +251,8 @@ export function clearRunAbort(runId: string, invokeId?: number): void {
   if (!entry) return
   if (invokeId !== undefined && entry.invokeId !== invokeId) return
   active.delete(runId)
+  pendingModeByRun.delete(runId)
+  lateWriteCheckpointByRun.delete(runId)
 }
 
 /** Queue a user message for mid-run injection. Soft-aborts the live stream if any. */
@@ -346,6 +375,7 @@ export function resetActiveRunsForTests(): void {
     entry.controller.abort()
   }
   active.clear()
+  pendingModeByRun.clear()
   nextInvokeId = 1
 }
 

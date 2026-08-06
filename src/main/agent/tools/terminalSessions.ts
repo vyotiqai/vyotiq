@@ -6,6 +6,7 @@ import {
   formatTerminalSessionOutput,
   resolveTerminalShell,
   sanitizedTerminalEnv,
+  stripPowerShellPatternNoise,
   terminalSpawnSpec,
   unsupportedUnixOnWindowsMessage,
   type ResolvedTerminalShell,
@@ -31,12 +32,15 @@ type TerminalSession = {
   running: boolean
   status: TerminalSessionStatus
   pattern?: RegExp
+  patternMatched?: boolean
   createdAt: number
   onOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
 }
 
 const sessions = new Map<string, TerminalSession>()
 const MAX_OUTPUT = TERMINAL_MAX_OUTPUT
+/** Cap concurrent background sessions per invoke — kill oldest when exceeded. */
+const MAX_BACKGROUND_SESSIONS_PER_INVOKE = 8
 
 function appendCapped(
   prev: string,
@@ -48,10 +52,29 @@ function appendCapped(
   return { next: prev + emitted, emitted }
 }
 
+function patternHaystack(session: TerminalSession): string {
+  const hay = `${session.stdout}\n${session.stderr}`
+  return session.shell === 'powershell' ? stripPowerShellPatternNoise(hay) : hay
+}
+
 function matchesPattern(session: TerminalSession): boolean {
   if (!session.pattern) return false
-  const hay = `${session.stdout}\n${session.stderr}`
-  return session.pattern.test(hay)
+  if (session.patternMatched) return true
+  if (!session.running && session.status !== 'running') return false
+  const matched = session.pattern.test(patternHaystack(session))
+  if (matched) session.patternMatched = true
+  return matched
+}
+
+function enforceBackgroundSessionCap(runId: string, invokeId: number): void {
+  const owned = [...sessions.values()]
+    .filter((s) => s.runId === runId && s.invokeId === invokeId)
+    .sort((a, b) => a.createdAt - b.createdAt)
+  while (owned.length >= MAX_BACKGROUND_SESSIONS_PER_INVOKE) {
+    const oldest = owned.shift()
+    if (!oldest) break
+    disposeTerminalSession(oldest.id)
+  }
 }
 
 function assertSessionOwnership(
@@ -97,6 +120,15 @@ export function disposeTerminalSession(id: string): void {
 
 export function resetTerminalSessionsForTests(): void {
   for (const id of [...sessions.keys()]) disposeTerminalSession(id)
+}
+
+/** @internal Test helper — count sessions owned by a run invoke. */
+export function countTerminalSessionsForInvoke(runId: string, invokeId: number): number {
+  let count = 0
+  for (const session of sessions.values()) {
+    if (session.runId === runId && session.invokeId === invokeId) count++
+  }
+  return count
 }
 
 export function disposeTerminalSessionsForInvoke(runId: string, invokeId: number): number {
@@ -217,9 +249,11 @@ export async function startBackgroundTerminal(
     running: true,
     status: 'running',
     pattern,
+    patternMatched: false,
     createdAt: Date.now(),
     onOutput: opts.onOutput
   }
+  enforceBackgroundSessionCap(opts.runId, opts.invokeId)
   sessions.set(id, session)
 
   const onAbort = (): void => {
@@ -234,7 +268,7 @@ export async function startBackgroundTerminal(
     const { next, emitted } = appendCapped(session.stdout, buf.toString('utf8'))
     session.stdout = next
     if (emitted) session.onOutput?.({ text: emitted, stream: 'stdout' })
-    if (matchesPattern(session) && session.running) {
+    if (session.pattern && !session.patternMatched && matchesPattern(session) && session.running) {
       session.status = 'pattern_matched'
     }
   })
@@ -242,7 +276,7 @@ export async function startBackgroundTerminal(
     const { next, emitted } = appendCapped(session.stderr, buf.toString('utf8'))
     session.stderr = next
     if (emitted) session.onOutput?.({ text: emitted, stream: 'stderr' })
-    if (matchesPattern(session) && session.running) {
+    if (session.pattern && !session.patternMatched && matchesPattern(session) && session.running) {
       session.status = 'pattern_matched'
     }
   })

@@ -2,11 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, wri
 import { readFile, readdir } from 'fs/promises'
 import { join, basename } from 'path'
 import { atomicWriteFile, atomicWriteJson } from '../storage/atomicWrite'
-import {
-  blockUntilEventAppendsFlushed,
-  enqueueEventAppend,
-  flushEventAppends
-} from './eventAppendQueue'
+import { enqueueEventAppend, flushEventAppends } from './eventAppendQueue'
 import { enqueueMessageAppend, flushMessageAppends, takeMessageAppendFailureNotice } from './messageAppendQueue'
 import { enqueueStatusPatch, flushStatusWrites, writeStatusImmediate } from './statusWriteQueue'
 import { getCachedListRuns, invalidateListRunsCache } from './runListCache'
@@ -15,6 +11,7 @@ import {
   PersistedEventSchema,
   RunStatusSchema,
   contentToText,
+  type AgentInteractionMode,
   type ChatMessage,
   type ListRunsResult,
   type MessageContent,
@@ -296,7 +293,12 @@ export function appendMessage(dir: string, message: ChatMessage): Promise<void> 
   return enqueueMessageAppend(dir, line)
 }
 
-export function createRun(workspacePath: string, runId: string, goal: string): string {
+export function createRun(
+  workspacePath: string,
+  runId: string,
+  goal: string,
+  mode: AgentInteractionMode = 'agent'
+): string {
   const dir = resolveRunDir(workspacePath, runId)
   ensureWorkspaceStorage(workspacePath)
   mkdirSync(dir, { recursive: true })
@@ -322,7 +324,7 @@ export function createRun(workspacePath: string, runId: string, goal: string): s
     updatedAt: new Date().toISOString(),
     goal: goalText.slice(0, 200),
     workspacePath,
-    mode: 'agent',
+    mode,
     consecutiveToolFailureSteps: 0
   }
   atomicWriteJson(join(dir, 'status.json'), status)
@@ -543,23 +545,12 @@ function eventsTailByteBudget(limit: number): number {
   return Math.max(64 * 1024, limit * 2048)
 }
 
+/** Sync read — does not block on pending appends. Prefer {@link loadEventsAsync} on hot paths. */
 export function loadEvents(
   dir: string,
   runId?: string,
   options?: { limit?: number }
 ): PersistedEvent[] {
-  let flushed = blockUntilEventAppendsFlushed(dir)
-  if (!flushed) {
-    // One more wait — sync callers (receipts/trajectory) should prefer a late
-    // complete read over a partial tail after a busy append chain.
-    flushed = blockUntilEventAppendsFlushed(dir, 5000)
-    if (!flushed) {
-      logger.warn('Loading events.jsonl after flush timeout; recent events may be missing', {
-        scope: 'state',
-        correlationId: basename(dir)
-      })
-    }
-  }
   const p = join(dir, 'events.jsonl')
   if (!existsSync(p)) return []
   const inferredRunId = runId ?? basename(dir)
@@ -606,9 +597,10 @@ const CRITICAL_HYDRATION_TYPES = new Set([
  */
 function collectLatestCriticalEvents(text: string, inferredRunId: string): PersistedEvent[] {
   const found = new Map<string, PersistedEvent>()
+  const writeCheckpoints: PersistedEvent[] = []
+  const seenCheckpointIds = new Set<string>()
   const lines = text.split('\n')
   for (let index = lines.length - 1; index >= 0; index--) {
-    if (found.size >= CRITICAL_HYDRATION_TYPES.size) break
     const line = lines[index]
     if (!line) continue
     try {
@@ -624,12 +616,19 @@ function collectLatestCriticalEvents(text: string, inferredRunId: string): Persi
         const status = (event as { status?: unknown }).status
         if (status !== 'done' && status !== 'cancelled' && status !== 'error') continue
       }
+      if (type === 'writes_checkpoint') {
+        const checkpointId = (event as { checkpointId?: unknown }).checkpointId
+        if (typeof checkpointId !== 'string' || seenCheckpointIds.has(checkpointId)) continue
+        seenCheckpointIds.add(checkpointId)
+        writeCheckpoints.push(row)
+        continue
+      }
       if (!found.has(type)) found.set(type, row)
     } catch {
       // skip bad line
     }
   }
-  return [...found.values()]
+  return [...found.values(), ...writeCheckpoints]
 }
 
 function mergeCriticalHydrationEvents(
@@ -857,8 +856,7 @@ export async function interruptOrphanRuns(workspacePaths: string[]): Promise<num
         // partial reads after GPU crash / slow disk.
         await flushEventAppends(dir)
         await flushStatusWrites(dir)
-        // Async read after flush — sync loadEvents uses Atomics.wait on the main
-        // thread and can time out while the append chain is still settling.
+        // Async read after flush — avoids racing the append chain on slow disks.
         const events = await loadEventsAsync(dir, name)
         // Keep receipt.json aligned with status after crash/orphan cancel
         // (loop finally normally writes this; orphans never reach finally).

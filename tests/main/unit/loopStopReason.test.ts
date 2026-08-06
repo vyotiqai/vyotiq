@@ -290,6 +290,52 @@ describe('runAgent stop-reason classification', () => {
     expect(deltas[1]?.argumentsDelta).toBe('')
   })
 
+  it('merges args-only tool_call_delta onto the indexed id when later delta sends id:""', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield {
+          type: 'tool_call_delta',
+          toolCallDelta: {
+            index: 0,
+            id: 'call_57e537a25d04434a8489d688',
+            name: 'web_fetch',
+            arguments: ''
+          }
+        }
+        yield {
+          type: 'tool_call_delta',
+          toolCallDelta: {
+            index: 0,
+            id: '',
+            arguments: '{"url":"https://example.com"}'
+          }
+        }
+        yield {
+          type: 'tool_call',
+          toolCall: {
+            id: 'call_57e537a25d04434a8489d688',
+            name: 'web_fetch',
+            arguments: '{"url":"https://example.com"}'
+          }
+        }
+        yield { type: 'done', stopReason: 'tool_calls' }
+        return
+      }
+      yield { type: 'text', text: 'done' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+    executeTool.mockResolvedValue({ ok: true, summary: 'fetched', content: 'ok' })
+
+    const events = await collect('deepseek-empty-id-args', workspace)
+    const deltas = events.filter((e) => e.type === 'tool_call_delta')
+    const argsDelta = deltas.find((e) => e.argumentsDelta?.includes('example.com'))
+
+    expect(argsDelta?.toolCallId).toBe('call_57e537a25d04434a8489d688')
+    expect(executeTool).toHaveBeenCalled()
+  })
+
   it('reports truncation when stopReason is tool_calls but no tools were parsed', async () => {
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       yield { type: 'text', text: 'about to call' }
@@ -497,6 +543,11 @@ describe('runAgent partial persistence', () => {
     expect(events.some((e) => e.type === 'error' && e.code === 'PROVIDER_STREAM')).toBe(true)
     expect(events.some((e) => e.type === 'error' && e.code === 'AGENT_LOOP')).toBe(false)
     expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
+    expect(
+      events.some(
+        (e) => e.type === 'incomplete' && e.reason === 'network_interrupted'
+      )
+    ).toBe(true)
   })
 
   it('emits stream_reset so the UI drops output from a retried attempt', async () => {

@@ -297,15 +297,19 @@ export const geminiProvider: LlmProvider = {
 
     let res: Response
     try {
-      res = await fetchWithRetry(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': req.apiKey
+      res = await fetchWithRetry(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': req.apiKey
+          },
+          signal: req.signal,
+          body: JSON.stringify(requestBody)
         },
-        signal: req.signal,
-        body: JSON.stringify(requestBody)
-      })
+        { maxAttempts: 5 }
+      )
     } catch (err) {
       if (req.signal.aborted) throw err
       logProviderFailure('gemini', 'network', {})

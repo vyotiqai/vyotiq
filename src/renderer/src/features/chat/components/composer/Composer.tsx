@@ -87,6 +87,10 @@ export function Composer({
   onRemoveFollowUp,
   composerPlaceholder,
   bannerError,
+  secondaryBannerError,
+  errorCode,
+  onRetryNetwork,
+  offlineHint,
   runNotice,
   incomplete,
   onContinue,
@@ -143,6 +147,10 @@ export function Composer({
   onRemoveFollowUp?: (id: string) => void
   composerPlaceholder?: string
   bannerError?: string | null
+  secondaryBannerError?: string | null
+  errorCode?: string | null
+  onRetryNetwork?: () => void
+  offlineHint?: string | null
   runNotice?: string | null
   incomplete?: import('@renderer/lib/hooks/createChatStreamController').IncompleteTurnState | null
   onContinue?: () => void
@@ -598,6 +606,12 @@ export function Composer({
   const slashListId = `slash-command-menu-${variant}`
   const mentionListId = `composer-mention-menu-${variant}`
 
+  const showRetry =
+    Boolean(onRetryNetwork) &&
+    (errorCode === 'PROVIDER_NETWORK' ||
+      errorCode === 'PROVIDER_STREAM' ||
+      incomplete?.reason === 'network_interrupted')
+
   return (
     <div
       className={cn(
@@ -628,10 +642,28 @@ export function Composer({
         className={cn(isDock && CHAT_COLUMN, 'flex flex-col gap-2')}
         data-composer-column={isDock ? true : undefined}
       >
-        {(isDock || isInline) && bannerError ? (
-          <Alert className="pointer-events-auto shrink-0" onDismiss={onDismissError}>
-            {bannerError}
-          </Alert>
+        {(isDock || isInline) && (bannerError || secondaryBannerError) ? (
+          <div className="pointer-events-auto flex shrink-0 flex-col gap-2">
+            {secondaryBannerError ? (
+              <Alert className="shrink-0">{secondaryBannerError}</Alert>
+            ) : null}
+            {bannerError ? (
+              <Alert className="shrink-0" onDismiss={onDismissError}>
+                <div className="flex items-start justify-between gap-2">
+                  <span className="min-w-0 [overflow-wrap:anywhere]">{bannerError}</span>
+                  {showRetry ? (
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-xl border border-border px-2 py-0.5 text-[11px] font-medium text-fg transition-colors hover:bg-surface"
+                      onClick={onRetryNetwork}
+                    >
+                      Retry
+                    </button>
+                  ) : null}
+                </div>
+              </Alert>
+            ) : null}
+          </div>
         ) : null}
 
         {isDock ? leading : null}
@@ -831,6 +863,7 @@ export function Composer({
           incomplete={incomplete}
           onContinue={onContinue}
           running={running}
+          offlineHint={offlineHint}
         />
 
         {onContinueInAgent ? (

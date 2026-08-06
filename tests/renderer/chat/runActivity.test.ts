@@ -148,21 +148,21 @@ describe('deriveRunActivity', () => {
 
 describe('turnSummaryActiveLabel', () => {
   it('keeps specific phase when collapsed', () => {
-    expect(turnSummaryActiveLabel({ kind: 'tool', label: 'Reading', detail: 'a.ts' }, true)).toBe(
+    expect(turnSummaryActiveLabel({ kind: 'tool', label: 'Reading', detail: 'a.ts' })).toBe(
       'Reading a.ts'
     )
   })
 
   it('keeps specific phase when expanded', () => {
-    expect(turnSummaryActiveLabel({ kind: 'thinking' }, false)).toBe('Thinking')
-    expect(turnSummaryActiveLabel({ kind: 'tool', label: 'Reading', detail: '2 files' }, false)).toBe(
+    expect(turnSummaryActiveLabel({ kind: 'thinking' })).toBe('Thinking')
+    expect(turnSummaryActiveLabel({ kind: 'tool', label: 'Reading', detail: '2 files' })).toBe(
       'Reading 2 files'
     )
-    expect(turnSummaryActiveLabel({ kind: 'awaiting_approval' }, false)).toBe('Awaiting approval')
+    expect(turnSummaryActiveLabel({ kind: 'awaiting_approval' })).toBe('Awaiting approval')
   })
 
   it('keeps Planning when expanded before the first work row', () => {
-    expect(turnSummaryActiveLabel({ kind: 'planning' }, false)).toBe('Planning')
+    expect(turnSummaryActiveLabel({ kind: 'planning' })).toBe('Planning')
   })
 })
 

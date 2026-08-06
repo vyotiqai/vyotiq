@@ -28,3 +28,10 @@ export function runTooltip(run: RunSummary): string {
   if (!goal) return run.runId
   return stripGoalMarkdown(goal) || goal
 }
+
+/** Lowercase plain text for sidebar search — matches displayed title, not raw goal. */
+export function runSearchText(run: RunSummary): string {
+  const goal = run.goal?.trim()
+  if (!goal) return run.runId.toLowerCase()
+  return (stripGoalMarkdown(goal) || goal).toLowerCase()
+}

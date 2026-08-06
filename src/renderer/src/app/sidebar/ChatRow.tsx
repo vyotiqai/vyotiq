@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { Icon, type IconName } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
 import type { RunSummary } from '@shared/ipc'
@@ -58,7 +58,7 @@ function RowActionButton({
   )
 }
 
-export function ChatRow({
+export const ChatRow = memo(function ChatRow({
   run,
   active,
   onSelect,
@@ -157,7 +157,7 @@ export function ChatRow({
 
       <div
         className={cn(
-          'app-region-no-drag absolute inset-y-1 right-1 z-10 flex items-center gap-0.5 vy-transition pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100',
+          'app-region-no-drag absolute inset-y-1 right-1 z-10 flex items-center gap-0.5 vy-transition pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100',
           '[@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100',
           confirmingDelete && 'pointer-events-auto opacity-100'
         )}
@@ -193,4 +193,4 @@ export function ChatRow({
       </div>
     </div>
   )
-}
+})

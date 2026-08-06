@@ -133,7 +133,8 @@ export const IncompleteReasonSchema = z.enum([
   'truncated',
   'empty_response',
   'filtered',
-  'context_overflow'
+  'context_overflow',
+  'network_interrupted'
 ])
 export type IncompleteReason = z.infer<typeof IncompleteReasonSchema>
 
@@ -236,7 +237,9 @@ const AgentEventUnionSchema = z.discriminatedUnion('type', [
     type: z.literal('compaction'),
     ...eventBase,
     summary: z.string(),
-    tokenEstimate: z.number().int().min(0).optional()
+    tokenEstimate: z.number().int().min(0).optional(),
+    /** Distinguish emergency trim watermarks from LLM summary compactions. */
+    kind: z.enum(['trim', 'summary']).optional()
   }),
   z.object({
     /** MCP tools shed from the step catalog to fit the tools token budget. */
@@ -274,6 +277,16 @@ const AgentEventUnionSchema = z.discriminatedUnion('type', [
     type: z.literal('stream_reset'),
     ...eventBase,
     step: z.number().int().min(1)
+  }),
+  z.object({
+    /** Emitted while waiting for connectivity or before a stream retry backoff. */
+    type: z.literal('network_wait'),
+    ...eventBase,
+    attempt: z.number().int().min(1),
+    maxAttempts: z.number().int().min(1),
+    retryInMs: z.number().int().min(0),
+    code: z.string().optional(),
+    step: z.number().int().min(1).optional()
   }),
   z.object({
     type: z.literal('step_usage'),
@@ -488,9 +501,21 @@ export const ChatFollowUpRequestSchema = z.object({
   runId: RunIdSchema,
   message: ChatMessageSchema.refine((m) => m.role === 'user', {
     message: 'Follow-up must be a user message'
-  })
+  }),
+  mode: AgentInteractionModeSchema.optional()
 })
 export type ChatFollowUpRequest = z.infer<typeof ChatFollowUpRequestSchema>
+
+export const ChatQueueModeRequestSchema = z.object({
+  runId: RunIdSchema,
+  mode: AgentInteractionModeSchema
+})
+export type ChatQueueModeRequest = z.infer<typeof ChatQueueModeRequestSchema>
+
+export const ChatQueueModeResultSchema = z.object({
+  queued: z.literal(true)
+})
+export type ChatQueueModeResult = z.infer<typeof ChatQueueModeResultSchema>
 
 export const ChatFollowUpResultSchema = z.object({
   id: z.string().min(1),

@@ -57,14 +57,3 @@ export type WorkspaceSidebarGroup = {
   runsLoaded?: boolean
   activeRunId: string | null
 }
-
-export type WorkspaceSwitcherProps = {
-  openPaths: string[]
-  activePath: string | null
-  activeRuns: { runId: string; workspacePath: string }[]
-  onSwitch: (path: string) => void
-  onClose: (path: string) => void
-  onAdd: () => void
-  workspaceHasBackgroundRun: (path: string) => boolean
-  collapsed?: boolean
-}

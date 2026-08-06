@@ -7,6 +7,7 @@ export function ComposerStatus({
   incomplete,
   onContinue,
   running,
+  offlineHint,
   className
 }: {
   modelsWarning?: string | null
@@ -15,9 +16,12 @@ export function ComposerStatus({
   onContinue?: () => void
   /** When true, show truncation notices without a Continue button (auto-continue in flight). */
   running?: boolean
+  offlineHint?: string | null
   className?: string
 }) {
-  const statusTexts = [runNotice, modelsWarning].filter((text): text is string => Boolean(text))
+  const statusTexts = [offlineHint, runNotice, modelsWarning].filter((text): text is string =>
+    Boolean(text)
+  )
 
   // context_overflow is terminal — Continue would just hit the same wall.
   const canContinue = incomplete?.reason !== 'context_overflow'

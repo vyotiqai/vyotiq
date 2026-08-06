@@ -19,7 +19,6 @@ vi.mock('fs/promises', async (importOriginal) => {
 import {
   enqueueEventAppend,
   flushEventAppends,
-  blockUntilEventAppendsFlushed,
   resetEventAppendQueueForTests,
   takeEventAppendFailureNotice
 } from '@main/agent/eventAppendQueue'
@@ -69,18 +68,31 @@ describe('eventAppendQueue', () => {
     expect(takeEventAppendFailureNotice(dir)).toBeUndefined()
   })
 
-  it('blockUntilEventAppendsFlushed returns false on timeout', async () => {
+  it('flushEventAppends awaits in-flight appends without blocking the main thread', async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => {
       release = resolve
     })
-    appendFileMock.mockImplementationOnce(async () => gate)
+    const actualAppend = appendFileMock.getMockImplementation()
+    appendFileMock.mockImplementationOnce(async (...args: Parameters<typeof appendFileMock>) => {
+      await gate
+      return actualAppend!(...args)
+    })
 
     enqueueEventAppend(dir, { type: 'status', status: 'running' })
-    const flushed = blockUntilEventAppendsFlushed(dir, 50)
+    const pending = flushEventAppends(dir)
+    let flushed = false
+    void pending.then(() => {
+      flushed = true
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
     expect(flushed).toBe(false)
 
     release()
-    await flushEventAppends(dir)
+    await pending
+    const path = join(dir, 'events.jsonl')
+    const lines = readFileSync(path, 'utf8').trim().split('\n')
+    expect(lines).toHaveLength(1)
+    expect(JSON.parse(lines[0]!).event).toMatchObject({ type: 'status', status: 'running' })
   })
 })

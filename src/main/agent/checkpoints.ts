@@ -193,6 +193,45 @@ export class InvokeWriteCheckpoint {
     this.files.set(rel, { path: rel, action: 'deleted', undoable: true })
   }
 
+  /**
+   * Record a mutation observed after a tool ran (e.g. opaque terminal redirect).
+   * First path wins — does not overwrite recordPrior entries.
+   */
+  recordObservedMutation(
+    pathArg: string,
+    kind: 'created' | 'modified' | 'deleted',
+    priorBlobPath?: string
+  ): void {
+    if (this.finalized) return
+    const resolved = resolveInsideWorkspace(this.workspaceRoot, pathArg)
+    const rel = normalizeRelPath(relative(this.workspaceRoot, resolved))
+    if (!rel || rel.startsWith('..')) return
+    if (this.files.has(rel)) return
+
+    if (kind === 'created') {
+      this.files.set(rel, { path: rel, action: 'created', undoable: true })
+      return
+    }
+
+    if (!priorBlobPath || !existsSync(priorBlobPath)) {
+      this.files.set(rel, {
+        path: rel,
+        action: kind === 'modified' ? 'modified' : 'deleted',
+        undoable: false
+      })
+      return
+    }
+
+    const dest = blobPathFor(this.checkpointDir(), rel)
+    mkdirSync(dirname(dest), { recursive: true })
+    copyFileSync(priorBlobPath, dest)
+    this.files.set(rel, {
+      path: rel,
+      action: kind === 'modified' ? 'modified' : 'deleted',
+      undoable: true
+    })
+  }
+
   /** Persist if any files were recorded; returns meta or null. */
   finalize(): WriteCheckpointMeta | null {
     if (this.finalized) return null

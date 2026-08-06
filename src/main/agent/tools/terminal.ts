@@ -233,6 +233,23 @@ export function isFindstrNoMatch(
   return stdout.trim().length === 0
 }
 
+/**
+ * Strip PowerShell error-record chrome before terminal pattern matching.
+ * Native stderr redirection adds CategoryInfo / FullyQualifiedErrorId lines that
+ * contain "Error" even when the underlying command output does not.
+ */
+export function stripPowerShellPatternNoise(text: string): string {
+  return text
+    .split(/\r?\n/)
+    .filter((line) => {
+      if (/^\s*\+\s*(CategoryInfo|FullyQualifiedErrorId)\s*:/.test(line)) return false
+      if (/^At line:\d+ char:\d+/.test(line)) return false
+      if (/^\s*\+\s*~+\s*$/.test(line)) return false
+      return true
+    })
+    .join('\n')
+}
+
 /** Parse terminal tool content for findstr no-match soft success. Exported for tests. */
 export function isFindstrNoMatchContent(command: string, content: string): boolean {
   const { stdout, stderr, exitCode } = parseTerminalOutput(content)

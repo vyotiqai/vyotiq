@@ -24,6 +24,7 @@ import {
   transcriptRowFingerprint,
   type TranscriptRow
 } from '../utils/transcriptRows'
+import { formatRunActivityLabel } from '../utils/runActivity'
 import { ChangeSummary, COMPACT_PREVIEW_COUNT } from './ChangeSummary'
 import { MessageFooter } from './MessageFooter'
 import { ThinkingBlock } from './ThinkingBlock'
@@ -61,8 +62,12 @@ const LINE_PX = 22
  * Collapsed Thought/Read stay near disclosure height (~44–52). Text/user
  * must not under-estimate — that stacks absolute rows on top of each other.
  */
-export function estimateTranscriptRowSize(row: TranscriptRow | undefined): number {
+export function estimateTranscriptRowSize(
+  row: TranscriptRow | undefined,
+  options?: { liveTurn?: boolean; keepOpenTurn?: boolean }
+): number {
   if (!row) return 48
+  const preferOpen = Boolean(options?.liveTurn || options?.keepOpenTurn)
   switch (row.kind) {
     case 'turn':
       return 40
@@ -89,7 +94,7 @@ export function estimateTranscriptRowSize(row: TranscriptRow | undefined): numbe
       return Math.min(2400, base)
     }
     case 'activity': {
-      const live = row.tools.some((t) => t.tool.status === 'running')
+      const live = preferOpen || row.tools.some((t) => t.tool.status === 'running')
       const groupExpanded = row.tools[0]?.groupExpanded === true
       const toolExpanded = row.tools.some((t) => t.toolExpanded === true)
       const multi = row.tools.length > 1
@@ -108,8 +113,9 @@ export function estimateTranscriptRowSize(row: TranscriptRow | undefined): numbe
       return 48
     }
     case 'card': {
-      const live = row.item.tool.status === 'running'
-      const expanded = row.item.toolExpanded === true || (live && row.item.toolExpanded !== false)
+      const live = preferOpen || row.item.tool.status === 'running'
+      const expanded =
+        row.item.toolExpanded === true || (live && row.item.toolExpanded !== false)
       const hasBody = toolHasBody(row.item.tool, {
         toolProgress: row.item.toolProgress
       })
@@ -135,6 +141,8 @@ export function estimateTranscriptRowSize(row: TranscriptRow | undefined): numbe
       return 120
     case 'question':
       return 160
+    case 'run_error':
+      return 72
     default: {
       const _exhaustive: never = row
       return _exhaustive
@@ -158,13 +166,19 @@ const NEAR_BOTTOM_MIN_PX = 80
  */
 const VIRTUALIZE_MIN_ROWS = 160
 
+/**
+ * During a live run, keep only this many trailing rows in document flow. Older
+ * rows in the same turn are virtualized — one user prompt with dozens of agent
+ * steps otherwise mounts the entire transcript and freezes the renderer.
+ */
+const HYBRID_FLOW_TAIL_ROWS = 40
+
 function distanceFromBottom(el: HTMLElement): number {
   return el.scrollHeight - el.scrollTop - el.clientHeight
 }
 
-function nearBottomThreshold(dockReservePx?: number): number {
-  if (dockReservePx == null || dockReservePx <= 0) return NEAR_BOTTOM_MIN_PX
-  return Math.max(NEAR_BOTTOM_MIN_PX, dockReservePx)
+function nearBottomThreshold(): number {
+  return NEAR_BOTTOM_MIN_PX
 }
 
 /** Structure for tail-follow — ids only; tool status churn must not yank scroll. */
@@ -259,11 +273,13 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   turnCollapsed = false,
   showThinking = true,
   live = false,
+  keepOpen = false,
   mcpServerNames,
   onOpenChanges,
   editingUserMessageIndex = null,
   editComposer,
-  onBeginEditUserMessage
+  onBeginEditUserMessage,
+  messageCount = 0
 }: {
   row: TranscriptRow
   onImageClick: (url: string, label: string) => void
@@ -277,13 +293,18 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   turnCollapsed?: boolean
   showThinking?: boolean
   live?: boolean
+  /** Last turn stays expanded after settle so tool chrome remains visible. */
+  keepOpen?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
   onOpenChanges?: () => void
   editingUserMessageIndex?: number | null
   editComposer?: ReactNode
   onBeginEditUserMessage?: (messageIndex: number) => void
+  messageCount?: number
 }) {
   if (row.kind === 'user') {
+    const match = /^user-(\d+)$/.exec(row.item.id)
+    const userIndex = match ? Number(match[1]) : -1
     return (
       <UserPrompt
         item={row.item}
@@ -297,9 +318,8 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         onBeginEdit={
           onBeginEditUserMessage && editingUserMessageIndex == null
             ? () => {
-                const match = /^user-(\d+)$/.exec(row.item.id)
-                if (!match) return
-                onBeginEditUserMessage(Number(match[1]))
+                if (userIndex < 0) return
+                onBeginEditUserMessage(userIndex)
               }
             : undefined
         }
@@ -332,10 +352,26 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   if (row.kind === 'text') {
     return (
       <div className="group/message">
+        {row.item.reconnecting ? (
+          <p className="m-0 mb-1 text-[11px] text-secondary" role="status">
+            Reconnecting…
+          </p>
+        ) : null}
         <MarkdownContent content={row.item.content} streaming={row.item.streaming} />
         {row.final && !row.item.streaming ? (
           <MessageFooter content={row.item.content} at={row.item.at} />
         ) : null}
+      </div>
+    )
+  }
+
+  if (row.kind === 'run_error') {
+    return (
+      <div
+        className="rounded-xl border border-danger/30 bg-danger/5 px-3 py-2 text-[12px] text-danger [overflow-wrap:anywhere]"
+        role="alert"
+      >
+        {row.message}
       </div>
     )
   }
@@ -362,6 +398,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         tools={row.tools}
         groupExpanded={anchor.groupExpanded}
         live={live}
+        keepOpen={keepOpen}
         onGroupToggle={
           onGroupToggle ? (expanded) => onGroupToggle(anchor.id, expanded) : undefined
         }
@@ -378,6 +415,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         item={row.item}
         expanded={row.item.toolExpanded}
         live={live}
+        keepOpen={keepOpen}
         // Without a host that persists the choice the card owns its own state,
         // so it still opens instead of swallowing the click.
         onToggle={onToolToggle ? (next) => onToolToggle(row.item.id, next) : undefined}
@@ -392,8 +430,6 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
 
 export function MessageList({
   items,
-  reserveComposerSpace,
-  dockReservePx,
   restoreScrollTop,
   scrollRestoreToken,
   onScrollTopChange,
@@ -409,17 +445,18 @@ export function MessageList({
   mcpServerNames,
   pendingRun = false,
   running = false,
+  networkWait = null,
+  turnFailed = false,
+  turnFailureLabel = null,
   transcriptLoading = false,
   onOpenChanges,
   sideRailPad = true,
   editingUserMessageIndex = null,
   editComposer,
-  onBeginEditUserMessage
+  onBeginEditUserMessage,
+  messageCount = 0
 }: {
   items: UiItem[]
-  reserveComposerSpace?: boolean
-  /** Measured composer dock reserve (padding + fade); drives pin threshold. */
-  dockReservePx?: number
   restoreScrollTop?: number
   scrollRestoreToken?: number
   onScrollTopChange?: (scrollTop: number) => void
@@ -436,6 +473,14 @@ export function MessageList({
   mcpServerNames?: ReadonlyMap<string, string>
   pendingRun?: boolean
   running?: boolean
+  networkWait?: {
+    attempt: number
+    maxAttempts: number
+    retryInMs: number
+    code?: string
+  } | null
+  turnFailed?: boolean
+  turnFailureLabel?: string | null
   /** True while the selected chat transcript is still loading. */
   transcriptLoading?: boolean
   onOpenChanges?: () => void
@@ -444,6 +489,7 @@ export function MessageList({
   editingUserMessageIndex?: number | null
   editComposer?: ReactNode
   onBeginEditUserMessage?: (messageIndex: number) => void
+  messageCount?: number
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
@@ -466,22 +512,40 @@ export function MessageList({
   )
   const prevStructuralKeyRef = useRef<string | null>(null)
   const prevRowsRef = useRef<TranscriptRow[] | null>(null)
-  /** After a live run, keep flow layout briefly so height settles before virtualizing. */
+  /** After a live run ends, keep flow layout briefly so height settles before virtualizing. */
   const [stayInFlowAfterLive, setStayInFlowAfterLive] = useState(false)
+  const wasLiveRef = useRef(false)
   useEffect(() => {
-    if (pendingRun || running) {
-      setStayInFlowAfterLive(true)
+    const live = pendingRun || running
+    if (live) {
+      wasLiveRef.current = true
+      setStayInFlowAfterLive(false)
       return
     }
-    const timer = window.setTimeout(() => setStayInFlowAfterLive(false), 800)
+    if (!wasLiveRef.current) {
+      setStayInFlowAfterLive(false)
+      return
+    }
+    setStayInFlowAfterLive(true)
+    const timer = window.setTimeout(() => {
+      setStayInFlowAfterLive(false)
+      wasLiveRef.current = false
+    }, 800)
     return () => window.clearTimeout(timer)
   }, [pendingRun, running])
 
   const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
   const allRows = useMemo(() => {
-    const next = buildTranscriptRows(items, { pendingRun, running, showThinking })
+    const next = buildTranscriptRows(items, {
+      pendingRun,
+      running,
+      showThinking,
+      networkWait,
+      turnFailed,
+      turnFailureLabel
+    })
     return stabilizeTranscriptRows(prevRowsRef.current, next)
-  }, [items, pendingRun, running, showThinking])
+  }, [items, pendingRun, running, showThinking, networkWait, turnFailed, turnFailureLabel])
   useLayoutEffect(() => {
     prevRowsRef.current = allRows
   }, [allRows])
@@ -508,7 +572,15 @@ export function MessageList({
     return max < 0 ? null : max
   }, [allRows, pendingRun, running])
 
-  const nearBottomPx = nearBottomThreshold(dockReservePx)
+  const lastTurnIndex = useMemo(() => {
+    let max = -1
+    for (const row of allRows) {
+      if (row.turnIndex > max) max = row.turnIndex
+    }
+    return max
+  }, [allRows])
+
+  const nearBottomPx = nearBottomThreshold()
   const nearBottomPxRef = useRef(nearBottomPx)
   nearBottomPxRef.current = nearBottomPx
 
@@ -631,15 +703,6 @@ export function MessageList({
     })
   }, [followTail, scrollRestored])
 
-  // Dock reserve (padding) can grow without resizing the scrollport; re-pin when pinned.
-  useLayoutEffect(() => {
-    if (!reserveComposerSpace || dockReservePx == null) return
-    if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
-    const el = containerRef.current
-    if (el && distanceFromBottom(el) < 1) return
-    followTail('auto')
-  }, [dockReservePx, reserveComposerSpace, followTail, scrollRestored])
-
   useEffect(() => {
     if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
     if (prevStructuralKeyRef.current === itemsStructuralKey) return
@@ -661,7 +724,7 @@ export function MessageList({
   }, [scheduleTailFollow, scrollRestored])
 
   const captureFlowAnchor = useCallback((el: HTMLElement): void => {
-    const column = el.querySelector('[data-chat-column]')
+    const column = el.querySelector('[data-chat-column], [data-live-turn-flow]')
     if (!column) return
     const containerTop = el.getBoundingClientRect().top
     const children = column.children
@@ -690,49 +753,19 @@ export function MessageList({
     [captureFlowAnchor, onScrollTopChange]
   )
 
-  // Prefer measured px when reserving composer space so pad cannot desync from --vy-dock-h.
-  const dockReserveStyle = (() => {
-    if (!reserveComposerSpace) return undefined
-    const pad =
-      dockReservePx != null && dockReservePx > 0
-        ? `${dockReservePx}px`
-        : 'var(--vy-dock-h, 8rem)'
-    return {
-      paddingBottom: pad,
-      scrollPaddingBottom: pad
-    } as const
-  })()
-
   const streamingAnnouncement = useMemo(() => {
     for (const row of displayRows) {
-      if (row.kind === 'text' && row.item.streaming) return 'Assistant is responding'
-      if (row.kind === 'thinking' && row.item.thinkingStreaming) return 'Assistant is thinking'
+      if (row.kind === 'text' && row.item.streaming) {
+        return `Assistant: ${formatRunActivityLabel({ kind: 'writing' })}`
+      }
+      if (row.kind === 'thinking' && row.item.thinkingStreaming) {
+        return `Assistant: ${formatRunActivityLabel({ kind: 'thinking' })}`
+      }
     }
-    // When thinking rows are hidden or the turn is collapsed, the timeline still
-    // shows phase via deriveRunActivity — keep aria-live in sync with that.
     for (let i = allRows.length - 1; i >= 0; i--) {
       const row = allRows[i]
       if (row?.kind !== 'turn' || !row.span.activity) continue
-      const phase = row.span.activity
-      switch (phase.kind) {
-        case 'thinking':
-          return 'Assistant is thinking'
-        case 'writing':
-          return 'Assistant is responding'
-        case 'planning':
-        case 'working':
-          return 'Assistant is working'
-        case 'tool':
-          return `Assistant is using ${phase.label}`
-        case 'awaiting_approval':
-          return 'Waiting for tool approval'
-        case 'awaiting_question':
-          return 'Waiting for your answer'
-        default: {
-          const _exhaustive: never = phase
-          return _exhaustive
-        }
-      }
+      return `Assistant: ${formatRunActivityLabel(row.span.activity)}`
     }
     return ''
   }, [displayRows, allRows])
@@ -750,14 +783,53 @@ export function MessageList({
     scheduleTailFollow()
   }, [rowsContentRevision, running, pendingRun, scheduleTailFollow, scrollRestored])
 
+  const useHybridVirtualize =
+    (pendingRun || running) &&
+    !stayInFlowAfterLive &&
+    displayRows.length >= VIRTUALIZE_MIN_ROWS &&
+    activeLiveTurnIndex != null
+
+  const flowStartIndex = useMemo(() => {
+    if (!useHybridVirtualize || activeLiveTurnIndex == null) return displayRows.length
+    const turnStartIdx = displayRows.findIndex((row) => row.turnIndex >= activeLiveTurnIndex)
+    const turnBased = turnStartIdx < 0 ? displayRows.length : turnStartIdx
+    const tailStart = Math.max(0, displayRows.length - HYBRID_FLOW_TAIL_ROWS)
+    return Math.max(turnBased, tailStart)
+  }, [useHybridVirtualize, displayRows, activeLiveTurnIndex])
+
+  const useFullVirtualize =
+    !pendingRun && !running && !stayInFlowAfterLive && displayRows.length >= VIRTUALIZE_MIN_ROWS
+
+  const virtualizedRows = useMemo(() => {
+    if (useHybridVirtualize && flowStartIndex > 0) {
+      return displayRows.slice(0, flowStartIndex)
+    }
+    if (useFullVirtualize) return displayRows
+    return []
+  }, [useHybridVirtualize, flowStartIndex, useFullVirtualize, displayRows])
+
+  const flowSuffixRows = useMemo(() => {
+    if (useHybridVirtualize && flowStartIndex > 0) {
+      return displayRows.slice(flowStartIndex)
+    }
+    return []
+  }, [useHybridVirtualize, flowStartIndex, displayRows])
+
   const getItemKey = useCallback(
-    (index: number) => displayRows[index]?.id ?? index,
-    [displayRows]
+    (index: number) => virtualizedRows[index]?.id ?? index,
+    [virtualizedRows]
   )
 
   const estimateSize = useCallback(
-    (index: number) => estimateTranscriptRowSize(displayRows[index]),
-    [displayRows]
+    (index: number) => {
+      const row = virtualizedRows[index]
+      const turnIndex = row?.turnIndex
+      return estimateTranscriptRowSize(row, {
+        liveTurn: activeLiveTurnIndex != null && turnIndex === activeLiveTurnIndex,
+        keepOpenTurn: lastTurnIndex >= 0 && turnIndex === lastTurnIndex
+      })
+    },
+    [virtualizedRows, activeLiveTurnIndex, lastTurnIndex]
   )
 
   const measureElementHeight = useCallback((element: Element) => {
@@ -768,15 +840,11 @@ export function MessageList({
     return element.getBoundingClientRect().height
   }, [])
 
-  const shouldVirtualize =
-    !pendingRun &&
-    !running &&
-    !stayInFlowAfterLive &&
-    displayRows.length >= VIRTUALIZE_MIN_ROWS
+  const shouldVirtualize = virtualizedRows.length > 0
   shouldVirtualizeRef.current = shouldVirtualize
 
   const rowVirtualizer = useVirtualizer({
-    count: shouldVirtualize ? displayRows.length : 0,
+    count: shouldVirtualize ? virtualizedRows.length : 0,
     getScrollElement: () => containerRef.current,
     estimateSize,
     measureElement: measureElementHeight,
@@ -866,11 +934,13 @@ export function MessageList({
       turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
       showThinking={showThinking}
       live={activeLiveTurnIndex != null && row.turnIndex === activeLiveTurnIndex}
+      keepOpen={lastTurnIndex >= 0 && row.turnIndex === lastTurnIndex}
       mcpServerNames={mcpServerNames}
       onOpenChanges={onOpenChanges}
       editingUserMessageIndex={editingUserMessageIndex}
       editComposer={editComposer}
       onBeginEditUserMessage={onBeginEditUserMessage}
+      messageCount={messageCount}
     />
   )
 
@@ -884,7 +954,6 @@ export function MessageList({
             'relative min-h-0 flex-1 overflow-auto pt-4 [scrollbar-gutter:stable]',
             sideRailPad ? CHAT_STAGE_INSET : CHAT_GUTTER
           )}
-          style={dockReserveStyle}
           onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
         >
           <div className="sr-only" role="status" aria-live="polite">
@@ -909,9 +978,13 @@ export function MessageList({
               const virtualItems = shouldVirtualize ? rowVirtualizer.getVirtualItems() : []
               const allowFullFallback =
                 typeof process !== 'undefined' && process.env.VITEST === 'true'
+              const useHybridLayout = shouldVirtualize && flowSuffixRows.length > 0
               const useFlowLayout =
                 !shouldVirtualize ||
-                (virtualItems.length === 0 && displayRows.length > 0 && allowFullFallback)
+                (virtualItems.length === 0 &&
+                  displayRows.length > 0 &&
+                  allowFullFallback &&
+                  flowSuffixRows.length === 0)
 
               const loadingOverlay =
                 transcriptLoading && items.length > 0 ? (
@@ -945,6 +1018,51 @@ export function MessageList({
                   </>
                 )
               }
+              if (useHybridLayout) {
+                return (
+                  <>
+                    {loadingOverlay}
+                    <div
+                      className={cn('relative w-full', CHAT_COLUMN)}
+                      data-chat-column
+                      style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
+                    >
+                      {virtualItems.map((virtualItem) => {
+                        const row = virtualizedRows[virtualItem.index]!
+                        return (
+                          <div
+                            key={virtualItem.key}
+                            data-index={virtualItem.index}
+                            ref={rowVirtualizer.measureElement}
+                            id={turnWorkPanelId(row, displayRows, virtualItem.index)}
+                            className={cn(
+                              'absolute left-0 top-0 w-full',
+                              rowSpacingClass(row, displayRows[virtualItem.index + 1])
+                            )}
+                            style={{ transform: `translateY(${virtualItem.start}px)` }}
+                          >
+                            {renderRow(row)}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    <div className={cn('flex w-full flex-col', CHAT_COLUMN)} data-live-turn-flow>
+                      {flowSuffixRows.map((row, localIndex) => {
+                        const index = flowStartIndex + localIndex
+                        return (
+                          <div
+                            key={row.id}
+                            id={turnWorkPanelId(row, displayRows, index)}
+                            className={rowSpacingClass(row, displayRows[index + 1])}
+                          >
+                            {renderRow(row)}
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </>
+                )
+              }
               return (
                 <>
                   {loadingOverlay}
@@ -954,7 +1072,7 @@ export function MessageList({
                     style={{ height: `${rowVirtualizer.getTotalSize()}px` }}
                   >
                     {virtualItems.map((virtualItem) => {
-                      const row = displayRows[virtualItem.index]!
+                      const row = virtualizedRows[virtualItem.index]!
                       return (
                         <div
                           key={virtualItem.key}
@@ -978,17 +1096,7 @@ export function MessageList({
           )}
           {isUnpinned ? (
             <div
-              className="pointer-events-none sticky z-20 flex h-0 justify-end pr-2"
-              style={{
-                // Sit above the bottom edge (and any reserved composer pad).
-                bottom: reserveComposerSpace
-                  ? `calc(${
-                      dockReservePx != null && dockReservePx > 0
-                        ? `${dockReservePx}px`
-                        : 'var(--vy-dock-h, 8rem)'
-                    } + 1rem)`
-                  : '1rem'
-              }}
+              className="pointer-events-none sticky bottom-4 z-dropdown flex h-0 justify-end pr-2"
               data-jump-to-bottom
             >
               <button

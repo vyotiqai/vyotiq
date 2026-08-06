@@ -1,0 +1,114 @@
+import { getWriteCheckpoint } from '../checkpoints'
+import { resolveInsideWorkspace } from '@main/workspace/safePath'
+
+/**
+ * Conservatively extract workspace-relative write targets from a shell command.
+ * Only records paths we can parse with high confidence — no glob expansion.
+ */
+export function extractTerminalWritePaths(command: string): string[] {
+  const raw = command.trim()
+  if (!raw) return []
+
+  const found = new Set<string>()
+
+  // Redirections: > path, >> path (not 2>&1 / >&2).
+  const redirectRe = /(?:^|[\s;|&])(?:\d*)>>?\s*(?!\d)(?!&)'([^']+)'|(?:^|[\s;|&])(?:\d*)>>?\s*(?!\d)(?!&)"([^"]+)"|(?:^|[\s;|&])(?:\d*)>>?\s*(?!\d)(?!&)([^\s;|&<>]+)/g
+  let m: RegExpExecArray | null
+  while ((m = redirectRe.exec(raw)) !== null) {
+    const path = (m[1] ?? m[2] ?? m[3] ?? '').trim()
+    if (path && path !== '/dev/null' && path !== 'NUL' && path !== 'nul') {
+      found.add(path)
+    }
+  }
+
+  // Common mutators: cp/mv/rm/del/mkdir/touch/git checkout -- / git restore
+  const mutatorRe =
+    /(?:^|[\s;|&])(?:(?:copy|cp|move|mv|del|rm|rmdir|rd|mkdir|md|touch|ni|New-Item)\b|(?:git\s+(?:checkout|restore)\s+--))\s+(.+?)(?=(?:[\s;|&](?:&&|\|\||;|\|)\s*)|$)/gi
+  while ((m = mutatorRe.exec(raw)) !== null) {
+    const tail = (m[1] ?? '').trim()
+    if (!tail) continue
+    for (const token of tokenizeShellArgs(tail)) {
+      if (token.startsWith('-')) continue
+      if (token === '--') continue
+      if (token.includes('*') || token.includes('?')) continue
+      found.add(token)
+    }
+  }
+
+  // PowerShell write cmdlets: Set-Content, Out-File, Add-Content.
+  const psWriteRe =
+    /\b(?:Set-Content|Out-File|Add-Content)\b(?:\s+-(?:Path|FilePath|LiteralPath)\s+|\s+)('([^']+)'|"([^"]+)"|([^\s;|&<>]+))/gi
+  while ((m = psWriteRe.exec(raw)) !== null) {
+    const path = (m[2] ?? m[3] ?? m[4] ?? '').trim()
+    if (path && path !== '/dev/null' && path !== 'NUL' && path !== 'nul') {
+      found.add(path)
+    }
+  }
+
+  // tee / tee -a
+  const teeRe = /\btee\b(?:\s+-a)?\s+(['"]?)([^\s'";|&]+)\1/gi
+  while ((m = teeRe.exec(raw)) !== null) {
+    const path = (m[2] ?? '').trim()
+    if (path && path !== '/dev/null' && path !== 'NUL' && path !== 'nul') {
+      found.add(path)
+    }
+  }
+
+  return [...found]
+}
+
+function tokenizeShellArgs(tail: string): string[] {
+  const tokens: string[] = []
+  const re = /'([^']*)'|"([^"]*)"|(\S+)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(tail)) !== null) {
+    const tok = (m[1] ?? m[2] ?? m[3] ?? '').trim()
+    if (tok) tokens.push(tok)
+  }
+  return tokens
+}
+
+export function recordTerminalCommandPriors(
+  workspaceRoot: string,
+  command: string,
+  context: { runDir?: string; skipWriteCheckpoint?: boolean }
+): void {
+  if (context.skipWriteCheckpoint || !context.runDir) return
+  const cp = getWriteCheckpoint(context.runDir)
+  if (!cp) return
+
+  for (const pathArg of extractTerminalWritePaths(command)) {
+    try {
+      resolveInsideWorkspace(workspaceRoot, pathArg)
+    } catch {
+      continue
+    }
+    // Prefer delete semantics for rm/del; otherwise write (covers create + modify).
+    const kind = isLikelyDeleteCommand(command, pathArg) ? 'delete' : 'write'
+    cp.recordPrior(pathArg, kind, kind === 'delete' ? { recursiveDir: true } : undefined)
+  }
+}
+
+function isLikelyDeleteCommand(command: string, pathArg: string): boolean {
+  const lower = command.toLowerCase()
+  if (!/\b(rm|del|rmdir|rd|remove-item)\b/i.test(lower)) return false
+  return lower.includes(pathArg.toLowerCase())
+}
+
+/** Package managers and build runners often mutate paths the parser cannot see. */
+function isLikelyOpaqueCommand(command: string): boolean {
+  const lower = command.toLowerCase()
+  return /\b(?:npm|pnpm|yarn|npx|bun|cargo|go|make|cmake|gradle|mvn|dotnet|pip|poetry|bundle|rake|mix|docker(?:\s+compose|-compose)?)\b/.test(
+    lower
+  )
+}
+
+/**
+ * Full workspace watch only for package managers / build runners that mutate
+ * paths the parser cannot see. Read-only commands (python -c, dir, ls, …)
+ * must NOT trigger a sync walk — on a venv-heavy workspace that was ~17 GB
+ * disk I/O per long terminal-heavy run.
+ */
+export function needsOpaqueWatch(command: string): boolean {
+  return isLikelyOpaqueCommand(command)
+}

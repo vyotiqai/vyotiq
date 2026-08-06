@@ -6,6 +6,7 @@ import type { TranscriptRow } from './transcriptRows'
 export type RunActivityPhase =
   | { kind: 'planning' }
   | { kind: 'working' }
+  | { kind: 'reconnecting'; attempt: number; maxAttempts: number }
   | { kind: 'thinking' }
   | { kind: 'writing' }
   | { kind: 'awaiting_approval' }
@@ -62,8 +63,7 @@ function toolPhaseFromActivity(row: Extract<TranscriptRow, { kind: 'activity' }>
  * expanded chrome stay aligned with aria-live announcements.
  */
 export function turnSummaryActiveLabel(
-  activity: RunActivityPhase | null | undefined,
-  _collapsed: boolean
+  activity: RunActivityPhase | null | undefined
 ): string {
   return activity ? formatRunActivityLabel(activity) : 'Working'
 }
@@ -74,6 +74,8 @@ export function formatRunActivityLabel(phase: RunActivityPhase): string {
       return 'Planning'
     case 'working':
       return 'Working'
+    case 'reconnecting':
+      return `Reconnecting (${phase.attempt}/${phase.maxAttempts})`
     case 'thinking':
       return 'Thinking'
     case 'writing':

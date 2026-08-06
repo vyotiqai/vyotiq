@@ -40,6 +40,7 @@ import {
   uiAttachments,
   MAX_TOOL_PROGRESS_ENTRIES,
   type UiItem,
+  type UiToolProgressEntry,
   type UiToolRow
 } from '@shared/transcript'
 import { isUnresolvedToolName, summarizeToolArgs } from '@shared/toolSummary'
@@ -49,6 +50,9 @@ import {
   contextUsageFromEvent,
   summarizeContextUsageFromEvents
 } from '@shared/utils/contextUsage'
+
+const CHAT_START_MAX_ATTEMPTS = 3
+const CHAT_START_RETRY_MS = 500
 import {
   compactionTriggerFromRaw,
   DEFAULT_COMPACTION_TRIGGER_RATIO,
@@ -330,7 +334,7 @@ function closeTrailingGroupIfIdle(items: UiItem[], endedAt = Date.now()): UiItem
 /** Force-fail any tool still marked running (terminal status / interrupted turn). */
 function failRunningTools(
   items: UiItem[],
-  reason: 'Cancelled' | 'Interrupted' | 'Stopped'
+  reason: 'Cancelled' | 'Interrupted' | 'Stopped' | 'Connection lost'
 ): UiItem[] {
   let changed = false
   const next = items.map((item) => {
@@ -493,7 +497,7 @@ function clearApprovals(items: UiItem[], requestId?: string): UiItem[] {
  */
 function finalizeTerminalItems(
   items: UiItem[],
-  reason: 'Cancelled' | 'Interrupted' | 'Stopped'
+  reason: 'Cancelled' | 'Interrupted' | 'Stopped' | 'Connection lost'
 ): UiItem[] {
   return clearQuestions(
     clearApprovals(failRunningTools(closeOpenGroupTimings(items), reason))
@@ -569,6 +573,15 @@ function errorMessageFromPersisted(events: PersistedEvent[]): string | null {
   return null
 }
 
+function errorCodeFromPersisted(events: PersistedEvent[]): string | null {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i]?.event
+    if (!isAgentEvent(event)) continue
+    if (event.type === 'error' && event.code) return event.code
+  }
+  return null
+}
+
 function errorFromPersisted(
   events: PersistedEvent[],
   dismissedErrorMessage: string | null = null
@@ -610,26 +623,43 @@ function incompleteFromPersisted(events: PersistedEvent[]): IncompleteTurnState 
 }
 
 function writeCheckpointFromPersisted(events: PersistedEvent[]): WriteCheckpointState | null {
+  const unresolved: Extract<AgentEvent, { type: 'writes_checkpoint' }>[] = []
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i]?.event
-    if (!isAgentEvent(event)) continue
-    if (event.type === 'writes_checkpoint') {
-      const files = event.files.map((f) => ({
+    if (!isAgentEvent(event) || event.type !== 'writes_checkpoint') continue
+    const files = event.files.map((f) => ({
+      path: f.path,
+      action: f.action,
+      undoable: f.undoable,
+      ...(f.resolved ? { resolved: f.resolved } : {})
+    }))
+    const fullyResolved =
+      files.length > 0 && files.every((f) => Boolean(f.resolved) || !f.undoable)
+    if (event.undone === true || fullyResolved) continue
+    unresolved.push(event)
+  }
+  if (unresolved.length === 0) return null
+
+  const latest = unresolved[0]
+  const fileMap = new Map<string, WriteCheckpointFileState>()
+  for (const checkpoint of [...unresolved].reverse()) {
+    for (const f of checkpoint.files) {
+      fileMap.set(f.path, {
         path: f.path,
         action: f.action,
         undoable: f.undoable,
         ...(f.resolved ? { resolved: f.resolved } : {})
-      }))
-      const fullyResolved =
-        files.length > 0 && files.every((f) => Boolean(f.resolved) || !f.undoable)
-      return {
-        checkpointId: event.checkpointId,
-        undone: event.undone === true || fullyResolved,
-        files
-      }
+      })
     }
   }
-  return null
+  const files = [...fileMap.values()]
+  const mergedResolved =
+    files.length > 0 && files.every((f) => Boolean(f.resolved) || !f.undoable)
+  return {
+    checkpointId: latest.checkpointId,
+    undone: mergedResolved,
+    files
+  }
 }
 
 function modeFromPersisted(events: PersistedEvent[]): AgentInteractionMode | null {
@@ -662,11 +692,34 @@ function hydrateFromDisk(
   return {
     messages: kept,
     error: errorFromPersisted(events, dismissedErrorMessage),
+    errorCode: errorCodeFromPersisted(events),
     incomplete: incompleteFromPersisted(events),
     contextUsage: summarizeContextUsageFromEvents(events),
-    items: finalizeHydratedTranscript(items, events),
+    items: appendRunErrorItems(finalizeHydratedTranscript(items, events), events),
     writeCheckpoint: writeCheckpointFromPersisted(events)
   }
+}
+
+function appendRunErrorItems(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const row = events[i]
+    const event = row?.event
+    if (!isAgentEvent(event)) continue
+    if (event.type !== 'error') continue
+    const id = `run-error:${row.at}:${i}`
+    if (items.some((item) => item.kind === 'run_error' && item.id === id)) return items
+    return [
+      ...items,
+      {
+        kind: 'run_error' as const,
+        id,
+        message: event.message,
+        ...(event.code ? { code: event.code } : {}),
+        at: row.at
+      }
+    ]
+  }
+  return items
 }
 
 export type PendingFollowUpState = {
@@ -681,9 +734,18 @@ export type ChatStreamState = {
   running: boolean
   runId: string | null
   error: string | null
+  /** Structured code from the last agent `error` event (e.g. PROVIDER_STREAM). */
+  errorCode: string | null
   runNotice: string | null
   /** Survives the terminal status event, unlike `runNotice`. */
   incomplete: IncompleteTurnState | null
+  /** Live reconnect/backoff state from `network_wait` events. */
+  networkWait: {
+    attempt: number
+    maxAttempts: number
+    retryInMs: number
+    code?: string
+  } | null
   contextUsage: ContextUsageState | null
   runStartedAt: number | null
   runTerminalTick: number
@@ -784,6 +846,7 @@ const UI_SUSPEND_ALLOWED_EVENTS = new Set<AgentEvent['type']>([
   'status',
   'error',
   'incomplete',
+  'network_wait',
   'mode_changed',
   // Live tool chrome — not persisted; dropping loses output with no disk backfill.
   'terminal_output_delta',
@@ -838,10 +901,14 @@ export function createChatStreamController(
   let completedTurnSeq = 0
   let runningTurnSeq = 0
   let lastRunErrorMessage: string | null = null
+  let lastRunErrorCode: string | null = null
   /** Persisted error message dismissed by the reader; hydrate skips restoring it. */
   let dismissedErrorMessage: string | null = null
   let usageTotals: StepUsageTotals = emptyStepUsageTotals()
   let streamPatchRaf: number | null = null
+  /** Coalesce reasoning deltas — markdown/shiki is skipped but DOM still updates. */
+  let thinkingPatchTimer: ReturnType<typeof setTimeout> | null = null
+  const THINKING_PATCH_MS = 100
   let pendingTextDelta = ''
   let pendingThinkingDelta = ''
   let pendingToolCallDeltas: Array<{
@@ -849,6 +916,15 @@ export function createChatStreamController(
     name?: string
     argumentsDelta: string
   }> = []
+  type PendingTerminalPiece = { text: string; stream: 'stdout' | 'stderr' }
+  const pendingTerminalByTool = new Map<string, PendingTerminalPiece[]>()
+  type PendingToolProgressEntry = {
+    parentToolCallId: string
+    kind: UiToolProgressEntry['kind']
+    text: string
+  }
+  let pendingToolProgress: PendingToolProgressEntry[] = []
+  const TERMINAL_UI_MAX = 64 * 1024
   const toolContentCache = new Map<string, string>()
 
   const applyToolCallDelta = (
@@ -946,6 +1022,17 @@ export function createChatStreamController(
     scheduleStreamingPatch()
   }
 
+  const materializePendingToolCallDeltas = (): void => {
+    if (!pendingToolCallDeltas.length) return
+    let items = state.items
+    const deltas = pendingToolCallDeltas
+    pendingToolCallDeltas = []
+    for (const delta of deltas) {
+      items = applyToolCallDelta(items, delta, state.runStartedAt)
+    }
+    patch({ items: scrubStreamingAssistantToolLeak(items) })
+  }
+
   const applyStreamingPatches = (): void => {
     let items = state.items
     let changed = false
@@ -1031,13 +1118,65 @@ export function createChatStreamController(
       changed = true
     }
 
+    if (pendingTerminalByTool.size) {
+      for (const [toolCallId, pieces] of pendingTerminalByTool) {
+        const idx = findToolRowIndex(items, toolCallId, 'terminal')
+        const item = idx >= 0 ? items[idx] : undefined
+        if (!item || item.kind !== 'tool' || item.tool.status !== 'running') continue
+        let prev = item.tool.content ?? ''
+        if (prev.length >= TERMINAL_UI_MAX) continue
+        for (const piece of pieces) {
+          if (prev.length >= TERMINAL_UI_MAX) break
+          const room = TERMINAL_UI_MAX - prev.length
+          let text = piece.text
+          if (piece.stream === 'stderr' && !prev.includes('stderr:\n')) {
+            text = `${prev ? '\n' : ''}stderr:\n${piece.text}`
+          }
+          const clipped = text.length > room ? text.slice(0, room) : text
+          if (!clipped) continue
+          prev += clipped
+        }
+        if (prev !== (item.tool.content ?? '')) {
+          items = replaceAt(items, idx, {
+            ...item,
+            tool: { ...item.tool, content: prev }
+          })
+          changed = true
+        }
+      }
+      pendingTerminalByTool.clear()
+    }
+
+    if (pendingToolProgress.length) {
+      const entries = pendingToolProgress
+      pendingToolProgress = []
+      for (const event of entries) {
+        const idx = findToolRowIndex(items, event.parentToolCallId)
+        const item = idx >= 0 ? items[idx] : undefined
+        if (!item || item.kind !== 'tool') continue
+        const progress = [...(item.toolProgress ?? []), { kind: event.kind, text: event.text }].slice(
+          -MAX_TOOL_PROGRESS_ENTRIES
+        )
+        items = replaceAt(items, idx, { ...item, toolProgress: progress })
+        changed = true
+      }
+    }
+
     if (changed) {
       items = scrubStreamingAssistantToolLeak(items)
       patch({ items })
     }
   }
 
+  const flushThinkingPatchTimer = (): void => {
+    if (thinkingPatchTimer != null) {
+      clearTimeout(thinkingPatchTimer)
+      thinkingPatchTimer = null
+    }
+  }
+
   const flushStreamingPatches = (): void => {
+    flushThinkingPatchTimer()
     if (streamPatchRaf != null) {
       cancelAnimationFrame(streamPatchRaf)
       streamPatchRaf = null
@@ -1054,13 +1193,18 @@ export function createChatStreamController(
   }
 
   const scheduleTextDelta = (text: string): void => {
+    flushThinkingPatchTimer()
     pendingTextDelta += text
     scheduleStreamingPatch()
   }
 
   const scheduleThinkingDelta = (text: string): void => {
     pendingThinkingDelta += text
-    scheduleStreamingPatch()
+    if (thinkingPatchTimer != null) return
+    thinkingPatchTimer = setTimeout(() => {
+      thinkingPatchTimer = null
+      scheduleStreamingPatch()
+    }, THINKING_PATCH_MS)
   }
 
   const state: ChatStreamState = {
@@ -1069,8 +1213,10 @@ export function createChatStreamController(
     running: false,
     runId,
     error: null,
+    errorCode: null,
     runNotice: null,
     incomplete: null,
+    networkWait: null,
     contextUsage: null,
     runStartedAt: null,
     runTerminalTick: 0,
@@ -1139,6 +1285,7 @@ export function createChatStreamController(
     ignoreStreamEvents = false
     dismissedErrorMessage = null
     lastRunErrorMessage = null
+    lastRunErrorCode = null
     if (activeInvokeId != null) supersededInvokeIds.add(activeInvokeId)
     activeInvokeId = null
     usageTotals = emptyStepUsageTotals()
@@ -1148,8 +1295,10 @@ export function createChatStreamController(
       items: [],
       messages: [],
       error: null,
+      errorCode: null,
       runNotice: null,
       incomplete: null,
+      networkWait: null,
       contextUsage: null,
       runId: null,
       running: false,
@@ -1181,6 +1330,9 @@ export function createChatStreamController(
     pendingTextDelta = ''
     pendingThinkingDelta = ''
     pendingToolCallDeltas = []
+    pendingTerminalByTool.clear()
+    pendingToolProgress = []
+    flushThinkingPatchTimer()
     if (streamPatchRaf != null) {
       cancelAnimationFrame(streamPatchRaf)
       streamPatchRaf = null
@@ -1288,10 +1440,7 @@ export function createChatStreamController(
     const ok = id ? await catchUpUiFromDisk(id) : true
     if (disposed || gen !== uiResumeGeneration) return
     if (!ok) {
-      // Stay catch-up pending, but re-enable live events so the transcript is
-      // not frozen forever if disk sync failed. A later resumeUiIfNeeded retries.
       needsUiCatchUp = true
-      setUiSuspended(false)
       return
     }
     // Deltas skipped during catch-up are not on this disk snapshot; clear the
@@ -1342,7 +1491,7 @@ export function createChatStreamController(
 
     if (event.type === 'text_delta') {
       if (!assistantId) assistantId = messageUiId('assistant', state.messages.length)
-      flushStreamingPatches()
+      materializePendingToolCallDeltas()
       closeOpenThinkingStep()
       scheduleTextDelta(event.text)
       return
@@ -1510,7 +1659,7 @@ export function createChatStreamController(
               ...existing,
               // The call is settled, so any prompt it was waiting on is moot.
               approval: undefined,
-              // Drop auto-expand so finished bodies collapse; user toggle still wins via false.
+              // Drop auto-expand so finished bodies collapse; user toggle still wins.
               toolExpanded: existing.toolExpanded === false ? false : undefined,
               tool: {
                 ...existing.tool,
@@ -1595,54 +1744,30 @@ export function createChatStreamController(
         messages: nextMessages
       })
     } else if (event.type === 'terminal_output_delta') {
-      const TERMINAL_UI_MAX = 64 * 1024
       const idx = findToolRowIndex(state.items, event.toolCallId, 'terminal')
       const item = idx >= 0 ? state.items[idx] : undefined
-      if (!item || item.kind !== 'tool') return
-      if (item.tool.status !== 'running') return
+      if (!item || item.kind !== 'tool' || item.tool.status !== 'running') return
       const prev = item.tool.content ?? ''
       if (prev.length >= TERMINAL_UI_MAX) return
-      const room = TERMINAL_UI_MAX - prev.length
-      let piece = event.text
-      if (event.stream === 'stderr' && !prev.includes('stderr:\n')) {
-        piece = `${prev ? '\n' : ''}stderr:\n${event.text}`
-      }
-      const clipped = piece.length > room ? piece.slice(0, room) : piece
-      if (!clipped) return
-      patch({
-        items: replaceAt(state.items, idx, {
-          ...item,
-          toolExpanded: item.toolExpanded === false ? false : true,
-          tool: {
-            ...item.tool,
-            content: prev + clipped
-          }
-        })
-      })
+      const pending = pendingTerminalByTool.get(event.toolCallId) ?? []
+      pending.push({ text: event.text, stream: event.stream ?? 'stdout' })
+      pendingTerminalByTool.set(event.toolCallId, pending)
+      scheduleStreamingPatch()
     } else if (event.type === 'tool_progress') {
       const idx = findToolRowIndex(state.items, event.parentToolCallId)
       const item = idx >= 0 ? state.items[idx] : undefined
       if (!item || item.kind !== 'tool') return
-      const entries = [...(item.toolProgress ?? []), { kind: event.kind, text: event.text }].slice(
-        -MAX_TOOL_PROGRESS_ENTRIES
-      )
-      patch({
-        items: replaceAt(state.items, idx, {
-          ...item,
-          toolProgress: entries,
-          // Auto-expand only while the tool is still running; preserve user collapse.
-          toolExpanded:
-            item.toolExpanded === false
-              ? false
-              : item.tool.status === 'running'
-                ? true
-                : item.toolExpanded
-        })
+      pendingToolProgress.push({
+        parentToolCallId: event.parentToolCallId,
+        kind: event.kind,
+        text: event.text
       })
+      scheduleStreamingPatch()
     } else if (event.type === 'mode_changed') {
       onAgentModeChange?.(event.mode)
     } else if (event.type === 'error') {
       lastRunErrorMessage = event.message
+      lastRunErrorCode = event.code ?? null
       dismissedErrorMessage = null
       // Put detail in the log line — AppError sanitize strips message from `err`.
       logger.warn(`Agent run error: ${event.message}`, {
@@ -1652,35 +1777,49 @@ export function createChatStreamController(
         err: event.message
       })
       patch({
-        error: event.message
+        error: event.message,
+        errorCode: event.code ?? null
+      })
+    } else if (event.type === 'network_wait') {
+      const reconnectIds = new Set([assistantId, reasoningId].filter((id): id is string => !!id))
+      patch({
+        networkWait: {
+          attempt: event.attempt,
+          maxAttempts: event.maxAttempts,
+          retryInMs: event.retryInMs,
+          ...(event.code ? { code: event.code } : {})
+        },
+        items: state.items.map((item) =>
+          item.kind === 'message' && reconnectIds.has(item.id)
+            ? { ...item, reconnecting: true, streaming: false, thinkingStreaming: false }
+            : item
+        )
       })
     } else if (event.type === 'stream_reset') {
-      // Drop the aborted attempt's output so the retry does not append to it —
-      // text, thinking, and any tool rows that only exist from streamed deltas.
+      // Step retry re-streams from scratch — drop partial text/thinking per IPC contract.
       pendingTextDelta = ''
       pendingThinkingDelta = ''
       pendingToolCallDeltas = []
       flushStreamingPatches()
-      const discardIds = new Set([assistantId, reasoningId].filter((id): id is string => !!id))
+      const reconnectIds = new Set([assistantId, reasoningId].filter((id): id is string => !!id))
       const nextItems = state.items
         .filter(
           (item) =>
             !(item.kind === 'tool' && item.tool.status === 'running' && !item.approval)
         )
         .map((item) =>
-          item.kind === 'message' && discardIds.has(item.id)
+          item.kind === 'message' && reconnectIds.has(item.id)
             ? {
                 ...item,
                 content: '',
-                thinking: item.thinking ? '' : item.thinking,
+                thinking: undefined,
+                reconnecting: true,
                 streaming: false,
                 thinkingStreaming: false
               }
             : item
         )
-      // Keep pending question cards — provider retry must not strand the run
-      // without a way to answer (approvals already survive via the filter above).
-      patch({ items: nextItems })
+      patch({ items: nextItems, networkWait: null })
     } else if (event.type === 'incomplete') {
       patch({
         incomplete: { reason: event.reason, message: event.message }
@@ -1800,7 +1939,13 @@ export function createChatStreamController(
           pendingRun: false,
           // Auto-continue after truncation clears the Continue banner for the next step.
           incomplete: null,
-          runStartedAt: state.runStartedAt ?? Date.now()
+          networkWait: null,
+          runStartedAt: state.runStartedAt ?? Date.now(),
+          items: state.items.map((item) =>
+            item.kind === 'message' && item.reconnecting
+              ? { ...item, reconnecting: false }
+              : item
+          )
         })
       }
       if (event.status === 'done' || event.status === 'cancelled' || event.status === 'error') {
@@ -1838,12 +1983,45 @@ export function createChatStreamController(
         if (event.status === 'error' && !state.error) {
           dismissedErrorMessage = null
         }
+        const toolStubReason =
+          event.status === 'cancelled'
+            ? 'Cancelled'
+            : event.status === 'error'
+              ? state.incomplete?.reason === 'network_interrupted'
+                ? 'Connection lost'
+                : 'Interrupted'
+              : 'Stopped'
+        const finalizedItems = finalizeTerminalItems(
+          unappliedItemIds && unappliedItemIds.size > 0
+            ? state.items.filter((item) => !unappliedItemIds.has(item.id))
+            : state.items,
+          toolStubReason
+        ).map((item) =>
+          item.kind === 'message' && item.reconnecting ? { ...item, reconnecting: false } : item
+        )
+        const errorMessage =
+          event.status === 'error' && !state.error
+            ? lastRunErrorMessage ?? 'Run failed'
+            : state.error
+        const withRunError =
+          event.status === 'error' && errorMessage
+            ? [
+                ...finalizedItems,
+                {
+                  kind: 'run_error' as const,
+                  id: `run-error:live:${state.runTerminalTick + 1}`,
+                  message: errorMessage,
+                  ...(lastRunErrorCode ? { code: lastRunErrorCode } : {})
+                }
+              ]
+            : finalizedItems
         patch({
           pendingRun: false,
           running: false,
           runId: sessionRunId,
           runStartedAt: null,
           pendingFollowUps: [],
+          networkWait: null,
           // Keep compaction / MCP budget notices readable after the run ends; cleared on next send.
           runNotice:
             state.runNotice?.startsWith('Context summarized') === true ||
@@ -1852,18 +2030,9 @@ export function createChatStreamController(
               : null,
           runTerminalTick: state.runTerminalTick + 1,
           ...(event.status === 'error' && !state.error
-            ? { error: lastRunErrorMessage ?? 'Run failed' }
+            ? { error: errorMessage, errorCode: lastRunErrorCode }
             : {}),
-          items: finalizeTerminalItems(
-            unappliedItemIds && unappliedItemIds.size > 0
-              ? state.items.filter((item) => !unappliedItemIds.has(item.id))
-              : state.items,
-            event.status === 'cancelled'
-              ? 'Cancelled'
-              : event.status === 'error'
-                ? 'Interrupted'
-                : 'Stopped'
-          )
+          items: withRunError
         })
         onTerminal?.()
       }
@@ -1887,8 +2056,9 @@ export function createChatStreamController(
       patch({ error: 'Pick a workspace before starting a chat.' })
       return false
     }
-    patch({ error: null, runNotice: null, incomplete: null })
+    patch({ error: null, errorCode: null, runNotice: null, incomplete: null, networkWait: null })
     lastRunErrorMessage = null
+    lastRunErrorCode = null
     usageTotals = emptyStepUsageTotals()
     // Keep last contextUsage so the meter does not flicker away between turns;
     // stepUsage resets via usageTotals and is overwritten on the next event.
@@ -1938,21 +2108,24 @@ export function createChatStreamController(
       patch({ pendingRun: true, running: true, runStartedAt: Date.now(), runId: null })
     }
     const mode = getAgentMode?.() ?? 'agent'
-    const res = await window.vyotiq.chatStart(
-      continuingRunId
-        ? {
-            incremental: true,
-            newMessages: [user],
-            workspacePath,
-            runId: continuingRunId,
-            mode
-          }
-        : {
-            messages: nextMessages,
-            workspacePath,
-            mode
-          }
-    )
+    const startPayload = continuingRunId
+      ? {
+          incremental: true as const,
+          newMessages: [user],
+          workspacePath,
+          runId: continuingRunId,
+          mode
+        }
+      : {
+          messages: nextMessages,
+          workspacePath,
+          mode
+        }
+    let res = await window.vyotiq.chatStart(startPayload)
+    for (let attempt = 2; attempt <= CHAT_START_MAX_ATTEMPTS && !res.ok; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, CHAT_START_RETRY_MS))
+      res = await window.vyotiq.chatStart(startPayload)
+    }
     if (!res.ok) {
       awaitingRun = false
       // Detail in the log line — string `err` keeps scrubbed text; AppError would not.
@@ -2864,7 +3037,7 @@ export function createChatStreamController(
 
   const clearError = (): void => {
     if (state.error) dismissedErrorMessage = state.error
-    patch({ error: null })
+    patch({ error: null, errorCode: null })
   }
 
   const setThinkingExpanded = (messageId: string, expanded: boolean): void => {
@@ -3081,11 +3254,17 @@ export function createChatStreamController(
     get error() {
       return state.error
     },
+    get errorCode() {
+      return state.errorCode
+    },
     get runNotice() {
       return state.runNotice
     },
     get incomplete() {
       return state.incomplete
+    },
+    get networkWait() {
+      return state.networkWait
     },
     get contextUsage() {
       return state.contextUsage

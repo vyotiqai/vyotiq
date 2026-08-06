@@ -94,6 +94,7 @@ export const ToolGroup = memo(function ToolGroup({
   groupExpanded,
   /** True for the active turn while the chat run is live — keep this group open between batches. */
   live = false,
+  keepOpen = false,
   onGroupToggle,
   onToolToggle,
   onLoadFullContent,
@@ -103,6 +104,7 @@ export const ToolGroup = memo(function ToolGroup({
   groupTiming?: ToolItem['groupTiming']
   groupExpanded?: boolean
   live?: boolean
+  keepOpen?: boolean
   onGroupToggle?: (expanded: boolean) => void
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
   onLoadFullContent?: (toolCallId: string) => Promise<string | null>
@@ -129,14 +131,13 @@ export const ToolGroup = memo(function ToolGroup({
   }, [nestedTools])
 
   const [localOverride, setLocalOverride] = useState<boolean | null>(null)
-  // Honor explicit persisted collapse even while pending; otherwise auto-open
-  // for the first live appearance (groupExpanded/localOverride unset).
+  // Honor explicit persisted collapse even while pending; otherwise auto-open while live.
   const expanded =
     groupExpanded !== undefined
       ? groupExpanded
       : isPending
         ? true
-        : (localOverride ?? live)
+        : (localOverride ?? (live || keepOpen))
   const toggle = (): void => {
     const next = !expanded
     if (onGroupToggle) onGroupToggle(next)
@@ -196,7 +197,7 @@ export const ToolGroup = memo(function ToolGroup({
     const hasBody = toolHasBody(item.tool, {
       toolProgress: item.toolProgress
     })
-    const defaultExpanded = toolDefaultExpanded(item.tool.name, item.tool.status, live)
+    const defaultExpanded = toolDefaultExpanded(item.tool.name, item.tool.status, live || keepOpen)
     // toolExpanded / localOverride win. Explicit groupExpanded (incl. false) is
     // honored even while running; otherwise use the tool's default expand.
     const isToolExpanded =
@@ -225,7 +226,7 @@ export const ToolGroup = memo(function ToolGroup({
           expanded={isToolExpanded}
           hasBody={hasBody}
           interrupted={isInterrupted}
-                    onToggle={toggleSingle}
+          onToggle={toggleSingle}
         />
         <ExpandPanel open={hasBody && isToolExpanded}>
           <div className="tool-body-enter">
@@ -304,9 +305,9 @@ export const ToolGroup = memo(function ToolGroup({
                 </div>
               )
             }
-            const defaultExpanded = toolDefaultExpanded(item.tool.name, item.tool.status, live)
-            // Per-item toolExpanded wins; siblings keep their own defaults.
-            const isToolExpanded = item.toolExpanded ?? defaultExpanded
+            const defaultExpanded = toolDefaultExpanded(item.tool.name, item.tool.status, live || keepOpen)
+            const isToolExpanded =
+              item.toolExpanded ?? (groupExpanded === false ? false : defaultExpanded)
             return (
               <NestedToolRow
                 key={item.id}

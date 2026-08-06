@@ -28,6 +28,14 @@ import { toolEditImage } from './editImage'
 import { normalizeOutputFormat } from '../providers/imageGen/mime'
 import { getSettings } from '@main/settings/settings'
 import { getWriteCheckpoint } from '../checkpoints'
+import { needsOpaqueWatch, recordTerminalCommandPriors } from './terminalCheckpoint'
+import { recordMcpFilesystemPriors } from './mcpCheckpoint'
+import {
+  applyWatchDiffToCheckpoint,
+  diffSince,
+  disposeWatch,
+  startWatch
+} from '../workspaceMutationWatch'
 import { resolveInsideWorkspace } from '@main/workspace/safePath'
 import { clearWorkspaceSnapshotCache } from '../context/workspaceSnapshot'
 import { commitAll, commitPaths } from '@main/git/git'
@@ -253,6 +261,30 @@ function invalidateAfterWorkspaceMutation(workspace: string): void {
   invalidateGitStatusCache(workspace)
   clearWorkspaceSnapshotCache(workspace)
   clearGitignoreMatcherCache(workspace)
+}
+
+type CheckpointWatchContext = { runDir?: string; skipWriteCheckpoint?: boolean }
+
+/** Snapshot known + opaque terminal writes for undo. */
+async function withTerminalCheckpointWatch<T>(
+  workspace: string,
+  command: string,
+  context: CheckpointWatchContext,
+  run: () => Promise<T>
+): Promise<T> {
+  recordTerminalCommandPriors(workspace, command, context)
+  const snap =
+    !context.skipWriteCheckpoint && context.runDir && command.trim() && needsOpaqueWatch(command)
+      ? startWatch(workspace)
+      : null
+  try {
+    return await run()
+  } finally {
+    if (snap) {
+      applyWatchDiffToCheckpoint(snap, diffSince(snap), context)
+      disposeWatch(snap)
+    }
+  }
 }
 
 function optionalMcpServerId(args: Record<string, unknown>): string | undefined {
@@ -1040,7 +1072,12 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     }
     await context.setAgentMode(mode)
     if (context.runId) {
-      context.emitAgentEvent?.({ type: 'mode_changed', runId: context.runId, mode })
+      context.emitAgentEvent?.({
+        type: 'mode_changed',
+        runId: context.runId,
+        mode,
+        ...(context.invokeId != null ? { invokeId: context.invokeId } : {})
+      })
     }
     const content =
       previous === mode
@@ -1078,6 +1115,10 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       const { startBackgroundTerminal, pollTerminalSession } = await import('./terminalSessions')
       const blockUntilMs =
         typeof args.block_until_ms === 'number' ? args.block_until_ms : sessionId ? 30_000 : 0
+      const watchCtx: CheckpointWatchContext = {
+        runDir: context.runDir,
+        skipWriteCheckpoint: context.skipWriteCheckpoint
+      }
       const content = sessionId
         ? await pollTerminalSession({
             runId,
@@ -1089,18 +1130,20 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
             runSignal: context.runSignal,
             onOutput
           })
-        : await startBackgroundTerminal({
-            runId,
-            invokeId,
-            workspaceRoot: workspace,
-            cwd,
-            command,
-            signal,
-            shell,
-            pattern,
-            blockUntilMs,
-            onOutput
-          })
+        : await withTerminalCheckpointWatch(workspace, command, watchCtx, () =>
+            startBackgroundTerminal({
+              runId,
+              invokeId,
+              workspaceRoot: workspace,
+              cwd,
+              command,
+              signal,
+              shell,
+              pattern,
+              blockUntilMs,
+              onOutput
+            })
+          )
       // New background command may mutate the tree; pure session polls do not.
       if (!sessionId) {
         invalidateAfterWorkspaceMutation(workspace)
@@ -1113,12 +1156,18 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
 
     const requested = typeof args.timeoutMs === 'number' ? args.timeoutMs : 60_000
     const timeoutMs = Math.min(TERMINAL_MAX_TIMEOUT_MS, Math.max(1, requested))
-    const content = await toolTerminal(workspace, command, signal, {
-      timeoutMs,
-      shell,
-      cwd,
-      onOutput
-    })
+    const watchCtx: CheckpointWatchContext = {
+      runDir: context.runDir,
+      skipWriteCheckpoint: context.skipWriteCheckpoint
+    }
+    const content = await withTerminalCheckpointWatch(workspace, command, watchCtx, () =>
+      toolTerminal(workspace, command, signal, {
+        timeoutMs,
+        shell,
+        cwd,
+        onOutput
+      })
+    )
     invalidateAfterWorkspaceMutation(workspace)
     const summary = command.slice(0, 80)
     const ok = terminalResultOk(command, content)
@@ -1428,6 +1477,10 @@ export async function executeTool(
     }
     const stamp = Math.max(context.currentStep ?? 1, 1)
     context.mcpLastUsedByName?.set(name, stamp)
+    recordMcpFilesystemPriors(mcp.serverId, mcp.toolName, parsed, {
+      runDir: context.runDir,
+      skipWriteCheckpoint: context.skipWriteCheckpoint
+    })
     return invokeMcpTool(
       mcp.serverId,
       mcp.toolName,

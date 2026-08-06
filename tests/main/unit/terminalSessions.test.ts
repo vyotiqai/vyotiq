@@ -2,13 +2,38 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { stripPowerShellPatternNoise } from '@main/agent/tools/terminal'
 import {
+  countTerminalSessionsForInvoke,
   disposeTerminalSessionsForInvoke,
   getTerminalSession,
   pollTerminalSession,
   resetTerminalSessionsForTests,
   startBackgroundTerminal
 } from '@main/agent/tools/terminalSessions'
+
+describe('stripPowerShellPatternNoise', () => {
+  it('removes NativeCommandError chrome so broad Error pattern does not match', () => {
+    const chrome = `progress 0%
+At line:1 char:1
++ cmd /c "echo progress 0% 1>&2"
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (progress 0%:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError`
+    const stripped = stripPowerShellPatternNoise(chrome)
+    expect(/Error/.test(stripped)).toBe(false)
+    expect(stripped).toContain('progress 0%')
+  })
+
+  it('still matches real error text after stripping chrome', () => {
+    const text = `At line:1 char:1
+    + CategoryInfo          : NotSpecified: (:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+Traceback (most recent call last):`
+    const stripped = stripPowerShellPatternNoise(text)
+    expect(/Traceback/.test(stripped)).toBe(true)
+  })
+})
 
 describe('terminalSessions', () => {
   let cwd: string
@@ -119,4 +144,95 @@ describe('terminalSessions', () => {
       })
     ).rejects.toThrow(/Unknown terminal session_id/i)
   })
+
+  it.runIf(process.platform === 'win32')(
+    'does not pattern-match PowerShell stderr chrome alone',
+    async () => {
+      cwd = mkdtempSync(join(tmpdir(), 'vyotiq-term-pwsh-pattern-'))
+      const signal = new AbortController().signal
+      const command =
+        `node -e "process.stderr.write('    + FullyQualifiedErrorId : NativeCommandError'+String.fromCharCode(10)); setInterval(()=>{}, 8000)"`
+      const first = await startBackgroundTerminal({
+        runId: 'run-pwsh-pattern',
+        invokeId: 1,
+        workspaceRoot: cwd,
+        command,
+        shell: 'powershell',
+        pattern: 'Error',
+        blockUntilMs: 800,
+        signal
+      })
+      expect(first).not.toMatch(/status:\s*pattern_matched/)
+      expect(first).toMatch(/status:\s*(running|timeout)/)
+    },
+    15_000
+  )
+
+  it('poll exits early when pattern matches', async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'vyotiq-term-pattern-'))
+    const signal = new AbortController().signal
+    const command =
+      process.platform === 'win32'
+        ? 'cmd /c echo READY && ping -n 30 127.0.0.1 > nul'
+        : 'sh -c "echo READY; sleep 30"'
+
+    const started = Date.now()
+    const result = await startBackgroundTerminal({
+      runId: 'run-pattern',
+      invokeId: 1,
+      workspaceRoot: cwd,
+      command,
+      signal,
+      shell: process.platform === 'win32' ? 'cmd' : 'auto',
+      pattern: 'READY',
+      blockUntilMs: 10_000
+    })
+    expect(result).toMatch(/status:\s*pattern_matched/)
+    expect(Date.now() - started).toBeLessThan(5_000)
+    disposeTerminalSessionsForInvoke('run-pattern', 1)
+  }, 15_000)
+
+  it('keeps pattern_matched after the child exits', async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'vyotiq-term-pattern-done-'))
+    const signal = new AbortController().signal
+    const command =
+      process.platform === 'win32' ? 'cmd /c echo MATCHED' : 'echo MATCHED'
+
+    const result = await startBackgroundTerminal({
+      runId: 'run-pattern-done',
+      invokeId: 1,
+      workspaceRoot: cwd,
+      command,
+      signal,
+      shell: process.platform === 'win32' ? 'cmd' : 'auto',
+      pattern: 'MATCHED',
+      blockUntilMs: 5_000
+    })
+    expect(result).toMatch(/status:\s*pattern_matched/)
+  }, 15_000)
+
+  it('caps concurrent background sessions per invoke', async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'vyotiq-term-cap-'))
+    const signal = new AbortController().signal
+    const command =
+      process.platform === 'win32'
+        ? 'ping -n 60 127.0.0.1 > nul'
+        : 'sleep 60'
+
+    for (let i = 0; i < 10; i++) {
+      await startBackgroundTerminal({
+        runId: 'run-cap',
+        invokeId: 3,
+        workspaceRoot: cwd,
+        command,
+        signal,
+        shell: process.platform === 'win32' ? 'cmd' : 'auto',
+        blockUntilMs: 0
+      })
+    }
+
+    expect(countTerminalSessionsForInvoke('run-cap', 3)).toBeLessThanOrEqual(8)
+    disposeTerminalSessionsForInvoke('run-cap', 3)
+    expect(countTerminalSessionsForInvoke('run-cap', 3)).toBe(0)
+  }, 15_000)
 })

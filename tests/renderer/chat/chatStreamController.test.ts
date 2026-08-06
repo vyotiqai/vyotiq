@@ -4,6 +4,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createChatStreamController } from '@renderer/lib/hooks/createChatStreamController'
 
+async function flushStreamPatches(): Promise<void> {
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+}
+
 describe('createChatStreamController', () => {
   it('persists turn collapse across transcript remounts', () => {
     const controller = createChatStreamController({ workspacePath: '/ws' })
@@ -24,7 +28,7 @@ describe('createChatStreamController', () => {
     expect(controller.collapsedTurnIndices).toEqual([])
   })
 
-  it('appends terminal_output_delta into a running terminal tool row', () => {
+  it('appends terminal_output_delta into a running terminal tool row', async () => {
     const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
 
     controller.handleEvent({
@@ -48,12 +52,34 @@ describe('createChatStreamController', () => {
       text: 'boom\n',
       stream: 'stderr'
     })
+    await flushStreamPatches()
 
     const tool = controller.items.find((item) => item.kind === 'tool' && item.id === 'term-1')
     expect(tool?.kind).toBe('tool')
     if (tool?.kind !== 'tool') return
     expect(tool.tool.status).toBe('running')
     expect(tool.tool.content).toBe('hi\n\nstderr:\nboom\n')
+  })
+
+  it('batches rapid text_delta events into one items revision per frame', async () => {
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+    controller.handleEvent({ type: 'status', runId: 'r1', status: 'running', invokeId: 1 })
+
+    const revisions: number[] = []
+    const unsub = controller.subscribeItems(() => {
+      revisions.push(controller.getItemsRevision())
+    })
+
+    controller.handleEvent({ type: 'text_delta', runId: 'r1', text: 'a', invokeId: 1 })
+    controller.handleEvent({ type: 'text_delta', runId: 'r1', text: 'b', invokeId: 1 })
+    controller.handleEvent({ type: 'text_delta', runId: 'r1', text: 'c', invokeId: 1 })
+    await flushStreamPatches()
+
+    unsub()
+    expect(revisions.length).toBeLessThanOrEqual(2)
+    expect(
+      controller.items.some((item) => item.kind === 'message' && item.content === 'abc')
+    ).toBe(true)
   })
 
   it('keeps UI suspended until disk catch-up finishes so live deltas are not clobbered', async () => {
@@ -212,6 +238,42 @@ describe('createChatStreamController', () => {
     expect(controller.running).toBe(false)
   })
 
+  it('scopes network_wait reconnecting to the current turn only', async () => {
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+    controller.hydrateTranscript([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'reply-1' },
+      { role: 'user', content: 'second' }
+    ])
+
+    const priorAssistant = controller.items.find(
+      (item) => item.kind === 'message' && item.role === 'assistant'
+    )
+    expect(priorAssistant?.kind).toBe('message')
+
+    controller.handleEvent({ type: 'status', runId: 'r1', status: 'running', invokeId: 1 })
+    controller.handleEvent({ type: 'text_delta', runId: 'r1', text: 'streaming', invokeId: 1 })
+    await flushStreamPatches()
+
+    const currentAssistant = controller.items.find(
+      (item) => item.kind === 'message' && item.role === 'assistant' && item.content === 'streaming'
+    )
+    expect(currentAssistant?.kind).toBe('message')
+
+    controller.handleEvent({
+      type: 'network_wait',
+      runId: 'r1',
+      attempt: 1,
+      maxAttempts: 5,
+      retryInMs: 1000
+    })
+
+    const priorAfter = controller.items.find((item) => item.id === priorAssistant?.id)
+    const currentAfter = controller.items.find((item) => item.id === currentAssistant?.id)
+    expect(priorAfter?.kind === 'message' ? priorAfter.reconnecting : undefined).toBeFalsy()
+    expect(currentAfter?.kind === 'message' ? currentAfter.reconnecting : undefined).toBe(true)
+  })
+
   it('skips advisory token_cost_hint from runNotice; keeps operational notices', () => {
     const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
 
@@ -240,5 +302,48 @@ describe('createChatStreamController', () => {
       omittedCount: 2
     })
     expect(controller.runNotice).toMatch(/2 MCP tools were deferred/)
+  })
+
+  it('merges unresolved writes_checkpoint rows on hydrate', async () => {
+    const listActiveRuns = vi.fn().mockResolvedValue({ ok: true, data: [] })
+    const loadRun = vi.fn().mockResolvedValue({
+      ok: true,
+      data: { messages: [], status: 'done' }
+    })
+    const loadRunEvents = vi.fn().mockResolvedValue({
+      ok: true,
+      data: [
+        {
+          at: '2026-01-01T00:00:00.000Z',
+          event: {
+            type: 'writes_checkpoint',
+            runId: 'r1',
+            checkpointId: 'cp-old',
+            files: [{ path: 'a.ts', action: 'modified', undoable: true }]
+          }
+        },
+        {
+          at: '2026-01-02T00:00:00.000Z',
+          event: {
+            type: 'writes_checkpoint',
+            runId: 'r1',
+            checkpointId: 'cp-new',
+            files: [{ path: 'b.ts', action: 'modified', undoable: true }]
+          }
+        }
+      ]
+    })
+    // @ts-expect-error test bridge
+    window.vyotiq.listActiveRuns = listActiveRuns
+    // @ts-expect-error test bridge
+    window.vyotiq.loadRun = loadRun
+    // @ts-expect-error test bridge
+    window.vyotiq.loadRunEvents = loadRunEvents
+
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+    await controller.syncFromDisk('r1')
+
+    expect(controller.writeCheckpoint?.checkpointId).toBe('cp-new')
+    expect(controller.writeCheckpoint?.files.map((f) => f.path).sort()).toEqual(['a.ts', 'b.ts'])
   })
 })

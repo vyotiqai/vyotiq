@@ -74,26 +74,6 @@ export function Sidebar({
 
   const clearSearch = (): void => onSessionQuery('')
 
-  const workspacesEnabled =
-    openPaths &&
-    onSwitchWorkspace &&
-    onCloseWorkspace &&
-    onAddWorkspace &&
-    workspaceHasBackgroundRun &&
-    activeRuns
-
-  const workspaceProps = workspacesEnabled
-    ? {
-        openPaths,
-        activePath: activePath ?? null,
-        activeRuns,
-        onSwitch: onSwitchWorkspace,
-        onClose: onCloseWorkspace,
-        onAdd: onAddWorkspace,
-        workspaceHasBackgroundRun
-      }
-    : null
-
   const widthClass = isDrawer
     ? SIDEBAR_WIDTH
     : isCollapsed

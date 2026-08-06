@@ -16,6 +16,7 @@ export const ToolCard = memo(function ToolCard({
   item,
   expanded,
   live = false,
+  keepOpen = false,
   onToggle,
   onLoadFullContent,
   mcpServerNames
@@ -24,14 +25,14 @@ export const ToolCard = memo(function ToolCard({
   expanded?: boolean
   /** Active-turn run is live — stay open like ToolGroup until the turn settles. */
   live?: boolean
+  keepOpen?: boolean
   onToggle?: (next: boolean) => void
   onLoadFullContent?: (toolCallId: string) => Promise<string | null>
   mcpServerNames?: ReadonlyMap<string, string>
 }) {
   const { tool } = item
   const [localOverride, setLocalOverride] = useState<boolean | null>(null)
-  // Open while running or while the active turn is live; fold to clamp when settled.
-  const isOpen = expanded ?? localOverride ?? (live || tool.status === 'running')
+  const isOpen = expanded ?? localOverride ?? (live || keepOpen || tool.status === 'running')
   const failed = tool.status === 'fail'
   const running = tool.status === 'running'
 

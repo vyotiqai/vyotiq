@@ -128,4 +128,26 @@ describe('toolWebFetch redirects', () => {
     expect(out).toContain('hello')
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
+
+  it('appends SPA shell warning for nav-heavy HTML', async () => {
+    const html =
+      '<html><body><header><nav><ul>' +
+      '<li><a href="/models">Models</a></li>' +
+      '<li><a href="/datasets">Datasets</a></li>' +
+      '<li><a href="/spaces">Spaces</a></li>' +
+      '<li><a href="/docs">Docs</a></li>' +
+      '<li><a href="/enterprise">Enterprise</a></li>' +
+      '</ul></nav></header></body></html>'
+    setPublicFetchForTests(
+      vi.fn(async () =>
+        new Response(html, {
+          status: 200,
+          headers: { 'content-type': 'text/html; charset=utf-8' }
+        })
+      )
+    )
+
+    const out = await toolWebFetch(`https://${PUBLIC_IP}/hf-model`)
+    expect(out).toMatch(/JavaScript-rendered/i)
+  })
 })

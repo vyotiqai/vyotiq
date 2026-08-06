@@ -1058,6 +1058,42 @@ describe('messagesToUiItems tool ok', () => {
     expect(tool?.kind).toBe('tool')
     if (tool?.kind === 'tool') expect(tool.tool.status).toBe('fail')
   })
+
+  it('keeps distinct rows when assistant/tool ids are empty (legacy DeepSeek)', () => {
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: 'go',
+        toolCalls: [
+          { id: '', name: 'web_fetch', arguments: '{"url":"https://a.example"}' },
+          { id: '', name: 'terminal', arguments: '{"command":"ls"}' }
+        ]
+      },
+      {
+        role: 'tool',
+        toolCallId: '',
+        toolName: 'web_fetch',
+        content: 'Tool call missing id',
+        ok: false
+      },
+      {
+        role: 'tool',
+        toolCallId: '',
+        toolName: 'terminal',
+        content: 'Tool call missing id',
+        ok: false
+      }
+    ])
+    const tools = items.filter((i) => i.kind === 'tool')
+    expect(tools).toHaveLength(2)
+    expect(new Set(tools.map((t) => t.id)).size).toBe(2)
+    if (tools[0]?.kind === 'tool' && tools[1]?.kind === 'tool') {
+      expect(tools[0].tool.name).toBe('web_fetch')
+      expect(tools[0].tool.status).toBe('fail')
+      expect(tools[1].tool.name).toBe('terminal')
+      expect(tools[1].tool.status).toBe('fail')
+    }
+  })
 })
 
 

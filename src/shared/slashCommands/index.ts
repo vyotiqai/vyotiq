@@ -22,6 +22,7 @@ export {
   formatMcpToolInvocation,
   parseMcpToolInvocation,
   mcpInvocationDisplayText,
+  slashChipFromContent,
   type ParsedSkillInvocation,
   type ParsedMcpToolInvocation
 } from './format'

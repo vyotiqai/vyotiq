@@ -22,8 +22,11 @@ import {
   isRetriableStreamFailure,
   shouldRetryProviderStreamError,
   shouldRetryThrownStreamError,
-  sleepStreamRetryBackoff
+  sleepStreamRetryBackoff,
+  streamRetryBackoffMs
 } from './streamRetry'
+import { isRetriableProviderMessage } from './providers/fetchWithRetry'
+import { isNetworkFailureCode, iterateNetworkWait } from './networkMonitor'
 import { isStreamIdleTimeoutError } from './providers/sse'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { resolveServiceTier } from '../../shared/domain/modelSelection'
@@ -88,14 +91,16 @@ import {
   tryBeginRunClosing,
   resetActiveRunsForTests,
   setStreamInterrupt,
-  streamSignalFor
+  streamSignalFor,
+  setLateWriteCheckpoint,
+  takePendingMode
 } from './runRegistry'
 import {
   appendEvent,
   appendMessage,
   createRun,
   loadCompaction,
-  loadEvents,
+  loadEventsAsync,
   loadMessages,
   loadStatus,
   loadToolCatalogSticky,
@@ -149,7 +154,7 @@ import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills
 import { beginWriteCheckpoint, finalizeWriteCheckpoint } from './checkpoints'
 import { isMcpToolPermitted } from '../../shared/utils/mcpToolPolicy'
 import { filterToolDefsForMode, modeSectionMarkdown } from './tools/modePolicy'
-import { dedupeToolCalls } from './dedupeToolCalls'
+import { dedupeToolCalls, ensureToolCallIds } from './dedupeToolCalls'
 import { existsSync, writeFileSync } from 'fs'
 import { join } from 'path'
 
@@ -168,7 +173,8 @@ const INCOMPLETE_MESSAGES: Record<Exclude<IncompleteReason, never>, string> = {
   empty_response: 'The model returned an empty response.',
   filtered: 'The provider stopped the response because of a content filter.',
   context_overflow:
-    'Context still exceeds the model window after compaction. Start a new chat or compact manually.'
+    'Context still exceeds the model window after compaction. Start a new chat or compact manually.',
+  network_interrupted: 'Connection lost. Retry when back online.'
 }
 
 /** True when two messages are the same role + normalized text (resume dedupe). */
@@ -224,6 +230,104 @@ function classifyIncompleteTurn(
   return undefined
 }
 
+/** Wait for connectivity and backoff before restarting a provider stream attempt. */
+async function* yieldStreamRetryWait(
+  runId: string,
+  invokeId: number,
+  step: number,
+  streamAttempt: number,
+  signal: AbortSignal,
+  runDir: string | undefined,
+  errorCode: string
+): AsyncGenerator<AgentEvent, void, unknown> {
+  try {
+    for await (const retryInMs of iterateNetworkWait({ signal })) {
+      const waitEv: AgentEvent = {
+        type: 'network_wait',
+        runId,
+        invokeId,
+        attempt: streamAttempt,
+        maxAttempts: MAX_STREAM_ATTEMPTS,
+        retryInMs,
+        code: errorCode,
+        step
+      }
+      if (runDir) appendEvent(runDir, waitEv)
+      yield waitEv
+    }
+  } catch (err) {
+    if (isAbortError(err)) throw err
+  }
+
+  const backoffMs = streamRetryBackoffMs(streamAttempt)
+  const backoffEv: AgentEvent = {
+    type: 'network_wait',
+    runId,
+    invokeId,
+    attempt: streamAttempt,
+    maxAttempts: MAX_STREAM_ATTEMPTS,
+    retryInMs: backoffMs,
+    code: errorCode,
+    step
+  }
+  if (runDir) appendEvent(runDir, backoffEv)
+  yield backoffEv
+  await sleepStreamRetryBackoff(signal, streamAttempt)
+}
+
+async function* yieldNetworkInterruptedTerminal(
+  runId: string,
+  invokeId: number,
+  step: number,
+  runDir: string | undefined,
+  messages: ChatMessage[],
+  assistantText: string,
+  thinkingText: string,
+  stepReasoningState: ProviderReasoningState | undefined,
+  toolCalls: ToolCall[],
+  streamedToolCalls: Map<string, ToolCall>,
+  errorMessage: string,
+  errorCode: string,
+  flushWriteCheckpoint: () => Generator<AgentEvent, void, unknown>,
+  writeStatus: (patch: { status: 'error'; error: string }) => void
+): AsyncGenerator<AgentEvent, void, unknown> {
+  if (!runDir) return
+  yield* flushPartialAssistant(
+    runId,
+    runDir,
+    messages,
+    assistantText,
+    thinkingText,
+    stepReasoningState,
+    toolCalls,
+    streamedToolCalls,
+    step,
+    'interrupted'
+  )
+  const incompleteEv: AgentEvent = {
+    type: 'incomplete',
+    runId,
+    invokeId,
+    reason: 'network_interrupted',
+    step,
+    message: INCOMPLETE_MESSAGES.network_interrupted
+  }
+  appendEvent(runDir, incompleteEv)
+  yield incompleteEv
+  yield { type: 'error', runId, invokeId, message: errorMessage, code: errorCode }
+  yield* flushWriteCheckpoint()
+  yield { type: 'status', runId, invokeId, status: 'error' }
+  writeStatus({ status: 'error', error: errorMessage })
+  appendEvent(runDir, {
+    type: 'error',
+    runId,
+    invokeId,
+    message: errorMessage,
+    code: errorCode
+  })
+  appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+}
+
 export function createRunId(): string {
   return randomUUID()
 }
@@ -262,6 +366,31 @@ function* applyDrainedFollowUps(
   }
   appendEvent(runDir, ev)
   yield ev
+}
+
+/**
+ * Apply composer mode from chatFollowUp before the next model/tool catalog step.
+ * Returns the mode when it changed so the caller can update its local agentMode.
+ */
+function* applyPendingModeChange(
+  runId: string,
+  runDir: string,
+  invokeId: number,
+  currentMode: AgentInteractionMode,
+  writeStatus: (patch: Parameters<typeof updateStatus>[1]) => void
+): Generator<AgentEvent, AgentInteractionMode> {
+  const pending = takePendingMode(runId)
+  if (pending == null || pending === currentMode) return currentMode
+  writeStatus({ mode: pending })
+  const ev: AgentEvent = {
+    type: 'mode_changed',
+    runId,
+    mode: pending,
+    invokeId
+  }
+  appendEvent(runDir, ev)
+  yield ev
+  return pending
 }
 
 /** Notify UI and clear queued follow-ups that will never be applied. */
@@ -336,11 +465,31 @@ function* emitEventAppendFailureNotice(
 }
 
 /**
- * Persist whatever the model streamed before the step was interrupted, plus stubs
- * for tool calls that never ran. Without this the transcript loses text the user
- * already watched arrive, because assistant messages are only written on a
- * completed step.
+ * Normalize streamed + completed tool calls (finished step or interrupted flush).
  */
+function resolveStepToolCalls(
+  completed: ToolCall[],
+  streamed: Map<string, ToolCall>,
+  step: number
+): ToolCall[] {
+  const base =
+    completed.length > 0
+      ? completed
+      : [...streamed.values()].filter((call) => call.name && call.name !== 'tool')
+  return ensureToolCallIds(dedupeToolCalls(base), { step, prefix: 'call' })
+}
+
+function accumulateStreamedToolDelta(
+  streamed: Map<string, ToolCall>,
+  toolCallId: string,
+  delta: { name?: string; arguments?: string }
+): void {
+  const existing = streamed.get(toolCallId) ?? { id: toolCallId, name: '', arguments: '' }
+  if (delta.name) existing.name += delta.name
+  if (delta.arguments) existing.arguments += delta.arguments
+  streamed.set(toolCallId, existing)
+}
+
 function* flushPartialAssistant(
   runId: string,
   runDir: string,
@@ -348,9 +497,12 @@ function* flushPartialAssistant(
   assistantText: string,
   thinkingText: string,
   reasoningState: ProviderReasoningState | undefined,
-  toolCalls: ToolCall[],
+  completedToolCalls: ToolCall[],
+  streamedToolCalls: Map<string, ToolCall>,
+  step: number,
   interruption: 'cancelled' | 'interrupted'
 ): Generator<AgentEvent> {
+  const toolCalls = resolveStepToolCalls(completedToolCalls, streamedToolCalls, step)
   const scrubbedText = stripToolShapedAssistantText(assistantText)
   if (!scrubbedText && !thinkingText && toolCalls.length === 0) return
 
@@ -376,8 +528,8 @@ function* flushPartialAssistant(
     ...(thinkingText ? { thinking: thinkingText } : {}),
     ...(mappedCalls.length ? { toolCalls: mappedCalls } : {})
   }
-  yield assistantEv
   appendEvent(runDir, assistantEv)
+  yield assistantEv
 
   for (const call of toolCalls) {
     const unfinished: ChatMessage = {
@@ -398,8 +550,8 @@ function* flushPartialAssistant(
       ok: false,
       content: stub
     }
-    yield toolResultEventForIpc(resultEv)
     appendEvent(runDir, toolResultEventForPersistence(resultEv))
+    yield toolResultEventForIpc(resultEv)
   }
 }
 
@@ -448,12 +600,13 @@ export async function* runAgent(input: {
     if (!runDir || !isCurrentInvoke(runId, invokeId)) return
     await flushStepArtifacts()
     if (!force && step - lastReceiptPersistedStep < RECEIPT_PERSIST_EVERY_STEPS) return
+    const events = await loadEventsAsync(runDir, runId)
     writeRunReceiptBestEffort({
       runDir,
       runId,
       loadStatus,
       loadMessages: () => loadMessages(workspace, runId),
-      loadEvents,
+      loadEvents: () => events,
       readContract
     })
     lastReceiptPersistedStep = step
@@ -518,10 +671,10 @@ export async function* runAgent(input: {
       await syncMessagesAsync(runDir, messages)
       // Seed cumulative billed totals from durable step_usage so resume does not
       // undercount vs the full events.jsonl series (OTel: accumulate per invocation).
-      costTotals = stepUsageTotalsFromPersistedEvents(loadEvents(runDir, runId))
+      costTotals = stepUsageTotalsFromPersistedEvents(await loadEventsAsync(runDir, runId))
     } else {
       messages = (input.messages ?? []).map((m) => ({ ...m }))
-      runDir = createRun(workspace, runId, goal)
+      runDir = createRun(workspace, runId, goal, agentMode)
       for (const m of messages) appendMessage(runDir, m)
       await flushMessageAppends(runDir)
     }
@@ -596,13 +749,14 @@ export async function* runAgent(input: {
     appendEvent(runDir, { type: 'status', runId, invokeId, status: 'running' })
     // Flush so interim receipt sees invokeId (status patches are coalesced).
     await flushStatusWrites(runDir)
+    const startEvents = await loadEventsAsync(runDir, runId)
     // Interim receipt so PlanPanel does not keep a prior invoke's done receipt while live.
     writeRunReceiptBestEffort({
       runDir,
       runId,
       loadStatus,
       loadMessages: () => loadMessages(workspace, runId),
-      loadEvents,
+      loadEvents: () => startEvents,
       readContract
     })
 
@@ -688,6 +842,8 @@ export async function* runAgent(input: {
       }
       const summaryChanged =
         compaction?.summary !== record.summary || compaction?.createdAt !== record.createdAt
+      const foldedGrew =
+        (record.foldedMessages ?? 0) > (compaction?.foldedMessages ?? 0)
       if (!saveCompaction(runDir, record)) {
         logger.warn('Compaction not persisted; keeping prior in-memory record', {
           scope: 'agent',
@@ -696,15 +852,28 @@ export async function* runAgent(input: {
         return { saved: false, event: null }
       }
       compaction = record
-      // UI notice only when a real summary changed, not trim watermarks / folded bumps
-      if (!summaryChanged || isTrimWatermarkCompaction(record)) {
+      // Trim watermarks still notify the UI when history was folded.
+      if (isTrimWatermarkCompaction(record)) {
+        if (!foldedGrew && !summaryChanged) return { saved: true, event: null }
+        const ev: AgentEvent = {
+          type: 'compaction',
+          runId,
+          summary: 'Context trimmed',
+          tokenEstimate: record.tokenEstimate,
+          kind: 'trim'
+        }
+        appendEvent(runDir, ev)
+        return { saved: true, event: ev }
+      }
+      if (!summaryChanged) {
         return { saved: true, event: null }
       }
       const ev: AgentEvent = {
         type: 'compaction',
         runId,
         summary: record.summary,
-        tokenEstimate: record.tokenEstimate
+        tokenEstimate: record.tokenEstimate,
+        kind: 'summary'
       }
       appendEvent(runDir, ev)
       return { saved: true, event: ev }
@@ -994,6 +1163,13 @@ export async function* runAgent(input: {
       if (controller.signal.aborted) break
       // Inject any queued user follow-ups before the next model call.
       yield* applyDrainedFollowUps(runId, runDir, messages)
+      agentMode = yield* applyPendingModeChange(
+        runId,
+        runDir,
+        invokeId,
+        agentMode,
+        writeStatus
+      )
       try {
         await flushMessageAppends(runDir)
       } catch {
@@ -1059,6 +1235,8 @@ export async function* runAgent(input: {
       let stepStopReason: StopReason | undefined
       let stepMalformedChunks = 0
       const toolCalls: ToolCall[] = []
+      const streamedToolCalls = new Map<string, ToolCall>()
+      const streamedToolCallIndex = new Map<number, string>()
       const liveForwardedToolIds = new Set<string>()
       const persistedLiveToolIds = new Set<string>()
       const thinkingEnabled =
@@ -1163,7 +1341,9 @@ export async function* runAgent(input: {
       // compactionCountThisRun tracks LLM summary compactions only — emergency
       // trim watermarks shrink messages without emitting a compaction event.
       if (compactionEv) {
-        compactionCountThisRun++
+        if (compactionEv.type === 'compaction' && compactionEv.kind !== 'trim') {
+          compactionCountThisRun++
+        }
         yield compactionEv
       }
       // Working-set / foldedMessages advance only after a successful watermark save
@@ -1400,6 +1580,9 @@ export async function* runAgent(input: {
       let streamAttempt = 0
       let streamFinished = false
       let streamSteered = false
+      let streamGotDone = false
+      let lastStreamFailureMessage = ''
+      let lastStreamFailureCode = 'PROVIDER_STREAM'
 
       while (!streamFinished && streamAttempt < MAX_STREAM_ATTEMPTS) {
         streamAttempt++
@@ -1419,8 +1602,11 @@ export async function* runAgent(input: {
         stepStopReason = undefined
         stepMalformedChunks = 0
         toolCalls.length = 0
+        streamedToolCalls.clear()
+        streamedToolCallIndex.clear()
         liveForwardedToolIds.clear()
         streamSteered = false
+        streamGotDone = false
 
         let retryStream = false
         try {
@@ -1478,9 +1664,29 @@ export async function* runAgent(input: {
             }
           } else if (chunk.type === 'tool_call_delta' && chunk.toolCallDelta) {
             const delta = chunk.toolCallDelta
-            const toolCallId = delta.id ?? `pending_${delta.index}`
+            let toolCallId = delta.id?.trim() || ''
+            if (!toolCallId && typeof delta.index === 'number') {
+              toolCallId = streamedToolCallIndex.get(delta.index) ?? ''
+            }
+            if (!toolCallId) {
+              toolCallId =
+                typeof delta.index === 'number'
+                  ? `pending_${delta.index}`
+                  : `pending_${streamedToolCalls.size}`
+            }
+            if (typeof delta.index === 'number') {
+              if (delta.id?.trim()) {
+                streamedToolCallIndex.set(delta.index, delta.id.trim())
+              } else if (!streamedToolCallIndex.has(delta.index)) {
+                streamedToolCallIndex.set(delta.index, toolCallId)
+              }
+            }
             liveForwardedToolIds.add(toolCallId)
             const argumentsDelta = delta.arguments ?? ''
+            accumulateStreamedToolDelta(streamedToolCalls, toolCallId, {
+              name: delta.name,
+              arguments: argumentsDelta
+            })
             persistLiveToolChrome(toolCallId, delta.name, argumentsDelta)
             yield {
               type: 'tool_call_delta',
@@ -1490,12 +1696,16 @@ export async function* runAgent(input: {
               argumentsDelta
             }
           } else if (chunk.type === 'tool_call' && chunk.toolCall) {
-            toolCalls.push(chunk.toolCall)
+            const [ensured] = ensureToolCallIds([chunk.toolCall], {
+              step,
+              prefix: 'call'
+            })
+            const tc = ensured ?? chunk.toolCall
+            toolCalls.push(tc)
             // Providers that only emit complete tool_call chunks (e.g. Gemini)
             // never produce tool_call_delta; live-forward so the UI can show
             // tool chrome before assistant_message. Args go out once per id so
             // applyToolCallDelta does not concatenate the full JSON twice.
-            const tc = chunk.toolCall
             const already = liveForwardedToolIds.has(tc.id)
             liveForwardedToolIds.add(tc.id)
             const argumentsDelta = already ? '' : (tc.arguments ?? '')
@@ -1508,6 +1718,7 @@ export async function* runAgent(input: {
               argumentsDelta
             }
           } else if (chunk.type === 'done') {
+            streamGotDone = true
             if (chunk.reasoningState) stepReasoningState = chunk.reasoningState
             if (chunk.stopReason) stepStopReason = chunk.stopReason
             if (chunk.malformedChunks) {
@@ -1714,6 +1925,8 @@ export async function* runAgent(input: {
                 ? chunk.errorCode
                 : 'PROVIDER_STREAM'
             if (shouldRetryProviderStreamError(message, streamAttempt)) {
+              lastStreamFailureMessage = message
+              lastStreamFailureCode = errorCode
               logger.warn('Provider stream error (retrying)', {
                 scope: 'agent',
                 code: errorCode,
@@ -1733,6 +1946,25 @@ export async function* runAgent(input: {
               step,
               message: message.slice(0, 280)
             })
+            if (isNetworkFailureCode(errorCode)) {
+              yield* yieldNetworkInterruptedTerminal(
+                runId,
+                invokeId,
+                step,
+                runDir,
+                messages,
+                assistantText,
+                thinkingText,
+                stepReasoningState,
+                toolCalls,
+                streamedToolCalls,
+                message,
+                errorCode,
+                flushWriteCheckpoint,
+                writeStatus
+              )
+              return
+            }
             yield* flushPartialAssistant(
               runId,
               runDir,
@@ -1740,7 +1972,9 @@ export async function* runAgent(input: {
               assistantText,
               thinkingText,
               stepReasoningState,
-              dedupeToolCalls(toolCalls),
+              toolCalls,
+              streamedToolCalls,
+              step,
               'interrupted'
             )
             yield { type: 'error', runId, invokeId, message, code: errorCode }
@@ -1776,7 +2010,9 @@ export async function* runAgent(input: {
               assistantText,
               thinkingText,
               stepReasoningState,
-              dedupeToolCalls(toolCalls),
+              toolCalls,
+              streamedToolCalls,
+              step,
               'interrupted'
             )
             yield { type: 'error', runId, invokeId, message, code: 'PROVIDER_TIMEOUT' }
@@ -1794,6 +2030,8 @@ export async function* runAgent(input: {
             return
           }
           if (shouldRetryThrownStreamError(err, streamAttempt)) {
+            lastStreamFailureMessage = err instanceof Error ? err.message : String(err)
+            lastStreamFailureCode = 'PROVIDER_STREAM'
             logger.warn('Provider stream disconnected (retrying)', {
               scope: 'agent',
               code: 'PROVIDER_STREAM',
@@ -1803,12 +2041,21 @@ export async function* runAgent(input: {
               attempt: streamAttempt,
               err
             })
-            await sleepStreamRetryBackoff(streamSignalFor(runId, controller.signal))
+            yield* yieldStreamRetryWait(
+              runId,
+              invokeId,
+              step,
+              streamAttempt,
+              streamSignalFor(runId, controller.signal),
+              runDir,
+              'PROVIDER_STREAM'
+            )
             continue
           }
-          // Exhausted retriable thrown failures → fall through to terminal PROVIDER_STREAM
-          // (same as inline chunk.error path), not outer AGENT_LOOP.
+          // Exhausted retriable thrown failures → fall through to terminal handling below.
           if (!isAbortError(err) && isRetriableStreamFailure(err)) {
+            lastStreamFailureMessage = err instanceof Error ? err.message : String(err)
+            lastStreamFailureCode = 'PROVIDER_STREAM'
             break
           }
           // Providers rethrow AbortError from SSE readers — treat like an in-loop cancel.
@@ -1822,7 +2069,9 @@ export async function* runAgent(input: {
               assistantText,
               thinkingText,
               stepReasoningState,
-              dedupeToolCalls(toolCalls),
+              toolCalls,
+              streamedToolCalls,
+              step,
               'interrupted'
             )
             throw err
@@ -1838,22 +2087,70 @@ export async function* runAgent(input: {
         }
 
         if (retryStream) {
-          await sleepStreamRetryBackoff(streamSignalFor(runId, controller.signal))
+          yield* yieldStreamRetryWait(
+            runId,
+            invokeId,
+            step,
+            streamAttempt,
+            streamSignalFor(runId, controller.signal),
+            runDir,
+            'PROVIDER_STREAM'
+          )
           continue
         }
         streamFinished = true
       }
 
-      // Exhausted retriable stream attempts — do not treat as a normal empty turn.
+      // Soft-steer may end the provider generator cleanly (return after abort)
+      // without throwing — still treat as steered so partial tools are not
+      // fingerprinted for identical-step LOOP_SAFETY. Skip when a `done` chunk
+      // already arrived (follow-up queued after a complete stream step).
+      if (
+        !streamSteered &&
+        !streamGotDone &&
+        !controller.signal.aborted &&
+        (hasPendingFollowUps(runId) || stepSoftAbort.signal.aborted)
+      ) {
+        streamSteered = true
+      }
+
+      // Exhausted retriable stream attempts — network failures get Continue UX.
       if (!streamFinished && !controller.signal.aborted && !streamSteered) {
-        const message = `Provider stream failed after ${MAX_STREAM_ATTEMPTS} attempts`
+        const message =
+          lastStreamFailureMessage.trim() ||
+          `Provider stream failed after ${MAX_STREAM_ATTEMPTS} attempts`
+        const errorCode = lastStreamFailureCode || 'PROVIDER_STREAM'
+        const networkRelated =
+          isNetworkFailureCode(errorCode) ||
+          (lastStreamFailureMessage.trim().length > 0 &&
+            isRetriableProviderMessage(lastStreamFailureMessage))
         logger.error(message, {
           scope: 'agent',
-          code: 'PROVIDER_STREAM',
+          code: errorCode,
           correlationId: runId,
           provider: providerId,
-          step
+          step,
+          networkRelated
         })
+        if (networkRelated) {
+          yield* yieldNetworkInterruptedTerminal(
+            runId,
+            invokeId,
+            step,
+            runDir,
+            messages,
+            assistantText,
+            thinkingText,
+            stepReasoningState,
+            toolCalls,
+            streamedToolCalls,
+            message,
+            errorCode,
+            flushWriteCheckpoint,
+            writeStatus
+          )
+          return
+        }
         yield* flushPartialAssistant(
           runId,
           runDir,
@@ -1861,14 +2158,22 @@ export async function* runAgent(input: {
           assistantText,
           thinkingText,
           stepReasoningState,
-          dedupeToolCalls(toolCalls),
+          toolCalls,
+          streamedToolCalls,
+          step,
           'interrupted'
         )
+        yield { type: 'error', runId, invokeId, message, code: errorCode }
         yield* flushWriteCheckpoint()
-        yield { type: 'error', runId, invokeId, message, code: 'PROVIDER_STREAM' }
         yield { type: 'status', runId, invokeId, status: 'error' }
         writeStatus({ status: 'error', error: message })
-        appendEvent(runDir, { type: 'error', runId, invokeId, message, code: 'PROVIDER_STREAM' })
+        appendEvent(runDir, {
+          type: 'error',
+          runId,
+          invokeId,
+          message,
+          code: errorCode
+        })
         appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
         return
       }
@@ -1882,46 +2187,17 @@ export async function* runAgent(input: {
           assistantText,
           thinkingText,
           stepReasoningState,
-          dedupeToolCalls(toolCalls),
+          toolCalls,
+          streamedToolCalls,
+          step,
           'cancelled'
         )
         break
       }
 
       // Mid-stream steer: keep the turn alive, flush partial output, then inject.
+      // Do not bump identicalStepStreak here — partial tool calls never executed.
       if (streamSteered) {
-        const steeredCalls = dedupeToolCalls(toolCalls)
-        if (steeredCalls.length > 0) {
-          const stepFingerprint = stepToolCallsFingerprint(steeredCalls)
-          identicalStepStreak = nextIdenticalStepStreak(
-            lastStepFingerprint,
-            identicalStepStreak,
-            stepFingerprint
-          )
-          lastStepFingerprint = stepFingerprint
-          const repeatStop = loopStopDecision({
-            step,
-            consecutiveToolFailureSteps,
-            identicalStepStreak
-          })
-          if (repeatStop) {
-            yield* flushPartialAssistant(
-              runId,
-              runDir,
-              messages,
-              assistantText,
-              thinkingText,
-              stepReasoningState,
-              steeredCalls,
-              'interrupted'
-            )
-            yield* stopForLoopSafety(repeatStop)
-            return
-          }
-        } else {
-          identicalStepStreak = 0
-          lastStepFingerprint = ''
-        }
         yield* flushPartialAssistant(
           runId,
           runDir,
@@ -1929,14 +2205,36 @@ export async function* runAgent(input: {
           assistantText,
           thinkingText,
           stepReasoningState,
-          dedupeToolCalls(toolCalls),
+          toolCalls,
+          streamedToolCalls,
+          step,
           'interrupted'
         )
+        const steeredCalls = resolveStepToolCalls(toolCalls, streamedToolCalls, step)
+        if (steeredCalls.length > 0) {
+          const stepFingerprint = stepToolCallsFingerprint(steeredCalls)
+          const nextStreak = nextIdenticalStepStreak(
+            lastStepFingerprint,
+            identicalStepStreak,
+            stepFingerprint
+          )
+          const steerStop = loopStopDecision({
+            step,
+            consecutiveToolFailureSteps,
+            identicalStepStreak: nextStreak
+          })
+          if (steerStop) {
+            identicalStepStreak = nextStreak
+            lastStepFingerprint = stepFingerprint
+            yield* stopForLoopSafety(steerStop)
+            return
+          }
+        }
         yield* applyDrainedFollowUps(runId, runDir, messages)
         continue
       }
 
-      const uniqueToolCalls = dedupeToolCalls(toolCalls)
+      const uniqueToolCalls = resolveStepToolCalls(toolCalls, streamedToolCalls, step)
 
       if (uniqueToolCalls.length > 0) {
         const stepFingerprint = stepToolCallsFingerprint(uniqueToolCalls)
@@ -1956,6 +2254,8 @@ export async function* runAgent(input: {
             thinkingText,
             stepReasoningState,
             uniqueToolCalls,
+            streamedToolCalls,
+            step,
             'interrupted'
           )
           yield* stopForLoopSafety(repeatStop)
@@ -2410,30 +2710,33 @@ export async function* runAgent(input: {
           const meta = finalizeWriteCheckpoint(runDir)
           checkpointFlushed = true
           if (meta) {
-            appendEvent(runDir, {
+            const ev: AgentEvent = {
               type: 'writes_checkpoint',
               runId,
               checkpointId: meta.id,
               files: meta.files
-            })
+            }
+            appendEvent(runDir, ev)
+            setLateWriteCheckpoint(runId, ev)
           }
         }
         await flushMessageAppends(runDir)
         await flushEventAppends(runDir)
         await flushStatusWrites(runDir)
+        const finalEvents = await loadEventsAsync(runDir, runId)
         const receipt = writeRunReceiptBestEffort({
           runDir,
           runId,
           loadStatus,
           loadMessages: () => loadMessages(workspace, runId),
-          loadEvents,
+          loadEvents: () => finalEvents,
           readContract
         })
         // Observational AHE sidecars — best-effort; must not block receipt success.
         writeTrajectoryArtifactsBestEffort({
           runDir,
           runId,
-          loadEvents,
+          loadEvents: () => finalEvents,
           receipt
         })
         if (costTotals.steps > 0) {

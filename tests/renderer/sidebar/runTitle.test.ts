@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { namedGitBranch } from '@shared/utils/gitBranch'
-import { runTitle, runTooltip, stripGoalMarkdown } from '@renderer/app/sidebar/runTitle'
+import { runTitle, runTooltip, runSearchText, stripGoalMarkdown } from '@renderer/app/sidebar/runTitle'
 import type { RunSummary } from '@shared/ipc'
 
 describe('namedGitBranch', () => {
@@ -45,5 +45,11 @@ describe('runTitle', () => {
 
   it('falls back to runId when goal missing', () => {
     expect(runTitle(run(undefined))).toBe('abcdefgh')
+  })
+
+  it('search text matches stripped display title', () => {
+    const goal = '### Fix login flow'
+    expect(runSearchText(run(goal))).toBe('fix login flow')
+    expect(runSearchText(run(goal)).includes('fix login')).toBe(true)
   })
 })

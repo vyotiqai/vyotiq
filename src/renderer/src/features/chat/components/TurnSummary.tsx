@@ -38,10 +38,18 @@ export const TurnSummary = memo(function TurnSummary({
     [turnElapsedMs]
   )
 
-  const phaseLabel = turnSummaryActiveLabel(activity, collapsed)
+  const phaseLabel = turnSummaryActiveLabel(activity)
   const activeText = turnDuration ? `${phaseLabel} · ${turnDuration}` : phaseLabel
 
-  const doneLabel = turnDuration ? `Worked for ${turnDuration}` : 'Worked'
+  const doneLabel = span.failed
+    ? span.failureLabel
+      ? `${span.failureLabel}${turnDuration ? ` · ${turnDuration}` : ''}`
+      : turnDuration
+        ? `Failed · ${turnDuration}`
+        : 'Failed'
+    : turnDuration
+      ? `Worked for ${turnDuration}`
+      : 'Worked'
   const accessibleName = active
     ? collapsed
       ? activeText
@@ -58,13 +66,17 @@ export const TurnSummary = memo(function TurnSummary({
     >
       {active ? (
         <>
-          <TextShimmer className="shrink-0">{phaseLabel}</TextShimmer>
+          {collapsed ? (
+            <TextShimmer className="shrink-0">{phaseLabel}</TextShimmer>
+          ) : (
+            <span className="shrink-0">{phaseLabel}</span>
+          )}
           {turnDuration ? (
             <span className="shrink-0 tabular-nums">· {turnDuration}</span>
           ) : null}
         </>
       ) : (
-        <span className="shrink-0 tabular-nums">{doneLabel}</span>
+        <span className={cn('shrink-0 tabular-nums', span.failed && 'text-danger')}>{doneLabel}</span>
       )}
       <Icon
         name="chevronRight"

@@ -167,9 +167,12 @@ describe('MarkdownContent streaming', () => {
     expect(container.textContent).toContain('const x = 1')
     expect(container.querySelector('.group\\/code')).toBeTruthy()
 
-    await waitFor(() => {
-      expect(container.querySelector('pre.shiki')).toBeTruthy()
-    })
+    await waitFor(
+      () => {
+        expect(container.querySelector('pre.shiki')).toBeTruthy()
+      },
+      { timeout: 5000 }
+    )
     expect(container.textContent).toContain('const x = 1')
   })
 

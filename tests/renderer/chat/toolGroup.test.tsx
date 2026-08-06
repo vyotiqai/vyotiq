@@ -98,7 +98,19 @@ describe('ToolGroup', () => {
     expect(screen.getByText(/b\.ts/)).toBeTruthy()
   })
 
-  it('folds automatically when the live run ends', async () => {
+  it('keeps the nested list open when the live run ends with keepOpen', async () => {
+    const tools = [
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
+      toolItem('t2', 'read', 'b.ts', 'done')
+    ]
+    const { rerender } = render(<ToolGroup tools={tools} live />)
+    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
+
+    rerender(<ToolGroup tools={tools} live={false} keepOpen />)
+    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
+  })
+
+  it('folds when settle keepOpen is off and the run is not live', async () => {
     const tools = [
       toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
       toolItem('t2', 'read', 'b.ts', 'done')
@@ -268,6 +280,18 @@ describe('ToolGroup', () => {
     render(<ToolGroup tools={tools} groupExpanded />)
     // Pattern is the nested row title; body must not repeat /TODO/ chip.
     expect(screen.getAllByText(/TODO/).length).toBe(1)
+  })
+
+  it('honors persisted groupExpanded=false for nested tools in a multi-tool group', () => {
+    const tools = [
+      toolItem('t1', 'todo_write', 'Plan', 'done', { startedAt: 1_000, endedAt: 2_000 }),
+      toolItem('t2', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 })
+    ]
+    tools[0]!.tool.content = '{"items":[]}'
+    tools[1]!.tool.content = 'file contents'
+    tools[0]!.groupExpanded = false
+    render(<ToolGroup tools={tools} groupExpanded={false} />)
+    expect(screen.queryByText('file contents')).toBeNull()
   })
 
   it('honors persisted groupExpanded=false while a tool is still running', () => {

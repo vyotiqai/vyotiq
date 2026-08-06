@@ -4,6 +4,7 @@ import * as http from 'http'
 import * as https from 'https'
 import { isIP } from 'net'
 import { dirname } from 'path'
+import { isRetriableToolNetworkError } from '../networkMonitor'
 import type { IncomingMessage, RequestOptions } from 'http'
 
 export const WEB_FETCH_MAX_BYTES = 2 * 1024 * 1024
@@ -322,18 +323,37 @@ function decodeEntities(text: string): string {
     .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
 }
 
+/** Strip tags and collapse whitespace — used to judge whether a region has substance. */
+function stripHtmlTags(html: string): string {
+  return decodeEntities(html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')).trim()
+}
+
 /**
- * Convert HTML to a rough markdown skeleton.
- *
- * The point is to keep the structure a reader relies on — headings, links, list
- * items, code — while dropping the markup that would otherwise burn context.
+ * Drop site chrome and prefer main landmarks before markdown conversion.
+ * SPA shells (e.g. Hugging Face) ship most nav in static HTML; stripping
+ * header/nav/footer keeps the converter from burning the char budget on links.
  */
-export function htmlToMarkdown(html: string): string {
+export function extractMainHtml(html: string): string {
   let text = html
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<(script|style|noscript|svg|iframe)[\s\S]*?<\/\1>/gi, '')
 
-  text = text
+  text = text.replace(/<(nav|header|footer|aside)[^>]*>[\s\S]*?<\/\1>/gi, '')
+
+  const landmark =
+    text.match(/<main[^>]*>([\s\S]*?)<\/main>/i) ??
+    text.match(/<article[^>]*>([\s\S]*?)<\/article>/i) ??
+    text.match(/<[^>]+role=["']main["'][^>]*>([\s\S]*?)<\/[^>]+>/i)
+
+  if (landmark?.[1] && stripHtmlTags(landmark[1]).length > 200) {
+    return landmark[1]
+  }
+
+  return text
+}
+
+function htmlFragmentToMarkdown(html: string): string {
+  let text = html
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|section|article|tr|li|h[1-6])>/gi, '\n')
     .replace(/<li[^>]*>/gi, '- ')
@@ -352,9 +372,87 @@ export function htmlToMarkdown(html: string): string {
   return decodeEntities(text)
     .split('\n')
     .map((line) => line.replace(/[ \t]+/g, ' ').trimEnd())
+    .filter((line) => {
+      const trimmed = line.trim()
+      if (!trimmed) return false
+      // Icon-only <li> elements become empty bullets after tag stripping.
+      return trimmed !== '-' && trimmed !== '- '
+    })
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
+}
+
+/** Common SPA nav labels that dominate shell HTML when main content is client-rendered. */
+const SPA_NAV_LABELS = new Set([
+  'models',
+  'datasets',
+  'spaces',
+  'docs',
+  'enterprise',
+  'pricing',
+  'tasks',
+  'collections',
+  'huggingchat',
+  'buckets',
+  'buckets new',
+  'login',
+  'sign up',
+  'log in',
+  'home',
+  'website'
+])
+
+/**
+ * Detect markdown that is mostly site chrome with little page-specific prose.
+ * Returns a warning paragraph when the fetch likely needs browser snapshot/API.
+ */
+export function spaShellWarning(markdown: string): string | null {
+  const lines = markdown
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (lines.length < 4) return null
+
+  const navHits = lines.filter((line) => {
+    const label = line
+      .replace(/^-\s*/, '')
+      .replace(/^\[(.+)\]\([^)]+\)$/, '$1')
+      .trim()
+      .toLowerCase()
+    return SPA_NAV_LABELS.has(label)
+  }).length
+
+  const proseLines = lines.filter(
+    (line) => !line.startsWith('#') && !line.startsWith('-') && line.length >= 48
+  )
+  const linkish = lines.filter((line) => /^\[.+\]\(.+\)$/.test(line) || /^-\s*\[.+\]/.test(line))
+
+  if (navHits >= 4 && proseLines.length < 4) {
+    return (
+      'Warning: this page looks like a JavaScript-rendered shell (mostly site navigation, little main content). ' +
+      'Static fetch cannot see the rendered model card. Use browser_snapshot, a direct API/file URL, or a terminal download instead of treating this output as the page body.'
+    )
+  }
+
+  if (linkish.length >= 6 && proseLines.length < 3 && lines.length < 40) {
+    return (
+      'Warning: fetched content is mostly navigation links with little substantive text. ' +
+      'The page may require client-side rendering — use browser tools or download artifacts directly.'
+    )
+  }
+
+  return null
+}
+
+/**
+ * Convert HTML to a rough markdown skeleton.
+ *
+ * The point is to keep the structure a reader relies on — headings, links, list
+ * items, code — while dropping the markup that would otherwise burn context.
+ */
+export function htmlToMarkdown(html: string): string {
+  return htmlFragmentToMarkdown(extractMainHtml(html))
 }
 
 export type WebFetchOptions = {
@@ -362,8 +460,29 @@ export type WebFetchOptions = {
   maxChars?: number
 }
 
+const WEB_FETCH_RETRY_ATTEMPTS = 3
+
 /** Fetch a public URL and return readable text, size- and time-capped. */
 export async function toolWebFetch(
+  rawUrl: string,
+  options: WebFetchOptions = {},
+  signal?: AbortSignal
+): Promise<string> {
+  let lastError: unknown
+  for (let attempt = 1; attempt <= WEB_FETCH_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await toolWebFetchOnce(rawUrl, options, signal)
+    } catch (err) {
+      lastError = err
+      if (signal?.aborted) throw err
+      if (!isRetriableToolNetworkError(err) || attempt >= WEB_FETCH_RETRY_ATTEMPTS) throw err
+      await new Promise((resolve) => setTimeout(resolve, 250 * attempt))
+    }
+  }
+  throw lastError ?? new Error('web_fetch failed')
+}
+
+async function toolWebFetchOnce(
   rawUrl: string,
   options: WebFetchOptions = {},
   signal?: AbortSignal
@@ -394,8 +513,15 @@ export async function toolWebFetch(
     const body = buffer.toString('utf8')
     const text = /html/i.test(contentType) ? htmlToMarkdown(body) : body.trim()
     const clipped = text.length > maxChars ? `${text.slice(0, maxChars)}\n… (truncated)` : text
+    let spaWarning = /html/i.test(contentType) ? spaShellWarning(clipped) : null
+    if (!spaWarning && /html/i.test(contentType) && clipped.trim().length < 120) {
+      spaWarning =
+        'Warning: static fetch produced little or no readable content (the page may be JavaScript-rendered). ' +
+        'Use browser_snapshot, a direct API/file URL, or a terminal download instead.'
+    }
+    const bodyOut = spaWarning ? `${clipped}\n\n${spaWarning}` : clipped
 
-    return [`# ${currentUrl.href}`, '', clipped].join('\n')
+    return [`# ${currentUrl.href}`, '', bodyOut].join('\n')
   } catch (err) {
     if (controller.signal.aborted && !signal?.aborted) {
       throw new Error(`Timed out after ${timeoutMs}ms fetching ${currentUrl?.href ?? rawUrl}`)

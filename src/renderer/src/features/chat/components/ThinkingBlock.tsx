@@ -4,7 +4,6 @@ import { MarkdownContent, cn } from '@renderer/lib/ui'
 import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
 import { shouldRenderThinking } from '@shared/transcript'
 import { ExpandPanel } from '../toolUi/ExpandPanel'
-import { TextShimmer } from './TextShimmer'
 
 /**
  * Cap the open thought body so long reasoning cannot dominate the transcript.
@@ -59,7 +58,7 @@ export function ThinkingBlock({
         onClick={toggle}
       >
         {streaming ? (
-          <TextShimmer className="font-medium text-tertiary">Thinking</TextShimmer>
+          <span className="font-medium text-tertiary">Thinking</span>
         ) : (
           <span className="font-medium text-tertiary">Thought</span>
         )}
@@ -77,7 +76,11 @@ export function ThinkingBlock({
           ref={bodyRef}
           className={cn('mt-0.5 border-l border-border pl-3', THINKING_BODY_MAX)}
         >
-          <MarkdownContent content={content} streaming={streaming} className={THINKING_INK} />
+          {streaming ? (
+            <MarkdownContent content={content} streaming className={THINKING_INK} />
+          ) : (
+            <MarkdownContent content={content} streaming={false} className={THINKING_INK} />
+          )}
         </div>
       </ExpandPanel>
     </div>

@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { FileChip, ImageChip, MarkdownContent, balanceIncompleteMarkdown, cn } from '@renderer/lib/ui'
-import { parseMcpToolInvocation, parseSkillInvocation } from '@shared/slashCommands'
+import { slashChipFromContent } from '@shared/slashCommands'
 import { TOOL_BODY_CLAMP_PX, USER_PROMPT_SURFACE } from '@renderer/lib/utils/layout'
 import type { UserItem } from '../utils/transcriptRows'
 import { SlashChip } from './SlashChip'
@@ -11,7 +11,7 @@ export function UserPrompt({
   onImageClick,
   editing = false,
   editComposer,
-  onBeginEdit
+  onBeginEdit,
 }: {
   item: UserItem
   onImageClick: (url: string, label: string) => void
@@ -23,26 +23,10 @@ export function UserPrompt({
   const [overflows, setOverflows] = useState(false)
   const [expanded, setExpanded] = useState(false)
 
-  const slashChip = useMemo(() => {
-    if (!item.content) return null
-    const skill = parseSkillInvocation(item.content)
-    if (skill) {
-      return {
-        kind: 'skill' as const,
-        name: skill.skillName,
-        userRequest: skill.userRequest
-      }
-    }
-    const mcp = parseMcpToolInvocation(item.content)
-    if (mcp) {
-      return {
-        kind: 'mcp' as const,
-        name: `${mcp.serverId}-${mcp.toolName}`,
-        userRequest: mcp.userRequest
-      }
-    }
-    return null
-  }, [item.content])
+  const slashChip = useMemo(
+    () => (item.content ? slashChipFromContent(item.content) : null),
+    [item.content]
+  )
 
   const content = useMemo(() => {
     if (!item.content) return ''
@@ -80,12 +64,24 @@ export function UserPrompt({
             'focus-within:vy-focus-ring'
           )
       )}
+      role={editable ? 'button' : undefined}
+      tabIndex={editable ? 0 : undefined}
       onClick={
         editable
           ? (e) => {
               const target = e.target as HTMLElement
               if (target.closest('button, a, [data-no-prompt-edit]')) return
               onBeginEdit?.()
+            }
+          : undefined
+      }
+      onKeyDown={
+        editable
+          ? (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                onBeginEdit?.()
+              }
             }
           : undefined
       }

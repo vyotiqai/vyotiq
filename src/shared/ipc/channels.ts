@@ -19,6 +19,7 @@ export const IPC = {
   chatRewindAndStart: 'chat:rewindAndStart',
   chatFollowUp: 'chat:followUp',
   chatFollowUpRemove: 'chat:followUpRemove',
+  chatQueueMode: 'chat:queueMode',
   chatEvent: 'chat:event',
   chatCompact: 'chat:compact',
   toolApprovalRequest: 'tool:approval-request',
@@ -119,7 +120,8 @@ export const IPC = {
   ptyData: 'pty:data',
   ptyExit: 'pty:exit',
   themeChanged: 'theme:changed',
-  getSystemTheme: 'theme:get-system'
+  getSystemTheme: 'theme:get-system',
+  networkProbe: 'network:probe'
 } as const
 
 export type IpcChannel = (typeof IPC)[keyof typeof IPC]

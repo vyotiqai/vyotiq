@@ -51,7 +51,7 @@ const baseProps = {
 }
 
 describe('ChatView operational errors', () => {
-  it('surfaces operational errors in the chat alert (preferred over chat errors)', () => {
+  it('surfaces operational and chat errors together when both are set', () => {
     const onDismissError = vi.fn()
     render(
       <ChatView
@@ -62,8 +62,8 @@ describe('ChatView operational errors', () => {
       />
     )
 
-    expect(screen.getByRole('alert').textContent).toContain('Failed to rename run')
-    expect(screen.getByRole('alert').textContent).not.toContain('Chat stream failed')
+    expect(screen.getByText('Failed to rename run')).toBeTruthy()
+    expect(screen.getByText('Chat stream failed')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /dismiss/i }))
     expect(onDismissError).toHaveBeenCalled()

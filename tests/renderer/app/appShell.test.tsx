@@ -26,15 +26,6 @@ const baseProps = {
       activeRunId: null
     }
   },
-  runs: [
-    {
-      runId: 'run-abc',
-      goal: 'Fix tests',
-      status: 'done' as const,
-      updatedAt: new Date().toISOString()
-    }
-  ],
-  activeRunId: null,
   sessionQuery: '',
   onSessionQuery: vi.fn(),
   onOpenSettings: vi.fn(),
@@ -418,12 +409,20 @@ describe('AppShell', () => {
 
   it('keeps the chat list visible when runsError is set', () => {
     render(
-      <AppShell {...baseProps} runsError="Failed to load chats">
+      <AppShell
+        {...baseProps}
+        runsByWorkspacePath={{
+          '/ws/demo': {
+            ...baseProps.runsByWorkspacePath['/ws/demo'],
+            runsError: 'Failed to load chats'
+          }
+        }}
+      >
         <p>Main content</p>
       </AppShell>
     )
 
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('alert').textContent).toContain('Failed to load chats')
     expect(screen.getAllByRole('button', { name: /fix tests/i }).length).toBeGreaterThan(0)
   })
 

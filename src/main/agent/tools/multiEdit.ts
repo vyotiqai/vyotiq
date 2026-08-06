@@ -3,6 +3,7 @@ import { dirname } from 'path'
 import { resolveInsideWorkspace, assertResolvedInsideWorkspace } from '../../workspace/safePath'
 import { applyUnifiedDiff } from './edit'
 import { throwIfAborted } from './walk'
+import { assertWritableTextContent } from './writeGuard'
 
 export type MultiEditEntry = {
   path: string
@@ -55,16 +56,19 @@ export function toolMultiEdit(
     seen.add(resolved)
 
     if (typeof edit.contents === 'string') {
+      assertWritableTextContent(path, edit.contents)
       planned.push({ path, resolved, next: edit.contents, action: 'wrote' })
       continue
     }
     if (typeof edit.diff === 'string' && edit.diff.trim()) {
       const original = existsSync(resolved) ? readFileSync(resolved, 'utf8') : ''
       try {
+        const next = applyUnifiedDiff(original, edit.diff)
+        assertWritableTextContent(path, next)
         planned.push({
           path,
           resolved,
-          next: applyUnifiedDiff(original, edit.diff),
+          next,
           action: 'patched'
         })
       } catch (err) {

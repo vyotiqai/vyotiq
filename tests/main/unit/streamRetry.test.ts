@@ -6,20 +6,23 @@ import {
   shouldRetryProviderStreamError,
   shouldRetryThrownStreamError,
   sleepStreamRetryBackoff,
-  STREAM_RETRY_BACKOFF_MS
+  streamRetryBackoffMs,
+  STREAM_RETRY_BASE_MS
 } from '@main/agent/streamRetry'
 
 describe('streamRetry', () => {
   it('exports shared retry constants', () => {
-    expect(MAX_STREAM_ATTEMPTS).toBe(2)
-    expect(STREAM_RETRY_BACKOFF_MS).toBe(750)
+    expect(MAX_STREAM_ATTEMPTS).toBe(5)
+    expect(STREAM_RETRY_BASE_MS).toBe(1000)
+    expect(streamRetryBackoffMs(1)).toBeGreaterThanOrEqual(500)
   })
 
   it('classifies retriable provider and thrown stream errors', () => {
     expect(shouldRetryProviderStreamError('fetch failed: other side closed', 1)).toBe(true)
-    expect(shouldRetryProviderStreamError('fetch failed: other side closed', 2)).toBe(false)
+    expect(shouldRetryProviderStreamError('fetch failed: other side closed', 4)).toBe(true)
+    expect(shouldRetryProviderStreamError('fetch failed: other side closed', 5)).toBe(false)
     expect(shouldRetryThrownStreamError(new RetriableStreamError('stream ended'), 1)).toBe(true)
-    expect(shouldRetryThrownStreamError(new RetriableStreamError('stream ended'), 2)).toBe(false)
+    expect(shouldRetryThrownStreamError(new RetriableStreamError('stream ended'), 5)).toBe(false)
     expect(shouldRetryThrownStreamError(new DOMException('Aborted', 'AbortError'), 1)).toBe(false)
   })
 
@@ -53,8 +56,8 @@ describe('streamRetry', () => {
 
   it('sleepStreamRetryBackoff waits for the shared delay', async () => {
     vi.useFakeTimers()
-    const done = sleepStreamRetryBackoff()
-    await vi.advanceTimersByTimeAsync(STREAM_RETRY_BACKOFF_MS)
+    const done = sleepStreamRetryBackoff(undefined, 1)
+    await vi.advanceTimersByTimeAsync(streamRetryBackoffMs(1))
     await done
     vi.useRealTimers()
   })
@@ -65,5 +68,16 @@ describe('streamRetry', () => {
     await expect(sleepStreamRetryBackoff(controller.signal)).rejects.toMatchObject({
       name: 'AbortError'
     })
+  })
+
+  it('throws when retries are exhausted', async () => {
+    const runAttempt = vi.fn().mockResolvedValue('retry')
+    await expect(
+      runWithStreamRetry({
+        onAttemptStart: vi.fn(),
+        runAttempt
+      })
+    ).rejects.toBeInstanceOf(RetriableStreamError)
+    expect(runAttempt).toHaveBeenCalledTimes(MAX_STREAM_ATTEMPTS)
   })
 })

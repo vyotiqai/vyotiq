@@ -28,11 +28,10 @@ import {
   contentImages,
   contentNativeFiles
 } from '@shared/ipc'
-import { parseMcpToolInvocation, parseSkillInvocation } from '@shared/slashCommands'
-import { MCP_TOOL_PREFIX } from '@shared/utils/toolSummary'
-import { mentionMarker } from './components/composer/mentionModel'
+import { userMessageEditDraft } from './utils/slashEditDraft'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert, PanelResizeHandle } from '@renderer/lib/ui'
+import { useNetworkStatus } from '@renderer/lib/hooks/useNetworkStatus'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
 import { usePersistedNumber } from '@renderer/lib/hooks/usePersistedNumber'
 import { useTitleBarAccessory } from '@renderer/lib/context/TitleBarAccessory'
@@ -87,7 +86,10 @@ function TranscriptPane({
   sideRailPad = true,
   editingUserMessageIndex = null,
   editComposer,
-  onBeginEditUserMessage
+  onBeginEditUserMessage,
+  networkWait = null,
+  turnFailed = false,
+  turnFailureLabel = null
 }: {
   items: UiItem[]
   pendingRun?: boolean
@@ -115,6 +117,14 @@ function TranscriptPane({
   editingUserMessageIndex?: number | null
   editComposer?: React.ReactNode
   onBeginEditUserMessage?: (messageIndex: number) => void
+  networkWait?: {
+    attempt: number
+    maxAttempts: number
+    retryInMs: number
+    code?: string
+  } | null
+  turnFailed?: boolean
+  turnFailureLabel?: string | null
 }) {
   const runSession = useMemo(
     () => ({
@@ -131,6 +141,9 @@ function TranscriptPane({
         items={items}
         pendingRun={pendingRun}
         running={running}
+        networkWait={networkWait}
+        turnFailed={turnFailed}
+        turnFailureLabel={turnFailureLabel}
         transcriptLoading={transcriptLoading}
         restoreScrollTop={restoreScrollTop}
         scrollRestoreToken={scrollRestoreToken}
@@ -163,6 +176,8 @@ export function ChatView({
   invokeId = null,
   pendingRun = false,
   error,
+  errorCode = null,
+  networkWait = null,
   runNotice,
   incomplete,
   onContinue,
@@ -235,6 +250,13 @@ export function ChatView({
   invokeId?: number | null
   pendingRun?: boolean
   error: string | null
+  errorCode?: string | null
+  networkWait?: {
+    attempt: number
+    maxAttempts: number
+    retryInMs: number
+    code?: string
+  } | null
   runNotice?: string | null
   incomplete?: import('@renderer/lib/hooks/createChatStreamController').IncompleteTurnState | null
   onContinue?: () => void
@@ -316,7 +338,17 @@ export function ChatView({
 }) {
   // Boolean presence only — stays Object.is-stable across pure text_delta frames.
   const hasItems = useHasChatItems(itemsStore, items)
-  const bannerError = operationalError ?? error
+  const { offlineHint } = useNetworkStatus()
+  const hasTranscriptRunError = items.some((item) => item.kind === 'run_error')
+  const chatBannerError = hasTranscriptRunError ? null : error
+  const operationalBannerError = operationalError ?? null
+  const turnFailed =
+    incomplete?.reason === 'network_interrupted' ||
+    errorCode === 'PROVIDER_NETWORK' ||
+    errorCode === 'PROVIDER_STREAM'
+  const turnFailureLabel =
+    incomplete?.message ??
+    (turnFailed ? error ?? 'Connection lost' : null)
   const showHero = !hasItems && !activeRunId && !transcriptLoading
   const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
   const [activeRightPanel, setActiveRightPanel] = useState<ChatRightPanelId | null>(() => {
@@ -465,6 +497,12 @@ export function ChatView({
     [setRightPanel]
   )
 
+  const onOpenAgentChanges = useCallback(() => openChangesPanel('agent'), [openChangesPanel])
+  const onOpenUncommittedChanges = useCallback(
+    () => openChangesPanel('uncommitted'),
+    [openChangesPanel]
+  )
+
   const activeRightPanelRef = useRef(activeRightPanel)
   activeRightPanelRef.current = activeRightPanel
 
@@ -608,7 +646,7 @@ export function ChatView({
     return () => {
       cancelled = true
     }
-  }, [workspacePath, activeRunId, running, agentMode, tryAutoOpenPanel])
+  }, [workspacePath, activeRunId, agentMode, tryAutoOpenPanel])
 
   const tabItems = useMemo(
     () => dockTabs.map((id) => defaultDockTab(id, id === 'pr' ? prNumber : null)),
@@ -654,25 +692,7 @@ export function ChatView({
       const audio = contentAudios(msg.content)
       const nativeFiles = contentNativeFiles(msg.content)
       const rawText = contentDisplayText(msg.content)
-      const skill = parseSkillInvocation(rawText)
-      const mcp = skill ? null : parseMcpToolInvocation(rawText)
-      let editDraftText = rawText
-      if (skill) {
-        editDraftText = `${mentionMarker({
-          kind: 'slash',
-          slashKind: 'skill',
-          trigger: skill.skillName
-        })}${skill.userRequest ? ` ${skill.userRequest}` : ' '}`
-      } else if (mcp) {
-        const trigger = `${mcp.serverId}-${mcp.toolName}`.replace(/__/g, '-')
-        editDraftText = `${mentionMarker({
-          kind: 'slash',
-          slashKind: 'mcp',
-          trigger,
-          commandId: `mcp:${MCP_TOOL_PREFIX}${mcp.serverId}__${mcp.toolName}`
-        })}${mcp.userRequest ? ` ${mcp.userRequest}` : ' '}`
-      }
-      setEditDraft(editDraftText)
+      setEditDraft(userMessageEditDraft(rawText))
       setEditSeeds({
         images: images.length ? images : undefined,
         files: files.length ? files : undefined,
@@ -735,7 +755,11 @@ export function ChatView({
         onCompactContext={onCompactContext}
         slashHandlers={slashHandlers}
         variant="inline"
-        bannerError={bannerError}
+        bannerError={chatBannerError}
+        secondaryBannerError={operationalBannerError}
+        errorCode={errorCode}
+        onRetryNetwork={onContinue}
+        offlineHint={offlineHint}
         onDismissError={onDismissError}
         className="w-full"
         seedImages={editSeeds.images}
@@ -792,7 +816,13 @@ export function ChatView({
     incomplete,
     onContinue,
     onContinueInAgent,
+    onRetryNetwork: onContinue,
+    errorCode,
+    bannerError: chatBannerError,
+    secondaryBannerError: operationalBannerError,
+    offlineHint,
     activeRunId,
+    onDismissError,
     contextUsage: metaStore ? undefined : contextUsage,
     metaStore,
     onCompactContext,
@@ -815,13 +845,17 @@ export function ChatView({
           )}
           role="status"
         >
-          {bannerError ? (
-            <Alert
-              className={cn('mb-4 w-full', CHAT_COLUMN_MAX)}
-              onDismiss={onDismissError}
-            >
-              {bannerError}
-            </Alert>
+          {(chatBannerError || operationalBannerError) ? (
+            <div className={cn('mb-4 flex w-full flex-col gap-2', CHAT_COLUMN_MAX)}>
+              {operationalBannerError ? (
+                <Alert className="w-full">{operationalBannerError}</Alert>
+              ) : null}
+              {chatBannerError ? (
+                <Alert className="w-full" onDismiss={onDismissError}>
+                  {chatBannerError}
+                </Alert>
+              ) : null}
+            </div>
           ) : null}
           <div
             className={cn(
@@ -862,21 +896,23 @@ export function ChatView({
             workspacePath={workspacePath}
             activeRunId={activeRunId}
             agentMode={agentMode}
-            onOpenChanges={() => openChangesPanel('agent')}
+            onOpenChanges={onOpenAgentChanges}
             sideRailPad={agentSideRailPad}
             editingUserMessageIndex={editingUserMessageIndex}
             editComposer={editComposer}
             onBeginEditUserMessage={onEditAndResend ? beginPromptEdit : undefined}
+            networkWait={networkWait}
+            turnFailed={turnFailed}
+            turnFailureLabel={turnFailureLabel}
           />
 
           <MemoComposer
             key={`composer:${surfaceKey}`}
             {...composerProps}
             variant="dock"
-            bannerError={bannerError}
             onDismissError={onDismissError}
             leading={
-              <ChatGitLeading chrome={gitChrome} onOpenChanges={() => openChangesPanel('uncommitted')} />
+              <ChatGitLeading chrome={gitChrome} onOpenChanges={onOpenUncommittedChanges} />
             }
           />
         </div>

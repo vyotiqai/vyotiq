@@ -1084,12 +1084,16 @@ export function createOpenAiCompatibleProvider(
           bodyOverrides
         )
         try {
-          res = await fetchWithRetry(url, {
-            method: 'POST',
-            headers,
-            signal: req.signal,
-            body: JSON.stringify(body)
-          })
+          res = await fetchWithRetry(
+            url,
+            {
+              method: 'POST',
+              headers,
+              signal: req.signal,
+              body: JSON.stringify(body)
+            },
+            { maxAttempts: 5 }
+          )
         } catch (err) {
           if (req.signal.aborted) throw err
           logProviderFailure(id, 'network', {})
@@ -1266,22 +1270,24 @@ export function createOpenAiCompatibleProvider(
           for (const tc of wholeCalls) {
             const index = typeof tc.index === 'number' ? tc.index : pending.size
             const fn = tc.function as { name?: string; arguments?: string } | undefined
+            const chunkId =
+              typeof tc.id === 'string' && tc.id.trim() ? tc.id.trim() : undefined
             const existing = pending.get(index) ?? {
-              id: typeof tc.id === 'string' ? tc.id : `call_${index}`,
+              id: chunkId ?? `call_${index}`,
               name: '',
               arguments: ''
             }
-            if (typeof tc.id === 'string') existing.id = tc.id
+            if (chunkId) existing.id = chunkId
             if (fn?.name) {
               // Prefer whole name when chunk includes id (xAI whole-chunk); else append deltas
-              if (tc.id && fn.name) existing.name = fn.name
+              if (chunkId && fn.name) existing.name = fn.name
               else existing.name += fn.name
             }
             if (fn?.arguments) {
-              if (tc.id && fn.name && fn.arguments.startsWith('{') && !existing.arguments) {
+              if (chunkId && fn.name && fn.arguments.startsWith('{') && !existing.arguments) {
                 existing.arguments = fn.arguments
               } else if (
-                tc.id &&
+                chunkId &&
                 fn.name &&
                 existing.arguments &&
                 fn.arguments.length >= existing.arguments.length &&
@@ -1297,7 +1303,7 @@ export function createOpenAiCompatibleProvider(
               type: 'tool_call_delta',
               toolCallDelta: {
                 index,
-                id: typeof tc.id === 'string' ? tc.id : undefined,
+                id: chunkId,
                 name: fn?.name,
                 arguments: fn?.arguments
               }

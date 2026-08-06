@@ -50,20 +50,20 @@ describe('MessageList', () => {
 
     const toggles = screen.getAllByRole('button', { name: /Read 2 files/i })
     expect(toggles).toHaveLength(2)
-    for (const toggle of toggles) {
-      expect(toggle.getAttribute('aria-expanded')).toBe('false')
-    }
+    // Prior turn stays collapsed; last turn uses keepOpen so recent work stays visible.
+    expect(toggles[0]!.getAttribute('aria-expanded')).toBe('false')
+    expect(toggles[1]!.getAttribute('aria-expanded')).toBe('true')
     expect(screen.queryByText('alpha-one.ts')).toBeNull()
-    expect(screen.queryByText('beta-one.ts')).toBeNull()
+    expect(screen.getByText('beta-one.ts')).toBeTruthy()
 
     fireEvent.click(toggles[0]!)
 
     expect(toggles[0]!.getAttribute('aria-expanded')).toBe('true')
-    expect(toggles[1]!.getAttribute('aria-expanded')).toBe('false')
+    expect(toggles[1]!.getAttribute('aria-expanded')).toBe('true')
     const alphaGroup = toggles[0]!.parentElement as HTMLElement
     expect(within(alphaGroup).getByText('alpha-one.ts')).toBeTruthy()
     expect(within(alphaGroup).getByText('alpha-two.ts')).toBeTruthy()
-    expect(screen.queryByText('beta-one.ts')).toBeNull()
+    expect(screen.getByText('beta-one.ts')).toBeTruthy()
 
     fireEvent.click(toggles[0]!)
     expect(toggles[0]!.getAttribute('aria-expanded')).toBe('false')

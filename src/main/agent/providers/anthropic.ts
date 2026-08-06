@@ -289,12 +289,16 @@ async function postAnthropicMessages(
       await last.text().catch(() => undefined)
     }
 
-    last = await fetchWithRetry(url, {
-      method: 'POST',
-      headers: attempt.headers,
-      signal,
-      body: JSON.stringify(attempt.body)
-    })
+    last = await fetchWithRetry(
+      url,
+      {
+        method: 'POST',
+        headers: attempt.headers,
+        signal,
+        body: JSON.stringify(attempt.body)
+      },
+      { maxAttempts: 5 }
+    )
     if (last.ok) return last
     if (last.status === 401 || last.status === 403) return last
   }

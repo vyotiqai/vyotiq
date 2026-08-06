@@ -73,6 +73,38 @@ function suggestSimilarPaths(workspaceRoot: string, relPath: string): string[] {
   }
 }
 
+/** Decode text files; UTF-16 BOM (common for PowerShell logs) before binary rejection. */
+function isUtf16Bom(buf: Buffer): boolean {
+  return (
+    buf.length >= 2 &&
+    ((buf[0] === 0xff && buf[1] === 0xfe) || (buf[0] === 0xfe && buf[1] === 0xff))
+  )
+}
+
+function decodeTextBuffer(buf: Buffer, pathArg: string, encoding: 'utf8' | 'utf16le' = 'utf8'): string {
+  if (encoding === 'utf16le') {
+    return buf.toString('utf16le')
+  }
+  if (buf.length >= 2) {
+    if (buf[0] === 0xff && buf[1] === 0xfe) {
+      return buf.subarray(2).toString('utf16le')
+    }
+    if (buf[0] === 0xfe && buf[1] === 0xff) {
+      const body = buf.subarray(2)
+      const le = Buffer.allocUnsafe(body.length)
+      for (let i = 0; i + 1 < body.length; i += 2) {
+        le[i] = body[i + 1]!
+        le[i + 1] = body[i]!
+      }
+      return le.toString('utf16le')
+    }
+  }
+  if (buf.includes(0)) {
+    throw new Error(`Binary file detected: ${pathArg}. Read is text-only.`)
+  }
+  return buf.toString('utf8')
+}
+
 function formatMissingFileHint(workspaceRoot: string, relPath: string): string {
   const suggestions = suggestSimilarPaths(workspaceRoot, relPath)
   if (!suggestions.length) {
@@ -115,13 +147,25 @@ export function toolRead(
   const limit = options.limit
 
   if (limit !== undefined || offset > 0) {
+    if (st.size > MAX_BYTES) {
+      throw new Error(
+        `File too large (${st.size} bytes, cap ${MAX_BYTES}). Use startLine/endLine to read a portion.`
+      )
+    }
     const buf = readFileSync(resolved)
-    if (buf.includes(0)) {
+    if (!isUtf16Bom(buf) && buf.includes(0)) {
       throw new Error(`Binary file detected: ${pathArg}. Read is text-only.`)
     }
     const slice = buf.subarray(offset, limit !== undefined ? offset + limit : undefined)
     const header = `--- offset ${offset}${limit !== undefined ? `, limit ${limit}` : ''} of ${st.size} bytes ---\n`
-    return header + slice.toString('utf8')
+    const utf16 = isUtf16Bom(buf)
+    const body =
+      utf16 && offset >= 2
+        ? decodeTextBuffer(slice, pathArg, 'utf16le')
+        : utf16
+          ? decodeTextBuffer(slice, pathArg)
+          : slice.toString('utf8')
+    return header + body
   }
 
   if (st.size > MAX_BYTES) {
@@ -130,10 +174,7 @@ export function toolRead(
     )
   }
   const buf = readFileSync(resolved)
-  if (buf.includes(0)) {
-    throw new Error(`Binary file detected: ${pathArg}. Read is text-only.`)
-  }
-  return buf.toString('utf8')
+  return decodeTextBuffer(buf, pathArg)
 }
 
 /**
@@ -154,11 +195,7 @@ function readLineRange(
   }
 
   const buf = readFileSync(resolved)
-  if (buf.includes(0)) {
-    throw new Error(`Binary file detected: ${pathArg}. Read is text-only.`)
-  }
-
-  const lines = buf.toString('utf8').split('\n')
+  const lines = decodeTextBuffer(buf, pathArg).split('\n')
   // A trailing newline terminates the last line rather than starting a new one.
   if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
 

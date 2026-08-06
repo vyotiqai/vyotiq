@@ -1,3 +1,4 @@
+import { existsSync } from 'fs'
 import type { AgentEvent, AgentInteractionMode, ChatMessage, Settings } from '../../shared/ipc'
 import { isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
@@ -9,7 +10,6 @@ import { isParallelSafeTool, MAX_PARALLEL_READ_TOOLS } from './tools/classify'
 import { repairToolArgs } from './toolArgsRepair'
 import type { ToolApprovalGate } from './toolApproval'
 import type { TerminalShell } from '../../shared/ipc'
-import { existsSync } from 'fs'
 import { resolveInsideWorkspace } from '../workspace/safePath'
 import {
   applyToolCallToKnownPaths,
@@ -19,6 +19,8 @@ import {
   unreadExistingEditPaths
 } from './loopPolicy'
 import { hasJavaScriptProject, hasTypeScriptProject } from './tools/diagnostics'
+import { validateWriteToolCall } from './tools/writeGuard'
+import { ensureToolCallIds } from './dedupeToolCalls'
 
 /** Soft ADW nudge: mutations without diagnostics in the same step are not a hard gate. */
 export const SOFT_WARN_MUTATION_WITHOUT_DIAGNOSTICS =
@@ -195,6 +197,30 @@ async function runSingleTool(
     summary
   })
   emitToolStart(ctx, events[0]!)
+
+  try {
+    validateWriteToolCall(call.name, call.arguments, ctx.workspace)
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    const toolMsg: ChatMessage = {
+      role: 'tool',
+      toolCallId: call.id,
+      toolName: call.name,
+      content: reason,
+      ok: false
+    }
+    events.push({
+      type: 'tool_result',
+      runId: ctx.runId,
+      toolCallId: call.id,
+      name: call.name,
+      summary: 'rejected',
+      ok: false,
+      content: reason
+    })
+    emitToolResult(ctx, events[events.length - 1]!)
+    return { ok: false, events, message: toolMsg }
+  }
 
   try {
     // Ask before doing anything: the tool_start event is already out, so the
@@ -420,7 +446,8 @@ async function runParallelBatch(
   calls: ToolCall[],
   ctx: ToolStepContext,
   parallelLimit: number,
-  stepFlags?: { softDiagnosticsNudge: boolean }
+  stepFlags?: { softDiagnosticsNudge: boolean },
+  onComplete?: (call: ToolCall, outcome: ToolOutcome) => Promise<void>
 ): Promise<Map<string, ToolOutcome>> {
   const results = new Map<string, ToolOutcome>()
   const startedIds = new Set<string>()
@@ -434,6 +461,7 @@ async function runParallelBatch(
       startedIds.add(call.id)
       const result = await runSingleTool(call, ctx, stepFlags)
       results.set(call.id, result)
+      if (onComplete) await onComplete(call, result)
     }
   })
   await Promise.all(workers)
@@ -454,9 +482,10 @@ async function runParallelBatch(
 
 /** Execute tool calls with read-only parallelism; preserve call order in output. */
 export async function executeStepToolCalls(
-  calls: ToolCall[],
+  rawCalls: ToolCall[],
   ctx: ToolStepContext
 ): Promise<{ messages: ChatMessage[]; events: AgentEvent[]; stepToolsOk: boolean }> {
+  const calls = ensureToolCallIds(rawCalls, { prefix: 'call_exec' })
   const messages: ChatMessage[] = []
   const events: AgentEvent[] = []
   let stepToolsOk = true
@@ -527,8 +556,13 @@ export async function executeStepToolCalls(
       group.length > 1 && group.every((c) => canParallelBatch(c.name))
     if (parallel) {
       const batchLimit = batchLimitFor(group[0]!.name)
-      const batch = await runParallelBatch(group, ctx, batchLimit, stepFlags)
+      const liveCollected = new Set<string>()
+      const batch = await runParallelBatch(group, ctx, batchLimit, stepFlags, async (call, outcome) => {
+        liveCollected.add(call.id)
+        await collect(outcome)
+      })
       for (const call of group) {
+        if (liveCollected.has(call.id)) continue
         await collect(batch.get(call.id) ?? abortedToolResult(call, ctx))
       }
     } else {

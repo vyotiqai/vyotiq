@@ -1,7 +1,8 @@
 import { useMemo } from 'react'
-import type { RunSummary } from '@shared/ipc'
 import { groupRunsByRecency } from '@renderer/lib/utils/groupRunsByRecency'
 import { formatWorkspaceName } from '@renderer/lib/utils/formatWorkspaceName'
+import { findByWorkspacePath, workspacePathsEqual } from '@shared/workspacePathMatch'
+import { runSearchText } from './runTitle'
 import type { WorkspaceSidebarGroup, WorkspaceSidebarRuns } from './types'
 
 type UseSidebarChatsInput = {
@@ -22,26 +23,26 @@ export function useSidebarChats({
   const workspaceGroups = useMemo<WorkspaceSidebarGroup[]>(() => {
     const q = sessionQuery.trim().toLowerCase()
     return openPaths.map((path) => {
-      const workspaceRuns = runsByWorkspacePath[path] ?? {
+      const workspaceRuns = findByWorkspacePath(runsByWorkspacePath, path) ?? {
         runs: [],
         activeRunId: null
       }
       const filteredRuns = q
-        ? workspaceRuns.runs.filter((r) => {
-            const title = (r.goal ?? r.runId).toLowerCase()
-            return title.includes(q)
-          })
+        ? workspaceRuns.runs.filter((r) => runSearchText(r).includes(q))
         : workspaceRuns.runs
       const groupedRuns = q
         ? filteredRuns.length
           ? [{ id: 'today' as const, label: 'Results', runs: filteredRuns }]
           : []
         : groupRunsByRecency(filteredRuns)
-      const expanded = q ? true : expandedByPath[path] ?? path === activePath
+      const expanded = q
+        ? true
+        : expandedByPath[path] ??
+          (activePath != null && workspacePathsEqual(path, activePath))
       return {
         path,
         label: formatWorkspaceName(path, path),
-        isActiveWorkspace: path === activePath,
+        isActiveWorkspace: activePath != null && workspacePathsEqual(path, activePath),
         expanded,
         filteredRuns,
         groupedRuns,
@@ -58,14 +59,5 @@ export function useSidebarChats({
     [workspaceGroups]
   )
 
-  const runningCount = useMemo(
-    () =>
-      Object.values(runsByWorkspacePath).reduce(
-        (count, workspace) => count + workspace.runs.filter((r) => r.status === 'running').length,
-        0
-      ),
-    [runsByWorkspacePath]
-  )
-
-  return { filteredRuns, workspaceGroups, runningCount }
+  return { filteredRuns, workspaceGroups }
 }

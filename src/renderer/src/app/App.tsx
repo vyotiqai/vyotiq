@@ -405,6 +405,10 @@ export function App() {
       },
       onUndoWrites: () => onUndoWrites(),
       onSetAgentMode: (mode: import('@shared/ipc').AgentInteractionMode) => {
+        if (chat.running || chat.pendingRun) {
+          setSettingsError('Mode is locked while a run is active.')
+          return false
+        }
         setAgentMode(mode)
         return true
       },
@@ -551,6 +555,8 @@ export function App() {
       refresh,
       setAgentMode,
       setSettingsError,
+      chat.running,
+      chat.pendingRun,
       settings.marketplace,
       update
     ]
@@ -678,21 +684,27 @@ export function App() {
         : `${effectiveChatSettings.provider}:${secrets[effectiveChatSettings.provider as SecretProvider] ? '1' : '0'}`
   }:${modelsRefreshNonce}`
 
+  const runsByWorkspacePath = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(contexts).map(([path, ctx]) => [
+          path,
+          {
+            runs: ctx.runs,
+            runsCapped: ctx.runsCapped,
+            runsError: ctx.runsError,
+            runsLoaded: ctx.runsLoaded,
+            activeRunId: ctx.activeRunId
+          }
+        ])
+      ),
+    [contexts]
+  )
+
   const shellWorkspaceProps = {
     openWorkspaces,
     activeRuns,
-    runsByWorkspacePath: Object.fromEntries(
-      Object.entries(contexts).map(([path, ctx]) => [
-        path,
-        {
-          runs: ctx.runs,
-          runsCapped: ctx.runsCapped,
-          runsError: ctx.runsError,
-          runsLoaded: ctx.runsLoaded,
-          activeRunId: ctx.activeRunId
-        }
-      ])
-    ),
+    runsByWorkspacePath,
     onSwitchWorkspace: (path: string) => void switchWorkspace(path),
     onCloseWorkspace,
     onAddWorkspace: onPickWorkspace,
@@ -708,8 +720,6 @@ export function App() {
       <AppShell
         view="chat"
         workspacePath={null}
-        runs={[]}
-        activeRunId={null}
         sessionQuery=""
         onSessionQuery={() => {}}
         onOpenSettings={() => {}}
@@ -743,11 +753,7 @@ export function App() {
     <AppShell
       view={view}
       workspacePath={activeWorkspace}
-      runs={activeContext?.runs ?? []}
-      runsCapped={activeContext?.runsCapped}
-      runsError={activeContext?.runsError}
       onDismissRunsError={clearRunsError}
-      activeRunId={activeContext?.activeRunId ?? chat.runId}
       sessionQuery=""
       onSessionQuery={setSessionQuery}
       onOpenSettings={() => setView('settings')}
@@ -833,6 +839,8 @@ export function App() {
             invokeId={chat.invokeId}
             pendingRun={chat.pendingRun}
             error={chatError}
+            errorCode={chat.errorCode}
+            networkWait={chat.networkWait}
             runNotice={chat.runNotice}
             incomplete={chat.incomplete}
             onContinue={onChatContinue}
@@ -862,7 +870,7 @@ export function App() {
             chatSettings={effectiveChatSettings}
             onChatSettingsChange={onChatSettingsChange}
             agentMode={activeContext?.ui.agentMode ?? 'agent'}
-            onAgentModeChange={setAgentMode}
+            onAgentModeChange={(mode) => setAgentMode(mode, { syncOnly: true })}
             onContinueInAgent={() => {
               setAgentMode('agent')
               setComposerDraft(
