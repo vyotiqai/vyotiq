@@ -9,7 +9,7 @@ export function DeleteBody({ tool }: ToolBodyProps) {
   const data = useMemo(() => parseDeleteData(tool), [tool])
 
   return (
-    <div className={cn(TOOL_BODY_PAD, 'flex items-start gap-2 text-[11px]')}>
+    <div className={cn(TOOL_BODY_PAD, 'flex items-start gap-2 text-caption')}>
       <Icon name="trash" size={16} className="mt-0.5 shrink-0 text-danger" />
       <div className="min-w-0">
         <p className="m-0 text-fg/80">{data.message}</p>

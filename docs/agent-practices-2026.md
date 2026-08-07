@@ -4,6 +4,9 @@ Durable reference synthesized from verified sources only: harness, handbook,
 `AGENTS.md`, mode policy, checkpoint/rewind tests, and session decisions from
 August 2026 audits. Not speculative guidance.
 
+**Full reference library:** [docs/reference/2026-jun-aug/README.md](./reference/2026-jun-aug/README.md)
+(checkpoints, security, browser, IPC, UI, test harness, audit snapshot).
+
 ## 1. Checkpoint semantics
 
 Workspace file mutations made through checkpointed tools are snapshotted
@@ -28,7 +31,7 @@ Evidence: `src/main/agent/checkpoints.ts`, `tests/main/unit/checkpoints.test.ts`
 | Keep / Discard (per path or all) | Resolve latest (or named) checkpoint; discard restores blobs | No |
 | Undo all | `undoWrites` — restore unresolved paths on latest undoable checkpoint | No |
 | Edit message + resend | `prepareRewindAndReplaceUserMessage` + `rewindWritesFrom` + new invoke | Yes |
-| Revert back (per user bubble) | `prepareRewindToUserMessage` + `rewindWritesFrom`; keep user text; truncate later turns | No |
+| Revert back (per user bubble) | `prepareRewindToUserMessage` + `chat:rewind` IPC; keep user text; truncate later turns | No |
 
 IPC guards: run must be inactive (or cancelled first) for undo/resolve/rewind.
 Evidence: `src/main/ipc/register.ts`, `src/main/agent/rewindRun.ts`,
@@ -42,7 +45,7 @@ Evidence: `src/main/ipc/register.ts`, `src/main/agent/rewindRun.ts`,
 | `generate_image` / `edit_image` (Agent mode) | Yes | Dry-run in Ask/Plan — no write |
 | Terminal known-path + watcher | Yes (phased) | Parser + post-exec workspace diff |
 | MCP filesystem write tools | Yes (phased) | Known path args + watcher fallback |
-| Recursive directory delete | Yes (tree snap) | Walk + per-file blobs |
+| Recursive directory delete | No (`undoable: false`) | Directory entry only; per-file tree snap not implemented (v1) |
 | `plan.md`, `contract.md`, `todos.json` | No (intentional) | Run artifacts |
 | `.vyotiq/memory/*` (`memory_write`) | No (intentional) | Durable memory |
 | `git_commit` / VCS state | No (intentional) | Out of scope |
@@ -83,7 +86,7 @@ Handbook: `docs/harness-handbook.md`.
 
 | Practice | Decision / evidence |
 |----------|---------------------|
-| Mid-session stale running reconciliation | `reconcileStaleRun` (2 min age) on list/load; boot `interruptOrphanRuns` with `maxAgeMs: 0` |
+| Mid-session stale running reconciliation | `reconcileStaleRuns` (2 min age) on `listRuns`; boot `interruptOrphanRuns` with `maxAgeMs: 0` |
 | Compaction retained decisions | Persist on `CompactionRecord`; reinject via `loopHint` until present in kept messages |
 | LOOP_SAFETY streak | Resets on new invoke; do not carry `consecutiveToolFailureSteps` across invokeIds |
 | Status / receipt flush | Status step patches flush immediately; receipt cadence decoupled from per-step artifacts |
@@ -148,7 +151,7 @@ counters).
 
 ### Token-cost invariants (test-only)
 
-Missing doc `docs/research/token-cost-jun-aug-2026` — canonical substitute:
+Stub `docs/research/token-cost-jun-aug-2026.md` — canonical substitute:
 `tests/shared/tokenCostRegression.invariants.test.ts` (64k compaction soft cap,
 MCP pin TTL=16 steps, soft max=12 tools).
 

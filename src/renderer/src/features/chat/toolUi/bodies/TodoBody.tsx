@@ -24,7 +24,7 @@ export function TodoBody({ tool }: ToolBodyProps) {
       {data.items.map((item, index) => {
         const icon = STATUS_ICON[item.status]
         return (
-          <li key={index} className="flex items-start gap-2 py-0.5 text-[11px] leading-relaxed">
+          <li key={index} className="flex items-start gap-2 py-0.5 text-caption leading-relaxed">
             <Icon
               name={icon.name}
               size={14}

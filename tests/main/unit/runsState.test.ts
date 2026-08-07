@@ -338,6 +338,42 @@ describe('listRuns / interruptOrphanRuns', () => {
     expect(status.error).toBeUndefined()
   })
 
+  it('reconciles stale running runs on listRuns', async () => {
+    const staleAt = new Date(Date.now() - 3 * 60_000).toISOString()
+    writeStatus(resolveRunDir(workspace, 'stale-run'), {
+      status: 'running',
+      updatedAt: staleAt,
+      goal: 'stale',
+      workspacePath: workspace
+    })
+    writeStatus(resolveRunDir(workspace, 'fresh-run'), {
+      status: 'running',
+      updatedAt: new Date().toISOString(),
+      goal: 'fresh',
+      workspacePath: workspace
+    })
+
+    const result = await listRuns(workspace)
+    expect(result.runs.find((r) => r.runId === 'stale-run')?.status).toBe('cancelled')
+    expect(result.runs.find((r) => r.runId === 'fresh-run')?.status).toBe('running')
+  })
+
+  it('skips in-memory active runs during stale reconciliation', async () => {
+    const staleAt = new Date(Date.now() - 3 * 60_000).toISOString()
+    writeStatus(resolveRunDir(workspace, 'live-run'), {
+      status: 'running',
+      updatedAt: staleAt,
+      goal: 'live',
+      workspacePath: workspace
+    })
+    registerRunAbort('live-run', new AbortController(), workspace, 1)
+
+    const result = await listRuns(workspace)
+    expect(result.runs.find((r) => r.runId === 'live-run')?.status).toBe('running')
+
+    clearRunAbort('live-run')
+  })
+
   it('syncMessages rewrites messages.jsonl from client history', () => {
     const runId = 'sync-run'
     const dir = createRun(workspace, runId, 'sync test')

@@ -20,7 +20,7 @@ export function WorkspaceEnableControls({
 }) {
   return (
     <div className={className ?? 'mt-2 flex flex-wrap items-center gap-2'}>
-      <span className="text-muted text-[11px]">{label}</span>
+      <span className="text-muted text-caption">{label}</span>
       <Button
         variant="subtle"
         disabled={formLocked}

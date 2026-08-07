@@ -13,7 +13,7 @@ export function SearchBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps
     <div>
       <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
         {!inGroup ? <Chip>{data.query}</Chip> : null}
-        <span className="text-[10px] tabular-nums text-tertiary">
+        <span className="text-2xs tabular-nums text-tertiary">
           {data.hits.length} {data.hits.length === 1 ? 'hit' : 'hits'}
           {data.truncated ? ' (truncated)' : ''}
         </span>
@@ -22,12 +22,12 @@ export function SearchBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps
       <div className={`${TOOL_BODY_INNER} ${TOOL_BODY_FLOW} space-y-2`}>
         {filenameHits.length > 0 ? (
           <section>
-            <h4 className="m-0 mb-1 text-[10px] font-medium uppercase tracking-wide text-tertiary">
+            <h4 className="m-0 mb-1 text-2xs font-medium uppercase tracking-wide text-tertiary">
               Files
             </h4>
             <ul className="m-0 list-none p-0">
               {filenameHits.map((hit) => (
-                <li key={hit.file} className="truncate font-mono text-[11px] text-fg/80">
+                <li key={hit.file} className="truncate font-mono text-caption text-fg/80">
                   {hit.file}
                 </li>
               ))}
@@ -36,11 +36,11 @@ export function SearchBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps
         ) : null}
         {contentHits.length > 0 ? (
           <section>
-            <h4 className="m-0 mb-1 text-[10px] font-medium uppercase tracking-wide text-tertiary">
+            <h4 className="m-0 mb-1 text-2xs font-medium uppercase tracking-wide text-tertiary">
               Content
             </h4>
             {contentHits.map((hit) => (
-              <div key={`${hit.file}:${hit.line}`} className="mb-1 font-mono text-[11px]">
+              <div key={`${hit.file}:${hit.line}`} className="mb-1 font-mono text-caption">
                 <div className="truncate text-tertiary">
                   {hit.file}:{hit.line}
                 </div>
@@ -52,7 +52,7 @@ export function SearchBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps
           </section>
         ) : null}
         {!data.hits.length ? (
-          <p className="m-0 text-[11px] text-tertiary">No matches</p>
+          <p className="m-0 text-caption text-tertiary">No matches</p>
         ) : null}
       </div>
     </div>

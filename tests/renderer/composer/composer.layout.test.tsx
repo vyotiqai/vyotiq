@@ -48,14 +48,16 @@ describe('Composer layout', () => {
 
     const shell = document.querySelector('[data-composer-shell]')
     expect(shell).toBeTruthy()
+    const form = shell?.querySelector('form')
+    expect(form).toBeTruthy()
 
     const textarea = screen.getByRole('textbox', { name: /^Message$/i })
-    const toolbar = shell?.querySelector('[data-composer-toolbar]')
+    const toolbar = form?.querySelector('[data-composer-toolbar]')
     expect(toolbar).toBeTruthy()
-    expect(shell?.contains(textarea)).toBe(true)
-    expect(shell?.contains(toolbar!)).toBe(true)
+    expect(form?.contains(textarea)).toBe(true)
+    expect(form?.contains(toolbar!)).toBe(true)
 
-    const children = Array.from(shell!.children).filter((el) => el.tagName !== 'INPUT')
+    const children = Array.from(form!.children).filter((el) => el.tagName !== 'INPUT')
     const textareaIdx = children.findIndex((el) => el.contains(textarea))
     const toolbarIdx = children.findIndex((el) => el === toolbar)
     expect(textareaIdx).toBeGreaterThanOrEqual(0)
@@ -66,12 +68,14 @@ describe('Composer layout', () => {
     render(<Composer {...composerProps} />)
 
     const shell = document.querySelector('[data-composer-shell]')
+    const form = shell?.querySelector('form')
+    expect(form).toBeTruthy()
     const textarea = screen.getByRole('textbox', { name: /^Message$/i })
     textarea.textContent = 'line one\nline two\nline three\nline four\nline five'
     fireEvent.input(textarea)
 
-    const toolbar = shell?.querySelector('[data-composer-toolbar]')
-    const children = Array.from(shell!.children).filter((el) => el.tagName !== 'INPUT')
+    const toolbar = form?.querySelector('[data-composer-toolbar]')
+    const children = Array.from(form!.children).filter((el) => el.tagName !== 'INPUT')
     const textareaIdx = children.findIndex((el) => el.contains(textarea))
     const toolbarIdx = children.findIndex((el) => el === toolbar)
     expect(toolbarIdx).toBeGreaterThan(textareaIdx)
@@ -90,5 +94,36 @@ describe('Composer layout', () => {
 
     const chip = await waitFor(() => screen.getByText(/Image 1/i))
     expect(shell?.contains(chip)).toBe(true)
+  })
+
+  it('keeps the toolbar left zone constrained for overflow', () => {
+    render(<Composer {...composerProps} />)
+
+    const toolbar = document.querySelector('[data-composer-toolbar]')
+    expect(toolbar).toBeTruthy()
+    const left = toolbar!.children[0] as HTMLElement
+    expect(left.className).toMatch(/\bmin-w-0\b/)
+    expect(left.className).toMatch(/\boverflow-hidden\b/)
+    const modelPicker = left.querySelector('[aria-label="Select model"]')?.parentElement
+    expect(modelPicker?.className).toMatch(/\bflex-1\b/)
+    expect(modelPicker?.className).toMatch(/\bmin-w-0\b/)
+    expect(toolbar!.className).toMatch(/border-t/)
+  })
+
+  it('renders dock leading inside the composer shell header', () => {
+    render(
+      <Composer
+        {...composerProps}
+        leading={<div data-testid="git-leading">git</div>}
+      />
+    )
+
+    const leading = screen.getByTestId('git-leading')
+    const shell = document.querySelector('[data-composer-shell]')
+    expect(shell).toBeTruthy()
+    expect(shell?.contains(leading)).toBe(true)
+    expect(
+      shell?.querySelector('[data-composer-git-leading-wrap]')?.contains(leading)
+    ).toBe(true)
   })
 })

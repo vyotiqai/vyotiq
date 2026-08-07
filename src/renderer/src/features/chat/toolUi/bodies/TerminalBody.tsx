@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement, type UIEvent } from 'react'
 import { cn } from '@renderer/lib/ui'
 import { TOOL_TERMINAL_VIEWPORT } from '@renderer/lib/utils/layout'
+import { sanitizeTerminalDisplayText } from '@shared/utils/terminalFormat'
 import type { ToolBodyProps } from '../types'
 import { parseTerminalCardData } from '../parsers/terminal'
 import { TruncatedBanner } from '../primitives'
@@ -24,7 +25,15 @@ function resolveEndedAt(timing: ToolBodyProps['timing']): number | undefined {
 }
 
 export function TerminalBody({ tool, loading, loadFailed, timing }: ToolBodyProps) {
-  const data = useMemo(() => parseTerminalCardData(tool), [tool])
+  const data = useMemo(() => {
+    const parsed = parseTerminalCardData(tool)
+    return {
+      ...parsed,
+      command: sanitizeTerminalDisplayText(parsed.command),
+      output: sanitizeTerminalDisplayText(parsed.output),
+      stderr: sanitizeTerminalDisplayText(parsed.stderr)
+    }
+  }, [tool])
   const running = tool.status === 'running'
   const viewportRef = useRef<HTMLDivElement>(null)
   const pinnedRef = useRef(true)
@@ -88,7 +97,7 @@ export function TerminalBody({ tool, loading, loadFailed, timing }: ToolBodyProp
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       <pre
         className={cn(
-          'm-0 px-3 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]'
+          'm-0 px-3 py-2 font-mono text-caption leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere]'
         )}
       >
         {hasMeta

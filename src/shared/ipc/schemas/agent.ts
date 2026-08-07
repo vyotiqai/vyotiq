@@ -493,6 +493,22 @@ export const ChatRewindAndStartRequestSchema = z.object({
 })
 export type ChatRewindAndStartRequest = z.infer<typeof ChatRewindAndStartRequestSchema>
 
+/** Revert to a past user message: restore write checkpoints, truncate history, no re-run. */
+export const ChatRewindRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  runId: RunIdSchema,
+  /** Index into messages.jsonl of the user message to rewind to (inclusive). */
+  userMessageIndex: z.number().int().min(0)
+})
+export type ChatRewindRequest = z.infer<typeof ChatRewindRequestSchema>
+
+export const ChatRewindResultSchema = z.object({
+  messages: z.array(ChatMessageSchema),
+  restored: z.array(z.string()),
+  skipped: z.array(z.string())
+})
+export type ChatRewindResult = z.infer<typeof ChatRewindResultSchema>
+
 export const CancelRunRequestSchema = z.object({
   runId: RunIdSchema
 })
@@ -535,6 +551,32 @@ export const ChatFollowUpRemoveResultSchema = z.object({
   queueLength: z.number().int().min(0)
 })
 export type ChatFollowUpRemoveResult = z.infer<typeof ChatFollowUpRemoveResultSchema>
+
+export const ChatFollowUpUpdateRequestSchema = z.object({
+  runId: RunIdSchema,
+  id: z.string().min(1),
+  message: ChatMessageSchema.refine((m) => m.role === 'user', {
+    message: 'Follow-up must be a user message'
+  })
+})
+export type ChatFollowUpUpdateRequest = z.infer<typeof ChatFollowUpUpdateRequestSchema>
+
+export const ChatFollowUpUpdateResultSchema = z.object({
+  preview: z.string(),
+  queueLength: z.number().int().min(0)
+})
+export type ChatFollowUpUpdateResult = z.infer<typeof ChatFollowUpUpdateResultSchema>
+
+export const ChatFollowUpPromoteRequestSchema = z.object({
+  runId: RunIdSchema,
+  id: z.string().min(1)
+})
+export type ChatFollowUpPromoteRequest = z.infer<typeof ChatFollowUpPromoteRequestSchema>
+
+export const ChatFollowUpPromoteResultSchema = z.object({
+  queueLength: z.number().int().min(0)
+})
+export type ChatFollowUpPromoteResult = z.infer<typeof ChatFollowUpPromoteResultSchema>
 
 export const CompactRunRequestSchema = z.object({
   workspacePath: z.string().min(1),

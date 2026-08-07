@@ -82,8 +82,10 @@ import {
   cancelRun,
   clearFollowUps,
   clearRunAbort,
-  drainFollowUps,
+  takeNextFollowUp,
+  takeNextReadyFollowUp,
   hasPendingFollowUps,
+  hasReadyFollowUps,
   isCurrentInvoke,
   markRunTurnComplete,
   peekFollowUps,
@@ -93,6 +95,7 @@ import {
   setStreamInterrupt,
   streamSignalFor,
   setLateWriteCheckpoint,
+  setLateFollowUpDropped,
   takePendingMode
 } from './runRegistry'
 import {
@@ -314,6 +317,7 @@ async function* yieldNetworkInterruptedTerminal(
   }
   appendEvent(runDir, incompleteEv)
   yield incompleteEv
+  yield* dropPendingFollowUps(runId, runDir, 'network_interrupted')
   yield { type: 'error', runId, invokeId, message: errorMessage, code: errorCode }
   yield* flushWriteCheckpoint()
   yield { type: 'status', runId, invokeId, status: 'error' }
@@ -342,27 +346,22 @@ function lastReasoningState(messages: ChatMessage[]): ProviderReasoningState | u
   return undefined
 }
 
-/** Persist and emit mid-run user follow-ups drained from the run registry. */
+/** Persist and emit one user follow-up drained from the run registry. */
 function* applyDrainedFollowUps(
   runId: string,
   runDir: string,
-  messages: ChatMessage[]
+  messages: ChatMessage[],
+  mode: 'ready' | 'next' = 'ready'
 ): Generator<AgentEvent> {
-  const drained = drainFollowUps(runId)
-  if (drained.length === 0) return
-  const ids: string[] = []
-  const applied: ChatMessage[] = []
-  for (const entry of drained) {
-    messages.push(entry.message)
-    appendMessage(runDir, entry.message)
-    ids.push(entry.id)
-    applied.push(entry.message)
-  }
+  const entry = mode === 'next' ? takeNextFollowUp(runId) : takeNextReadyFollowUp(runId)
+  if (!entry) return
+  messages.push(entry.message)
+  appendMessage(runDir, entry.message)
   const ev: AgentEvent = {
     type: 'follow_up_applied',
     runId,
-    ids,
-    messages: applied
+    ids: [entry.id],
+    messages: [entry.message]
   }
   appendEvent(runDir, ev)
   yield ev
@@ -437,6 +436,7 @@ function* emitMessageAppendFailureNotice(
   const ev: AgentEvent = { type: 'error', runId, invokeId, message, code: 'PERSIST' }
   appendEvent(runDir, ev)
   yield ev
+  yield* dropPendingFollowUps(runId, runDir, 'PERSIST')
   return true
 }
 
@@ -461,6 +461,7 @@ function* emitEventAppendFailureNotice(
   const ev: AgentEvent = { type: 'error', runId, invokeId, message, code: 'PERSIST' }
   appendEvent(runDir, ev)
   yield ev
+  yield* dropPendingFollowUps(runId, runDir, 'PERSIST')
   return true
 }
 
@@ -577,6 +578,7 @@ export async function* runAgent(input: {
   // Entire body in try/finally so early returns (missing key, etc.) always clear the abort map.
   let runDir: string | null = null
   let checkpointFlushed = false
+  let runExitedNormally = false
   let messages: ChatMessage[] = []
   let costTotals: StepUsageTotals = emptyStepUsageTotals()
   let compactionCountThisRun = 0
@@ -1161,7 +1163,7 @@ export async function* runAgent(input: {
       // Fairness under many concurrent runs — yield before sync-heavy step work.
       await new Promise<void>((resolve) => setImmediate(resolve))
       if (controller.signal.aborted) break
-      // Inject any queued user follow-ups before the next model call.
+      // Inject promoted follow-ups (Send now) before the next model call.
       yield* applyDrainedFollowUps(runId, runDir, messages)
       agentMode = yield* applyPendingModeChange(
         runId,
@@ -1529,7 +1531,7 @@ export async function* runAgent(input: {
             if (closeOverflow === 'has_followups') {
               checkpointFlushed = false
               beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
-              yield* applyDrainedFollowUps(runId, runDir, messages)
+              yield* applyDrainedFollowUps(runId, runDir, messages, 'next')
               continue
             }
             yield { type: 'status', runId, invokeId, status: 'error' }
@@ -1564,7 +1566,7 @@ export async function* runAgent(input: {
           if (closeOverflow2 === 'has_followups') {
             checkpointFlushed = false
             beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
-            yield* applyDrainedFollowUps(runId, runDir, messages)
+            yield* applyDrainedFollowUps(runId, runDir, messages, 'next')
             continue
           }
           yield { type: 'status', runId, invokeId, status: 'error' }
@@ -1639,7 +1641,7 @@ export async function* runAgent(input: {
         })) {
           if (controller.signal.aborted) break
           // Soft-steer: break so we can flush partial output and inject follow-ups.
-          if (hasPendingFollowUps(runId) || stepSoftAbort.signal.aborted) {
+          if (hasReadyFollowUps(runId) || stepSoftAbort.signal.aborted) {
             streamSteered = true
             break
           }
@@ -1977,6 +1979,7 @@ export async function* runAgent(input: {
               step,
               'interrupted'
             )
+            yield* dropPendingFollowUps(runId, runDir, errorCode)
             yield { type: 'error', runId, invokeId, message, code: errorCode }
             yield* flushWriteCheckpoint()
             yield { type: 'status', runId, invokeId, status: 'error' }
@@ -2079,7 +2082,7 @@ export async function* runAgent(input: {
           // Soft follow-up interrupt (stepSoftAbort) vs full run cancel.
           if (
             !controller.signal.aborted &&
-            (hasPendingFollowUps(runId) || stepSoftAbort.signal.aborted)
+            (hasReadyFollowUps(runId) || stepSoftAbort.signal.aborted)
           ) {
             streamSteered = true
           }
@@ -2109,7 +2112,7 @@ export async function* runAgent(input: {
         !streamSteered &&
         !streamGotDone &&
         !controller.signal.aborted &&
-        (hasPendingFollowUps(runId) || stepSoftAbort.signal.aborted)
+        (hasReadyFollowUps(runId) || stepSoftAbort.signal.aborted)
       ) {
         streamSteered = true
       }
@@ -2163,6 +2166,7 @@ export async function* runAgent(input: {
           step,
           'interrupted'
         )
+        yield* dropPendingFollowUps(runId, runDir, errorCode)
         yield { type: 'error', runId, invokeId, message, code: errorCode }
         yield* flushWriteCheckpoint()
         yield { type: 'status', runId, invokeId, status: 'error' }
@@ -2330,9 +2334,9 @@ export async function* runAgent(input: {
 
         if (controller.signal.aborted) break
 
-        // User steered during the final stream step — keep going instead of closing.
+        // Queued follow-ups at turn end auto-apply and continue the run.
         if (hasPendingFollowUps(runId)) {
-          yield* applyDrainedFollowUps(runId, runDir, messages)
+          yield* applyDrainedFollowUps(runId, runDir, messages, 'next')
           continue
         }
 
@@ -2367,7 +2371,7 @@ export async function* runAgent(input: {
         if (closeTurn === 'has_followups') {
           checkpointFlushed = false
           beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
-          yield* applyDrainedFollowUps(runId, runDir, messages)
+          yield* applyDrainedFollowUps(runId, runDir, messages, 'next')
           continue
         }
         // Surface disk append failures before claiming done — otherwise the UI
@@ -2383,6 +2387,7 @@ export async function* runAgent(input: {
             correlationId: runId,
             err: persistErr
           })
+          yield* dropPendingFollowUps(runId, runDir, 'PERSIST')
           yield { type: 'error', runId, invokeId, message, code: 'PERSIST' }
           yield { type: 'status', runId, invokeId, status: 'error' }
           writeStatus({ status: 'error', error: message })
@@ -2390,6 +2395,7 @@ export async function* runAgent(input: {
           appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
           return
         }
+        runExitedNormally = true
         yield { type: 'status', runId, invokeId, status: 'done' }
         writeStatus({ status: 'done', error: undefined })
         appendEvent(runDir, { type: 'status', runId, invokeId, status: 'done' })
@@ -2540,7 +2546,7 @@ export async function* runAgent(input: {
         if (toolsSettled) break
         if (
           !controller.signal.aborted &&
-          (hasPendingFollowUps(runId) || stepSoftAbort.signal.aborted)
+          (hasReadyFollowUps(runId) || stepSoftAbort.signal.aborted)
         ) {
           toolsSteered = true
           // Ensure in-flight tools see soft-abort even if enqueue raced before
@@ -2618,7 +2624,7 @@ export async function* runAgent(input: {
 
       if (
         !controller.signal.aborted &&
-        (toolsSteered || hasPendingFollowUps(runId))
+        (toolsSteered || hasReadyFollowUps(runId))
       ) {
         yield* applyDrainedFollowUps(runId, runDir, messages)
         try {
@@ -2799,6 +2805,27 @@ export async function* runAgent(input: {
         err: disposeErr
       })
     } finally {
+      const pending = peekFollowUps(runId)
+      if (pending.length > 0) {
+        if (runExitedNormally) {
+          logger.error('Follow-ups remained after normal run exit', {
+            scope: 'agent',
+            code: 'FOLLOW_UP_ORPHAN',
+            correlationId: runId,
+            count: pending.length
+          })
+        }
+        const ids = pending.map((entry) => entry.id)
+        clearFollowUps(runId)
+        const dropped: AgentEvent = {
+          type: 'follow_up_dropped',
+          runId,
+          ids,
+          reason: 'run_ended'
+        }
+        if (runDir) appendEvent(runDir, dropped)
+        setLateFollowUpDropped(runId, dropped)
+      }
       clearRunAbort(runId, invokeId)
     }
   }

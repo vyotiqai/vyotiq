@@ -70,7 +70,7 @@ OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI
 
 ## Layout
 
-See [docs/architecture.md](docs/architecture.md) for process boundaries, import aliases (`@shared`, `@renderer/lib`, `@main`), feature folder conventions, and the composer variant contract. For harness failure modes → section → evidence mapping, see [docs/harness-handbook.md](docs/harness-handbook.md).
+See [docs/architecture.md](docs/architecture.md) for process boundaries, import aliases (`@shared`, `@renderer/lib`, `@main`), feature folder conventions, and the composer variant contract. For harness failure modes → section → evidence mapping, see [docs/harness-handbook.md](docs/harness-handbook.md). June–August 2026 verified reference (checkpoints, security, browser, IPC, audit snapshot): [docs/reference/2026-jun-aug/README.md](docs/reference/2026-jun-aug/README.md).
 
 ```
 src/main/          # window, security, IPC, secrets, agent loop / tools / providers / context / logging

@@ -265,7 +265,7 @@ export const ToolGroup = memo(function ToolGroup({
           </span>
         )}
         {summary ? (
-          <span className="min-w-0 truncate text-tertiary" title={summary}>
+          <span className="min-w-0 flex-1 truncate text-tertiary" title={summary}>
             {summary}
           </span>
         ) : null}
@@ -296,7 +296,7 @@ export const ToolGroup = memo(function ToolGroup({
               return (
                 <div
                   key={item.id}
-                  className="tool-stagger-enter rounded-md px-2 py-1 text-[12px] text-muted"
+                  className="tool-stagger-enter rounded-md px-2 py-1 text-xs text-muted"
                   style={{ '--stagger-index': index } as CSSProperties}
                   data-testid={`tool-group-fallback-${item.id}`}
                 >

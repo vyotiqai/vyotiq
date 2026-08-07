@@ -1672,7 +1672,10 @@ export function useWorkspaceManager() {
         ? {
             send: activeController.send.bind(activeController),
             editAndResend: activeController.editAndResend.bind(activeController),
+            revertToUserMessage: activeController.revertToUserMessage.bind(activeController),
             removeFollowUp: activeController.removeFollowUp.bind(activeController),
+            editFollowUp: activeController.editFollowUp.bind(activeController),
+            sendFollowUpNow: activeController.sendFollowUpNow.bind(activeController),
             stop: activeController.stop.bind(activeController),
             reset: activeController.reset.bind(activeController),
             loadTranscript: activeController.loadTranscript.bind(activeController),

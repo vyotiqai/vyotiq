@@ -1,5 +1,27 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { iterateNetworkWait } from '@main/agent/networkMonitor'
+import { iterateNetworkWait, probeNetworkOnline } from '@main/agent/networkMonitor'
+
+describe('probeNetworkOnline', () => {
+  const savedVitest = process.env.VITEST
+
+  afterEach(() => {
+    process.env.VITEST = savedVitest
+    vi.restoreAllMocks()
+  })
+
+  it('probes with GET because HEAD returns 404 on the Cloudflare trace endpoint', async () => {
+    process.env.VITEST = 'false'
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('ok', { status: 200 })
+    )
+
+    await expect(probeNetworkOnline()).resolves.toBe(true)
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://1.1.1.1/cdn-cgi/trace',
+      expect.objectContaining({ method: 'GET' })
+    )
+  })
+})
 
 describe('iterateNetworkWait', () => {
   const savedVitest = process.env.VITEST

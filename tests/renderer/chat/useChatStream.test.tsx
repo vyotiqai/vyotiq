@@ -16,6 +16,7 @@ describe('useChatStream', () => {
   const chatCancel = vi.fn()
   const chatFollowUp = vi.fn()
   const chatFollowUpRemove = vi.fn()
+  const chatFollowUpUpdate = vi.fn()
 
   beforeEach(() => {
     handler = null
@@ -23,6 +24,7 @@ describe('useChatStream', () => {
     chatCancel.mockReset()
     chatFollowUp.mockReset()
     chatFollowUpRemove.mockReset()
+    chatFollowUpUpdate.mockReset()
     chatStart.mockResolvedValue({ ok: true, data: { runId: 'run-1', invokeId: 1 } })
     chatCancel.mockResolvedValue({ ok: true, data: true })
     chatFollowUp.mockResolvedValue({
@@ -30,6 +32,7 @@ describe('useChatStream', () => {
       data: { id: 'fu-1', position: 1, queueLength: 1 }
     })
     chatFollowUpRemove.mockResolvedValue({ ok: true, data: { removed: true, queueLength: 0 } })
+    chatFollowUpUpdate.mockResolvedValue({ ok: true, data: { preview: 'updated', queueLength: 1 } })
 
     // @ts-expect-error test bridge
     window.vyotiq = {
@@ -37,6 +40,7 @@ describe('useChatStream', () => {
       chatCancel,
       chatFollowUp,
       chatFollowUpRemove,
+      chatFollowUpUpdate,
       onChatEvent: (h: Handler) => {
         handler = h
         return () => {
@@ -135,6 +139,9 @@ describe('useChatStream', () => {
       message: { role: 'user', content: 'steer now' }
     })
     expect(result.current.pendingFollowUps.some((e) => e.preview === 'steer now')).toBe(true)
+    expect(
+      result.current.messages.some((m) => m.role === 'user' && m.content === 'steer now')
+    ).toBe(false)
     expect(result.current.running).toBe(true)
   })
 
@@ -175,6 +182,16 @@ describe('useChatStream', () => {
 
     await act(async () => {
       await result.current.send('continue')
+    })
+
+    await act(async () => {
+      handler?.({
+        type: 'follow_up_applied',
+        runId: 'run-1',
+        invokeId: 1,
+        ids: ['fu-1'],
+        messages: [{ role: 'user', content: 'continue' }]
+      })
     })
 
     const continueIdx = result.current.items.findIndex(
@@ -2284,5 +2301,150 @@ describe('useChatStream', () => {
 
     expect(loadToolResult).toHaveBeenCalledWith('/ws', 'run-disk', 'c1')
     expect(content).toBe('full body')
+  })
+
+  it('preserves attachments when editing a queued follow-up', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('start')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running', invokeId: 1 })
+    })
+
+    await act(async () => {
+      await result.current.send('see this', ['data:image/png;base64,abc'])
+    })
+
+    const followUpId = result.current.pendingFollowUps[0]?.id
+    expect(followUpId).toBeTruthy()
+
+    chatFollowUpUpdate.mockClear()
+    await act(async () => {
+      await result.current.editFollowUp?.(followUpId!, 'see that')
+    })
+
+    expect(chatFollowUpUpdate).toHaveBeenCalledWith({
+      runId: 'run-1',
+      id: followUpId,
+      message: {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'see that' },
+          { type: 'image_url', url: 'data:image/png;base64,abc' }
+        ]
+      }
+    })
+  })
+
+  it('surfaces runNotice when queued follow-ups are dropped', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('start')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running', invokeId: 1 })
+      await result.current.send('queued steer')
+    })
+
+    const followUpId = result.current.pendingFollowUps[0]?.id
+    expect(followUpId).toBeTruthy()
+
+    await act(async () => {
+      handler?.({
+        type: 'follow_up_dropped',
+        runId: 'run-1',
+        invokeId: 1,
+        ids: [followUpId!],
+        reason: 'network_interrupted'
+      })
+    })
+
+    expect(result.current.pendingFollowUps).toEqual([])
+    expect(result.current.runNotice).toBe(
+      'Queued follow-up was dropped because the run ended.'
+    )
+  })
+
+  it('keeps queued follow-ups visible on done until follow_up_applied arrives', async () => {
+    const { result } = renderHook(() => useChatStream('/ws'))
+
+    await act(async () => {
+      await result.current.send('start')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'running', invokeId: 1 })
+      await result.current.send('queued steer')
+    })
+
+    const followUpId = result.current.pendingFollowUps[0]?.id
+    expect(followUpId).toBeTruthy()
+
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-1', status: 'done', invokeId: 1 })
+    })
+
+    expect(result.current.running).toBe(false)
+    expect(result.current.pendingFollowUps).toHaveLength(1)
+
+    await act(async () => {
+      handler?.({
+        type: 'follow_up_applied',
+        runId: 'run-1',
+        invokeId: 1,
+        ids: [followUpId!],
+        messages: [{ role: 'user', content: 'queued steer' }]
+      })
+    })
+
+    expect(result.current.pendingFollowUps).toEqual([])
+    expect(
+      result.current.messages.some((m) => m.role === 'user' && m.content === 'queued steer')
+    ).toBe(true)
+  })
+
+  it('does not reattach a run after terminal status while main unwinds', async () => {
+    const listActiveRuns = vi.fn()
+    const loadRun = vi.fn().mockResolvedValue({
+      ok: true,
+      data: {
+        messages: [
+          { role: 'user', content: 'hello' },
+          { role: 'assistant', content: 'done' }
+        ]
+      }
+    })
+    const loadRunEvents = vi.fn().mockResolvedValue({ ok: true, data: [] })
+    // @ts-expect-error test bridge
+    window.vyotiq.listActiveRuns = listActiveRuns
+    // @ts-expect-error test bridge
+    window.vyotiq.loadRun = loadRun
+    // @ts-expect-error test bridge
+    window.vyotiq.loadRunEvents = loadRunEvents
+
+    const controller = createChatStreamController({
+      workspacePath: '/ws',
+      runId: 'run-1'
+    })
+
+    controller.handleEvent({ type: 'status', runId: 'run-1', status: 'running', invokeId: 1 })
+    controller.handleEvent({ type: 'status', runId: 'run-1', status: 'done', invokeId: 1 })
+    expect(controller.running).toBe(false)
+    expect(controller.runTerminalTick).toBe(1)
+
+    listActiveRuns.mockResolvedValue({
+      ok: true,
+      data: [{ runId: 'run-1', workspacePath: '/ws', invokeId: 1, pendingFollowUps: [] }]
+    })
+
+    await act(async () => {
+      await controller.reattachActiveRun('run-1')
+    })
+
+    expect(loadRun).toHaveBeenCalledWith('/ws', 'run-1')
+    expect(controller.running).toBe(false)
+    controller.dispose()
   })
 })

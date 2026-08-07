@@ -154,10 +154,10 @@ function reviewsLabel(pr: PrView): string {
 
 function ReviewCard({ review }: { review: PrReview }) {
   return (
-    <li className="rounded-md border border-border/40 px-2.5 py-2 text-[11px]">
+    <li className="rounded-md border border-border/40 px-2.5 py-2 text-caption">
       <div className="flex items-center gap-2">
         <span className="font-medium text-fg">{review.author}</span>
-        <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] text-muted">
+        <span className="rounded bg-surface-2 px-1.5 py-0.5 text-2xs text-muted">
           {review.state}
         </span>
         {review.submittedAt ? (
@@ -168,7 +168,7 @@ function ReviewCard({ review }: { review: PrReview }) {
       </div>
       {review.body.trim() ? (
         <div className="mt-1.5 text-fg">
-          <MarkdownContent content={review.body} className="text-[11px]" />
+          <MarkdownContent content={review.body} className="text-caption" />
         </div>
       ) : (
         <p className="m-0 mt-1 text-muted">No review comment.</p>
@@ -452,13 +452,13 @@ export function PrPanel({
   const connectActions = (
     <>
       {auth && !auth.clientIdConfigured ? (
-        <p className="m-0 w-full text-[11px] text-muted">
+        <p className="m-0 w-full text-caption text-muted">
           Set a GitHub client ID in Settings → Agent (or VYOTIQ_GITHUB_CLIENT_ID) before connecting.
         </p>
       ) : null}
       <Button
         variant="subtle"
-        className="h-7 px-2.5 text-[11px]"
+        className="h-7 px-2.5 text-caption"
         disabled={
           authBusy ||
           Boolean(auth?.pending) ||
@@ -471,7 +471,7 @@ export function PrPanel({
       {auth?.pending && auth.verificationUri ? (
         <Button
           variant="subtle"
-          className="h-7 px-2.5 text-[11px]"
+          className="h-7 px-2.5 text-caption"
           onClick={() => void openExternal(auth.verificationUri!)}
         >
           Open verification
@@ -480,7 +480,7 @@ export function PrPanel({
       {auth?.pending ? (
         <Button
           variant="subtle"
-          className="h-7 px-2.5 text-[11px]"
+          className="h-7 px-2.5 text-caption"
           disabled={authBusy}
           onClick={() => {
             void window.vyotiq.githubAuthCancel?.().then((res) => {
@@ -494,7 +494,7 @@ export function PrPanel({
       {auth?.hasAppToken ? (
         <Button
           variant="subtle"
-          className="h-7 px-2.5 text-[11px]"
+          className="h-7 px-2.5 text-caption"
           onClick={() => {
             void window.vyotiq.githubAuthLogout?.().then((res) => {
               if (res.ok) setAuth(res.data)
@@ -603,10 +603,10 @@ export function PrPanel({
       {pr ? (
         <div className="flex shrink-0 flex-col gap-1 border-b border-border/40 px-2.5 py-2">
           <div className="flex h-7 min-w-0 items-center gap-2">
-            <span className="shrink-0 rounded bg-success/20 px-1.5 py-0.5 text-[10px] font-medium leading-none text-success">
+            <span className="shrink-0 rounded bg-success/20 px-1.5 py-0.5 text-2xs font-medium leading-none text-success">
               {formatPrState(pr.state)}
             </span>
-            <span className="min-w-0 flex-1 truncate text-[11px] leading-none text-muted" title={`${pr.headRefName} → ${pr.baseRefName}`}>
+            <span className="min-w-0 flex-1 truncate text-caption leading-none text-muted" title={`${pr.headRefName} → ${pr.baseRefName}`}>
               {pr.headRefName} → {pr.baseRefName}
             </span>
             <div
@@ -633,7 +633,7 @@ export function PrPanel({
                     <div className="relative">
                       <button
                         type="button"
-                        className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                        className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                         onClick={() => setLayoutOpen((v) => !v)}
                       >
                         <span>Layout</span>
@@ -652,7 +652,7 @@ export function PrPanel({
                             <button
                               key={id}
                               type="button"
-                              className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                              className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                               onClick={() => {
                                 setLayout(id)
                                 setLayoutOpen(false)
@@ -665,7 +665,7 @@ export function PrPanel({
                         </div>
                       ) : null}
                     </div>
-                    <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] hover:bg-surface">
+                    <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-caption hover:bg-surface">
                       <span>Ignore Whitespace</span>
                       <Switch
                         checked={ignoreWhitespace}
@@ -673,7 +673,7 @@ export function PrPanel({
                         label="Ignore Whitespace"
                       />
                     </label>
-                    <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] hover:bg-surface">
+                    <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-caption hover:bg-surface">
                       <span>Word Wrap</span>
                       <Switch
                         checked={wordWrap}
@@ -684,21 +684,21 @@ export function PrPanel({
                     <div className="my-1 border-t border-border/50" />
                     <button
                       type="button"
-                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                       onClick={expandAll}
                     >
                       Expand All Files
                     </button>
                     <button
                       type="button"
-                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                       onClick={collapseAll}
                     >
                       Collapse All
                     </button>
                     <button
                       type="button"
-                      className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                       onClick={() => {
                         closeMenus()
                         setFindOpen(true)
@@ -710,7 +710,7 @@ export function PrPanel({
                     </button>
                     <button
                       type="button"
-                      className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                       onClick={() => {
                         closeMenus()
                         void load()
@@ -721,7 +721,7 @@ export function PrPanel({
                     </button>
                     <button
                       type="button"
-                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                       onClick={() => {
                         closeMenus()
                         void openExternal(pr.url)
@@ -731,7 +731,7 @@ export function PrPanel({
                     </button>
                     <button
                       type="button"
-                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                       onClick={() => {
                         closeMenus()
                         void navigator.clipboard.writeText(pr.url)
@@ -741,7 +741,7 @@ export function PrPanel({
                     </button>
                     <button
                       type="button"
-                      className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                       onClick={startEditTitle}
                     >
                       <span>Edit Title</span>
@@ -750,14 +750,14 @@ export function PrPanel({
                     <div className="my-1 border-t border-border/50" />
                     <button
                       type="button"
-                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] text-danger hover:bg-surface"
+                      className="flex w-full px-2.5 py-1.5 text-left text-caption text-danger hover:bg-surface"
                       onClick={() => void closePr()}
                     >
                       Close PR
                     </button>
                     <button
                       type="button"
-                      className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                      className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                       onClick={() => {
                         closeMenus()
                         onPrMeta?.(null)
@@ -787,7 +787,7 @@ export function PrPanel({
                 menu={
                   mergeOpen ? (
                     <div className="absolute right-0 top-full z-dropdown mt-0.5 min-w-[11rem] overflow-visible rounded-md border border-border bg-bg py-1 shadow-lg">
-                      <p className="m-0 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-muted">
+                      <p className="m-0 px-2.5 py-1 text-2xs font-medium uppercase tracking-wide text-muted">
                         Merge Method
                       </p>
                       {(
@@ -800,7 +800,7 @@ export function PrPanel({
                         <button
                           key={method}
                           type="button"
-                          className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                          className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                           disabled={mergeBusy}
                           onClick={() => void merge(method)}
                         >
@@ -828,7 +828,7 @@ export function PrPanel({
               <input
                 ref={titleInputRef}
                 type="text"
-                className="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-[12px] text-fg"
+                className="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-xs text-fg"
                 value={titleDraft}
                 aria-label="PR title"
                 onChange={(e) => setTitleDraft(e.target.value)}
@@ -844,13 +844,13 @@ export function PrPanel({
               <Button
                 type="submit"
                 variant="subtle"
-                className="h-7 px-2 text-[11px]"
+                className="h-7 px-2 text-caption"
               >
                 Save
               </Button>
             </form>
           ) : (
-            <p className="m-0 truncate text-[12px] font-medium text-fg" title={pr.title}>
+            <p className="m-0 truncate text-xs font-medium text-fg" title={pr.title}>
               {pr.title} #{pr.number}
             </p>
           )}
@@ -868,7 +868,7 @@ export function PrPanel({
                 key={id}
                 type="button"
                 className={cn(
-                  'relative shrink-0 rounded px-2 py-1 text-[11px]',
+                  'relative shrink-0 rounded px-2 py-1 text-caption',
                   tab === id ? 'bg-bg text-fg underline decoration-accent' : 'text-muted hover:text-fg'
                 )}
                 aria-pressed={tab === id}
@@ -899,7 +899,7 @@ export function PrPanel({
       {notice ? (
         <p
           className={cn(
-            'm-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px]',
+            'm-0 shrink-0 border-b border-border/40 px-3 py-1 text-caption',
             noticeFailed ? 'text-danger' : 'text-success'
           )}
           role={noticeFailed ? 'alert' : 'status'}
@@ -913,7 +913,7 @@ export function PrPanel({
           <input
             ref={findInputRef}
             type="search"
-            className="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-[11px] text-fg"
+            className="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-caption text-fg"
             value={findQuery}
             placeholder="Find in diff…"
             aria-label="Find in diff"
@@ -929,7 +929,7 @@ export function PrPanel({
           />
           <button
             type="button"
-            className="rounded px-1.5 py-0.5 text-[11px] text-muted hover:bg-surface-2"
+            className="rounded px-1.5 py-0.5 text-caption text-muted hover:bg-surface-2"
             aria-label="Close find"
             onClick={() => {
               setFindOpen(false)
@@ -971,11 +971,11 @@ export function PrPanel({
               actions={connectActions}
             />
           ) : pr.commits.length === 0 ? (
-            <p className="m-0 text-[11px] text-muted">No commits reported for this pull request.</p>
+            <p className="m-0 text-caption text-muted">No commits reported for this pull request.</p>
           ) : (
             <ul className="m-0 list-none space-y-1.5 p-0">
               {pr.commits.map((c) => (
-                <li key={c.oid} className="rounded-md border border-border/40 px-2.5 py-1.5 text-[11px]">
+                <li key={c.oid} className="rounded-md border border-border/40 px-2.5 py-1.5 text-caption">
                   <p className="m-0 text-fg">{c.messageHeadline}</p>
                   <p className="m-0 mt-0.5 truncate text-muted">
                     {c.oid.slice(0, 7)}
@@ -990,14 +990,14 @@ export function PrPanel({
           <div className="min-h-0 flex-1 overflow-auto">
           <ul className="m-0 list-none space-y-1 p-0">
             {pr.checks.length === 0 ? (
-              <li className="text-[11px] text-muted">
+              <li className="text-caption text-muted">
                 No CI checks configured — they&apos;ll appear here once set up.
               </li>
             ) : (
               pr.checks.map((c, i) => (
                 <li
                   key={`${c.name}-${i}`}
-                  className="flex items-center gap-2 rounded-md border border-border/40 px-2.5 py-1.5 text-[11px]"
+                  className="flex items-center gap-2 rounded-md border border-border/40 px-2.5 py-1.5 text-caption"
                 >
                   <span className="min-w-0 flex-1 truncate text-fg">{c.name}</span>
                   <span className="shrink-0 text-muted">{c.conclusion ?? c.state}</span>
@@ -1019,7 +1019,7 @@ export function PrPanel({
                     {connectActions}
                     <Button
                       variant="subtle"
-                      className="h-7 px-2.5 text-[11px]"
+                      className="h-7 px-2.5 text-caption"
                       onClick={() => void openExternal(pr.url)}
                     >
                       View on Web
@@ -1030,18 +1030,18 @@ export function PrPanel({
             ) : (
               <>
                 {pr.reviewDecision ? (
-                  <p className="m-0 text-[11px] text-muted">
+                  <p className="m-0 text-caption text-muted">
                     Decision:{' '}
                     <span className="font-medium text-fg">{pr.reviewDecision}</span>
                   </p>
                 ) : null}
                 {pr.reviewRequests.length > 0 ? (
-                  <p className="m-0 text-[11px] text-muted">
+                  <p className="m-0 text-caption text-muted">
                     Requested: {pr.reviewRequests.join(', ')}
                   </p>
                 ) : null}
                 {(pr.latestReviews.length ? pr.latestReviews : pr.reviews).length === 0 ? (
-                  <p className="m-0 text-[11px] text-muted">No reviews yet for this pull request.</p>
+                  <p className="m-0 text-caption text-muted">No reviews yet for this pull request.</p>
                 ) : (
                   <ul className="m-0 list-none space-y-2 p-0">
                     {(pr.latestReviews.length ? pr.latestReviews : pr.reviews).map((r, i) => (
@@ -1055,7 +1055,7 @@ export function PrPanel({
         ) : (
           <>
             {pr.files.length === 0 ? (
-              <p className="m-0 text-[11px] text-muted">No files changed.</p>
+              <p className="m-0 text-caption text-muted">No files changed.</p>
             ) : (
               <ChangedFilesBrowser
                 className="min-h-0 flex-1"

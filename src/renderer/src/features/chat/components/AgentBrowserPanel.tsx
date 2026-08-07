@@ -167,10 +167,10 @@ export function AgentBrowserPanel({
         target = `https://www.google.com/search?q=${encodeURIComponent(target)}`
       }
     }
-    void window.vyotiq.browserNavigate?.(target)
+    void window.vyotiq.browserNavigate?.(target, workspacePath ?? undefined)
     setHistoryOpen(false)
     urlInputRef.current?.blur()
-  }, [])
+  }, [workspacePath])
 
   const handleNavigate = useCallback(
     (e: React.FormEvent) => {
@@ -273,7 +273,7 @@ export function AgentBrowserPanel({
               key={tab.id}
               type="button"
               className={cn(
-                'flex max-w-[10rem] shrink-0 items-center gap-1 truncate rounded-t-md px-2 py-1 text-[11px]',
+                'flex max-w-[10rem] shrink-0 items-center gap-1 truncate rounded-t-md px-2 py-1 text-caption',
                 tab.active
                   ? 'bg-surface font-medium text-fg'
                   : 'text-muted hover:bg-surface/60 hover:text-fg'
@@ -318,7 +318,7 @@ export function AgentBrowserPanel({
           <form onSubmit={handleNavigate}>
             <div
               className={cn(
-                'flex items-center rounded-md border bg-surface px-2.5 py-1 text-[12px] transition-colors',
+                'flex items-center rounded-md border bg-surface px-2.5 py-1 text-xs transition-colors',
                 urlFocused ? 'border-accent/60' : 'border-border/40'
               )}
             >
@@ -370,14 +370,14 @@ export function AgentBrowserPanel({
             >
               {recentGroups.map((group) => (
                 <div key={group.label}>
-                  <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-muted">
+                  <div className="px-3 py-1 text-2xs font-medium uppercase tracking-wide text-muted">
                     {group.label}
                   </div>
                   {group.items.map((item) => (
                     <button
                       key={`${item.url}-${item.visitedAt}`}
                       type="button"
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] text-fg hover:bg-surface-2"
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs text-fg hover:bg-surface-2"
                       onMouseDown={(e) => e.preventDefault()}
                       onClick={() => navigateTo(item.url)}
                       title={item.url}
@@ -457,7 +457,7 @@ export function AgentBrowserPanel({
       </div>
 
       {bookmarkBar ? (
-        <div className="flex items-center gap-1 border-b border-border/30 px-2 py-1 text-[11px] text-muted">
+        <div className="flex items-center gap-1 border-b border-border/30 px-2 py-1 text-caption text-muted">
           <span className="px-1">Bookmarks</span>
           {recents.slice(0, 5).map((item) => (
             <button
@@ -474,7 +474,7 @@ export function AgentBrowserPanel({
       ) : null}
 
       {statusMsg ? (
-        <div className="px-2.5 py-1 text-[11px] text-muted" role="status">
+        <div className="px-2.5 py-1 text-caption text-muted" role="status">
           {statusMsg}
         </div>
       ) : null}
@@ -488,13 +488,13 @@ export function AgentBrowserPanel({
           <div className="absolute inset-0 overflow-auto px-4 py-6">
             {recents.length > 0 ? (
               <div>
-                <p className="mb-2 text-[11px] font-medium text-muted">Recents</p>
+                <p className="mb-2 text-caption font-medium text-muted">Recents</p>
                 <ul className="m-0 list-none space-y-1 p-0">
                   {recents.slice(0, 12).map((item) => (
                     <li key={`${item.url}-${item.visitedAt}`}>
                       <button
                         type="button"
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[12px] text-fg hover:bg-surface-2"
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-fg hover:bg-surface-2"
                         onClick={() => navigateTo(item.url)}
                         title={item.url}
                       >
@@ -510,8 +510,8 @@ export function AgentBrowserPanel({
             ) : (
               <div className="flex h-full flex-col items-center justify-center px-6 text-center">
                 <GlobeGlyph className="mb-4 text-muted/40" size={48} />
-                <p className="text-[12px] font-medium text-fg/80">No page loaded</p>
-                <p className="mt-1 max-w-[16rem] text-[11px] leading-relaxed text-muted">
+                <p className="text-xs font-medium text-fg/80">No page loaded</p>
+                <p className="mt-1 max-w-[16rem] text-caption leading-relaxed text-muted">
                   Enter a URL above, or ask the agent to open a page.
                 </p>
               </div>
@@ -589,7 +589,7 @@ function MenuButton({
   return (
     <button
       type="button"
-      className="flex w-full items-center px-3 py-1.5 text-left text-[12px] text-fg transition-colors hover:bg-surface-2 disabled:opacity-40"
+      className="flex w-full items-center px-3 py-1.5 text-left text-xs text-fg transition-colors hover:bg-surface-2 disabled:opacity-40"
       onClick={onClick}
       disabled={disabled}
     >

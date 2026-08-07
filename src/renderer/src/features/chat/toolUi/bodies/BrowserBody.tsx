@@ -43,32 +43,32 @@ export function BrowserSnapshotBody({ tool, loading, loadFailed }: ToolBodyProps
       <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
         {data.url ? <Chip>{data.url}</Chip> : null}
         {data.title ? (
-          <span className="truncate text-[11px] text-fg/80" title={data.title}>
+          <span className="truncate text-caption text-fg/80" title={data.title}>
             {data.title}
           </span>
         ) : null}
         {data.tabId ? (
-          <span className="text-[10px] tabular-nums text-tertiary">{data.tabId}</span>
+          <span className="text-2xs tabular-nums text-tertiary">{data.tabId}</span>
         ) : null}
         {data.viewport ? (
-          <span className="text-[10px] tabular-nums text-tertiary">{data.viewport}</span>
+          <span className="text-2xs tabular-nums text-tertiary">{data.viewport}</span>
         ) : null}
         {data.refs.length > 0 ? (
-          <span className="text-[10px] tabular-nums text-tertiary">
+          <span className="text-2xs tabular-nums text-tertiary">
             {data.refs.length} {data.refs.length === 1 ? 'ref' : 'refs'}
           </span>
         ) : null}
       </div>
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       {data.message ? (
-        <p className={`${TOOL_BODY_PAD} m-0 text-[11px] text-tertiary`}>{data.message}</p>
+        <p className={`${TOOL_BODY_PAD} m-0 text-caption text-tertiary`}>{data.message}</p>
       ) : null}
       {data.refs.length > 0 ? (
         <ul className={`${TOOL_BODY_INNER} ${TOOL_BODY_FLOW} m-0 list-none space-y-0.5 p-0`}>
           {data.refs.map((ref) => (
             <li
               key={ref.id}
-              className="flex min-w-0 items-baseline gap-2 font-mono text-[11px] text-fg/80"
+              className="flex min-w-0 items-baseline gap-2 font-mono text-caption text-fg/80"
             >
               <span className="shrink-0 text-accent">@{ref.id}</span>
               <span className="shrink-0 text-tertiary">{ref.role}</span>
@@ -81,7 +81,7 @@ export function BrowserSnapshotBody({ tool, loading, loadFailed }: ToolBodyProps
       ) : null}
       {data.body ? (
         <pre
-          className={`${TOOL_BODY_INNER} m-0 ${TOOL_BODY_FLOW} font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-fg/75 [overflow-wrap:anywhere]`}
+          className={`${TOOL_BODY_INNER} m-0 ${TOOL_BODY_FLOW} font-mono text-caption leading-relaxed whitespace-pre-wrap text-fg/75 [overflow-wrap:anywhere]`}
         >
           {data.body}
         </pre>
@@ -95,7 +95,7 @@ export function BrowserSnapshotBody({ tool, loading, loadFailed }: ToolBodyProps
           />
         </div>
       ) : data.screenshotNote ? (
-        <p className={`${TOOL_BODY_PAD} m-0 pt-1 text-[10px] text-tertiary`}>{data.screenshotNote}</p>
+        <p className={`${TOOL_BODY_PAD} m-0 pt-1 text-2xs text-tertiary`}>{data.screenshotNote}</p>
       ) : null}
     </div>
   )
@@ -109,7 +109,7 @@ export function BrowserTabsBody({ tool, loading, loadFailed }: ToolBodyProps) {
       <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
         <Chip>{data.action}</Chip>
         {data.tabs.length > 0 ? (
-          <span className="text-[10px] tabular-nums text-tertiary">
+          <span className="text-2xs tabular-nums text-tertiary">
             {data.tabs.length} {data.tabs.length === 1 ? 'tab' : 'tabs'}
           </span>
         ) : null}
@@ -118,21 +118,21 @@ export function BrowserTabsBody({ tool, loading, loadFailed }: ToolBodyProps) {
       {data.tabs.length > 0 ? (
         <ul className={`${TOOL_BODY_INNER} ${TOOL_BODY_FLOW} m-0 list-none space-y-1 p-0`}>
           {data.tabs.map((tab) => (
-            <li key={tab.id} className="min-w-0 font-mono text-[11px] text-fg/80">
+            <li key={tab.id} className="min-w-0 font-mono text-caption text-fg/80">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="shrink-0 text-tertiary">{tab.id}</span>
                 <span className="min-w-0 truncate" title={tab.title}>
                   {tab.title}
                 </span>
               </div>
-              <div className="truncate text-[10px] text-accent" title={tab.url}>
+              <div className="truncate text-2xs text-accent" title={tab.url}>
                 {tab.url}
               </div>
             </li>
           ))}
         </ul>
       ) : (
-        <p className={`${TOOL_BODY_PAD} m-0 text-[11px] text-fg/80`}>{data.message || 'No tabs'}</p>
+        <p className={`${TOOL_BODY_PAD} m-0 text-caption text-fg/80`}>{data.message || 'No tabs'}</p>
       )}
     </div>
   )
@@ -146,15 +146,15 @@ export function BrowserActionBody({ tool, loading, loadFailed }: ToolBodyProps) 
       <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
         {data.target ? <Chip>{data.target}</Chip> : null}
         {data.tabId ? (
-          <span className="text-[10px] tabular-nums text-tertiary">{data.tabId}</span>
+          <span className="text-2xs tabular-nums text-tertiary">{data.tabId}</span>
         ) : null}
         {data.failed && !loading ? (
-          <span className="text-[10px] font-medium text-danger">Failed</span>
+          <span className="text-2xs font-medium text-danger">Failed</span>
         ) : null}
       </div>
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       <p
-        className={`${TOOL_BODY_PAD} m-0 text-[11px] [overflow-wrap:anywhere] ${
+        className={`${TOOL_BODY_PAD} m-0 text-caption [overflow-wrap:anywhere] ${
           data.failed && !loading ? 'text-danger' : 'text-fg/80'
         }`}
         aria-busy={loading || undefined}

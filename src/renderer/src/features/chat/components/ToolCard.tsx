@@ -101,7 +101,7 @@ export const ToolCard = memo(function ToolCard({
         className={cn(
           'min-w-0 flex-1 truncate text-tertiary',
           // Command snippets stay mono; free-form edit paths use the default UI face.
-          headerMeta.icon === 'terminal' && 'font-mono text-[11px]'
+          headerMeta.icon === 'terminal' && 'font-mono text-caption'
         )}
         title={headerMeta.target}
       >
@@ -114,7 +114,7 @@ export const ToolCard = memo(function ToolCard({
         {headerMeta.exitCode != null ? (
           <span
             className={cn(
-              'rounded-sm px-1 text-[10px]',
+              'rounded-sm px-1 text-2xs',
               headerMeta.exitCode === 0 ? 'text-success' : 'text-danger'
             )}
             title={`Exit code ${headerMeta.exitCode}`}

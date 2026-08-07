@@ -623,7 +623,7 @@ export function ChangesPanel({
         <div className="relative shrink-0">
           <button
             type="button"
-            className="inline-flex h-6 max-w-[9rem] items-center gap-1 rounded-md px-1.5 text-[11px] leading-none text-fg hover:bg-surface-2"
+            className="inline-flex h-6 max-w-[9rem] items-center gap-1 rounded-md px-1.5 text-caption leading-none text-fg hover:bg-surface-2"
             onClick={() => {
               const next = !scopeOpen
               closeMenus()
@@ -650,7 +650,7 @@ export function ChangesPanel({
                     key={key}
                     type="button"
                     className={cn(
-                      'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] hover:bg-surface',
+                      'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption hover:bg-surface',
                       displayScope === key ? 'text-fg' : 'text-muted'
                     )}
                     onClick={() => {
@@ -680,7 +680,7 @@ export function ChangesPanel({
           ) : null}
         </div>
 
-        <span className="shrink-0 tabular-nums text-[11px] leading-none text-muted">
+        <span className="shrink-0 tabular-nums text-caption leading-none text-muted">
           {totals.added > 0 ? <span className="text-success">+{totals.added}</span> : null}
           {totals.removed > 0 ? (
             <span className="ml-1 text-danger">-{totals.removed}</span>
@@ -690,7 +690,7 @@ export function ChangesPanel({
         <div className="relative min-w-0 flex-1">
           <button
             type="button"
-            className="inline-flex h-6 w-full min-w-0 max-w-full items-center gap-1 rounded-md px-1.5 text-[11px] leading-none text-muted hover:bg-surface-2 hover:text-fg"
+            className="inline-flex h-6 w-full min-w-0 max-w-full items-center gap-1 rounded-md px-1.5 text-caption leading-none text-muted hover:bg-surface-2 hover:text-fg"
             disabled={!workspacePath || chrome.result?.kind !== 'ok'}
             onClick={() => {
               const next = !branchOpen
@@ -708,16 +708,16 @@ export function ChangesPanel({
           {branchOpen ? (
             <div className="absolute left-0 top-full z-dropdown mt-0.5 max-h-56 min-w-[12rem] overflow-auto rounded-md border border-border bg-bg py-1 shadow-lg">
               {branchesBusy ? (
-                <p className="m-0 px-2.5 py-1.5 text-[11px] text-muted">Loading…</p>
+                <p className="m-0 px-2.5 py-1.5 text-caption text-muted">Loading…</p>
               ) : branches.length === 0 ? (
-                <p className="m-0 px-2.5 py-1.5 text-[11px] text-muted">No local branches</p>
+                <p className="m-0 px-2.5 py-1.5 text-caption text-muted">No local branches</p>
               ) : (
                 branches.map((b) => (
                   <button
                     key={b.name}
                     type="button"
                     className={cn(
-                      'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] hover:bg-surface',
+                      'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption hover:bg-surface',
                       b.current ? 'text-fg' : 'text-muted'
                     )}
                     disabled={b.current}
@@ -754,7 +754,7 @@ export function ChangesPanel({
                 <div className="relative">
                   <button
                     type="button"
-                    className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                    className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                     onClick={() => setLayoutOpen((v) => !v)}
                     aria-expanded={layoutOpen}
                   >
@@ -773,7 +773,7 @@ export function ChangesPanel({
                           key={mode}
                           type="button"
                           className={cn(
-                            'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[11px] capitalize hover:bg-surface',
+                            'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption capitalize hover:bg-surface',
                             layout === mode ? 'text-fg' : 'text-muted'
                           )}
                           onClick={() => {
@@ -789,7 +789,7 @@ export function ChangesPanel({
                     </div>
                   ) : null}
                 </div>
-                <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] text-fg">
+                <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-caption text-fg">
                   Ignore Whitespace
                   <Switch
                     checked={ignoreWhitespace}
@@ -797,7 +797,7 @@ export function ChangesPanel({
                     label="Ignore Whitespace"
                   />
                 </label>
-                <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-[11px] text-fg">
+                <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-caption text-fg">
                   Word Wrap
                   <Switch
                     checked={wordWrap}
@@ -807,25 +807,25 @@ export function ChangesPanel({
                 </label>
                 <button
                   type="button"
-                  className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                  className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                   onClick={() => {
                     setFindOpen(true)
                     closeMenus()
                   }}
                 >
                   Find in Changes
-                  <span className="text-[10px] text-muted">{shortcutLabel('find')}</span>
+                  <span className="text-2xs text-muted">{shortcutLabel('find')}</span>
                 </button>
                 <button
                   type="button"
-                  className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                  className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                   onClick={expandAll}
                 >
                   Expand All
                 </button>
                 <button
                   type="button"
-                  className="flex w-full px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                  className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                   onClick={() => {
                     setExpanded(new Set())
                     closeMenus()
@@ -835,7 +835,7 @@ export function ChangesPanel({
                 </button>
                 <button
                   type="button"
-                  className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                  className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                   onClick={() => {
                     chrome.refresh()
                     void refreshCommits()
@@ -843,7 +843,7 @@ export function ChangesPanel({
                   }}
                 >
                   Refresh Changes
-                  <span className="text-[10px] text-muted">{shortcutLabel('refresh')}</span>
+                  <span className="text-2xs text-muted">{shortcutLabel('refresh')}</span>
                 </button>
               </div>
             ) : null}
@@ -874,7 +874,7 @@ export function ChangesPanel({
               <CommitComposer
                 compact
                 className="mr-1"
-                inputClassName="mr-1 h-6 w-36 rounded-md border border-border bg-bg px-1.5 text-[11px] leading-none text-fg outline-none"
+                inputClassName="mr-1 h-6 w-36 rounded-md border border-border bg-bg px-1.5 text-caption leading-none text-fg outline-none"
                 message={message}
                 onMessageChange={setMessage}
                 busy={chrome.busy}
@@ -896,7 +896,7 @@ export function ChangesPanel({
                     <div className="absolute right-0 top-full z-dropdown mt-0.5 min-w-[9rem] rounded-md border border-border bg-bg py-1 shadow-lg">
                       <button
                         type="button"
-                        className="flex w-full whitespace-nowrap px-2.5 py-1.5 text-left text-[11px] hover:bg-surface"
+                        className="flex w-full whitespace-nowrap px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                         onClick={() => openCompose(!commitPrimaryPushes)}
                       >
                         {commitPrimaryPushes ? 'Commit' : 'Commit & Push'}
@@ -929,7 +929,7 @@ export function ChangesPanel({
             onChange={(e) => setFindQuery(e.target.value)}
             placeholder="Find in changes"
             aria-label="Find in changes"
-            className="min-w-0 flex-1 bg-transparent text-[11px] text-fg outline-none placeholder:text-muted"
+            className="min-w-0 flex-1 bg-transparent text-caption text-fg outline-none placeholder:text-muted"
             onKeyDown={(e) => {
               if (e.key === 'Escape') {
                 e.preventDefault()
@@ -941,7 +941,7 @@ export function ChangesPanel({
           />
           <button
             type="button"
-            className="rounded px-1 text-[10px] text-muted hover:text-fg"
+            className="rounded px-1 text-2xs text-muted hover:text-fg"
             aria-label="Close find"
             onClick={() => {
               setFindOpen(false)
@@ -956,7 +956,7 @@ export function ChangesPanel({
       {chrome.notice ? (
         <p
           className={cn(
-            'm-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px]',
+            'm-0 shrink-0 border-b border-border/40 px-3 py-1 text-caption',
             chrome.noticeFailed ? 'text-danger' : 'text-secondary'
           )}
           role={chrome.noticeFailed ? 'alert' : 'status'}
@@ -966,7 +966,7 @@ export function ChangesPanel({
       ) : null}
 
       {status?.truncated && displayScope !== 'agent' && displayScope !== 'commits' ? (
-        <p className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px] text-muted">
+        <p className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-caption text-muted">
           Showing first {status.files.length} of {status.fileCount} changed files
         </p>
       ) : null}
@@ -1000,14 +1000,14 @@ export function ChangesPanel({
           </div>
         ) : displayScope === 'commits' && !selectedCommit ? (
           <ul className="m-0 min-h-0 flex-1 list-none overflow-auto rounded-md border border-border/50 bg-surface p-0">
-            <li className="border-b border-border/40 px-3 py-1.5 text-[11px] text-fg">
+            <li className="border-b border-border/40 px-3 py-1.5 text-caption text-fg">
               {commits.length} {commits.length === 1 ? 'Commit' : 'Commits'}
             </li>
             {commits.map((c) => (
               <li key={c.sha} className="border-b border-border/40 last:border-b-0">
                 <button
                   type="button"
-                  className="flex w-full min-w-0 flex-col gap-0.5 px-3 py-1.5 text-left text-[11px] hover:bg-surface/60"
+                  className="flex w-full min-w-0 flex-col gap-0.5 px-3 py-1.5 text-left text-caption hover:bg-surface/60"
                   onClick={() => {
                     setSelectedCommit(c)
                     setExpanded(new Set())
@@ -1018,7 +1018,7 @@ export function ChangesPanel({
                     <span className="shrink-0 font-mono text-muted">{c.shortSha}</span>
                     <span className="min-w-0 truncate text-fg">{c.subject}</span>
                   </span>
-                  <span className="text-[10px] text-muted">
+                  <span className="text-2xs text-muted">
                     {c.author} · {c.relativeDate}
                   </span>
                 </button>
@@ -1028,7 +1028,7 @@ export function ChangesPanel({
         ) : (
           <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto" data-diff-scroll-root>
             {displayScope === 'commits' && selectedCommit ? (
-              <div className="flex shrink-0 items-center gap-2 rounded-md border border-border/50 bg-surface px-3 py-1.5 text-[11px]">
+              <div className="flex shrink-0 items-center gap-2 rounded-md border border-border/50 bg-surface px-3 py-1.5 text-caption">
                 <button
                   type="button"
                   className="shrink-0 text-muted hover:text-fg"
@@ -1064,7 +1064,7 @@ export function ChangesPanel({
             chrome.result?.kind !== 'not_repo' &&
             sessionAgentFiles.length > 0 ? (
               <div className="shrink-0">
-                <p className="m-0 mb-1.5 px-0.5 text-[10px] font-medium uppercase tracking-wide text-muted">
+                <p className="m-0 mb-1.5 px-0.5 text-2xs font-medium uppercase tracking-wide text-muted">
                   Agent edits
                 </p>
                 <ChangeSummary

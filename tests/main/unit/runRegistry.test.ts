@@ -7,10 +7,18 @@ import {
   isActive,
   markRunTurnComplete,
   enqueueFollowUp,
+  takeNextFollowUp,
+  takeNextReadyFollowUp,
+  drainReadyFollowUps,
   drainFollowUps,
   removeFollowUp,
+  updateFollowUp,
+  promoteFollowUp,
   hasPendingFollowUps,
+  hasReadyFollowUps,
   peekFollowUps,
+  setLateFollowUpDropped,
+  takeLateFollowUpDropped,
   setStreamInterrupt,
   chatCancelResult,
   tryBeginRunClosing,
@@ -53,7 +61,7 @@ describe('runRegistry listActiveRuns', () => {
 })
 
 describe('runRegistry follow-ups', () => {
-  it('queues, drains, and soft-aborts the stream interrupt', () => {
+  it('queues, drains, and only soft-aborts on promote', () => {
     resetActiveRunsForTests()
     const runId = 'follow-up-run'
     registerRunAbort(runId, '/ws')
@@ -65,18 +73,24 @@ describe('runRegistry follow-ups', () => {
     if (!queued.ok) return
     expect(queued.position).toBe(1)
     expect(hasPendingFollowUps(runId)).toBe(true)
-    expect(streamAbort.signal.aborted).toBe(true)
+    expect(hasReadyFollowUps(runId)).toBe(false)
+    expect(streamAbort.signal.aborted).toBe(false)
 
     const second = enqueueFollowUp(runId, { role: 'user', content: 'again' })
     expect(second.ok).toBe(true)
     if (!second.ok) return
 
+    const promoted = promoteFollowUp(runId, queued.id)
+    expect(promoted).toEqual({ ok: true, queueLength: 2 })
+    expect(hasReadyFollowUps(runId)).toBe(true)
+    expect(streamAbort.signal.aborted).toBe(true)
+
     const removed = removeFollowUp(runId, second.id)
     expect(removed).toEqual({ ok: true, removed: true, queueLength: 1 })
 
-    const drained = drainFollowUps(runId)
-    expect(drained).toHaveLength(1)
-    expect(drained[0]?.message).toEqual({ role: 'user', content: 'steer' })
+    const drained = takeNextReadyFollowUp(runId)
+    expect(drained?.message).toEqual({ role: 'user', content: 'steer' })
+    expect(drained?.ready).toBe(true)
     expect(hasPendingFollowUps(runId)).toBe(false)
   })
 
@@ -102,7 +116,7 @@ describe('runRegistry follow-ups', () => {
     })
   })
 
-  it('tryBeginRunClosing drains atomically when a follow-up races the close', () => {
+  it('tryBeginRunClosing keeps the turn open for any queued follow-up', () => {
     resetActiveRunsForTests()
     const runId = 'close-race'
     const handle = registerRunAbort(runId, '/ws')
@@ -138,6 +152,60 @@ describe('runRegistry follow-ups', () => {
         invokeId: handle.invokeId,
         pendingFollowUps: [{ id: queued.id, preview: 'late steer' }]
       }
+    ])
+  })
+
+  it('takes queued follow-ups one at a time in FIFO order', () => {
+    resetActiveRunsForTests()
+    const runId = 'fifo-next'
+    registerRunAbort(runId, '/ws')
+    const first = enqueueFollowUp(runId, { role: 'user', content: 'first' })
+    const second = enqueueFollowUp(runId, { role: 'user', content: 'second' })
+    expect(first.ok && second.ok).toBe(true)
+
+    const one = takeNextFollowUp(runId)
+    expect(one?.message.content).toBe('first')
+    expect(peekFollowUps(runId)).toHaveLength(1)
+
+    const two = takeNextFollowUp(runId)
+    expect(two?.message.content).toBe('second')
+    expect(peekFollowUps(runId)).toHaveLength(0)
+  })
+
+  it('marks promoted follow-ups ready for drain', () => {
+    resetActiveRunsForTests()
+    const runId = 'ready-flag'
+    registerRunAbort(runId, '/ws')
+    const queued = enqueueFollowUp(runId, { role: 'user', content: 'wait' })
+    expect(queued.ok).toBe(true)
+    if (!queued.ok) return
+    expect(hasReadyFollowUps(runId)).toBe(false)
+    promoteFollowUp(runId, queued.id)
+    expect(hasReadyFollowUps(runId)).toBe(true)
+    expect(drainReadyFollowUps(runId)[0]?.ready).toBe(true)
+  })
+
+  it('updates and promotes queued follow-ups', () => {
+    resetActiveRunsForTests()
+    const runId = 'follow-up-actions'
+    registerRunAbort(runId, '/ws')
+    const first = enqueueFollowUp(runId, { role: 'user', content: 'first' })
+    const second = enqueueFollowUp(runId, { role: 'user', content: 'second' })
+    expect(first.ok && second.ok).toBe(true)
+    if (!first.ok || !second.ok) return
+
+    const updated = updateFollowUp(runId, second.id, { role: 'user', content: 'second edited' })
+    expect(updated).toEqual({ ok: true, preview: 'second edited' })
+    expect(peekFollowUps(runId).map((entry) => entry.message.content)).toEqual([
+      'first',
+      'second edited'
+    ])
+
+    const promoted = promoteFollowUp(runId, second.id)
+    expect(promoted).toEqual({ ok: true, queueLength: 2 })
+    expect(peekFollowUps(runId).map((entry) => entry.message.content)).toEqual([
+      'second edited',
+      'first'
     ])
   })
 })
@@ -230,5 +298,21 @@ describe('runRegistry cancel clears pending gates', () => {
     await expect(nestedQ).resolves.toEqual([{ questionId: 'q1', values: ['a'] }])
 
     resetAgentQuestionForTests()
+  })
+})
+
+describe('runRegistry late follow-up dropped', () => {
+  it('buffers and takes a late follow_up_dropped event', () => {
+    resetActiveRunsForTests()
+    const runId = 'late-drop'
+    const event = {
+      type: 'follow_up_dropped' as const,
+      runId,
+      ids: ['fu-1'],
+      reason: 'run_ended'
+    }
+    setLateFollowUpDropped(runId, event)
+    expect(takeLateFollowUpDropped(runId)).toEqual(event)
+    expect(takeLateFollowUpDropped(runId)).toBeUndefined()
   })
 })

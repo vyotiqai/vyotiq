@@ -505,10 +505,51 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-transcript-scroll]')?.className).not.toMatch(/pr-10/)
   })
 
-  it('pads the empty hero shell for the floating side rail', () => {
+  it('centers the hero composer with symmetric gutter and column', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+
+    const hero = document.querySelector('[role="status"]')
+    expect(hero?.className).toMatch(/px-4/)
+    expect(hero?.className).not.toMatch(/pr-10/)
+
+    const heroColumn = document.querySelector('[data-composer-hero]')
+    expect(heroColumn?.className).toMatch(/mx-auto/)
+    expect(heroColumn?.className).toMatch(/max-w-\[840px\]/)
+  })
+
+  it('top-aligns the side rail on empty hero', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    const rail = document.querySelector('[data-chat-side-rail]')
+    expect(rail?.className).toMatch(/justify-start/)
+    expect(rail?.className).toMatch(/pt-2/)
+    expect(rail?.className).not.toMatch(/justify-center/)
+  })
+
+  it('top-aligns the side rail when transcript is visible', () => {
+    render(
+      <ChatView
+        {...baseProps}
+        items={[
+          {
+            kind: 'message',
+            id: 'm1',
+            role: 'user',
+            content: 'hello',
+            at: '2024-01-01T00:00:00.000Z'
+          }
+        ]}
+      />
+    )
+    const rail = document.querySelector('[data-chat-side-rail]')
+    expect(rail?.className).toMatch(/justify-start/)
+    expect(rail?.className).toMatch(/pt-2/)
+  })
+
+  it('uses symmetric gutter on empty hero (rail overlays edge)', () => {
     render(<ChatView {...baseProps} items={[]} />)
     const hero = document.querySelector('[role="status"]')
-    expect(hero?.className).toMatch(/pr-10/)
+    expect(hero?.className).toMatch(/px-4/)
+    expect(hero?.className).not.toMatch(/pr-10/)
     expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
   })
 

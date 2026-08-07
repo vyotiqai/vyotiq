@@ -81,41 +81,41 @@ export function GenerateImageBody({
     <div>
       {!inGroup ? (
         <div className={`${TOOL_BODY_PAD} border-b border-border pb-2`}>
-          <span className="truncate font-mono text-[10px] text-tertiary" title={data.path}>
+          <span className="truncate font-mono text-2xs text-tertiary" title={data.path}>
             {data.path || '(no path)'}
           </span>
           {data.references ? (
-            <div className="mt-1 truncate text-[10px] text-tertiary" title={data.references}>
+            <div className="mt-1 truncate text-2xs text-tertiary" title={data.references}>
               refs: {data.references}
             </div>
           ) : null}
           {metaBits.length > 0 ? (
-            <div className="mt-1 truncate text-[10px] text-secondary">{metaBits.join(' · ')}</div>
+            <div className="mt-1 truncate text-2xs text-secondary">{metaBits.join(' · ')}</div>
           ) : null}
         </div>
       ) : null}
       {progressText ? (
-        <p className={`${TOOL_BODY_PAD} m-0 py-1.5 text-[11px] text-secondary`}>{progressText}</p>
+        <p className={`${TOOL_BODY_PAD} m-0 py-1.5 text-caption text-secondary`}>{progressText}</p>
       ) : null}
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       {data.prompt ? (
-        <div className={`${TOOL_BODY_INNER} ${TOOL_BODY_FLOW} text-[11px] text-fg/80`}>
+        <div className={`${TOOL_BODY_INNER} ${TOOL_BODY_FLOW} text-caption text-fg/80`}>
           {data.prompt}
         </div>
       ) : data.body && !previewSrc ? (
         <pre
-          className={`${TOOL_BODY_INNER} ${TOOL_BODY_FLOW} whitespace-pre-wrap font-mono text-[10px] text-fg/70`}
+          className={`${TOOL_BODY_INNER} ${TOOL_BODY_FLOW} whitespace-pre-wrap font-mono text-2xs text-fg/70`}
         >
           {data.body}
         </pre>
       ) : null}
       {data.revisedPrompt ? (
-        <div className={`${TOOL_BODY_PAD} pt-1 text-[10px] text-tertiary`}>
+        <div className={`${TOOL_BODY_PAD} pt-1 text-2xs text-tertiary`}>
           revised: {data.revisedPrompt}
         </div>
       ) : null}
       {data.maskPath ? (
-        <div className={`${TOOL_BODY_PAD} pt-0.5 text-[10px] text-tertiary`} title={data.maskPath}>
+        <div className={`${TOOL_BODY_PAD} pt-0.5 text-2xs text-tertiary`} title={data.maskPath}>
           mask: {data.maskPath}
         </div>
       ) : null}
@@ -128,7 +128,7 @@ export function GenerateImageBody({
           />
         </div>
       ) : previewError && showPreview ? (
-        <p className={`${TOOL_BODY_PAD} m-0 pt-1 text-[10px] text-tertiary`}>{previewError}</p>
+        <p className={`${TOOL_BODY_PAD} m-0 pt-1 text-2xs text-tertiary`}>{previewError}</p>
       ) : null}
     </div>
   )

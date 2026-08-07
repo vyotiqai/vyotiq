@@ -32,7 +32,7 @@ export function SlashChip({
   return (
     <span
       className={cn(
-        'inline-flex max-w-[12rem] items-center gap-1 px-0.5 text-[13px] leading-none text-accent',
+        'inline-flex max-w-[12rem] items-center gap-1 px-0.5 text-sm leading-none text-accent',
         className
       )}
       title={`${KIND_TITLE[kind]}: ${name}`}

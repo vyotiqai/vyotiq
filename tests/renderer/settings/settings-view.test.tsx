@@ -139,6 +139,24 @@ describe('settings', () => {
     expect(screen.queryByPlaceholderText(/Custom model id/i)).toBeNull()
   })
 
+  it('active model badge uses row width not a fixed 200px cap', () => {
+    const longModel = 'deepseek/deepseek-v4-flash-0731-extra-long-suffix'
+    render(
+      <SettingsView
+        settings={{ ...baseSettings, provider: 'custom', model: longModel }}
+        secrets={emptySecrets}
+        onClose={vi.fn()}
+        onUpdate={vi.fn(async () => ({ ok: true as const }))}
+        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
+        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
+      />
+    )
+
+    const badge = screen.getByTitle(longModel)
+    expect(badge.className).not.toContain('max-w-[200px]')
+    expect(badge.className).toContain('max-w-full')
+  })
+
   it('surfaces save key errors as alert', async () => {
     render(
       <SettingsView
@@ -557,7 +575,7 @@ describe('settings', () => {
     expect(await screen.findByText(/Connected · 2 tools/i)).toBeTruthy()
   })
 
-  it('opens Registry settings section for marketplace registry URL', async () => {
+  it('opens Marketplace settings section for marketplace registry URL', async () => {
     render(
       <SettingsView
         settings={baseSettings}
@@ -569,7 +587,7 @@ describe('settings', () => {
       />
     )
 
-    fireEvent.click(screen.getByRole('button', { name: /^Registry$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Marketplace$/i }))
     expect(await screen.findByLabelText(/Registry URL/i)).toBeTruthy()
     expect(screen.getByLabelText(/Acknowledge marketplace install risk/i)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /^Browse$/i })).toBeNull()

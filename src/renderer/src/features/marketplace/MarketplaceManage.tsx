@@ -135,7 +135,7 @@ export function MarketplaceManage({
               aria-controls={`marketplace-manage-panel-${t}`}
               tabIndex={tab === t ? 0 : -1}
               variant="subtle"
-              className={tab === t ? 'bg-surface-2 text-fg-strong' : undefined}
+              className={tab === t ? 'bg-surface text-fg-strong ring-1 ring-inset ring-border/50' : undefined}
               disabled={formLocked}
               onClick={() => setTab(t)}
             >

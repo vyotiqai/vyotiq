@@ -53,7 +53,7 @@ export const IconButton = forwardRef<
 ) {
   const tip = title ?? label
   const buttonClass = cn(
-    'inline-grid place-items-center rounded-md',
+    'inline-grid place-items-center rounded-md focus-visible:vy-focus-ring',
     interactive,
     iconButtonSizes[size],
     iconButtonVariants[variant],
@@ -77,7 +77,7 @@ export const IconButton = forwardRef<
   if (disabled) {
     return (
       <Tooltip content={tip}>
-        <span className="inline-grid cursor-not-allowed" tabIndex={0}>
+        <span className="inline-grid cursor-not-allowed" aria-disabled="true">
           {button}
         </span>
       </Tooltip>

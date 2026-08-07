@@ -206,7 +206,7 @@ describe('Composer', () => {
     })
   })
 
-  it('keeps composer editable while a run is in progress and shows Send with Stop', () => {
+  it('keeps composer editable while a run is in progress and shows Stop only', () => {
     render(
       <Composer
         provider="ollama"
@@ -224,11 +224,40 @@ describe('Composer', () => {
     const ta = screen.getByRole('textbox', { name: /^Message$/i })
     expect(ta.getAttribute('contenteditable')).toBe('true')
     expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Send follow-up$/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Send follow-up$/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Send$/i })).toBeNull()
   })
 
-  it('shows queued follow-ups with remove', () => {
+  it('queues follow-ups via Enter while running without a Send button', async () => {
+    const onSend = vi.fn(async () => true)
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running
+        hasWorkspace
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={onSend}
+        onStop={vi.fn()}
+      />
+    )
+
+    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    ta.textContent = 'steer left'
+    fireEvent.input(ta)
+    fireEvent.keyDown(ta, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledWith('steer left', undefined, undefined, undefined)
+    })
+  })
+
+  it('shows queued follow-ups with edit, send now, and remove', async () => {
     const onRemoveFollowUp = vi.fn()
+    const onEditFollowUp = vi.fn().mockResolvedValue(true)
+    const onSendFollowUpNow = vi.fn()
     render(
       <Composer
         provider="ollama"
@@ -240,13 +269,75 @@ describe('Composer', () => {
         onProviderModel={vi.fn()}
         onSend={vi.fn()}
         onStop={vi.fn()}
-        pendingFollowUps={[{ id: 'fu-1', itemId: 'item-1', preview: 'Steer left' }]}
+        pendingFollowUps={[
+          { id: 'fu-1', itemId: 'item-1', preview: 'Steer left', text: 'Steer left' }
+        ]}
         onRemoveFollowUp={onRemoveFollowUp}
+        onEditFollowUp={onEditFollowUp}
+        onSendFollowUpNow={onSendFollowUpNow}
       />
     )
 
-    expect(screen.getByText(/Queued: Steer left/i)).toBeTruthy()
+    expect(screen.getByText('Steer left')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Edit queued follow-up$/i }))
+    const editor = screen.getByRole('textbox', { name: /^Edit queued follow-up$/i })
+    fireEvent.change(editor, { target: { value: 'Steer right' } })
+    fireEvent.click(screen.getByRole('button', { name: /^Save queued follow-up edit$/i }))
+    await waitFor(() => {
+      expect(onEditFollowUp).toHaveBeenCalledWith('fu-1', 'Steer right')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /^Send queued follow-up now$/i }))
+    expect(onSendFollowUpNow).toHaveBeenCalledWith('fu-1')
+
     fireEvent.click(screen.getByRole('button', { name: /^Remove queued follow-up$/i }))
     expect(onRemoveFollowUp).toHaveBeenCalledWith('fu-1')
+  })
+
+  it('keeps queued follow-up editor open when save fails', async () => {
+    const onEditFollowUp = vi.fn().mockResolvedValue(false)
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running
+        hasWorkspace
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        pendingFollowUps={[
+          { id: 'fu-1', itemId: 'item-1', preview: 'Steer left', text: 'Steer left' }
+        ]}
+        onEditFollowUp={onEditFollowUp}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /^Edit queued follow-up$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Save queued follow-up edit$/i }))
+    await waitFor(() => {
+      expect(onEditFollowUp).toHaveBeenCalledWith('fu-1', 'Steer left')
+    })
+    expect(screen.getByRole('textbox', { name: /^Edit queued follow-up$/i })).toBeTruthy()
+  })
+
+  it('shows reconnecting status while running with network_wait', () => {
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running
+        hasWorkspace
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        networkWait={{ attempt: 2, maxAttempts: 5, retryInMs: 1500 }}
+      />
+    )
+
+    expect(screen.getByText('Reconnecting in 2s (attempt 2/5)…')).toBeTruthy()
   })
 })

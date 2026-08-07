@@ -15,9 +15,9 @@ export function GitStatusBody({ tool, loading, loadFailed }: ToolBodyProps) {
       <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
         {data.branch ? <Chip>{data.branch}</Chip> : null}
         {data.message ? (
-          <span className="text-[11px] text-tertiary">{data.message}</span>
+          <span className="text-caption text-tertiary">{data.message}</span>
         ) : (
-          <span className="text-[10px] tabular-nums text-tertiary">
+          <span className="text-2xs tabular-nums text-tertiary">
             {data.clean
               ? 'clean'
               : `${data.files.length} ${data.files.length === 1 ? 'file' : 'files'}`}
@@ -32,7 +32,7 @@ export function GitStatusBody({ tool, loading, loadFailed }: ToolBodyProps) {
           {data.files.map((file) => (
             <li
               key={file.path}
-              className="flex min-w-0 items-center gap-2 font-mono text-[11px] text-fg/80"
+              className="flex min-w-0 items-center gap-2 font-mono text-caption text-fg/80"
             >
               <span className="w-8 shrink-0 text-tertiary">{file.status}</span>
               <FileTypeIcon path={file.path} size={14} />
@@ -63,10 +63,10 @@ export function GitDiffBody({ tool, expanded, loading, loadFailed, inGroup }: To
         >
           {!inGroup ? <Chip>{data.summary}</Chip> : null}
           {data.added > 0 ? (
-            <span className="text-[10px] tabular-nums text-success">+{data.added}</span>
+            <span className="text-2xs tabular-nums text-success">+{data.added}</span>
           ) : null}
           {data.removed > 0 ? (
-            <span className="text-[10px] tabular-nums text-danger">-{data.removed}</span>
+            <span className="text-2xs tabular-nums text-danger">-{data.removed}</span>
           ) : null}
         </div>
       ) : null}
@@ -74,7 +74,7 @@ export function GitDiffBody({ tool, expanded, loading, loadFailed, inGroup }: To
       {data.lines.length > 0 ? (
         <DiffPreview lines={data.lines} path={data.path || 'diff'} expanded={expanded} />
       ) : (
-        <pre className={`${TOOL_BODY_PAD} m-0 ${TOOL_BODY_FLOW} font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-fg/80 [overflow-wrap:anywhere]`}>
+        <pre className={`${TOOL_BODY_PAD} m-0 ${TOOL_BODY_FLOW} font-mono text-caption leading-relaxed whitespace-pre-wrap text-fg/80 [overflow-wrap:anywhere]`}>
           {data.message || 'No diff'}
         </pre>
       )}
@@ -91,16 +91,16 @@ export function GitCommitBody({ tool, loading, loadFailed }: ToolBodyProps) {
       <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
         <Chip>{chip}</Chip>
         {data.message ? (
-          <span className="min-w-0 text-[11px] text-tertiary [overflow-wrap:anywhere]">
+          <span className="min-w-0 text-caption text-tertiary [overflow-wrap:anywhere]">
             {data.message}
           </span>
         ) : data.detail ? (
-          <span className="text-[11px] text-tertiary">{data.detail}</span>
+          <span className="text-caption text-tertiary">{data.detail}</span>
         ) : null}
         {data.pushed === true ? (
-          <span className="text-[10px] text-success">pushed</span>
+          <span className="text-2xs text-success">pushed</span>
         ) : data.committed === false ? (
-          <span className="text-[10px] text-tertiary">nothing to commit</span>
+          <span className="text-2xs text-tertiary">nothing to commit</span>
         ) : null}
       </div>
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}

@@ -5,9 +5,12 @@ import { toolMessageForIpc } from '../../shared/utils/toolResultIpc'
 import {
   ChatStartRequestSchema,
   ChatRewindAndStartRequestSchema,
+  ChatRewindRequestSchema,
   CancelRunRequestSchema,
   ChatFollowUpRequestSchema,
   ChatFollowUpRemoveRequestSchema,
+  ChatFollowUpUpdateRequestSchema,
+  ChatFollowUpPromoteRequestSchema,
   ChatQueueModeRequestSchema,
   CompactRunRequestSchema,
   UndoWritesRequestSchema,
@@ -92,8 +95,11 @@ import {
   type AgentQuestionRequest,
   type ToolApprovalRequest,
   type ChatStartResult,
+  type ChatRewindResult,
   type ChatFollowUpResult,
   type ChatFollowUpRemoveResult,
+  type ChatFollowUpUpdateResult,
+  type ChatFollowUpPromoteResult,
   type ChatQueueModeResult,
   type ChatMessage,
   type CompactRunResult,
@@ -179,7 +185,7 @@ import { installIpcTiming, timeSyncIpc } from '../perf/ipcTiming'
 import { runAgent, createRunId } from '../agent/loop'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
 import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
-import { prepareRewindAndReplaceUserMessage } from '../agent/rewindRun'
+import { prepareRewindAndReplaceUserMessage, prepareRewindToUserMessage } from '../agent/rewindRun'
 import { resolveRunDir } from '@main/storage/paths'
 import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState, selectBrowserTab, browserGoBack, browserGoForward, setAgentBrowserBounds, navigateUrl, clearAgentBrowserData, takeBrowserScreenshot, disposeAgentBrowserForWorkspace } from '@main/app/agentBrowser'
 import { extractAttachment } from '../attachments/extract'
@@ -212,11 +218,15 @@ import {
   markRunTurnComplete,
   enqueueFollowUp,
   removeFollowUp,
+  updateFollowUp,
+  promoteFollowUp,
+  peekFollowUps,
   setPendingMode,
   getRunInvokeId,
   followUpPreview,
   getRunWorkspace,
-  takeLateWriteCheckpoint
+  takeLateWriteCheckpoint,
+  takeLateFollowUpDropped
 } from '../agent/runRegistry'
 import {
   listRuns,
@@ -744,6 +754,8 @@ export function registerIpc(): void {
           }
           const lateCheckpoint = takeLateWriteCheckpoint(runId)
           if (lateCheckpoint) batcher.push(lateCheckpoint)
+          const lateDropped = takeLateFollowUpDropped(runId)
+          if (lateDropped) batcher.push(lateDropped)
         } catch (err) {
           if (isAbortError(err)) {
             logger.warn('Chat run aborted', {
@@ -880,6 +892,8 @@ export function registerIpc(): void {
             }
             const lateCheckpoint = takeLateWriteCheckpoint(runId)
             if (lateCheckpoint) batcher.push(lateCheckpoint)
+            const lateDropped = takeLateFollowUpDropped(runId)
+            if (lateDropped) batcher.push(lateDropped)
           } catch (err) {
             if (isAbortError(err)) {
               logger.warn('Chat rewind run aborted', {
@@ -923,6 +937,60 @@ export function registerIpc(): void {
       }
     }
   )
+
+  ipcMain.handle(IPC.chatRewind, async (event, raw): Promise<IpcResult<ChatRewindResult>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = ChatRewindRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) {
+        return fail('Workspace is not open')
+      }
+      if (!existsSync(req.workspacePath)) {
+        return fail('Workspace path does not exist')
+      }
+      if (!runExists(req.workspacePath, req.runId)) {
+        return fail('Run not found')
+      }
+
+      if (isActive(req.runId)) {
+        const cancelled = chatCancelResult(req.runId)
+        if (!cancelled.ok) return fail(cancelled.error)
+        const cleared = await waitUntilRunInactive(req.runId)
+        if (!cleared || isActive(req.runId)) {
+          return fail('Run is already active')
+        }
+      }
+
+      const prepared = await prepareRewindToUserMessage({
+        workspacePath: req.workspacePath,
+        runId: req.runId,
+        userMessageIndex: req.userMessageIndex
+      })
+      if (prepared.writes.restored.length > 0) {
+        invalidateGitStatusCache(req.workspacePath)
+      }
+
+      logger.info('Chat rewind', {
+        scope: 'ipc',
+        correlationId: req.runId,
+        channel: IPC.chatRewind,
+        userMessageIndex: req.userMessageIndex,
+        restoredFiles: prepared.writes.restored.length
+      })
+
+      return ok({
+        messages: prepared.messages,
+        restored: prepared.writes.restored,
+        skipped: prepared.writes.skipped
+      })
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      if (/userMessageIndex|run not found/i.test(msg)) {
+        return fail(msg)
+      }
+      return failFrom(err, IPC.chatRewind)
+    }
+  })
 
   ipcMain.handle(IPC.toolApprovalResponse, async (event, raw): Promise<IpcResult<boolean>> => {
     if (!senderOk(event)) return fail('Invalid sender')
@@ -1087,6 +1155,9 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const req = ChatFollowUpRemoveRequestSchema.parse(raw)
+        if (!isActive(req.runId)) {
+          return fail('Run is not active')
+        }
         const workspace = getRunWorkspace(req.runId)
         if (!workspace || !isOpenWorkspace(workspace)) {
           return fail('Workspace is not open')
@@ -1096,6 +1167,50 @@ export function registerIpc(): void {
         return ok({ removed: result.removed, queueLength: result.queueLength })
       } catch (err) {
         return failFrom(err, IPC.chatFollowUpRemove)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.chatFollowUpUpdate,
+    async (event, raw): Promise<IpcResult<ChatFollowUpUpdateResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ChatFollowUpUpdateRequestSchema.parse(raw)
+        if (!isActive(req.runId)) {
+          return fail('Run is not active')
+        }
+        const workspace = getRunWorkspace(req.runId)
+        if (!workspace || !isOpenWorkspace(workspace)) {
+          return fail('Workspace is not open')
+        }
+        const result = updateFollowUp(req.runId, req.id, req.message)
+        if (!result.ok) return fail(result.error)
+        return ok({ preview: result.preview, queueLength: peekFollowUps(req.runId).length })
+      } catch (err) {
+        return failFrom(err, IPC.chatFollowUpUpdate)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.chatFollowUpPromote,
+    async (event, raw): Promise<IpcResult<ChatFollowUpPromoteResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ChatFollowUpPromoteRequestSchema.parse(raw)
+        if (!isActive(req.runId)) {
+          return fail('Run is not active')
+        }
+        const workspace = getRunWorkspace(req.runId)
+        if (!workspace || !isOpenWorkspace(workspace)) {
+          return fail('Workspace is not open')
+        }
+        const result = promoteFollowUp(req.runId, req.id)
+        if (!result.ok) return fail(result.error)
+        return ok({ queueLength: result.queueLength })
+      } catch (err) {
+        return failFrom(err, IPC.chatFollowUpPromote)
       }
     }
   )
@@ -2417,8 +2532,8 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.browserNavigate, async (event, raw): Promise<IpcResult<boolean>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      const url = BrowserNavigateRequestSchema.parse(raw)
-      await navigateUrl(url)
+      const payload = BrowserNavigateRequestSchema.parse(raw)
+      await navigateUrl(payload.url, { workspacePath: payload.workspacePath })
       return ok(true)
     } catch (err) {
       return failFrom(err, IPC.browserNavigate)

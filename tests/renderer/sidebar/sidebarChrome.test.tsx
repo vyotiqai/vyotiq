@@ -106,4 +106,37 @@ describe('Sidebar chrome', () => {
     fireEvent.click(screen.getByRole('button', { name: /^settings$/i }))
     expect(onOpenSettings).toHaveBeenCalledTimes(1)
   })
+
+  it('uses a flat bg-bg shell without footer tray chrome', () => {
+    const { container } = render(<Sidebar {...baseProps} />)
+
+    const aside = container.querySelector('aside')
+    expect(aside).toBeTruthy()
+    expect(aside!.className).toContain('bg-bg')
+    expect(aside!.className).not.toContain('bg-card')
+
+    const footer = screen.getByRole('button', { name: /^settings$/i }).parentElement
+    expect(footer).toBeTruthy()
+    expect(footer!.className).toContain('border-t')
+    expect(footer!.className).toContain('border-border/30')
+    expect(footer!.className).not.toContain('rounded-xl')
+  })
+
+  it('uses a flat search field without pill chrome', () => {
+    render(<Sidebar {...baseProps} />)
+
+    const input = screen.getByRole('textbox', { name: /search chats/i })
+    const wrapper = input.parentElement
+    expect(wrapper).toBeTruthy()
+    expect(wrapper!.className).toContain('bg-transparent')
+    expect(wrapper!.className).not.toContain('rounded-full')
+    expect(wrapper!.className).not.toContain('border-border')
+  })
+
+  it('shows full Marketplace label in the stacked footer', () => {
+    render(<Sidebar {...baseProps} />)
+
+    const marketplace = screen.getByRole('button', { name: /^marketplace$/i })
+    expect(marketplace.textContent).toBe('Marketplace')
+  })
 })

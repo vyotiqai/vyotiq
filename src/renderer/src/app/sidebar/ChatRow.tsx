@@ -6,7 +6,6 @@ import {
   SIDEBAR_ROW_HOVER
 } from '@renderer/lib/utils/layout'
 import type { RunSummary } from '@shared/ipc'
-import { relativeTime } from '@shared/timeFormat'
 import { InlineConfirmActions } from './InlineConfirmActions'
 import { runTitle, runTooltip } from './runTitle'
 
@@ -20,8 +19,8 @@ function RunStatusDot({ status }: { status: RunSummary['status'] }) {
   }
   if (status === 'error') {
     return (
-      <span className="size-1.5 shrink-0 rounded-full bg-danger" title="Error">
-        <span className="sr-only">Error</span>
+      <span className="size-1.5 shrink-0 rounded-full bg-danger" title="Run ended with errors">
+        <span className="sr-only">Run ended with errors</span>
       </span>
     )
   }
@@ -73,11 +72,11 @@ export const ChatRow = memo(function ChatRow({
 
   if (renaming) {
     return (
-      <div role="listitem" className="py-0.5">
+      <div role="listitem" className="px-1.5 py-0.5">
         <input
           ref={inputRef}
           type="text"
-          className="app-region-no-drag w-full rounded-md border border-border bg-surface px-1.5 py-1 text-sm text-fg outline-none focus:vy-focus-ring"
+          className="app-region-no-drag w-full rounded-lg border border-border/50 bg-surface/60 px-2 py-1.5 text-sm text-fg outline-none focus:border-border-strong focus:bg-surface focus:vy-focus-ring"
           value={draft}
           aria-label="Rename chat"
           onChange={(e) => setDraft(e.target.value)}
@@ -98,29 +97,23 @@ export const ChatRow = memo(function ChatRow({
   return (
     <div
       role="listitem"
-      className={cn('group relative min-w-0', active ? 'text-fg-strong' : 'text-fg/80')}
+      className={cn('group relative min-w-0', active ? 'text-fg-strong' : '')}
     >
       <button
         type="button"
         className={cn(
-          'app-region-no-drag flex w-full min-w-0 items-center gap-1 pr-10 text-left vy-transition',
+          'app-region-no-drag flex w-full min-w-0 items-center gap-1.5 pr-2 text-left vy-transition',
+          'group-hover:pr-10 group-focus-within:pr-10 [@media(hover:none)]:pr-10',
           SIDEBAR_ROW,
-          active ? SIDEBAR_ROW_ACTIVE : SIDEBAR_ROW_HOVER
+          active ? SIDEBAR_ROW_ACTIVE : SIDEBAR_ROW_HOVER,
+          active ? 'font-medium' : 'text-fg/85'
         )}
-        aria-current={active ? 'true' : undefined}
+        aria-current={active ? 'page' : undefined}
         title={runTooltip(run)}
         onClick={onSelect}
       >
         <RunStatusDot status={run.status} />
         <span className="min-w-0 flex-1 truncate">{title}</span>
-        <span
-          className={cn(
-            'hidden shrink-0 text-[10px] text-muted tabular-nums @min-[12.5rem]/sidebar:inline group-hover:invisible [@media(hover:none)]:invisible',
-            confirmingDelete && 'invisible'
-          )}
-        >
-          {relativeTime(run.updatedAt)}
-        </span>
       </button>
 
       <div

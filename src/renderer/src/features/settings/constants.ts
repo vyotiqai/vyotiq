@@ -41,7 +41,7 @@ export const SECTION_LABELS: Record<
     description: 'Compaction, memory, and approval settings.'
   },
   marketplace: {
-    title: 'Registry',
+    title: 'Marketplace',
     description: 'Optional package registry URL and remote-install acknowledgement.'
   }
 }

@@ -2,7 +2,7 @@ import { cn } from '@renderer/lib/ui'
 import type { GitChangedFile, GitStatus } from '@shared/ipc'
 
 const PILL =
-  'inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] vy-transition'
+  'inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1 text-caption vy-transition'
 
 /** Shared default commit message for Changes panel (and any legacy callers). */
 export function defaultCommitMessage(
@@ -72,7 +72,7 @@ export function CommitComposer({
         type="button"
         className={cn(
           compact
-            ? 'h-6 rounded-md px-2 text-[11px] text-fg hover:bg-surface-2'
+            ? 'h-6 rounded-md px-2 text-caption text-fg hover:bg-surface-2'
             : cn(PILL, 'text-fg hover:bg-surface-2'),
           'disabled:opacity-50'
         )}
@@ -86,7 +86,7 @@ export function CommitComposer({
           type="button"
           className={cn(
             compact
-              ? 'h-6 rounded-md px-2 text-[11px] text-fg hover:bg-surface-2'
+              ? 'h-6 rounded-md px-2 text-caption text-fg hover:bg-surface-2'
               : cn(PILL, 'text-fg hover:bg-surface-2'),
             'disabled:opacity-50'
           )}

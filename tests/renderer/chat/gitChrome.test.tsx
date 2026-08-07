@@ -119,6 +119,25 @@ describe('git chrome', () => {
     expect(pill.textContent).toMatch(/lines/)
   })
 
+  it('abbreviates large line deltas in the Changes pill', async () => {
+    mockApi({
+      gitStatus: vi.fn().mockResolvedValue({
+        ok: true,
+        data: {
+          kind: 'ok',
+          status: { ...dirty, added: 3988, removed: 1 }
+        }
+      })
+    })
+    render(<Harness />)
+    const pill = await screen.findByRole('button', {
+      name: 'Open Changes panel, 2 files, +3988 -1 lines'
+    })
+    expect(pill.textContent).toContain('+4k')
+    expect(pill.textContent).toContain('-1')
+    expect(pill.getAttribute('title')).toBe('2 files · +3988 / -1 lines')
+  })
+
   it('shows detached when branch is null or HEAD', async () => {
     mockApi({
       gitStatus: vi.fn().mockResolvedValue({

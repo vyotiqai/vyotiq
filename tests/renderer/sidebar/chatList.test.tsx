@@ -68,6 +68,8 @@ describe('ChatList', () => {
     )
 
     expect(screen.getAllByText('No matching chats')).toHaveLength(1)
+    const emptyState = screen.getByText('No matching chats')
+    expect(emptyState.className).not.toContain('rounded-xl')
   })
 
   it('shows the dynamic runs cap footnote', () => {

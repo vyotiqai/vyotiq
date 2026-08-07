@@ -6,7 +6,7 @@ import { useGitStatus } from './useGitStatus'
 import { defaultCommitMessageFromStatus } from './CommitComposer'
 
 const PILL =
-  'inline-flex items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1 text-[11px] vy-transition'
+  'inline-flex items-center gap-1.5 text-2xs vy-transition text-tertiary'
 
 export type GitChrome = {
   status: GitStatus | null
@@ -139,6 +139,15 @@ export function useGitChrome(
   }
 }
 
+/** Compact line deltas for the Changes pill — mirrors token abbreviations. */
+function formatLineDelta(n: number): string {
+  const v = Math.round(Number.isFinite(n) ? n : 0)
+  if (v <= 0) return '0'
+  if (v >= 10_000) return `${Math.round(v / 1000)}k`
+  if (v >= 1000) return `${(v / 1000).toFixed(1).replace(/\.0$/, '')}k`
+  return String(v)
+}
+
 /**
  * Compact working-tree summary that opens the Changes panel.
  * Commit / Keep / Discard actions live only in Changes.
@@ -155,37 +164,43 @@ export function GitChangePills({
   if (!ready || !status || status.fileCount === 0) return null
 
   return (
-    <div className="pointer-events-auto flex flex-col items-start gap-1.5">
-      <div className="flex items-center gap-1.5 text-tertiary">
-        <button
-          type="button"
-          className={cn(PILL, 'tabular-nums text-fg hover:bg-surface-2')}
-          onClick={() => onOpenChanges?.()}
-          aria-label={
-            status.added > 0 || status.removed > 0
-              ? `Open Changes panel, ${status.fileCount} files, +${status.added} -${status.removed} lines`
-              : `Open Changes panel, ${status.fileCount} files`
-          }
-          title={
-            status.added > 0 || status.removed > 0
-              ? `${status.fileCount} files · +${status.added} / -${status.removed} lines`
-              : `${status.fileCount} files changed`
-          }
-        >
-          <span>Changes</span>
-          {status.added > 0 ? <span className="text-success">+{status.added}</span> : null}
-          {status.removed > 0 ? <span className="text-danger">-{status.removed}</span> : null}
-          {status.added > 0 || status.removed > 0 ? (
-            <span className="text-muted">lines</span>
-          ) : null}
-          <Icon name="chevronRight" size={14} className="-rotate-90" />
-        </button>
-        {status.truncated ? (
-          <span className="px-1 text-[11px] text-muted" title="File list is truncated">
-            Showing first {status.files.length} of {status.fileCount}
+    <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1.5 text-tertiary">
+      <button
+        type="button"
+        className={cn(PILL, 'tabular-nums text-fg hover:text-fg-strong')}
+        onClick={() => onOpenChanges?.()}
+        aria-label={
+          status.added > 0 || status.removed > 0
+            ? `Open Changes panel, ${status.fileCount} files, +${status.added} -${status.removed} lines`
+            : `Open Changes panel, ${status.fileCount} files`
+        }
+        title={
+          status.added > 0 || status.removed > 0
+            ? `${status.fileCount} files · +${status.added} / -${status.removed} lines`
+            : `${status.fileCount} files changed`
+        }
+      >
+        <span>Changes</span>
+        {status.added > 0 ? (
+          <span className="text-success" title={`+${status.added} lines`}>
+            +{formatLineDelta(status.added)}
           </span>
         ) : null}
-      </div>
+        {status.removed > 0 ? (
+          <span className="text-danger" title={`-${status.removed} lines`}>
+            -{formatLineDelta(status.removed)}
+          </span>
+        ) : null}
+        {status.added > 0 || status.removed > 0 ? (
+          <span className="text-muted">lines</span>
+        ) : null}
+        <Icon name="chevronRight" size={14} className="-rotate-90" />
+      </button>
+      {status.truncated ? (
+        <span className="shrink-0 text-2xs text-muted" title="File list is truncated">
+          Showing first {status.files.length} of {status.fileCount}
+        </span>
+      ) : null}
     </div>
   )
 }
@@ -199,7 +214,7 @@ export function GitBranchStrip({ chrome }: { chrome: GitChrome }) {
     status.branch && status.branch !== 'HEAD' ? status.branch : 'detached'
 
   return (
-    <div className="pointer-events-auto flex shrink-0 items-center gap-2 px-1 text-[11px] text-tertiary">
+    <div className="pointer-events-auto flex shrink-0 items-center gap-1.5 text-2xs text-tertiary">
       <span className="inline-flex min-w-0 items-center gap-1.5">
         <Icon name="branch" size={14} />
         <span className="max-w-[24ch] truncate text-fg" title={branchLabel}>

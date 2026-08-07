@@ -3,6 +3,8 @@ import { useWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
 import { useEffect, useState } from 'react'
 import {
   SIDEBAR_CONTAINER,
+  SIDEBAR_PAD_X,
+  SIDEBAR_SURFACE,
   SIDEBAR_WIDTH,
   SIDEBAR_WIDTH_COLLAPSED,
   SIDEBAR_WIDTH_COLLAPSED_DARWIN,
@@ -102,7 +104,8 @@ export function Sidebar({
     <aside
       className={cn(
         SIDEBAR_CONTAINER,
-        'flex h-full min-h-0 shrink-0 flex-col self-stretch overflow-hidden bg-bg',
+        SIDEBAR_SURFACE,
+        'flex h-full min-h-0 shrink-0 flex-col self-stretch overflow-hidden',
         widthClass
       )}
       style={expandedWidthPx != null ? { width: expandedWidthPx } : undefined}
@@ -176,24 +179,26 @@ export function Sidebar({
 
       <div
         className={cn(
-          'app-region-no-drag flex shrink-0 flex-col border-t border-border/40',
-          isCollapsed ? 'items-center gap-1 p-1.5' : 'gap-0.5 p-2'
+          'app-region-no-drag flex shrink-0 min-w-0 flex-col border-t border-border/30',
+          SIDEBAR_PAD_X,
+          'gap-0.5 py-2',
+          isCollapsed ? 'items-center' : ''
         )}
       >
         <NavItem
           label="Settings"
           icon="gear"
           variant={isCollapsed ? 'icon' : 'sidebar'}
-          active={view === 'settings'}
           current={view === 'settings'}
+          className={isCollapsed ? undefined : 'w-full'}
           onClick={openSettings}
         />
         <NavItem
           label="Marketplace"
           icon="marketplace"
           variant={isCollapsed ? 'icon' : 'sidebar'}
-          active={view === 'marketplace'}
           current={view === 'marketplace'}
+          className={isCollapsed ? undefined : 'w-full'}
           onClick={openMarketplace}
         />
       </div>

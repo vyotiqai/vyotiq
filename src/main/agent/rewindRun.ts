@@ -9,11 +9,17 @@ import {
   saveCompaction,
   syncEventsAsync,
   syncMessagesAsync,
-  updateStatus
+  updateStatus,
+  flushEventAppends,
+  flushStatusWrites,
+  loadStatus,
+  readContract
 } from './state'
 import { resolveRunDir } from '../storage/paths'
 import { clearFollowUps } from './runRegistry'
 import { logger } from '../../shared/logger'
+import { writeRunReceiptBestEffort } from './runReceipt'
+import { writeTrajectoryArtifactsBestEffort } from './runTrajectory'
 
 export type PrepareRewindResult = {
   messages: ChatMessage[]
@@ -92,14 +98,36 @@ export async function prepareRewindAndReplaceUserMessage(input: {
   }
 
   const writes = rewindWritesFrom(runDir, workspacePath, editMessageIndex)
-  const rewoundIds = new Set(writes.checkpointIds)
-
   const prior = diskMessages.slice(0, editMessageIndex)
   const nextMessages: ChatMessage[] = [...prior, { ...editedUserMessage, role: 'user' }]
+
+  await applyRewindPersistence({
+    workspacePath,
+    runId,
+    runDir,
+    userMessageIndex: editMessageIndex,
+    nextMessages,
+    writes
+  })
+
+  return { messages: nextMessages, writes }
+}
+
+async function applyRewindPersistence(input: {
+  workspacePath: string
+  runId: string
+  runDir: string
+  userMessageIndex: number
+  nextMessages: ChatMessage[]
+  writes: RewindWritesResult
+}): Promise<void> {
+  const { workspacePath, runId, runDir, userMessageIndex, nextMessages, writes } = input
   await syncMessagesAsync(runDir, nextMessages)
 
   const persistedEvents = await loadEventsAsync(runDir, runId)
+  const prior = nextMessages.slice(0, userMessageIndex)
   const keptIds = keptToolCallIds(prior)
+  const rewoundIds = new Set(writes.checkpointIds)
   const truncatedEvents = truncateEvents(persistedEvents, keptIds, rewoundIds)
   await syncEventsAsync(runDir, truncatedEvents)
 
@@ -129,6 +157,62 @@ export async function prepareRewindAndReplaceUserMessage(input: {
     },
     { sync: true }
   )
+
+  await flushEventAppends(runDir)
+  await flushStatusWrites(runDir)
+  const events = await loadEventsAsync(runDir, runId)
+  const receipt = writeRunReceiptBestEffort({
+    runDir,
+    runId,
+    loadStatus,
+    loadMessages: () => nextMessages,
+    loadEvents: () => events,
+    readContract
+  })
+  writeTrajectoryArtifactsBestEffort({
+    runDir,
+    runId,
+    loadEvents: () => events,
+    receipt
+  })
+}
+
+/**
+ * Restore workspace files and truncate run persistence to the chosen user message
+ * without replacing its text or starting a new invoke.
+ */
+export async function prepareRewindToUserMessage(input: {
+  workspacePath: string
+  runId: string
+  userMessageIndex: number
+}): Promise<PrepareRewindResult> {
+  const { workspacePath, runId, userMessageIndex } = input
+  const runDir = resolveRunDir(workspacePath, runId)
+  if (!existsSync(runDir)) {
+    throw new Error('Run not found')
+  }
+
+  clearFollowUps(runId)
+
+  const diskMessages = await loadMessagesAsync(workspacePath, runId)
+  if (userMessageIndex < 0 || userMessageIndex >= diskMessages.length) {
+    throw new Error('userMessageIndex out of range')
+  }
+  if (diskMessages[userMessageIndex]?.role !== 'user') {
+    throw new Error('userMessageIndex must point at a user message')
+  }
+
+  const writes = rewindWritesFrom(runDir, workspacePath, userMessageIndex)
+  const nextMessages = diskMessages.slice(0, userMessageIndex + 1)
+
+  await applyRewindPersistence({
+    workspacePath,
+    runId,
+    runDir,
+    userMessageIndex,
+    nextMessages,
+    writes
+  })
 
   return { messages: nextMessages, writes }
 }

@@ -1,10 +1,11 @@
 /** Shared viewport clamping for composer portal dropdowns (model / mention / slash). */
 
+import { MICRO_LABEL_CAPS } from '@renderer/lib/utils/layout'
+
 export const COMPOSER_DROPDOWN_PAD_PX = 8
 
 /** Section headers inside composer autocomplete panels. */
-export const composerDropdownSectionHeader =
-  'm-0 px-2.5 py-1 text-[10px] font-medium uppercase tracking-wide text-secondary'
+export const composerDropdownSectionHeader = `m-0 px-2.5 py-1 ${MICRO_LABEL_CAPS}`
 
 /** Option rows inside composer autocomplete panels. */
 export const composerDropdownRow =

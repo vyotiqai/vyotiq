@@ -870,6 +870,60 @@ describe('MessageList', () => {
     expect(onBegin).toHaveBeenCalledWith(2)
   })
 
+  it('shows Revert back only when later transcript content exists', () => {
+    const onRevert = vi.fn()
+    const items: UiItem[] = [
+      { kind: 'message', id: 'user-0', role: 'user', content: 'first prompt' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'ok' },
+      { kind: 'message', id: 'user-2', role: 'user', content: 'second prompt' },
+      { kind: 'message', id: 'a2', role: 'assistant', content: 'ok2' }
+    ]
+
+    const { rerender } = render(
+      <MessageList
+        items={items}
+        messageCount={4}
+        onRevertUserMessage={onRevert}
+      />
+    )
+
+    expect(screen.getAllByLabelText('Revert back')).toHaveLength(2)
+
+    rerender(
+      <MessageList
+        items={[{ kind: 'message', id: 'user-0', role: 'user', content: 'solo prompt' }]}
+        messageCount={1}
+        onRevertUserMessage={onRevert}
+      />
+    )
+    expect(screen.queryByLabelText('Revert back')).toBeNull()
+
+    rerender(
+      <MessageList
+        items={items}
+        messageCount={4}
+        running
+        onRevertUserMessage={onRevert}
+      />
+    )
+    expect(screen.queryByLabelText('Revert back')).toBeNull()
+  })
+
+  it('clicking Revert back calls onRevertUserMessage with its message index', () => {
+    const onRevert = vi.fn()
+    const items: UiItem[] = [
+      { kind: 'message', id: 'user-0', role: 'user', content: 'first prompt' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'ok' }
+    ]
+
+    render(
+      <MessageList items={items} messageCount={2} onRevertUserMessage={onRevert} />
+    )
+
+    fireEvent.click(screen.getByLabelText('Revert back'))
+    expect(onRevert).toHaveBeenCalledWith(0)
+  })
+
   it('replaces the user bubble with editComposer while editing', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'user-0', role: 'user', content: 'original prompt' }
@@ -897,8 +951,8 @@ describe('MessageList', () => {
     render(<MessageList items={items} onBeginEditUserMessage={() => {}} />)
 
     const editBtn = screen.getByLabelText('Edit message')
-    const bubble = editBtn.parentElement
-    expect(bubble?.getAttribute('title')).toBe('Click to edit')
+    const bubble = editBtn.closest('[aria-label="User message"]')
+    expect(bubble).toBeTruthy()
     expect(bubble?.className).toContain('group/prompt')
   })
 })

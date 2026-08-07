@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -21,7 +21,7 @@ import {
   finalizeWriteCheckpoint,
   resetWriteCheckpointsForTests
 } from '@main/agent/checkpoints'
-import { prepareRewindAndReplaceUserMessage } from '@main/agent/rewindRun'
+import { prepareRewindAndReplaceUserMessage, prepareRewindToUserMessage } from '@main/agent/rewindRun'
 import {
   appendEvent,
   createRun,
@@ -152,5 +152,106 @@ describe('prepareRewindAndReplaceUserMessage', () => {
           (e.event as { checkpointId?: string }).checkpointId === meta2!.id
       )
     ).toBe(false)
+
+    expect(existsSync(join(runDir, 'receipt.json'))).toBe(true)
+    const receipt = JSON.parse(readFileSync(join(runDir, 'receipt.json'), 'utf8')) as {
+      status: string
+    }
+    expect(receipt.status).toBe('done')
+    expect(existsSync(join(runDir, 'trajectory.jsonl'))).toBe(true)
+  })
+})
+
+describe('prepareRewindToUserMessage', () => {
+  it('keeps original user text, truncates later turns, and restores files', async () => {
+    const messages = [
+      { role: 'user' as const, content: 'first' },
+      {
+        role: 'assistant' as const,
+        content: 'ok',
+        toolCalls: [{ id: 't1', name: 'edit', arguments: '{}' }]
+      },
+      { role: 'tool' as const, toolCallId: 't1', toolName: 'edit', content: 'done', ok: true },
+      { role: 'user' as const, content: 'second' },
+      {
+        role: 'assistant' as const,
+        content: 'ok2',
+        toolCalls: [{ id: 't2', name: 'edit', arguments: '{}' }]
+      },
+      { role: 'tool' as const, toolCallId: 't2', toolName: 'edit', content: 'done2', ok: true }
+    ]
+    await syncMessagesAsync(runDir, messages)
+
+    const cp1 = beginWriteCheckpoint(runDir, workspace, 0)
+    cp1.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'after-first\n', 'utf8')
+    const meta1 = finalizeWriteCheckpoint(runDir)
+    appendEvent(runDir, {
+      type: 'writes_checkpoint',
+      runId,
+      checkpointId: meta1!.id,
+      files: meta1!.files
+    })
+
+    const cp2 = beginWriteCheckpoint(runDir, workspace, 3)
+    cp2.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'after-second\n', 'utf8')
+    const meta2 = finalizeWriteCheckpoint(runDir)
+    appendEvent(runDir, {
+      type: 'writes_checkpoint',
+      runId,
+      checkpointId: meta2!.id,
+      files: meta2!.files
+    })
+    appendEvent(runDir, {
+      type: 'tool_start',
+      runId,
+      toolCallId: 't2',
+      name: 'edit',
+      summary: 'a.txt'
+    })
+    await flushEventAppends(runDir)
+
+    const prepared = await prepareRewindToUserMessage({
+      workspacePath: workspace,
+      runId,
+      userMessageIndex: 3
+    })
+
+    expect(prepared.messages).toEqual([
+      { role: 'user', content: 'first' },
+      {
+        role: 'assistant',
+        content: 'ok',
+        toolCalls: [{ id: 't1', name: 'edit', arguments: '{}' }]
+      },
+      { role: 'tool', toolCallId: 't1', toolName: 'edit', content: 'done', ok: true },
+      { role: 'user', content: 'second' }
+    ])
+    expect(loadMessages(workspace, runId)).toEqual(prepared.messages)
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('after-first\n')
+
+    const events = await loadEventsAsync(runDir, runId)
+    expect(
+      events.some(
+        (e) =>
+          e.event.type === 'tool_start' &&
+          (e.event as { toolCallId?: string }).toolCallId === 't2'
+      )
+    ).toBe(false)
+    expect(
+      events.some(
+        (e) =>
+          e.event.type === 'writes_checkpoint' &&
+          (e.event as { checkpointId?: string }).checkpointId === meta2!.id
+      )
+    ).toBe(false)
+
+    expect(existsSync(join(runDir, 'receipt.json'))).toBe(true)
+    const receipt = JSON.parse(readFileSync(join(runDir, 'receipt.json'), 'utf8')) as {
+      status: string
+    }
+    expect(receipt.status).toBe('done')
+    expect(existsSync(join(runDir, 'trajectory.jsonl'))).toBe(true)
   })
 })

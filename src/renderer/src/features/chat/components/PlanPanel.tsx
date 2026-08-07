@@ -144,7 +144,7 @@ function PathList({
           </li>
         ))}
         {more > 0 ? (
-          <li className="text-[11px] text-muted">+{more} more</li>
+          <li className="text-caption text-muted">+{more} more</li>
         ) : null}
       </ul>
     </section>
@@ -198,7 +198,7 @@ function ReceiptSummary({
         <div className="mt-1.5 flex min-w-0 flex-wrap items-center gap-2">
           <span
             className={cn(
-              'inline-flex shrink-0 rounded-md px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
+              'inline-flex shrink-0 rounded-md px-1.5 py-0.5 text-2xs font-medium uppercase tracking-wide',
               statusTone
             )}
             data-receipt-status={statusLabel}
@@ -222,7 +222,7 @@ function ReceiptSummary({
         ) : null}
         {receipt.contractExcerpt.trim() ? (
           <div className="mt-2 rounded-md border border-border/40 bg-surface/60 px-2.5 py-2">
-            <p className="m-0 text-[10px] font-medium uppercase tracking-wide text-muted">
+            <p className="m-0 text-2xs font-medium uppercase tracking-wide text-muted">
               Contract
             </p>
             <p className="m-0 mt-1 whitespace-pre-wrap text-xs text-secondary [overflow-wrap:anywhere]">
@@ -235,15 +235,15 @@ function ReceiptSummary({
       <section className="min-w-0">
         <h3 className="m-0 text-xs font-medium uppercase tracking-wide text-muted">Tools</h3>
         <div className="mt-1.5 flex flex-wrap gap-1.5">
-          <span className="rounded-md bg-surface px-1.5 py-0.5 text-[11px] tabular-nums text-fg">
+          <span className="rounded-md bg-surface px-1.5 py-0.5 text-caption tabular-nums text-fg">
             {receipt.toolStats.totalCalls} calls
           </span>
-          <span className="rounded-md bg-surface px-1.5 py-0.5 text-[11px] tabular-nums text-success">
+          <span className="rounded-md bg-surface px-1.5 py-0.5 text-caption tabular-nums text-success">
             {receipt.toolStats.ok} ok
           </span>
           <span
             className={cn(
-              'rounded-md bg-surface px-1.5 py-0.5 text-[11px] tabular-nums',
+              'rounded-md bg-surface px-1.5 py-0.5 text-caption tabular-nums',
               receipt.toolStats.failed > 0 ? 'text-danger' : 'text-muted'
             )}
           >
@@ -255,7 +255,7 @@ function ReceiptSummary({
             {failTop.map((f) => (
               <li
                 key={f.key}
-                className="min-w-0 rounded-md border border-border/30 bg-surface/40 px-2 py-1.5 font-mono text-[11px] text-muted [overflow-wrap:anywhere]"
+                className="min-w-0 rounded-md border border-border/30 bg-surface/40 px-2 py-1.5 font-mono text-caption text-muted [overflow-wrap:anywhere]"
               >
                 <span className="text-fg/80">{f.count}×</span> {f.key}
               </li>
@@ -285,7 +285,7 @@ function ReceiptSummary({
             {contextChips.map((c) => (
               <span
                 key={`${c.label}:${c.value}`}
-                className="inline-flex max-w-full items-baseline gap-1 rounded-md bg-surface px-1.5 py-0.5 text-[11px] [overflow-wrap:anywhere]"
+                className="inline-flex max-w-full items-baseline gap-1 rounded-md bg-surface px-1.5 py-0.5 text-caption [overflow-wrap:anywhere]"
               >
                 <span className="text-muted">{c.label}</span>
                 <span className="tabular-nums text-fg">{c.value}</span>
@@ -538,11 +538,11 @@ export function PlanPanel({
                 className="mb-3 rounded-md border border-border/40 bg-surface px-2.5 py-2"
                 aria-label="Plan outline"
               >
-                <p className="m-0 text-[10px] font-medium uppercase tracking-[0.06em] text-muted">
+                <p className="m-0 text-2xs font-medium uppercase tracking-[var(--vy-tracking-caps)] text-muted">
                   Outline
                 </p>
                 {planOutline.checked + planOutline.unchecked > 0 ? (
-                  <p className="m-0 mt-1 text-[11px] text-muted">
+                  <p className="m-0 mt-1 text-caption text-muted">
                     Checklist {planOutline.checked}/{planOutline.checked + planOutline.unchecked}
                   </p>
                 ) : null}
@@ -567,7 +567,7 @@ export function PlanPanel({
                             <button
                               type="button"
                               className={cn(
-                                'block w-full whitespace-normal break-words text-left text-[11px] leading-snug underline-offset-2 hover:underline',
+                                'block w-full whitespace-normal break-words text-left text-caption leading-snug underline-offset-2 hover:underline',
                                 h.level === 1 && 'font-medium text-fg',
                                 h.level === 2 && 'text-fg/90',
                                 h.level === 3 && 'text-fg/75'
@@ -580,7 +580,7 @@ export function PlanPanel({
                           </li>
                         ))}
                         {hidden > 0 ? (
-                          <li className="pt-0.5 text-[11px] text-muted">+{hidden} more</li>
+                          <li className="pt-0.5 text-caption text-muted">+{hidden} more</li>
                         ) : null}
                       </ul>
                     )

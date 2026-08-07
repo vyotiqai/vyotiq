@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
-import { SETTINGS_COLUMN } from '@renderer/lib/utils/layout'
+import { cn } from '@renderer/lib/ui'
+import { SETTINGS_COLUMN, SETTINGS_GUTTER } from '@renderer/lib/utils/layout'
 
 export function SettingsLayout({
   nav,
@@ -13,8 +14,8 @@ export function SettingsLayout({
       <div className="flex min-h-0 flex-1 flex-col sm:flex-row">
         {nav}
         <div className="flex min-w-0 flex-1 flex-col overflow-auto bg-bg">
-          <div className={`flex w-full flex-col px-4 sm:px-0 ${SETTINGS_COLUMN}`}>
-            <div className="flex flex-col px-1 pb-7 sm:px-5">{children}</div>
+          <div className={cn('flex w-full flex-col', SETTINGS_GUTTER, SETTINGS_COLUMN)}>
+            <div className="flex flex-col pb-7">{children}</div>
           </div>
         </div>
       </div>

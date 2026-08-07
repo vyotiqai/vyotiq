@@ -70,7 +70,7 @@ function DiffLines({
   return (
     <div
       className={cn(
-        'overflow-hidden font-mono text-[11px] leading-[1.6]',
+        'overflow-hidden font-mono text-caption leading-mono',
         wordWrap && '[&_pre]:whitespace-pre-wrap'
       )}
     >
@@ -98,7 +98,7 @@ function DiffLines({
             )}
           >
             <span
-              className="w-5 shrink-0 select-none pr-1 text-right tabular-nums text-[10px] text-tertiary/55"
+              className="w-5 shrink-0 select-none pr-1 text-right tabular-nums text-2xs text-tertiary/55"
               aria-hidden={line.lineNumber == null}
             >
               {line.lineNumber ?? ''}
@@ -110,7 +110,7 @@ function DiffLines({
         )
       })}
       {hidden > 0 ? (
-        <p className="m-0 px-2 py-1 text-[10px] text-tertiary">
+        <p className="m-0 px-2 py-1 text-2xs text-tertiary">
           {hidden} more {hidden === 1 ? 'line' : 'lines'}
         </p>
       ) : null}

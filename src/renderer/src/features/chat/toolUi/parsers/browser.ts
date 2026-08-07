@@ -69,23 +69,36 @@ export function parseBrowserSnapshotData(tool: UiToolRow): BrowserSnapshotParsed
   const screenshotNote = screenshotMatch?.[0] ?? ''
 
   const refs: BrowserRef[] = []
-  const refRe =
+  const newRefRe =
+    /^-\s+@(e\d+)\s+role=("(?:\\.|[^"\\])*"|""|\S+)\s+name=("(?:\\.|[^"\\])*"|""|\S+)\s+css=("(?:\\.|[^"\\])*"|""|\S+)\s*$/gm
+  const oldRefRe =
     /^-\s+@(e\d+)\s+(\S+)\s+("(?:\\.|[^"\\])*"|""|\S+)\s+css=("(?:\\.|[^"\\])*"|""|\S+)\s*$/gm
+  const parseQuoted = (value: string): string => {
+    try {
+      if (value.startsWith('"')) return JSON.parse(value) as string
+    } catch {
+      return value.replace(/^"|"$/g, '')
+    }
+    return value
+  }
   let m: RegExpExecArray | null
-  while ((m = refRe.exec(content)) !== null) {
-    let name = m[3] ?? ''
-    let css = m[4] ?? ''
-    try {
-      if (name.startsWith('"')) name = JSON.parse(name) as string
-    } catch {
-      name = name.replace(/^"|"$/g, '')
+  while ((m = newRefRe.exec(content)) !== null) {
+    refs.push({
+      id: m[1]!,
+      role: parseQuoted(m[2]!),
+      name: parseQuoted(m[3]!),
+      css: parseQuoted(m[4]!)
+    })
+  }
+  if (refs.length === 0) {
+    while ((m = oldRefRe.exec(content)) !== null) {
+      refs.push({
+        id: m[1]!,
+        role: m[2]!,
+        name: parseQuoted(m[3]!),
+        css: parseQuoted(m[4]!)
+      })
     }
-    try {
-      if (css.startsWith('"')) css = JSON.parse(css) as string
-    } catch {
-      css = css.replace(/^"|"$/g, '')
-    }
-    refs.push({ id: m[1]!, role: m[2]!, name, css })
   }
 
   let body = ''

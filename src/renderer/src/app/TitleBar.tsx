@@ -46,7 +46,7 @@ export function TitleBar({
   return (
     <header
       className={cn(
-        'app-region-drag z-sticky flex shrink-0 items-stretch bg-bg',
+        'app-region-drag z-sticky flex shrink-0 items-stretch border-b border-border/30 bg-bg',
         TITLE_BAR_HEIGHT,
         showControls ? 'pr-0' : 'pr-2'
       )}

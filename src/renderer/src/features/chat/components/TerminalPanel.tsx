@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Terminal, type ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { cn, IconButton, Tooltip } from '@renderer/lib/ui'
-import { Icon } from '@renderer/lib/icons'
 import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
 import type { PtySessionInfo } from '@shared/ipc'
 import { prunePtyOutputBuffers } from '@shared/utils/ptyOutputBuffer'
 import { getPtyOutputBuffers, ensurePtyOutputBufferListener } from './ptyOutputBuffers'
 import { EmptyPanel } from './PanelChrome'
+import { TerminalSessionBar } from './TerminalSessionBar'
 
 ensurePtyOutputBufferListener()
 
@@ -53,7 +54,7 @@ function PtySessionView({
 
     const term = new Terminal({
       convertEol: true,
-      fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      fontFamily: '"JetBrains Mono", ui-monospace, monospace',
       fontSize: 12,
       theme: readTerminalTheme()
     })
@@ -164,6 +165,7 @@ export function TerminalPanel({
   className,
   workspacePath,
   visible = true,
+  sessionBarHostRef,
   onSessionsChange,
   onActiveSessionChange
 }: {
@@ -171,6 +173,8 @@ export function TerminalPanel({
   workspacePath?: string | null
   /** False while the terminal dock tab is CSS-hidden. */
   visible?: boolean
+  /** When set, session tabs render in the dock tab bar instead of inside the panel. */
+  sessionBarHostRef?: React.RefObject<HTMLElement | null>
   onSessionsChange?: (sessions: PtySessionInfo[]) => void
   onActiveSessionChange?: (session: PtySessionInfo | null) => void
 }) {
@@ -208,8 +212,8 @@ export function TerminalPanel({
     const boundWorkspace = workspacePath
     const res = await window.vyotiq.ptyList(boundWorkspace ?? undefined)
     if (seq !== listSeqRef.current) return
-    if (!res.ok) {
-      setError(res.error)
+    if (!res?.ok) {
+      setError(res?.error ?? 'Terminal list failed.')
       setListReady(true)
       return
     }
@@ -309,6 +313,9 @@ export function TerminalPanel({
 
   useEffect(() => {
     void refreshList()
+    return () => {
+      listSeqRef.current += 1
+    }
   }, [refreshList])
 
   // Auto-create only when the dock tab is visible (manual open / focused tab).
@@ -335,6 +342,43 @@ export function TerminalPanel({
     }
   }, [refreshList])
 
+  const [sessionBarHost, setSessionBarHost] = useState<HTMLElement | null>(null)
+  useLayoutEffect(() => {
+    if (!sessionBarHostRef || !visible) {
+      setSessionBarHost(null)
+      return
+    }
+    let cancelled = false
+    const attach = (): void => {
+      if (cancelled) return
+      const host = sessionBarHostRef.current
+      if (host) {
+        setSessionBarHost(host)
+        return
+      }
+      requestAnimationFrame(attach)
+    }
+    attach()
+    return () => {
+      cancelled = true
+    }
+  }, [sessionBarHostRef, visible, sessions.length])
+
+  const useExternalSessionBar = Boolean(sessionBarHostRef)
+  const showExternalSessionBar = useExternalSessionBar && visible && sessionBarHost != null
+
+  const sessionBar = (
+    <TerminalSessionBar
+      sessions={sessions}
+      activeId={activeId}
+      splitId={splitId}
+      onSelect={setActiveId}
+      onKill={(id) => void killSession(id)}
+      onCreate={() => void createSession()}
+      onToggleSplit={() => void toggleSplit()}
+    />
+  )
+
   return (
     <div
       className={cn(CHAT_RIGHT_PANEL_BODY, className)}
@@ -342,65 +386,18 @@ export function TerminalPanel({
       role="region"
       aria-label="Terminal panel"
     >
+      {showExternalSessionBar
+        ? createPortal(sessionBar, sessionBarHost)
+        : null}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border/40 bg-bg px-1 py-0.5">
-          <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto">
-            {sessions.map((s) => (
-              <div
-                key={s.id}
-                className={cn(
-                  'group inline-flex max-w-[8rem] items-center gap-0.5 rounded-md px-1.5 py-0.5 text-[11px]',
-                  s.id === activeId
-                    ? 'bg-surface text-fg'
-                    : 'text-muted hover:bg-surface/60'
-                )}
-              >
-                <button
-                  type="button"
-                  className="min-w-0 truncate"
-                  aria-pressed={s.id === activeId}
-                  onClick={() => setActiveId(s.id)}
-                >
-                  &gt;_ {s.title}
-                  {!s.running ? ' (exited)' : ''}
-                </button>
-                <Tooltip content={`Close ${s.title}`}>
-                  <button
-                    type="button"
-                    className="shrink-0 rounded p-0.5 opacity-0 hover:bg-surface-2 group-hover:opacity-100"
-                    aria-label={`Close ${s.title}`}
-                    onClick={() => void killSession(s.id)}
-                  >
-                    <Icon name="close" size={10} />
-                  </button>
-                </Tooltip>
-              </div>
-            ))}
+        {!useExternalSessionBar ? (
+          <div className="flex shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border/40 bg-bg px-1 py-0.5">
+            {sessionBar}
           </div>
-          <div className="flex shrink-0 items-center gap-0.5">
-            <IconButton
-              icon="plus"
-              label="New terminal"
-              variant="bare"
-              size="sm"
-              className="text-muted"
-              onClick={() => void createSession()}
-            />
-            {activeSession ? (
-              <IconButton
-                icon="columns"
-                label={splitId ? 'Unsplit terminals' : 'Split terminal'}
-                variant="bare"
-                size="sm"
-                className={cn('text-muted', splitId && 'text-fg')}
-                onClick={() => void toggleSplit()}
-              />
-            ) : null}
-          </div>
-        </div>
+        ) : null}
         {error ? (
           <p
-            className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px] text-danger"
+            className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-caption text-danger"
             data-terminal-error
             role="alert"
           >
@@ -408,7 +405,7 @@ export function TerminalPanel({
           </p>
         ) : null}
         {usingPipeFallback ? (
-          <p className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-[11px] text-muted">
+          <p className="m-0 shrink-0 border-b border-border/40 px-3 py-1 text-caption text-muted">
             Pipe shell fallback — rebuild node-pty for Electron for a full interactive PTY.
           </p>
         ) : null}

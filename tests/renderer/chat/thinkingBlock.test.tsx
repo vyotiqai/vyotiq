@@ -41,14 +41,14 @@ describe('ThinkingBlock', () => {
     expect(screen.queryByText('Let me reason about this.')).toBeNull()
   })
 
-  it('does not render placeholder-only reasoning', () => {
-    const { container } = render(<ThinkingBlock content="." />)
-    expect(container.firstChild).toBeNull()
+  it('renders placeholder-only reasoning when mounted directly (MessageList filters rows)', () => {
+    render(<ThinkingBlock content="." />)
+    expect(screen.getByRole('button', { name: /thought/i })).toBeTruthy()
   })
 
-  it('does not render short finished reasoning stubs', () => {
-    const { container } = render(<ThinkingBlock content="OK" />)
-    expect(container.firstChild).toBeNull()
+  it('renders short finished reasoning when mounted directly (MessageList filters rows)', () => {
+    render(<ThinkingBlock content="OK" />)
+    expect(screen.getByRole('button', { name: /thought/i })).toBeTruthy()
   })
 
   it('still shows short reasoning while it streams', () => {

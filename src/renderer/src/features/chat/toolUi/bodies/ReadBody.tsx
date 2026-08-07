@@ -6,7 +6,7 @@ import { parseReadData } from '../parsers/read'
 import { CodeBlock, DirListing, TruncatedBanner } from '../primitives'
 
 const DIR_SECTION_LABEL =
-  'text-[10px] font-medium uppercase tracking-[0.07em] text-tertiary'
+  'text-2xs font-medium uppercase tracking-[var(--vy-tracking-caps)] text-tertiary'
 
 export function ReadBody({ tool, loading, loadFailed }: ToolBodyProps) {
   const data = useMemo(() => parseReadData(tool), [tool])
@@ -24,7 +24,7 @@ export function ReadBody({ tool, loading, loadFailed }: ToolBodyProps) {
         </div>
       ) : totalLines > 0 ? (
         <div className={`${TOOL_BODY_PAD} pb-1`}>
-          <span className="text-[10px] tabular-nums text-tertiary">
+          <span className="text-2xs tabular-nums text-tertiary">
             {totalLines} {totalLines === 1 ? 'line' : 'lines'}
             {clamped ? ` · showing ${previewLines.length}` : ''}
             {data.lineRange ? ` · ${data.lineRange}` : ''}

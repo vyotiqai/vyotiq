@@ -37,7 +37,7 @@ function chipClassName(kind: ComposerMention['kind']): string {
   const accent = kind === 'slash' ? 'text-accent' : 'text-secondary'
   return [
     'mention-chip mx-0.5 inline-flex max-w-[12rem] items-center gap-1 align-baseline',
-    'px-0.5 text-[13px] leading-none',
+    'px-0.5 text-sm leading-none',
     accent,
     'select-none'
   ].join(' ')
@@ -79,7 +79,7 @@ function buildChipElement(mention: ComposerMention): HTMLSpanElement {
     span.appendChild(img)
   } else {
     const ico = document.createElement('span')
-    ico.className = 'text-[11px] opacity-70'
+    ico.className = 'text-caption opacity-70'
     ico.textContent =
       mention.kind === 'branch'
         ? '⎇'

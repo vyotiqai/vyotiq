@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type RefObject } from 'react'
 import { ActionMenu, IconButton, Tooltip, cn } from '@renderer/lib/ui'
 import { Icon, type IconName } from '@renderer/lib/icons'
 import type { ChatRightPanelId, DockImmersiveTabId } from '@renderer/lib/utils/layout'
@@ -39,6 +39,7 @@ export function DockTabBar({
   expanded,
   onToggleExpanded,
   variant = 'dock',
+  terminalSessionBarHostRef,
   className
 }: {
   active: DockImmersiveTabId
@@ -49,6 +50,8 @@ export function DockTabBar({
   expanded?: boolean
   onToggleExpanded?: () => void
   variant?: 'dock' | 'immersive'
+  /** Host for {@link TerminalSessionBar} when the terminal panel is active. */
+  terminalSessionBarHostRef?: RefObject<HTMLDivElement | null>
   className?: string
 }) {
   const [addOpen, setAddOpen] = useState(false)
@@ -81,22 +84,18 @@ export function DockTabBar({
         items={addItems}
         trigger={(props) =>
           immersive ? (
-            <button
-              type="button"
+            <IconButton
               ref={props.ref}
-              className={cn(
-                'app-region-no-drag inline-grid size-7 shrink-0 place-items-center rounded-full',
-                'text-muted hover:bg-surface hover:text-fg focus-visible:vy-focus-ring'
-              )}
-              aria-label="Add panel"
-              title="Add panel"
+              icon="plus"
+              label="Add panel"
+              size="sm"
+              variant="bare"
+              className="text-muted"
               aria-expanded={props['aria-expanded']}
               aria-controls={props['aria-controls']}
               aria-haspopup={props['aria-haspopup']}
               onClick={props.onClick}
-            >
-              <Icon name="plus" size={18} />
-            </button>
+            />
           ) : (
             <IconButton
               ref={props.ref}
@@ -163,18 +162,25 @@ export function DockTabBar({
                 type="button"
                 role="tab"
                 aria-selected={selected}
+                aria-controls={`dock-panel-${tab.id}`}
                 tabIndex={selected ? 0 : -1}
                 className={cn(
                   'inline-flex h-full min-w-0 flex-1 items-center gap-1.5 text-xs leading-tight focus-visible:vy-focus-ring',
                   immersive ? 'rounded-full' : 'rounded-md',
                   selected ? 'font-medium text-fg' : 'text-secondary hover:text-fg'
                 )}
+                onKeyDown={(e) => {
+                  if (e.key === 'Delete' && closable && tab.id !== 'agent') {
+                    e.preventDefault()
+                    onCloseTab(tab.id)
+                  }
+                }}
                 onClick={() => onSelect(tab.id)}
               >
                 <Icon
                   name={tab.icon}
-                  size={12}
-                  className={cn('shrink-0', selected ? 'text-fg' : 'text-secondary')}
+                  size={14}
+                  className={cn('shrink-0 self-center', selected ? 'text-fg' : 'text-secondary')}
                 />
                 <span className="min-w-0 truncate leading-tight">{tab.label}</span>
               </button>
@@ -189,7 +195,8 @@ export function DockTabBar({
                         : 'opacity-0 hover:bg-surface-2 group-hover:opacity-100 group-focus-within:opacity-100'
                     )}
                     aria-label={`Close ${tab.label}`}
-                    tabIndex={-1}
+                    aria-keyshortcuts="Delete"
+                    tabIndex={selected ? 0 : -1}
                     onClick={() => {
                       if (tab.id !== 'agent') onCloseTab(tab.id)
                     }}
@@ -201,6 +208,16 @@ export function DockTabBar({
             </div>
           )
         })}
+        {terminalSessionBarHostRef ? (
+          <>
+            <span className="mx-0.5 h-4 w-px shrink-0 bg-border/40" aria-hidden />
+            <div
+              ref={terminalSessionBarHostRef}
+              className="flex min-w-0 shrink items-center gap-0.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:h-0"
+              data-terminal-session-bar-host
+            />
+          </>
+        ) : null}
       </div>
 
       {/* Keep + outside the scrollport so the menu can portal below the h-9 titlebar. */}

@@ -742,6 +742,7 @@ async function collectRunsFromRoot(root: string): Promise<RunSummary[]> {
 }
 
 export async function listRuns(workspacePath: string): Promise<ListRunsResult> {
+  await reconcileStaleRuns(workspacePath)
   return getCachedListRuns(workspacePath, async () => {
     const summaries = await collectRunsFromRoot(workspaceSessionsRoot(workspacePath))
     const sorted = summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
@@ -815,12 +816,17 @@ function patchInterruptedTodoMessage(dir: string): void {
 /**
  * Mark runs left as `running` after a crash/restart as cancelled.
  * Scans workspace run directories under each provided path.
+ * When `maxAgeMs` is 0 (default), every disk-`running` non-active run is cancelled immediately.
  */
-export async function interruptOrphanRuns(workspacePaths: string[]): Promise<number> {
+export async function interruptOrphanRuns(
+  workspacePaths: string[],
+  maxAgeMs = 0
+): Promise<number> {
   let count = 0
   for (const workspacePath of workspacePaths) {
     const runs = workspaceSessionsRoot(workspacePath)
     if (!existsSync(runs)) continue
+    let workspaceCount = 0
     for (const name of readdirSync(runs)) {
       const dir = join(runs, name)
       try {
@@ -834,46 +840,92 @@ export async function interruptOrphanRuns(workspacePaths: string[]): Promise<num
         // Skip runs still live in memory (re-adding an open workspace must not
         // treat an in-flight agent as a crash orphan).
         if (isActive(name)) continue
-        appendOrphanToolStubs(dir, name)
-        finalizeInterruptedTodos(dir)
-        patchInterruptedTodoMessage(dir)
-        await updateStatus(
-          dir,
-          {
-            status: 'cancelled',
-            error: 'Interrupted: app exited while run was active',
-            ...(parsed.data.invokeId != null ? { invokeId: parsed.data.invokeId } : {})
-          },
-          { sync: true }
-        )
-        appendEvent(dir, {
-          type: 'status',
-          status: 'cancelled',
-          runId: name,
-          ...(parsed.data.invokeId != null ? { invokeId: parsed.data.invokeId } : {})
-        })
-        // Drain pending appends before sync receipt load — avoids flush-timeout
-        // partial reads after GPU crash / slow disk.
-        await flushEventAppends(dir)
-        await flushStatusWrites(dir)
-        // Async read after flush — avoids racing the append chain on slow disks.
-        const events = await loadEventsAsync(dir, name)
-        // Keep receipt.json aligned with status after crash/orphan cancel
-        // (loop finally normally writes this; orphans never reach finally).
-        writeRunReceiptBestEffort({
-          runDir: dir,
-          runId: name,
-          loadStatus,
-          loadMessages: () => loadMessages(workspacePath, name),
-          loadEvents: () => events,
-          readContract
-        })
-        count += 1
+        if (!isRunStaleByAge(parsed.data.updatedAt, maxAgeMs)) continue
+        await interruptRunningRunOnDisk(workspacePath, name, dir, parsed.data)
+        workspaceCount += 1
       } catch {
         // skip
       }
     }
+    if (workspaceCount > 0) invalidateListRunsCache(workspacePath)
+    count += workspaceCount
   }
+  return count
+}
+
+const DEFAULT_STALE_RUN_AGE_MS = 120_000
+
+function isRunStaleByAge(updatedAt: string, maxAgeMs: number): boolean {
+  if (maxAgeMs <= 0) return true
+  const ts = Date.parse(updatedAt)
+  if (!Number.isFinite(ts)) return true
+  return Date.now() - ts >= maxAgeMs
+}
+
+async function interruptRunningRunOnDisk(
+  workspacePath: string,
+  runId: string,
+  dir: string,
+  status: RunStatus
+): Promise<void> {
+  appendOrphanToolStubs(dir, runId)
+  finalizeInterruptedTodos(dir)
+  patchInterruptedTodoMessage(dir)
+  await updateStatus(
+    dir,
+    {
+      status: 'cancelled',
+      error: 'Interrupted: app exited while run was active',
+      ...(status.invokeId != null ? { invokeId: status.invokeId } : {})
+    },
+    { sync: true }
+  )
+  appendEvent(dir, {
+    type: 'status',
+    status: 'cancelled',
+    runId,
+    ...(status.invokeId != null ? { invokeId: status.invokeId } : {})
+  })
+  await flushEventAppends(dir)
+  await flushStatusWrites(dir)
+  const events = await loadEventsAsync(dir, runId)
+  writeRunReceiptBestEffort({
+    runDir: dir,
+    runId,
+    loadStatus,
+    loadMessages: () => loadMessages(workspacePath, runId),
+    loadEvents: () => events,
+    readContract
+  })
+}
+
+/** Reconcile disk-`running` runs older than `maxAgeMs` when listing or loading sessions. */
+export async function reconcileStaleRuns(
+  workspacePath: string,
+  maxAgeMs = DEFAULT_STALE_RUN_AGE_MS
+): Promise<number> {
+  let count = 0
+  const runs = workspaceSessionsRoot(workspacePath)
+  if (!existsSync(runs)) return 0
+  for (const name of readdirSync(runs)) {
+    const dir = join(runs, name)
+    try {
+      if (!statSync(dir).isDirectory()) continue
+      const statusPath = join(dir, 'status.json')
+      if (!existsSync(statusPath)) continue
+      const raw = JSON.parse(readFileSync(statusPath, 'utf8')) as unknown
+      const parsed = RunStatusSchema.safeParse(raw)
+      if (!parsed.success) continue
+      if (parsed.data.status !== 'running') continue
+      if (isActive(name)) continue
+      if (!isRunStaleByAge(parsed.data.updatedAt, maxAgeMs)) continue
+      await interruptRunningRunOnDisk(workspacePath, name, dir, parsed.data)
+      count += 1
+    } catch {
+      // skip
+    }
+  }
+  if (count > 0) invalidateListRunsCache(workspacePath)
   return count
 }
 

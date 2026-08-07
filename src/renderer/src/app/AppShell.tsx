@@ -320,7 +320,7 @@ function AppShellInner({
               aria-hidden
               onClick={closeDrawer}
             />
-            <div className="relative z-sticky h-full min-h-0 animate-slide-in-left">
+            <div className="relative z-sticky h-full min-h-0 animate-slide-in-left shadow-[var(--vy-shadow-menu)]">
               <ErrorBoundary
                 title="Sidebar couldn't render"
                 resetKey={(openWorkspaces ?? []).join('|')}
@@ -334,7 +334,6 @@ function AppShellInner({
         <main
           ref={mainRef}
           className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg outline-none"
-          id="main"
           tabIndex={-1}
           aria-busy={loading ? true : undefined}
         >

@@ -238,6 +238,67 @@ describe('createChatStreamController', () => {
     expect(controller.running).toBe(false)
   })
 
+  it('revertToUserMessage truncates transcript and calls chatRewind without starting run', async () => {
+    const chatRewind = vi.fn().mockResolvedValue({
+      ok: true,
+      data: {
+        messages: [
+          { role: 'user', content: 'first' },
+          { role: 'assistant', content: 'reply-1' }
+        ],
+        restored: ['a.ts'],
+        skipped: []
+      }
+    })
+    // @ts-expect-error test bridge
+    window.vyotiq = { chatRewind }
+
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+    controller.hydrateTranscript([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'reply-1' },
+      { role: 'user', content: 'second' },
+      { role: 'assistant', content: 'reply-2' }
+    ])
+
+    const ok = await controller.revertToUserMessage(0)
+    expect(ok).toBe(true)
+    expect(chatRewind).toHaveBeenCalledWith({
+      workspacePath: '/ws',
+      runId: 'r1',
+      userMessageIndex: 0
+    })
+    expect(controller.messages).toEqual([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'reply-1' }
+    ])
+    expect(controller.running).toBe(false)
+    expect(controller.pendingRun).toBe(false)
+  })
+
+  it('revertToUserMessage rolls back UI when chatRewind fails', async () => {
+    const chatRewind = vi.fn().mockResolvedValue({
+      ok: false,
+      error: 'rewind failed'
+    })
+    // @ts-expect-error test bridge
+    window.vyotiq = { chatRewind }
+
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+    const prior = [
+      { role: 'user' as const, content: 'first' },
+      { role: 'assistant' as const, content: 'reply-1' },
+      { role: 'user' as const, content: 'second' },
+      { role: 'assistant' as const, content: 'reply-2' }
+    ]
+    controller.hydrateTranscript(prior)
+
+    const ok = await controller.revertToUserMessage(0)
+    expect(ok).toBe(false)
+    expect(controller.messages).toEqual(prior)
+    expect(controller.error).toBe('rewind failed')
+  })
+
   it('scopes network_wait reconnecting to the current turn only', async () => {
     const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
     controller.hydrateTranscript([

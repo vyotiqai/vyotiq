@@ -270,12 +270,24 @@ export function App() {
     []
   )
 
+  const onChatRevertToUserMessage = useCallback(async (userMessageIndex: number) => {
+    return chatActionsRef.current?.revertToUserMessage?.(userMessageIndex) ?? false
+  }, [])
+
   const onChatStop = useCallback(() => {
     void chatActionsRef.current?.stop()
   }, [])
 
   const onRemoveFollowUp = useCallback((id: string) => {
     void chatActionsRef.current?.removeFollowUp?.(id)
+  }, [])
+
+  const onEditFollowUp = useCallback((id: string, text: string) => {
+    return chatActionsRef.current?.editFollowUp?.(id, text) ?? false
+  }, [])
+
+  const onSendFollowUpNow = useCallback((id: string) => {
+    void chatActionsRef.current?.sendFollowUpNow?.(id)
   }, [])
 
   const onChatContinue = useCallback(() => {
@@ -844,10 +856,13 @@ export function App() {
             }}
             onSend={onChatSend}
             onEditAndResend={onChatEditAndResend}
+            onRevertToUserMessage={onChatRevertToUserMessage}
             messages={chat.messages}
             onStop={onChatStop}
             pendingFollowUps={chat.pendingFollowUps}
             onRemoveFollowUp={onRemoveFollowUp}
+            onEditFollowUp={onEditFollowUp}
+            onSendFollowUpNow={onSendFollowUpNow}
             onDismissError={onDismissChatBanner}
             onComposerDraftChange={setComposerDraft}
             restoreScrollTop={activeScrollTop}

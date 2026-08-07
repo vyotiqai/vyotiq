@@ -7,7 +7,7 @@ export function Input({ className = '', ...props }: InputHTMLAttributes<HTMLInpu
       className={cn(
         'min-h-8 w-full rounded-md border border-border bg-surface px-2.5 text-sm tracking-[var(--vy-tracking)] text-fg placeholder:text-muted',
         'hover:border-border-strong',
-        'focus-visible:border-border-strong focus-visible:outline focus-visible:outline-1 focus-visible:outline-offset-0 focus-visible:outline-focus',
+        'focus-visible:border-border-strong focus-visible:vy-focus-ring',
         'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)] disabled:hover:border-border',
         'vy-transition',
         className

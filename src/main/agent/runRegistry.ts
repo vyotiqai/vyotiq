@@ -6,6 +6,8 @@ import { cancelPendingQuestions } from './agentQuestion'
 export type FollowUpEntry = {
   id: string
   message: ChatMessage
+  /** True after the user clicks Send now — passive Enter-queue stays false until then. */
+  ready?: boolean
 }
 
 type RunEntry = {
@@ -37,6 +39,7 @@ const active = new Map<string, RunEntry>()
 const pendingModeByRun = new Map<string, AgentInteractionMode>()
 /** writes_checkpoint persisted in loop finally after the generator consumer ended. */
 const lateWriteCheckpointByRun = new Map<string, AgentEvent>()
+const lateFollowUpDroppedByRun = new Map<string, AgentEvent>()
 let nextInvokeId = 1
 
 /** Queue a mode switch to apply at the start of the next loop step. */
@@ -59,6 +62,17 @@ export function setLateWriteCheckpoint(runId: string, event: AgentEvent): void {
 export function takeLateWriteCheckpoint(runId: string): AgentEvent | undefined {
   const event = lateWriteCheckpointByRun.get(runId)
   lateWriteCheckpointByRun.delete(runId)
+  return event
+}
+
+/** Loop finally may drop follow-ups after the IPC consumer stopped yielding. */
+export function setLateFollowUpDropped(runId: string, event: AgentEvent): void {
+  lateFollowUpDroppedByRun.set(runId, event)
+}
+
+export function takeLateFollowUpDropped(runId: string): AgentEvent | undefined {
+  const event = lateFollowUpDroppedByRun.get(runId)
+  lateFollowUpDroppedByRun.delete(runId)
   return event
 }
 
@@ -161,7 +175,7 @@ function disposeTerminalSessionsNow(runId: string, invokeId: number): void {
   }
 }
 
-export function cancelRun(runId: string): boolean {
+function cancelRunCore(runId: string): boolean {
   const entry = active.get(runId)
   if (!entry) return false
   entry.followUps = []
@@ -172,6 +186,10 @@ export function cancelRun(runId: string): boolean {
   cancelPendingGateWaiters(runId)
   disposeTerminalSessionsNow(runId, entry.invokeId)
   return true
+}
+
+export function cancelRun(runId: string): boolean {
+  return cancelRunCore(runId)
 }
 
 export function getRunAbort(runId: string): AbortController | undefined {
@@ -253,9 +271,10 @@ export function clearRunAbort(runId: string, invokeId?: number): void {
   active.delete(runId)
   pendingModeByRun.delete(runId)
   lateWriteCheckpointByRun.delete(runId)
+  lateFollowUpDroppedByRun.delete(runId)
 }
 
-/** Queue a user message for mid-run injection. Soft-aborts the live stream if any. */
+/** Queue a user message for mid-run injection (passive — does not interrupt). */
 export function enqueueFollowUp(runId: string, message: ChatMessage): EnqueueFollowUpResult {
   const entry = active.get(runId)
   // Reject once the turn closed or the run abort fired — otherwise IPC can ack
@@ -268,17 +287,8 @@ export function enqueueFollowUp(runId: string, message: ChatMessage): EnqueueFol
   }
   const id = randomUUID()
   entry.followUps.push({ id, message })
-  // Interrupt the current provider stream so the loop can drain promptly.
-  entry.streamInterrupt?.abort()
-  // Soft-abort must also unblock parked parent approval waits (streamInterrupt
-  // may already be null during tool execution after the provider stream ended).
-  // Scope to this invoke. Question prompts stay parked: they gate nothing
-  // destructive, so the user can finish answering first; the follow-up is
-  // drained once the answer lands.
-  cancelPendingGateWaiters(runId, {
-    invokeId: entry.invokeId,
-    skipQuestions: true
-  })
+  // Passive queue — no stream interrupt. The composer shows the item until the
+  // user clicks Send now (promoteFollowUp) or the loop drains at a step boundary.
   return {
     ok: true,
     id,
@@ -305,10 +315,58 @@ export function removeFollowUp(
   }
 }
 
+/** Replace a queued follow-up message before the loop applies it. */
+export function updateFollowUp(
+  runId: string,
+  id: string,
+  message: ChatMessage
+): { ok: true; preview: string } | { ok: false; error: string } {
+  const entry = active.get(runId)
+  if (!entry || entry.turnComplete || entry.controller.signal.aborted) {
+    return { ok: false, error: 'Run is not active' }
+  }
+  if (message.role !== 'user') {
+    return { ok: false, error: 'Follow-up must be a user message' }
+  }
+  const queued = entry.followUps.find((item) => item.id === id)
+  if (!queued) return { ok: false, error: 'Follow-up not found' }
+  queued.message = message
+  return { ok: true, preview: followUpPreview(message) }
+}
+
+/** Move a queued follow-up to the front and interrupt the live stream. */
+export function promoteFollowUp(
+  runId: string,
+  id: string
+): { ok: true; queueLength: number } | { ok: false; error: string } {
+  const entry = active.get(runId)
+  if (!entry || entry.turnComplete || entry.controller.signal.aborted) {
+    return { ok: false, error: 'Run is not active' }
+  }
+  const idx = entry.followUps.findIndex((item) => item.id === id)
+  if (idx < 0) return { ok: false, error: 'Follow-up not found' }
+  const [item] = entry.followUps.splice(idx, 1)
+  item.ready = true
+  entry.followUps.unshift(item)
+  entry.streamInterrupt?.abort()
+  cancelPendingGateWaiters(runId, {
+    invokeId: entry.invokeId,
+    skipQuestions: true
+  })
+  return { ok: true, queueLength: entry.followUps.length }
+}
+
 export function hasPendingFollowUps(runId: string): boolean {
   const entry = active.get(runId)
   if (!entry || entry.turnComplete) return false
   return entry.followUps.length > 0
+}
+
+/** Follow-ups the user promoted with Send now — eligible for loop drain/steer. */
+export function hasReadyFollowUps(runId: string): boolean {
+  const entry = active.get(runId)
+  if (!entry || entry.turnComplete) return false
+  return entry.followUps.some((item) => item.ready)
 }
 
 export function peekFollowUps(runId: string): FollowUpEntry[] {
@@ -317,7 +375,33 @@ export function peekFollowUps(runId: string): FollowUpEntry[] {
   return entry.followUps.slice()
 }
 
-/** Take all pending follow-ups (FIFO). */
+/** Take the next queued follow-up (FIFO), regardless of ready state — turn-end auto-apply. */
+export function takeNextFollowUp(runId: string): FollowUpEntry | undefined {
+  const entry = active.get(runId)
+  if (!entry || entry.followUps.length === 0) return undefined
+  return entry.followUps.shift()
+}
+
+/** Take the front follow-up only when promoted (Send now). */
+export function takeNextReadyFollowUp(runId: string): FollowUpEntry | undefined {
+  const entry = active.get(runId)
+  if (!entry || entry.followUps.length === 0) return undefined
+  if (!entry.followUps[0]?.ready) return undefined
+  return entry.followUps.shift()
+}
+
+/** Take promoted follow-ups only (FIFO among ready items). */
+export function drainReadyFollowUps(runId: string): FollowUpEntry[] {
+  const drained: FollowUpEntry[] = []
+  for (;;) {
+    const next = takeNextReadyFollowUp(runId)
+    if (!next) break
+    drained.push(next)
+  }
+  return drained
+}
+
+/** Take all pending follow-ups (FIFO) — test/cleanup helper. */
 export function drainFollowUps(runId: string): FollowUpEntry[] {
   const entry = active.get(runId)
   if (!entry) return []
@@ -383,16 +467,8 @@ export function resetActiveRunsForTests(): void {
 export function chatCancelResult(
   runId: string
 ): { ok: true; data: true } | { ok: false; error: string } {
-  const entry = active.get(runId)
-  if (!entry) {
+  if (!cancelRunCore(runId)) {
     return { ok: false, error: 'Run not found' }
   }
-  entry.followUps = []
-  entry.turnComplete = true
-  entry.streamInterrupt?.abort()
-  entry.streamInterrupt = null
-  entry.controller.abort()
-  cancelPendingGateWaiters(runId)
-  disposeTerminalSessionsNow(runId, entry.invokeId)
   return { ok: true, data: true }
 }

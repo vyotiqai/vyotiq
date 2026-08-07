@@ -54,8 +54,8 @@ function turnWorkPanelId(
 
 /** ~chars per visual line in the 840px chat column at text-sm. */
 const CHARS_PER_LINE = 65
-/** Line height for text-sm (1.69 line-height × 13px). */
-const LINE_PX = 22
+/** Line height for text-sm + leading-relaxed (1.625 × 13px). */
+const LINE_PX = 21
 
 /**
  * First-paint height guesses for the virtualizer.
@@ -279,7 +279,10 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   editingUserMessageIndex = null,
   editComposer,
   onBeginEditUserMessage,
-  messageCount = 0
+  onRevertUserMessage,
+  messageCount = 0,
+  running = false,
+  pendingRun = false
 }: {
   row: TranscriptRow
   onImageClick: (url: string, label: string) => void
@@ -300,11 +303,20 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   editingUserMessageIndex?: number | null
   editComposer?: ReactNode
   onBeginEditUserMessage?: (messageIndex: number) => void
+  onRevertUserMessage?: (messageIndex: number) => void
   messageCount?: number
+  running?: boolean
+  pendingRun?: boolean
 }) {
   if (row.kind === 'user') {
     const match = /^user-(\d+)$/.exec(row.item.id)
     const userIndex = match ? Number(match[1]) : -1
+    const canRevert =
+      userIndex >= 0 &&
+      messageCount > userIndex + 1 &&
+      !running &&
+      !pendingRun &&
+      editingUserMessageIndex == null
     return (
       <UserPrompt
         item={row.item}
@@ -320,6 +332,15 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
             ? () => {
                 if (userIndex < 0) return
                 onBeginEditUserMessage(userIndex)
+              }
+            : undefined
+        }
+        canRevert={canRevert}
+        onRevert={
+          onRevertUserMessage && canRevert
+            ? () => {
+                if (userIndex < 0) return
+                onRevertUserMessage(userIndex)
               }
             : undefined
         }
@@ -353,7 +374,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
     return (
       <div className="group/message">
         {row.item.reconnecting ? (
-          <p className="m-0 mb-1 text-[11px] text-secondary" role="status">
+          <p className="m-0 mb-1 text-caption text-secondary" role="status">
             Reconnecting…
           </p>
         ) : null}
@@ -368,7 +389,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   if (row.kind === 'run_error') {
     return (
       <div
-        className="rounded-xl border border-danger/30 bg-danger/5 px-3 py-2 text-[12px] text-danger [overflow-wrap:anywhere]"
+        className="rounded-xl border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger [overflow-wrap:anywhere]"
         role="alert"
       >
         {row.message}
@@ -454,6 +475,7 @@ export function MessageList({
   editingUserMessageIndex = null,
   editComposer,
   onBeginEditUserMessage,
+  onRevertUserMessage,
   messageCount = 0
 }: {
   items: UiItem[]
@@ -489,6 +511,7 @@ export function MessageList({
   editingUserMessageIndex?: number | null
   editComposer?: ReactNode
   onBeginEditUserMessage?: (messageIndex: number) => void
+  onRevertUserMessage?: (messageIndex: number) => void
   messageCount?: number
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -940,7 +963,10 @@ export function MessageList({
       editingUserMessageIndex={editingUserMessageIndex}
       editComposer={editComposer}
       onBeginEditUserMessage={onBeginEditUserMessage}
+      onRevertUserMessage={onRevertUserMessage}
       messageCount={messageCount}
+      running={running}
+      pendingRun={pendingRun}
     />
   )
 
@@ -993,7 +1019,7 @@ export function MessageList({
                     role="status"
                     aria-busy="true"
                   >
-                    <span className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1 text-[11px] text-muted shadow-sm">
+                    <span className="inline-flex items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1 text-caption text-muted shadow-sm">
                       <Icon name="loader" size={12} className="motion-safe:animate-spin" />
                       Loading chat…
                     </span>
@@ -1103,7 +1129,7 @@ export function MessageList({
                 type="button"
                 onClick={jumpToBottom}
                 aria-label="Jump to latest messages"
-                className="pointer-events-auto inline-flex -translate-y-full items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1.5 text-[11px] text-secondary shadow-md vy-transition hover:bg-surface-2 hover:text-fg"
+                className="pointer-events-auto inline-flex -translate-y-full items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1.5 text-caption text-secondary shadow-md vy-transition hover:bg-surface-2 hover:text-fg"
               >
                 <Icon name="chevron" size={12} />
                 Latest

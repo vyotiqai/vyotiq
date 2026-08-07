@@ -3,6 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { useRef } from 'react'
 import { TerminalPanel } from '@renderer/features/chat/components/TerminalPanel'
 import type { PtySessionInfo } from '@shared/ipc'
 
@@ -61,7 +62,7 @@ afterEach(() => {
 })
 
 describe('TerminalPanel', () => {
-  it('shows a pty host after successful list + auto-create', async () => {
+  it('renders session tabs inline when no dock host is provided', async () => {
     const ptyList = vi
       .fn()
       .mockResolvedValueOnce({ ok: true, data: [] as PtySessionInfo[] })
@@ -89,6 +90,46 @@ describe('TerminalPanel', () => {
     })
     expect(screen.queryByText('No terminal')).toBeNull()
     expect(ptyCreate).toHaveBeenCalled()
+    expect(document.querySelector('[data-terminal-session-bar]')).toBeTruthy()
+  })
+
+  it('portals session tabs to a dock host instead of rendering an inline bar', async () => {
+    const ptyList = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, data: [] as PtySessionInfo[] })
+      .mockResolvedValue({ ok: true, data: [session] })
+    const ptyCreate = vi.fn().mockResolvedValue({ ok: true, data: session })
+
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        ptyList,
+        ptyCreate,
+        ptyKill: vi.fn().mockResolvedValue({ ok: true, data: true }),
+        ptyWrite: vi.fn().mockResolvedValue({ ok: true, data: true }),
+        ptyResize: vi.fn().mockResolvedValue({ ok: true, data: true }),
+        onPtyData: vi.fn().mockReturnValue(() => undefined),
+        onPtyExit: vi.fn().mockReturnValue(() => undefined)
+      }
+    })
+
+    function HostHarness() {
+      const hostRef = useRef<HTMLDivElement>(null)
+      return (
+        <div>
+          <div ref={hostRef} data-terminal-session-bar-host />
+          <TerminalPanel workspacePath="/ws" visible sessionBarHostRef={hostRef} />
+        </div>
+      )
+    }
+
+    render(<HostHarness />)
+
+    await waitFor(() => {
+      expect(document.querySelector('[data-terminal-session-bar-host] [data-terminal-session-bar]')).toBeTruthy()
+    })
+    expect(document.querySelector('[data-terminal-panel] [data-terminal-session-bar]')).toBeNull()
   })
 
   it('surfaces ptyCreate failure as an error banner', async () => {

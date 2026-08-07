@@ -25,7 +25,7 @@ export function MessageFooter({ content, at }: { content: string; at?: string })
   if (!content.trim()) return null
 
   return (
-    <div className="mt-1 flex items-center justify-end gap-2 text-[11px] text-tertiary">
+    <div className="mt-1 flex items-center justify-end gap-2 text-caption text-tertiary">
       {timestamp ? <span className="tabular-nums">{timestamp}</span> : null}
       <Tooltip content={copied ? 'Copied' : 'Copy message'}>
         <button

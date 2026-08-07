@@ -17,7 +17,12 @@ import {
   stepUsageFromEvent,
   type StepUsageTotals
 } from '@shared/utils/runTelemetry'
-import { buildUserContent, contentDisplayText, contentImages } from '@shared/ipc'
+import {
+  buildUserContent,
+  contentDisplayText,
+  contentImages,
+  type MessageContent
+} from '@shared/ipc'
 import {
   appendAssistantWithTools,
   appendToolResult,
@@ -50,6 +55,7 @@ import {
   contextUsageFromEvent,
   summarizeContextUsageFromEvents
 } from '@shared/utils/contextUsage'
+import { sanitizeTerminalDisplayText } from '@shared/utils/terminalFormat'
 
 const CHAT_START_MAX_ATTEMPTS = 3
 const CHAT_START_RETRY_MS = 500
@@ -726,6 +732,21 @@ export type PendingFollowUpState = {
   id: string
   itemId: string
   preview: string
+  text: string
+  /** Full queued message — preserved so text-only edits keep attachments. */
+  message?: ChatMessage
+}
+
+function mergeUserFollowUpText(content: MessageContent | undefined, text: string): MessageContent {
+  if (content == null || typeof content === 'string') return text
+  const parts = [...content]
+  const textIdx = parts.findIndex((part) => part.type === 'text')
+  if (textIdx >= 0) {
+    parts[textIdx] = { type: 'text', text }
+  } else {
+    parts.unshift({ type: 'text', text })
+  }
+  return parts
 }
 
 export type ChatStreamState = {
@@ -777,8 +798,14 @@ export type ChatStreamController = ChatStreamState & {
     files?: AttachedFile[],
     extras?: ComposerSendExtras
   ) => Promise<boolean>
+  /** Rewind to a past user message: restore files, truncate later turns, no re-run. */
+  revertToUserMessage: (userMessageIndex: number) => Promise<boolean>
   /** Drop a still-queued mid-run follow-up before the loop applies it. */
   removeFollowUp: (id: string) => Promise<boolean>
+  /** Update queued follow-up text before the loop applies it. */
+  editFollowUp: (id: string, text: string) => Promise<boolean>
+  /** Move a queued follow-up to the front of the drain order. */
+  sendFollowUpNow: (id: string) => Promise<boolean>
   stop: () => Promise<void>
   reset: () => void
   loadTranscript: (loaded: ChatMessage[], events?: PersistedEvent[]) => void
@@ -802,7 +829,7 @@ export type ChatStreamController = ChatStreamState & {
   handleQuestionRequest: (request: AgentQuestionRequest) => void
   respondToQuestion: (requestId: string, answers: AgentQuestionAnswer[]) => Promise<void>
   /** Reload transcript from disk when a run finished but IPC was missed. */
-  syncFromDisk: (runId: string) => Promise<boolean>
+  syncFromDisk: (runId: string, opts?: { ignoreActiveList?: boolean }) => Promise<boolean>
   /** Update meter + notice after a manual Compact now. */
   applyManualCompaction: (result: {
     estimatedTokens?: number
@@ -1128,7 +1155,7 @@ export function createChatStreamController(
         for (const piece of pieces) {
           if (prev.length >= TERMINAL_UI_MAX) break
           const room = TERMINAL_UI_MAX - prev.length
-          let text = piece.text
+          let text = sanitizeTerminalDisplayText(piece.text)
           if (piece.stream === 'stderr' && !prev.includes('stderr:\n')) {
             text = `${prev ? '\n' : ''}stderr:\n${piece.text}`
           }
@@ -1405,7 +1432,9 @@ export function createChatStreamController(
             return {
               id: entry.id,
               itemId: local?.itemId ?? `followup-${entry.id}`,
-              preview: local?.preview ?? entry.preview
+              preview: local?.preview ?? entry.preview,
+              text: local?.text ?? entry.preview,
+              ...(local?.message ? { message: local.message } : {})
             }
           })
         : state.pendingFollowUps
@@ -1462,7 +1491,13 @@ export function createChatStreamController(
       return
     }
 
-    if (ignoreStreamEvents) return
+    if (
+      ignoreStreamEvents &&
+      event.type !== 'follow_up_applied' &&
+      event.type !== 'follow_up_dropped'
+    ) {
+      return
+    }
 
     if (uiSuspended && !UI_SUSPEND_ALLOWED_EVENTS.has(event.type)) {
       needsUiCatchUp = true
@@ -1859,15 +1894,16 @@ export function createChatStreamController(
           {
             id: event.id,
             itemId: `followup-${event.id}`,
-            preview: event.preview?.trim() || `Follow-up #${event.position}`
+            preview: event.preview?.trim() || `Follow-up #${event.position}`,
+            text: event.preview?.trim() || `Follow-up #${event.position}`
           }
         ]
       })
     } else if (event.type === 'follow_up_applied') {
       const applied = new Set(event.ids)
       const nextPending = state.pendingFollowUps.filter((entry) => !applied.has(entry.id))
-      // Idempotent merge — optimistic send already appended; reattach/echo paths may not.
       let nextMessages = state.messages
+      let nextItems = state.items
       if (event.messages?.length) {
         const existingTail = state.messages.slice(-event.messages.length)
         const alreadyPresent =
@@ -1881,19 +1917,46 @@ export function createChatStreamController(
           })
         if (!alreadyPresent) {
           nextMessages = messagesForNextTurn([...state.messages, ...event.messages])
+          const startIdx = nextMessages.length - event.messages.length
+          const newItems = event.messages.map((msg, i) => {
+            const followUpId = event.ids[i]
+            const pendingEntry = state.pendingFollowUps.find((entry) => entry.id === followUpId)
+            const content = msg.content
+            const displayText = contentDisplayText(content)
+            const imageUrls = contentImages(content)
+            const attachments = uiAttachments(content)
+            return {
+              kind: 'message' as const,
+              id: pendingEntry?.itemId ?? messageUiId('user', startIdx + i),
+              role: 'user' as const,
+              content: displayText,
+              images: imageUrls.length ? imageUrls : undefined,
+              attachments: attachments.length ? attachments : undefined,
+              at: new Date().toISOString()
+            }
+          })
+          nextItems = prependClosed(state.items, newItems)
         }
       }
       patch({
         pendingFollowUps: nextPending,
-        ...(nextMessages !== state.messages ? { messages: nextMessages } : {})
+        ...(nextMessages !== state.messages ? { messages: nextMessages, items: nextItems } : {})
       })
     } else if (event.type === 'follow_up_dropped') {
       const dropped = new Set(event.ids)
       const unappliedItemIds = new Set(
         state.pendingFollowUps.filter((entry) => dropped.has(entry.id)).map((entry) => entry.itemId)
       )
+      const droppedCount = state.pendingFollowUps.filter((entry) => dropped.has(entry.id)).length
+      const dropNotice =
+        droppedCount === 1
+          ? 'Queued follow-up was dropped because the run ended.'
+          : droppedCount > 1
+            ? `${droppedCount} queued follow-ups were dropped because the run ended.`
+            : null
       patch({
         pendingFollowUps: state.pendingFollowUps.filter((entry) => !dropped.has(entry.id)),
+        ...(dropNotice ? { runNotice: dropNotice } : {}),
         ...(unappliedItemIds.size > 0
           ? { items: state.items.filter((item) => !unappliedItemIds.has(item.id)) }
           : {})
@@ -1976,7 +2039,7 @@ export function createChatStreamController(
         completedTurnSeq = turnSeq
         const sessionRunId = runId ?? event.runId
         runId = sessionRunId
-        const dropUnapplied = true
+        const dropUnapplied = event.status !== 'done'
         const unappliedItemIds = dropUnapplied
           ? new Set(state.pendingFollowUps.map((entry) => entry.itemId))
           : null
@@ -2020,7 +2083,7 @@ export function createChatStreamController(
           running: false,
           runId: sessionRunId,
           runStartedAt: null,
-          pendingFollowUps: [],
+          pendingFollowUps: event.status === 'done' ? state.pendingFollowUps : [],
           networkWait: null,
           // Keep compaction / MCP budget notices readable after the run ends; cleared on next send.
           runNotice:
@@ -2320,6 +2383,97 @@ export function createChatStreamController(
     return true
   }
 
+  const revertToUserMessage = async (userMessageIndex: number): Promise<boolean> => {
+    if (state.transcriptLoading) return false
+    if (!workspacePath) {
+      patch({ error: 'Pick a workspace before reverting.' })
+      return false
+    }
+    const id = runId ?? contentRunId
+    if (!id) {
+      patch({ error: 'No run to revert.' })
+      return false
+    }
+    if (
+      userMessageIndex < 0 ||
+      userMessageIndex >= state.messages.length ||
+      state.messages[userMessageIndex]?.role !== 'user'
+    ) {
+      patch({ error: 'Cannot revert to that message.' })
+      return false
+    }
+    if (state.messages.length <= userMessageIndex + 1) {
+      patch({ error: 'Nothing to revert after that prompt.' })
+      return false
+    }
+    if (state.running || state.pendingRun) {
+      patch({ error: 'Wait for the run to finish before reverting.' })
+      return false
+    }
+
+    const priorMessages = state.messages
+    const priorItems = state.items
+    const priorFollowUps = state.pendingFollowUps
+    const priorIncomplete = state.incomplete
+    const priorWriteCheckpoint = state.writeCheckpoint
+    const priorCollapsed = state.collapsedTurnIndices
+    const nextMessages = priorMessages.slice(0, userMessageIndex + 1)
+    const nextItems = carryTimingFromPriorItems(
+      messagesToUiItems(nextMessages),
+      priorItems
+    )
+
+    patch({
+      error: null,
+      runNotice: null,
+      incomplete: null,
+      writeCheckpoint: null,
+      pendingFollowUps: [],
+      collapsedTurnIndices: priorCollapsed.filter((i) => i <= userMessageIndex),
+      messages: nextMessages,
+      items: nextItems
+    })
+
+    toolContentCache.clear()
+    assistantId = null
+    reasoningId = null
+
+    const res = await window.vyotiq.chatRewind({
+      workspacePath,
+      runId: id,
+      userMessageIndex
+    })
+
+    if (!res.ok) {
+      logger.error('chatRewind failed', {
+        scope: 'chat',
+        correlationId: id,
+        err: toLogErr(res.error)
+      })
+      patch({
+        error: res.error,
+        messages: priorMessages,
+        items: priorItems,
+        pendingFollowUps: priorFollowUps,
+        incomplete: priorIncomplete,
+        writeCheckpoint: priorWriteCheckpoint,
+        collapsedTurnIndices: priorCollapsed
+      })
+      return false
+    }
+
+    const authoritativeItems = carryTimingFromPriorItems(
+      messagesToUiItems(res.data.messages),
+      priorItems
+    )
+    patch({
+      messages: res.data.messages,
+      items: authoritativeItems,
+      writeCheckpoint: null
+    })
+    return true
+  }
+
   const followUp = async (
     text: string,
     images?: string[],
@@ -2344,27 +2498,8 @@ export function createChatStreamController(
     }
     const content = buildUserContent(text, images, files, extras)
     const user: ChatMessage = { role: 'user', content }
-    const priorMessages = state.messages
-    const nextMessages = messagesForNextTurn([...priorMessages, user])
-    const userItemId = messageUiId('user', nextMessages.length - 1)
-    const imageUrls = contentImages(content)
-    const attachments = uiAttachments(content)
     const displayText = contentDisplayText(content)
-    const sentAt = new Date().toISOString()
-    const preview = displayText.trim() || (attachments.length ? attachments[0]!.name : 'Follow-up')
-    patch({
-      error: null,
-      messages: nextMessages,
-      items: prependClosed(state.items, {
-        kind: 'message',
-        id: userItemId,
-        role: 'user',
-        content: displayText,
-        images: imageUrls.length ? imageUrls : undefined,
-        attachments: attachments.length ? attachments : undefined,
-        at: sentAt
-      })
-    })
+    const preview = displayText.trim() || (uiAttachments(content).length ? uiAttachments(content)[0]!.name : 'Follow-up')
     const res = await window.vyotiq.chatFollowUp({ runId: id, message: user })
     if (!res.ok) {
       logger.warn('chatFollowUp failed', {
@@ -2372,65 +2507,19 @@ export function createChatStreamController(
         correlationId: id,
         err: toLogErr(res.error)
       })
-      // Main already marked the turn complete while the renderer still shows
-      // running — convert the optimistic follow-up into an incremental chatStart.
-      if (/not active/i.test(res.error)) {
-        // Mirror send() preflight so a prior terminal ignore flag cannot drop the new invoke.
-        ignoreStreamEvents = false
-        if (activeInvokeId != null) supersededInvokeIds.add(activeInvokeId)
-        activeInvokeId = null
-        turnSeq += 1
-        patch({
-          error: null,
-          pendingRun: true,
-          running: true,
-          runStartedAt: state.runStartedAt ?? Date.now(),
-          runId: id
-        })
-        const mode = getAgentMode?.() ?? 'agent'
-        const startRes = await window.vyotiq.chatStart({
-          incremental: true,
-          newMessages: [user],
-          workspacePath,
-          runId: id,
-          mode
-        })
-        if (!startRes.ok) {
-          awaitingRun = false
-          logger.error('chatStart after follow-up race failed', {
-            scope: 'chat',
-            correlationId: id,
-            err: startRes.error
-          })
-          patch({
-            error: startRes.error,
-            running: false,
-            runStartedAt: null,
-            pendingRun: false,
-            messages: priorMessages,
-            items: state.items.filter((item) => item.id !== userItemId)
-          })
-          return false
-        }
-        if (!closedRuns.has(startRes.data.runId)) {
-          assignRunId(startRes.data.runId)
-        }
-        activeInvokeId = startRes.data.invokeId
-        supersededInvokeIds.delete(startRes.data.invokeId)
-        awaitingRun = false
-        return true
-      }
-      patch({
-        error: res.error,
-        messages: priorMessages,
-        items: state.items.filter((item) => item.id !== userItemId)
-      })
+      patch({ error: res.error })
       return false
     }
     patch({
       pendingFollowUps: [
         ...state.pendingFollowUps.filter((entry) => entry.id !== res.data.id),
-        { id: res.data.id, itemId: userItemId, preview }
+        {
+          id: res.data.id,
+          itemId: `followup-${res.data.id}`,
+          preview,
+          text: displayText.trim() || preview,
+          message: user
+        }
       ]
     })
     return true
@@ -2450,33 +2539,58 @@ export function createChatStreamController(
       return false
     }
     const nextPending = state.pendingFollowUps.filter((entry) => entry.id !== followUpId)
-    if (!res.data.removed) {
-      // Already drained by the loop — drop local queue chrome only.
-      patch({ pendingFollowUps: nextPending })
-      return true
-    }
-    const nextMessages = [...state.messages]
-    const indexMatch = /^user-(\d+)$/.exec(pending.itemId)
-    if (indexMatch) {
-      const idx = Number(indexMatch[1])
-      if (nextMessages[idx]?.role === 'user') {
-        nextMessages.splice(idx, 1)
-      }
-    } else {
-      // Reattach uses followup-<uuid> itemIds — fall back to preview match.
-      for (let i = nextMessages.length - 1; i >= 0; i--) {
-        const msg = nextMessages[i]
-        if (msg?.role === 'user' && contentDisplayText(msg.content) === pending.preview) {
-          nextMessages.splice(i, 1)
-          break
-        }
-      }
+    patch({ pendingFollowUps: nextPending })
+    return true
+  }
+
+  const editFollowUp = async (followUpId: string, text: string): Promise<boolean> => {
+    const id = runId
+    const pending = state.pendingFollowUps.find((entry) => entry.id === followUpId)
+    const trimmed = text.trim()
+    if (!id || !pending || !state.running || !trimmed) return false
+    const content = mergeUserFollowUpText(pending.message?.content, trimmed)
+    const user: ChatMessage = { role: 'user', content }
+    const res = await window.vyotiq.chatFollowUpUpdate({ runId: id, id: followUpId, message: user })
+    if (!res.ok) {
+      logger.warn('chatFollowUpUpdate failed', {
+        scope: 'chat',
+        correlationId: id,
+        err: toLogErr(res.error)
+      })
+      patch({ error: res.error })
+      return false
     }
     patch({
-      pendingFollowUps: nextPending,
-      messages: nextMessages,
-      items: state.items.filter((item) => item.id !== pending.itemId)
+      pendingFollowUps: state.pendingFollowUps.map((entry) =>
+        entry.id === followUpId
+          ? { ...entry, preview: res.data.preview, text: trimmed, message: user }
+          : entry
+      )
     })
+    return true
+  }
+
+  const sendFollowUpNow = async (followUpId: string): Promise<boolean> => {
+    const id = runId
+    if (!id || !state.running) return false
+    if (!state.pendingFollowUps.some((entry) => entry.id === followUpId)) return false
+    const res = await window.vyotiq.chatFollowUpPromote({ runId: id, id: followUpId })
+    if (!res.ok) {
+      logger.warn('chatFollowUpPromote failed', {
+        scope: 'chat',
+        correlationId: id,
+        err: toLogErr(res.error)
+      })
+      patch({ error: res.error })
+      return false
+    }
+    const nextPending = [...state.pendingFollowUps]
+    const idx = nextPending.findIndex((entry) => entry.id === followUpId)
+    if (idx > 0) {
+      const [item] = nextPending.splice(idx, 1)
+      nextPending.unshift(item)
+      patch({ pendingFollowUps: nextPending })
+    }
     return true
   }
 
@@ -2522,10 +2636,13 @@ export function createChatStreamController(
     })
   }
 
-  const syncFromDisk = async (id: string): Promise<boolean> => {
+  const syncFromDisk = async (
+    id: string,
+    opts?: { ignoreActiveList?: boolean }
+  ): Promise<boolean> => {
     if (closedRuns.has(id) || disposed) return false
     // Brief listActiveRuns misses must not force idle while main is still streaming.
-    if (window.vyotiq?.listActiveRuns) {
+    if (!opts?.ignoreActiveList && window.vyotiq?.listActiveRuns) {
       const active = await window.vyotiq.listActiveRuns()
       if (active.ok && active.data.some((entry) => entry.runId === id)) {
         return false
@@ -2543,7 +2660,7 @@ export function createChatStreamController(
       return false
     }
     // Re-check after awaits — run may have resumed / re-registered.
-    if (window.vyotiq?.listActiveRuns) {
+    if (!opts?.ignoreActiveList && window.vyotiq?.listActiveRuns) {
       const active = await window.vyotiq.listActiveRuns()
       if (active.ok && active.data.some((entry) => entry.runId === id)) {
         return false
@@ -2734,6 +2851,11 @@ export function createChatStreamController(
 
   const reattachActiveRun = async (id: string): Promise<void> => {
     if (closedRuns.has(id) || disposed) return
+    // Poll can race terminal status while main unwinds — don't resurrect a finished turn.
+    if (!state.running && state.runTerminalTick > 0 && state.runId === id) {
+      await syncFromDisk(id, { ignoreActiveList: true })
+      return
+    }
     // Poll/mount can race a terminal status — verify the run is still live.
     let liveInvokeId: number | null = null
     let pendingFromMain: { id: string; preview: string }[] = []
@@ -2761,7 +2883,8 @@ export function createChatStreamController(
               id: entry.id,
               // Prefer live optimistic itemIds (`user-N`) so remove/stop can roll back messages.
               itemId: local?.itemId ?? `followup-${entry.id}`,
-              preview: local?.preview ?? entry.preview
+              preview: local?.preview ?? entry.preview,
+              text: local?.text ?? entry.preview
             }
           })
         : state.pendingFollowUps
@@ -2835,7 +2958,9 @@ export function createChatStreamController(
             return {
               id: entry.id,
               itemId: local?.itemId ?? `followup-${entry.id}`,
-              preview: local?.preview ?? entry.preview
+              preview: local?.preview ?? entry.preview,
+              text: local?.text ?? entry.preview,
+              ...(local?.message ? { message: local.message } : {})
             }
           })
         : hydratedPending
@@ -3300,7 +3425,10 @@ export function createChatStreamController(
     getInvokeId: () => activeInvokeId,
     send,
     editAndResend,
+    revertToUserMessage,
     removeFollowUp,
+    editFollowUp,
+    sendFollowUpNow,
     stop,
     reset,
     loadTranscript,

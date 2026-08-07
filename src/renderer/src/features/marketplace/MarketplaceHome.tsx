@@ -96,7 +96,7 @@ function PackageCard({
       <button
         type="button"
         onClick={onOpen}
-        aria-current={selected ? 'true' : undefined}
+        aria-current={selected ? 'page' : undefined}
         aria-label={entry.name}
         title={entry.name}
         className={cn(
@@ -117,7 +117,7 @@ function PackageCard({
             {entry.description || '—'}
           </p>
           <p
-            className={cn('m-0 mt-1 truncate text-[11px] text-muted', activity.className)}
+            className={cn('m-0 mt-1 truncate text-caption text-muted', activity.className)}
             title={[
               kindLabel(entry.kind),
               entry.publisher,

@@ -140,7 +140,7 @@ function FileDiffBody({
   return (
     <div ref={rootRef} className="bg-surface-2/20 px-3 py-1.5">
       {loading || (!inView && !lines) ? (
-        <p className="m-0 py-1 text-[11px] text-muted">Loading diff…</p>
+        <p className="m-0 py-1 text-caption text-muted">Loading diff…</p>
       ) : lines && lines.length > 0 ? (
         <DiffPreview
           lines={lines}
@@ -151,7 +151,7 @@ function FileDiffBody({
           wordWrap={wordWrap}
         />
       ) : (
-        <p className="m-0 py-1 text-[11px] text-muted">
+        <p className="m-0 py-1 text-caption text-muted">
           {diffError ? diffError : binary ? 'Binary file' : 'No textual diff'}
         </p>
       )}
@@ -183,7 +183,7 @@ function StageControls({
         <Tooltip content="Stage file">
           <button
             type="button"
-            className="rounded px-1 text-[10px] text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-50"
+            className="rounded px-1 text-2xs text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-50"
             disabled={busy}
             aria-label={`Stage ${file.path}`}
             onClick={() => onStage(file.path)}
@@ -196,7 +196,7 @@ function StageControls({
         <Tooltip content="Unstage file">
           <button
             type="button"
-            className="rounded px-1 text-[10px] text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-50"
+            className="rounded px-1 text-2xs text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-50"
             disabled={busy}
             aria-label={`Unstage ${file.path}`}
             onClick={() => onUnstage(file.path)}
@@ -279,7 +279,7 @@ function FileRow({
           <span className="w-3 shrink-0 text-tertiary">{expanded ? '▾' : '▸'}</span>
           <span
             className={cn(
-              'w-3 shrink-0 text-center font-mono text-[10px]',
+              'w-3 shrink-0 text-center font-mono text-2xs',
               statusLetterClass(file.statusLetter)
             )}
           >
@@ -290,7 +290,7 @@ function FileRow({
             {label.dir ? <span className="text-muted">{label.dir}</span> : null}
             <span className="font-medium">{label.name}</span>
           </span>
-          <span className="shrink-0 tabular-nums text-[11px]">
+          <span className="shrink-0 tabular-nums text-caption">
             {file.added > 0 ? <span className="text-success">+{file.added}</span> : null}
             {file.removed > 0 ? (
               <span className="ml-1 text-danger">-{file.removed}</span>
@@ -299,7 +299,7 @@ function FileRow({
           {file.statusLabel ? (
             <span
               className={cn(
-                'shrink-0 text-[10px]',
+                'shrink-0 text-2xs',
                 file.statusTone === 'success' ? 'text-success' : 'text-muted'
               )}
             >
@@ -389,7 +389,7 @@ export function ChangedFilesBrowser({
         className
       )}
     >
-      <div className="shrink-0 border-b border-border/40 px-3 py-1.5 text-[11px] text-fg">
+      <div className="shrink-0 border-b border-border/40 px-3 py-1.5 text-caption text-fg">
         {header ?? (
           <>
             {files.length} {files.length === 1 ? 'File Changed' : 'Files Changed'}

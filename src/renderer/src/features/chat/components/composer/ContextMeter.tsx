@@ -71,18 +71,18 @@ function StatCard({
 }) {
   return (
     <div className="flex min-w-0 flex-col gap-0.5 rounded-xl bg-surface/50 px-2.5 py-2">
-      <span className="text-[10px] text-secondary">{label}</span>
+      <span className="text-3xs text-secondary">{label}</span>
       <span className={cn('truncate text-sm font-semibold tabular-nums leading-tight', tone ?? 'text-fg')}>
         {value}
       </span>
-      {detail ? <span className="truncate text-[10px] text-secondary">{detail}</span> : null}
+      {detail ? <span className="truncate text-3xs text-secondary">{detail}</span> : null}
     </div>
   )
 }
 
 function MetricRow({ label, value, tone }: { label: string; value: string; tone?: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-3 text-[11px]">
+    <div className="flex items-baseline justify-between gap-3 text-2xs">
       <span className="shrink-0 text-secondary">{label}</span>
       <span className={cn('min-w-0 truncate text-right tabular-nums', tone ?? 'text-fg')}>{value}</span>
     </div>
@@ -103,7 +103,7 @@ function LayerRow({
   const ratio = total > 0 ? Math.min(1, tokens / total) : 0
   return (
     <div className="grid grid-cols-[4.5rem_minmax(0,1fr)_5.5rem] items-center gap-x-2">
-      <span className="truncate text-[11px] text-secondary">
+      <span className="truncate text-2xs text-secondary">
         {label}
         {hint ? <span className="sr-only"> {hint}</span> : null}
       </span>
@@ -113,7 +113,7 @@ function LayerRow({
           style={{ width: `${ratio * 100}%` }}
         />
       </div>
-      <span className="shrink-0 text-right text-[11px] tabular-nums text-fg">
+      <span className="shrink-0 text-right text-2xs tabular-nums text-fg">
         {formatTokens(tokens)}
         <span className="text-secondary"> · {formatPct(tokens, total)}</span>
       </span>
@@ -178,11 +178,11 @@ function PromptCacheSection({ totals }: { totals: StepUsageTotals }) {
           />
         ) : null}
         {hasHit ? (
-          <p className="m-0 text-[10px] leading-snug text-secondary">
+          <p className="m-0 text-3xs leading-snug text-secondary">
             Hit rate is for the latest step’s input window
           </p>
         ) : (
-          <p className="m-0 text-[10px] leading-snug text-secondary">
+          <p className="m-0 text-3xs leading-snug text-secondary">
             Cache write tokens accumulate across steps this run
           </p>
         )}
@@ -231,7 +231,7 @@ function StepUsageSection({ totals }: { totals: StepUsageTotals }) {
           />
         ) : null}
         {reasoningPct != null && reasoningPct >= 40 ? (
-          <p className="m-0 text-[10px] leading-snug text-secondary">
+          <p className="m-0 text-3xs leading-snug text-secondary">
             Reasoning is a large share of output — lower Think effort for simpler work (settings are
             never changed automatically).
           </p>
@@ -240,7 +240,7 @@ function StepUsageSection({ totals }: { totals: StepUsageTotals }) {
           <MetricRow label="Run cache hit" value={`${runHit}%`} tone="text-success" />
         ) : null}
         {taskBoundary ? (
-          <p className="m-0 text-[10px] leading-snug text-warning" role="status">
+          <p className="m-0 text-3xs leading-snug text-warning" role="status">
             Long run — /clear (new chat) zeros history for an unrelated task; /compact keeps
             continuity on this one.
           </p>
@@ -310,13 +310,13 @@ function ContextMeterPanel({
         <div className="mb-2 flex items-start justify-between gap-2">
           <div className="min-w-0">
             <p className="m-0 text-xs font-medium text-fg">Context window</p>
-            <p className="m-0 mt-0.5 text-[10px] text-secondary">
+            <p className="m-0 mt-0.5 text-3xs text-secondary">
               Step {usage.step} · {formatTokens(usage.window)} window
             </p>
           </div>
           <span
             className={cn(
-              'shrink-0 rounded-lg px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide',
+              'shrink-0 rounded-lg px-1.5 py-0.5 text-3xs font-medium uppercase tracking-wide',
               usage.source === 'provider'
                 ? 'bg-success/15 text-success'
                 : 'bg-warning/15 text-warning'
@@ -357,7 +357,7 @@ function ContextMeterPanel({
             ) : null}
           </div>
           <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
-            <p className="m-0 min-w-0 flex-1 text-[10px] leading-snug text-secondary">
+            <p className="m-0 min-w-0 flex-1 text-3xs leading-snug text-secondary">
               Compaction at {formatTokens(usage.compactionTrigger)} ·{' '}
               {formatPct(usage.compactionTrigger, denominator)} of budget
             </p>
@@ -373,7 +373,7 @@ function ContextMeterPanel({
                       ? 'Compacting…'
                       : 'Compact older history now'
                 }
-                className="shrink-0 rounded-xl border border-border px-2 py-1 text-[10px] font-medium text-fg vy-transition hover:bg-surface disabled:opacity-[var(--vy-disabled-opacity)]"
+                className="shrink-0 rounded-xl border border-border px-2 py-1 text-3xs font-medium text-fg vy-transition hover:bg-surface disabled:opacity-[var(--vy-disabled-opacity)]"
               >
                 {compacting ? 'Compacting…' : 'Compact now'}
               </button>
@@ -382,7 +382,7 @@ function ContextMeterPanel({
           {compactMessage ? (
             <p
               className={cn(
-                'm-0 mt-2 text-[10px] leading-snug',
+                'm-0 mt-2 text-3xs leading-snug',
                 compactFailed ? 'text-danger' : 'text-secondary'
               )}
               role={compactFailed ? 'alert' : 'status'}
@@ -391,12 +391,12 @@ function ContextMeterPanel({
             </p>
           ) : null}
           {usage.overflow ? (
-            <p className="m-0 mt-2 text-[10px] leading-snug text-danger" role="alert">
+            <p className="m-0 mt-2 text-3xs leading-snug text-danger" role="alert">
               Context still exceeds the model window after compaction. Run /compact with a focus, or
               /clear (new chat) when starting an unrelated task.
             </p>
           ) : usage.used >= usage.compactionTrigger ? (
-            <p className="m-0 mt-2 text-[10px] leading-snug text-warning" role="status">
+            <p className="m-0 mt-2 text-3xs leading-snug text-warning" role="status">
               Past the compaction line — /compact keeps continuity; /clear is free when switching
               tasks.
             </p>
@@ -416,7 +416,7 @@ function ContextMeterPanel({
                 hint="reserved allocation, not counted in usage bar"
               />
             </div>
-            <p className="m-0 mt-2 text-[10px] leading-snug text-secondary">
+            <p className="m-0 mt-2 text-3xs leading-snug text-secondary">
               Buffer is reserved, not counted in usage
             </p>
           </PanelSection>
@@ -428,7 +428,7 @@ function ContextMeterPanel({
       </div>
 
       <footer className="shrink-0 border-t border-border px-3 py-1.5">
-        <p className="m-0 text-[10px] text-secondary">
+        <p className="m-0 text-3xs text-secondary">
           Updated {new Date(usage.updatedAt).toLocaleTimeString()}
         </p>
       </footer>
@@ -543,7 +543,7 @@ export function ContextMeter({
         ref={triggerRef}
         type="button"
         className={cn(
-          'group relative inline-flex h-7 max-w-[9.5rem] min-w-0 items-center overflow-hidden rounded-xl px-1.5 text-[11px] leading-none tracking-[var(--vy-tracking)]',
+          'group relative inline-flex h-7 max-w-[8.5rem] min-w-0 items-center overflow-hidden rounded-xl px-1.5 text-2xs leading-none tracking-[var(--vy-tracking)] @min-[480px]:max-w-[9.5rem]',
           'vy-transition',
           tipCue
             ? 'bg-warning/10 text-warning hover:bg-warning/15 active:bg-warning/15'
@@ -574,8 +574,8 @@ export function ContextMeter({
           <span className="min-w-0 truncate text-muted">{windowLabel}</span>
           {hitPct != null ? (
             <>
-              <span className="shrink-0 text-tertiary">·</span>
-              <span className="shrink-0 text-success">{hitPct}%</span>
+              <span className="shrink-0 text-tertiary @max-[480px]:hidden">·</span>
+              <span className="shrink-0 text-success @max-[480px]:hidden">{hitPct}%</span>
             </>
           ) : null}
         </span>

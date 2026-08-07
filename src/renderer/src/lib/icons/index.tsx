@@ -64,6 +64,7 @@ const ICONS = {
   gitMerge: GitMergeIcon,
   gitCommit: GitCommitIcon,
   gitRebase: ArrowElbowLeftIcon,
+  revert: ArrowElbowLeftIcon,
   refresh: ArrowsClockwiseIcon,
   arrowUp: ArrowUpIcon,
   stop: StopIcon,

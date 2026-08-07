@@ -193,7 +193,7 @@ export const AskQuestionPanel = memo(function AskQuestionPanel({
                   <MarkdownContent content={item.prompt} />
                 </div>
                 {multi ? (
-                  <span className="text-[11px] text-tertiary">{questionTypeHint(item.type)}</span>
+                  <span className="text-caption text-tertiary">{questionTypeHint(item.type)}</span>
                 ) : null}
               </div>
               <QuestionField

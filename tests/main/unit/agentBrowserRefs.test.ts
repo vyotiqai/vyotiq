@@ -24,6 +24,20 @@ describe('formatInteractiveRefs', () => {
       formatInteractiveRefs([
         { id: 'e1', selector: '#go', tag: 'BUTTON', role: 'button', name: 'Go' }
       ])
-    ).toContain('@e1 button "Go"')
+    ).toContain('@e1 role="button" name="Go"')
+  })
+
+  it('formats multi-word roles with named fields', () => {
+    expect(
+      formatInteractiveRefs([
+        {
+          id: 'e2',
+          selector: '[role="menuitem"]',
+          tag: 'DIV',
+          role: 'menu item',
+          name: 'Settings'
+        }
+      ])
+    ).toContain('role="menu item"')
   })
 })

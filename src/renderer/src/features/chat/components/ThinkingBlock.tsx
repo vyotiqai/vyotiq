@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { MarkdownContent, cn } from '@renderer/lib/ui'
 import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
-import { shouldRenderThinking } from '@shared/transcript'
 import { ExpandPanel } from '../toolUi/ExpandPanel'
 
 /**
@@ -14,7 +13,7 @@ const THINKING_BODY_MAX =
 
 /** Subtle but readable — dimmer than answer text-fg. */
 const THINKING_INK =
-  '!text-[11px] !leading-snug !text-tertiary [&_*]:!text-tertiary [&_a]:!underline [&_a]:!decoration-tertiary'
+  '!text-caption !leading-snug !text-tertiary [&_*]:!text-tertiary [&_a]:!underline [&_a]:!decoration-tertiary'
 
 export function ThinkingBlock({
   content,
@@ -39,8 +38,6 @@ export function ThinkingBlock({
     if (!el) return
     el.scrollTop = el.scrollHeight
   }, [content, isExpanded, streaming])
-
-  if (!shouldRenderThinking(content, streaming)) return null
 
   const toggle = (): void => {
     const next = !isExpanded

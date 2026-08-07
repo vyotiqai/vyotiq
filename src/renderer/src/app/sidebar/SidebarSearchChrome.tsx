@@ -1,61 +1,43 @@
 import type { RefObject } from 'react'
-import { IconButton, SearchInput, cn } from '@renderer/lib/ui'
+import { SearchInput, cn } from '@renderer/lib/ui'
 import { shortcutLabel } from '@renderer/lib/shortcuts'
 
 export function SidebarSearchChrome({
   searchRef,
   sessionQuery,
   workspaceReady,
-  disabledTitle,
-  onSessionQuery,
-  onNewChat
+  onSessionQuery
 }: {
   searchRef: RefObject<HTMLInputElement | null>
   sessionQuery: string
   workspaceReady: boolean
-  disabledTitle?: string
   onSessionQuery: (q: string) => void
-  onNewChat: () => void
 }) {
   const showShortcut = workspaceReady && !sessionQuery
 
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-1">
-      <SearchInput
-        ref={searchRef}
-        tone="quiet"
-        disabled={!workspaceReady}
-        className={cn(
-          'min-h-8 min-w-0 flex-1 gap-1.5 border border-border/30 px-2 focus-within:border-border/60',
-          'bg-surface/50 focus-within:bg-surface'
-        )}
-        inputClassName="min-h-8 py-1 text-[13px]"
-        placeholder={workspaceReady ? 'Search' : 'Open workspace'}
-        value={sessionQuery}
-        aria-label="Search chats"
-        aria-keyshortcuts="Meta+K Control+K"
-        onChange={(e) => onSessionQuery(e.target.value)}
-        onClear={sessionQuery ? () => onSessionQuery('') : undefined}
-        trailing={
-          showShortcut ? (
-            <kbd className="hidden shrink-0 rounded border border-border/50 px-0.5 py-px text-[9px] font-medium text-muted @min-[13rem]/sidebar:inline">
-              {shortcutLabel('search')}
-            </kbd>
-          ) : undefined
-        }
-      />
-
-      <IconButton
-        icon="plus"
-        label="New chat"
-        size="sm"
-        variant="bare"
-        disabled={!workspaceReady}
-        title={
-          !workspaceReady ? disabledTitle : `New chat (${shortcutLabel('newChat')})`
-        }
-        onClick={onNewChat}
-      />
-    </div>
+    <SearchInput
+      ref={searchRef}
+      disabled={!workspaceReady}
+      tone="quiet"
+      className={cn(
+        'h-8 min-h-0 w-full gap-1.5 rounded-none border-0 bg-transparent px-1',
+        'min-h-0 focus-within:bg-transparent focus-within:outline-none focus-within:outline-offset-0'
+      )}
+      inputClassName="h-8 min-h-0 py-0 text-sm"
+      placeholder={workspaceReady ? 'Search chats' : 'Open workspace'}
+      aria-label="Search chats"
+      aria-keyshortcuts="Meta+K Control+K"
+      value={sessionQuery}
+      onChange={(e) => onSessionQuery(e.target.value)}
+      onClear={sessionQuery ? () => onSessionQuery('') : undefined}
+      trailing={
+        showShortcut ? (
+          <kbd className="hidden shrink-0 px-1 py-px text-3xs font-medium text-muted @min-[13rem]/sidebar:inline">
+            {shortcutLabel('search')}
+          </kbd>
+        ) : undefined
+      }
+    />
   )
 }

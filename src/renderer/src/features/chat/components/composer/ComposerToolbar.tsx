@@ -1,6 +1,6 @@
 import { useCallback, useSyncExternalStore } from 'react'
 import { Icon } from '@renderer/lib/icons'
-import { IconButton, Tooltip, cn } from '@renderer/lib/ui'
+import { Tooltip, cn } from '@renderer/lib/ui'
 import { shortcutLabel } from '@renderer/lib/shortcuts'
 import type { ProviderId, ServiceTier } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
@@ -27,7 +27,8 @@ function ThinkingControlsWithSteps({
   chatSettings,
   onChatSettingsChange,
   disabled,
-  running
+  running,
+  className
 }: {
   metaStore?: ChatMetaStore
   usage?: ContextUsageState | null
@@ -38,6 +39,7 @@ function ThinkingControlsWithSteps({
   onChatSettingsChange: (patch: ChatSettingsPatch) => void
   disabled?: boolean
   running?: boolean
+  className?: string
 }) {
   const resolved = useResolvedContextUsage(metaStore, usage)
   const runSteps = resolved?.stepUsage?.steps ?? 0
@@ -51,6 +53,7 @@ function ThinkingControlsWithSteps({
       disabled={disabled}
       running={running}
       runSteps={runSteps}
+      className={className}
     />
   )
 }
@@ -108,12 +111,14 @@ const modelPillTrigger = cn(
 )
 
 const sendCtl = cn(
-  'inline-grid size-7 shrink-0 place-items-center rounded-md vy-transition',
+  'inline-grid size-7 shrink-0 place-items-center rounded-xl vy-transition',
   'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
 )
 
 /** Shared control row — every pill/icon aligns to the same 28px baseline. */
-const zone = 'flex h-7 min-w-0 items-center gap-0.5'
+const zone = 'flex h-7 min-w-0 items-center gap-1'
+
+const toolbarDivider = 'mx-0.5 h-4 w-px shrink-0 bg-border/40'
 
 export type ComposerVariant = 'hero' | 'dock' | 'inline'
 
@@ -227,44 +232,48 @@ export function ComposerToolbar({
           </button>
         </Tooltip>
       ) : null}
-      {running ? (
-        <IconButton
-          icon="stop"
-          label="Stop"
-          title={`Stop (${shortcutLabel('stop')})`}
-          size="sm"
-          variant="primary"
-          className="size-7 shrink-0 rounded-xl"
-          onClick={onStop}
-        />
-      ) : null}
       <Tooltip
         content={
-          isInline ? 'Resend edited message' : running ? 'Send follow-up' : 'Send'
+          running
+            ? `Stop (${shortcutLabel('stop')})`
+            : isInline
+              ? 'Resend edited message'
+              : 'Send'
         }
       >
-        <button
-          type="submit"
-          className={cn(
-            sendCtl,
-            canSend ? 'bg-accent text-accent-fg hover:bg-fg-strong' : 'bg-surface-2 text-muted'
-          )}
-          aria-label={isInline ? 'Resend' : running ? 'Send follow-up' : 'Send'}
-          disabled={!canSend}
-        >
-          <Icon name="send" size={14} weight="fill" />
-        </button>
+        {running ? (
+          <button
+            type="button"
+            className={cn(sendCtl, 'bg-accent text-accent-fg hover:bg-fg-strong')}
+            aria-label="Stop"
+            onClick={onStop}
+          >
+            <Icon name="stop" size={14} weight="fill" />
+          </button>
+        ) : (
+          <button
+            type="submit"
+            className={cn(
+              sendCtl,
+              canSend ? 'bg-accent text-accent-fg hover:bg-fg-strong' : 'bg-surface-2 text-muted'
+            )}
+            aria-label={isInline ? 'Resend' : 'Send'}
+            disabled={!canSend}
+          >
+            <Icon name="send" size={14} weight="fill" />
+          </button>
+        )}
       </Tooltip>
     </div>
   )
 
   return (
     <div
-      className="col-span-full grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-1 gap-y-1"
+      className="col-span-full flex items-center gap-2 border-t border-border/25 pt-1.5"
       data-composer-toolbar
     >
-      {/* Left */}
-      <div className={zone}>
+      {/* Left: attach + mode + model */}
+      <div className={cn(zone, 'min-w-0 flex-1 overflow-hidden')}>
         {attachBlocked || attachFull ? (
           <Tooltip content={attachLabel}>
             <span className="inline-grid cursor-not-allowed" tabIndex={0}>
@@ -291,18 +300,16 @@ export function ComposerToolbar({
             </button>
           </Tooltip>
         )}
-      </div>
-
-      {/* Middle: mode + model + thinking, truncates into the flexible column */}
-      <div className={zone}>
+        <span className={toolbarDivider} aria-hidden />
         <ModePicker
           mode={agentMode}
           onModeChange={onAgentModeChange}
           disabled={locked}
           running={running}
+          className="shrink-0"
         />
         <ModelPicker
-          className="min-w-0 max-w-[16rem] shrink @max-[420px]:max-w-[min(100%,16rem)]"
+          className="min-w-0 max-w-[14rem] flex-1 shrink"
           triggerClassName={modelPillTrigger}
           providers={providers}
           optionsByProvider={optionsByProvider}
@@ -323,6 +330,18 @@ export function ComposerToolbar({
           disabled={locked}
           focusInput={focusInput}
         />
+        {imageReadyHint ? (
+          <span
+            className="hidden max-w-[9rem] shrink-0 truncate px-1 text-2xs text-tertiary @min-[560px]:inline"
+            title={imageReadyHint}
+          >
+            {imageReadyHint}
+          </span>
+        ) : null}
+      </div>
+
+      {/* Right: thinking + context + send */}
+      <div className={cn(zone, 'shrink-0 justify-end')}>
         <ThinkingControlsWithSteps
           metaStore={metaStore}
           usage={contextUsage}
@@ -333,19 +352,8 @@ export function ComposerToolbar({
           onChatSettingsChange={onChatSettingsChange}
           disabled={disabled}
           running={running}
+          className="shrink-0"
         />
-        {imageReadyHint ? (
-          <span
-            className="hidden max-w-[9rem] truncate px-1 text-[10px] text-tertiary @min-[520px]:inline"
-            title={imageReadyHint}
-          >
-            {imageReadyHint}
-          </span>
-        ) : null}
-      </div>
-
-      {/* Right: context + send, always trailing */}
-      <div className={cn(zone, 'justify-end')}>
         <ContextMeterLeaf
           metaStore={metaStore}
           usage={contextUsage}

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { MarketplaceCatalogEntry, Settings, WorkspaceSettingsOverride } from '@shared/ipc'
-import { CHAT_GUTTER, MARKETPLACE_COLUMN } from '@renderer/lib/utils/layout'
+import { CHAT_GUTTER, MARKETPLACE_COLUMN, SIDEBAR_NAV_ACTIVE } from '@renderer/lib/utils/layout'
 import { handleTabListKeyDown } from '@renderer/lib/utils/tabListKeyboard'
-import { Button, cn } from '@renderer/lib/ui'
+import { Button, PageHeader, cn } from '@renderer/lib/ui'
+import { Icon } from '@renderer/lib/icons'
 import { useMarketplaceController } from './useMarketplaceController'
 import { MarketplaceHome } from './MarketplaceHome'
 import { MarketplaceDetail } from './MarketplaceDetail'
@@ -99,72 +100,67 @@ export function MarketplaceView({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg animate-fade-in">
-      <header
-        className={cn(
-          'flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5'
-        )}
-      >
-        <div className="min-w-0">
-          <h1 className="m-0 text-base font-medium tracking-[var(--vy-tracking)] text-fg-strong">
-            Marketplace
-          </h1>
-          <p className="m-0 mt-0.5 text-xs text-secondary">
-            MCP servers, skills, and plugins for the agent.
-          </p>
-        </div>
-        <div className="flex shrink-0 flex-wrap items-center gap-2">
-          <div
-            className="flex gap-1"
-            role="tablist"
-            aria-label="Marketplace sections"
-            onKeyDown={(e) =>
-              handleTabListKeyDown(e, {
-                tabs: [...SECTION_TABS],
-                activeId: sectionTab,
-                onSelect: (id) => {
-                  if (id === 'browse') openBrowse()
-                  else openManage()
-                }
-              })
-            }
-          >
-            <Button
-              id="marketplace-tab-browse"
-              role="tab"
-              aria-selected={browseActive}
-              aria-controls={PANEL_IDS.browse}
-              tabIndex={browseActive ? 0 : -1}
-              variant="subtle"
-              className={browseActive ? 'bg-surface-2 text-fg-strong' : undefined}
-              onClick={openBrowse}
+      <PageHeader
+        bordered={false}
+        className={cn('shrink-0 border-b border-border/30 bg-bg py-3', CHAT_GUTTER)}
+        title="Marketplace"
+        description="MCP servers, skills, and plugins for the agent."
+        trailing={
+          <div className="flex shrink-0 flex-wrap items-center gap-2">
+            <div
+              className="flex gap-0.5"
+              role="tablist"
+              aria-label="Marketplace sections"
+              onKeyDown={(e) =>
+                handleTabListKeyDown(e, {
+                  tabs: [...SECTION_TABS],
+                  activeId: sectionTab,
+                  onSelect: (id) => {
+                    if (id === 'browse') openBrowse()
+                    else openManage()
+                  }
+                })
+              }
             >
-              Browse
-            </Button>
-            <Button
-              id="marketplace-tab-manage"
-              role="tab"
-              aria-selected={manageActive}
-              aria-controls={PANEL_IDS.manage}
-              tabIndex={manageActive ? 0 : -1}
-              variant="subtle"
-              className={manageActive ? 'bg-surface-2 text-fg-strong' : undefined}
-              onClick={() => openManage()}
-            >
-              Manage
-            </Button>
+              <Button
+                id="marketplace-tab-browse"
+                role="tab"
+                aria-selected={browseActive}
+                aria-controls={PANEL_IDS.browse}
+                tabIndex={browseActive ? 0 : -1}
+                variant="ghost"
+                className={cn('min-h-7 px-2.5', browseActive && SIDEBAR_NAV_ACTIVE)}
+                onClick={openBrowse}
+              >
+                Browse
+              </Button>
+              <Button
+                id="marketplace-tab-manage"
+                role="tab"
+                aria-selected={manageActive}
+                aria-controls={PANEL_IDS.manage}
+                tabIndex={manageActive ? 0 : -1}
+                variant="ghost"
+                className={cn('min-h-7 px-2.5', manageActive && SIDEBAR_NAV_ACTIVE)}
+                onClick={() => openManage()}
+              >
+                Manage
+              </Button>
+            </div>
+            {onClose ? (
+              <button
+                ref={closeRef}
+                type="button"
+                className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-2 text-sm text-muted vy-transition hover:bg-surface/50 hover:text-fg focus-visible:vy-focus-ring"
+                onClick={onClose}
+              >
+                <Icon name="chevron" size={14} className="-rotate-90" />
+                Close
+              </button>
+            ) : null}
           </div>
-          {onClose ? (
-            <button
-              ref={closeRef}
-              type="button"
-              className="shrink-0 text-sm text-secondary vy-transition hover:text-fg focus-visible:vy-focus-ring"
-              onClick={onClose}
-            >
-              Close
-            </button>
-          ) : null}
-        </div>
-      </header>
+        }
+      />
 
       <div className={cn('min-h-0 flex-1 overflow-y-auto', CHAT_GUTTER, 'py-5')}>
         <div className={MARKETPLACE_COLUMN}>

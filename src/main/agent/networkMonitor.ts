@@ -32,7 +32,7 @@ export async function probeNetworkOnline(signal?: AbortSignal): Promise<boolean>
   if (process.env.VITEST === 'true') return true
   try {
     const res = await fetch(DEFAULT_PROBE_URL, {
-      method: 'HEAD',
+      method: 'GET',
       signal: probeTimeoutSignal(signal)
     })
     return res.ok
@@ -100,30 +100,6 @@ export async function* iterateNetworkWait(options: {
     await sleepMs(retryInMs, options.signal)
     waited += retryInMs
   }
-}
-
-/**
- * Block until the probe succeeds or `maxWaitMs` elapses. Calls `onWait` before
- * each sleep so the agent loop can surface `network_wait` to the renderer.
- */
-export async function waitForNetworkOnline(options: {
-  signal?: AbortSignal
-  onWait?: NetworkWaitCallback
-  maxWaitMs?: number
-}): Promise<boolean> {
-  try {
-    for await (const retryInMs of iterateNetworkWait(options)) {
-      await options.onWait?.(retryInMs)
-    }
-  } catch (err) {
-    if (isAbortError(err)) throw err
-    return false
-  }
-
-  return probeNetworkOnline(options.signal).catch((err) => {
-    if (isAbortError(err)) throw err
-    return false
-  })
 }
 
 /** True when an error looks like a transient network failure. */

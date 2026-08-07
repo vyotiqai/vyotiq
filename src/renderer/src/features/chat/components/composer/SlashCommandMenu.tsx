@@ -21,7 +21,7 @@ const SLASH_MAX_PX = 380
 const stickyCategoryHeader = cn(composerDropdownSectionHeader, 'sticky top-0 z-[2] bg-card')
 
 const stickyServerHeader =
-  'sticky top-6 z-[1] m-0 border-b border-border/60 bg-card px-2.5 py-1 text-[11px] font-medium text-secondary'
+  'sticky top-6 z-[1] m-0 border-b border-border/60 bg-card px-2.5 py-1 text-caption font-medium text-secondary'
 
 export function SlashCommandMenu({
   open,
@@ -118,7 +118,7 @@ export function SlashCommandMenu({
           <div className="px-2.5 py-2 text-xs text-secondary">No matches</div>
         ) : null}
         {loading && commands.length > 0 ? (
-          <div className="px-2.5 py-1 text-[10px] text-secondary">Refreshing…</div>
+          <div className="px-2.5 py-1 text-2xs text-secondary">Refreshing…</div>
         ) : null}
         {sections.map(({ group, startIndex, blocks }, sectionIndex) => {
           const heading = slashGroupDisplayName(group)
@@ -179,7 +179,7 @@ export function SlashCommandMenu({
                               </span>
                               {secondary ? (
                                 <span
-                                  className="block truncate font-mono text-[11px] leading-snug text-secondary"
+                                  className="block truncate font-mono text-caption leading-snug text-secondary"
                                   title={secondary}
                                 >
                                   {secondary}
@@ -187,7 +187,7 @@ export function SlashCommandMenu({
                               ) : null}
                             </span>
                             {cta ? (
-                              <span className="shrink-0 text-[10px] font-medium uppercase tracking-wide text-secondary">
+                              <span className="shrink-0 text-2xs font-medium uppercase tracking-wide text-secondary">
                                 {cta}
                               </span>
                             ) : null}

@@ -83,7 +83,7 @@ export const ChangeSummary = memo(function ChangeSummary({
   const panelSurface =
     'w-full overflow-hidden rounded-md border border-border/50 bg-surface'
   const panelHeader =
-    'flex shrink-0 items-center border-b border-border/40 px-3 py-1.5 text-[11px] text-fg'
+    'flex shrink-0 items-center border-b border-border/40 px-3 py-1.5 text-caption text-fg'
 
   if (compact) {
     const visible = showAll ? files : files.slice(0, COMPACT_PREVIEW_COUNT)
@@ -156,7 +156,7 @@ export const ChangeSummary = memo(function ChangeSummary({
             <>
               {resolveBlockedReason ? (
                 <span
-                  className="ml-2 max-w-[12rem] truncate text-[10px] text-muted"
+                  className="ml-2 max-w-[12rem] truncate text-2xs text-muted"
                   title={resolveBlockedReason}
                 >
                   {resolveBlockedReason}
@@ -240,7 +240,7 @@ export const ChangeSummary = memo(function ChangeSummary({
                       {onKeepFile ? (
                         <Button
                           variant="subtle"
-                          className="h-5 px-1.5 text-[10px]"
+                          className="h-5 px-1.5 text-2xs"
                           disabled={resolveDisabled}
                           title={resolveBlockedReason ?? undefined}
                           onClick={() => {
@@ -253,7 +253,7 @@ export const ChangeSummary = memo(function ChangeSummary({
                       {onDiscardFile ? (
                         <Button
                           variant="subtle"
-                          className="h-5 px-1.5 text-[10px]"
+                          className="h-5 px-1.5 text-2xs"
                           disabled={resolveDisabled}
                           title={resolveBlockedReason ?? undefined}
                           onClick={() => {
@@ -272,7 +272,7 @@ export const ChangeSummary = memo(function ChangeSummary({
                   {lines && lines.length > 0 ? (
                     <DiffPreview lines={lines} path={file.path} expanded />
                   ) : (
-                    <p className="m-0 py-1 text-[11px] text-muted">File deleted</p>
+                    <p className="m-0 py-1 text-caption text-muted">File deleted</p>
                   )}
                 </div>
               ) : null}

@@ -346,13 +346,13 @@ export function McpServerCard({
               }}
             />
             {hasStoredToken ? (
-              <p className="m-0 text-[11px] text-secondary">
+              <p className="m-0 text-caption text-secondary">
                 Auth token is in OS secure storage (not settings.json). Clear the field and blur
                 to remove it.
               </p>
             ) : null}
             {authError ? (
-              <p className="m-0 text-[11px] text-danger [overflow-wrap:anywhere]">{authError}</p>
+              <p className="m-0 text-caption text-danger [overflow-wrap:anywhere]">{authError}</p>
             ) : null}
             <Button
               variant="subtle"
@@ -376,12 +376,12 @@ export function McpServerCard({
             >
               {oauthPending ? 'Signing in…' : 'Sign in with OAuth'}
             </Button>
-            <p className="m-0 text-[11px] text-secondary">
+            <p className="m-0 text-caption text-secondary">
               Opens your browser for Authorization Code + PKCE. Prefer this when the MCP
               server uses OAuth instead of a static Bearer token.
             </p>
             {nonBearerAuth ? (
-              <p className="m-0 text-[11px] text-secondary">
+              <p className="m-0 text-caption text-secondary">
                 Custom Authorization header is set (not Bearer). Edit it under extra headers as
                 Authorization=…
               </p>

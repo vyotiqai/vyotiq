@@ -1,6 +1,9 @@
 /** Shared horizontal gutter for chat column surfaces. */
 export const CHAT_GUTTER = 'px-4 sm:px-5'
 
+/** Settings/marketplace body gutter — matches {@link CHAT_GUTTER}. */
+export const SETTINGS_GUTTER = CHAT_GUTTER
+
 /**
  * Horizontal inset for the docked chat stage (transcript + composer).
  * Left matches {@link CHAT_GUTTER}; right clears the floating side rail (`w-10`)
@@ -105,7 +108,7 @@ export const TRANSCRIPT_TURN_GAP = 'pt-8'
 
 /** User prompt block — thin border matching composer chrome. */
 export const USER_PROMPT_SURFACE =
-  'rounded-xl border border-border bg-bg px-2.5 py-2 text-sm leading-relaxed tracking-[-0.006em] text-fg [overflow-wrap:anywhere]'
+  'rounded-xl border border-border bg-bg px-2.5 py-2 text-sm leading-relaxed tracking-[var(--vy-tracking-body)] text-fg [overflow-wrap:anywhere]'
 
 /** Quiet activity row — no fill, no border. */
 export const ACTIVITY_ROW = 'text-xs tracking-[var(--vy-tracking)]'
@@ -166,7 +169,7 @@ export const TOOL_BODY_INNER = 'px-3 py-1.5'
 export const TOOL_BODY_FLOW = 'overflow-visible pr-5'
 
 /** Family shells — compact todo / delete / read-only terminal (not bordered cards). */
-export const TOOL_FAMILY_TERMINAL = 'overflow-hidden rounded-md bg-surface'
+export const TOOL_FAMILY_TERMINAL = 'overflow-hidden'
 export const TOOL_FAMILY_TODO = 'rounded-md'
 export const TOOL_FAMILY_DELETE = 'border-l-2 border-danger/50 pl-2'
 
@@ -176,10 +179,10 @@ export const FLOATING_CHROME =
 
 /** Theme token `--vy-shadow-chrome` — soft in light, deeper in dark. */
 export const FLOATING_CHROME_SHADOW_BOTTOM =
-  'shadow-[var(--vy-shadow-chrome)] animate-chrome-rise-in'
+  'shadow-[var(--vy-shadow-chrome)] animate-chrome-drop-in'
 
 /** App chrome dimensions — sidebar header row aligns with title bar height. */
-export const SIDEBAR_WIDTH_PX = 220
+export const SIDEBAR_WIDTH_PX = 248
 export const SIDEBAR_WIDTH_MIN_PX = 180
 export const SIDEBAR_WIDTH_MAX_PX = 420
 export const SIDEBAR_COLLAPSED_WIDTH_PX = 44
@@ -192,31 +195,73 @@ export const TITLE_BAR_HEIGHT_PX = 36
  * Template-interpolated `w-[${n}px]` is invisible to the scanner and never ships.
  * Expanded desktop width is applied via inline style so it can be drag-resized.
  */
-export const SIDEBAR_WIDTH = 'w-[min(220px,92vw)]'
+export const SIDEBAR_WIDTH = 'w-[min(248px,92vw)]'
 export const SIDEBAR_WIDTH_COLLAPSED = 'w-[44px]'
 export const SIDEBAR_WIDTH_COLLAPSED_DARWIN = 'w-[72px]'
 
 /** Named container — children use `@sidebar/…` for width-aware density. */
 export const SIDEBAR_CONTAINER = '@container/sidebar'
 
+/** Sidebar shell — same surface as main column, no elevated chrome. */
+export const SIDEBAR_SURFACE = 'bg-bg'
+
+/** Quiet micro copy — dense panels, git chrome, dock toolbars. */
+export const MICRO_LABEL =
+  'text-caption font-medium tracking-[var(--vy-tracking-tight)] text-muted'
+
+/** Uppercase section labels in composer dropdowns and tool bodies. */
+export const MICRO_LABEL_CAPS =
+  'text-2xs font-medium uppercase tracking-[var(--vy-tracking-caps)] text-secondary'
+
 /** Sidebar section label — quiet category headers. */
-export const SIDEBAR_SECTION_LABEL =
-  'm-0 px-2.5 text-[10px] font-medium uppercase tracking-[0.07em] text-secondary'
+export const SIDEBAR_SECTION_LABEL = `m-0 px-1 ${MICRO_LABEL}`
 
 /** Horizontal padding for sidebar list body. */
 export const SIDEBAR_PAD_X = 'px-2'
 
+/**
+ * Sidebar toolbar row — collapse + new chat; same {@link TITLE_BAR_HEIGHT} as main title bar.
+ */
+export const SIDEBAR_TOOLBAR_ROW = `app-region-drag flex items-center gap-0.5 px-2 ${TITLE_BAR_HEIGHT}`
+
+/** Search field row below the sidebar toolbar. */
+export const SIDEBAR_SEARCH_ROW = 'app-region-no-drag min-w-0 px-2 pb-2'
+
+/** Workspace group inside the chat list — flat, no nested card chrome. */
+export const SIDEBAR_WORKSPACE_GROUP = 'flex flex-col gap-0.5'
+
 /** Indent for chat rows nested under a workspace header. */
-export const SIDEBAR_INDENT = 'ml-3'
+export const SIDEBAR_INDENT = 'pl-1'
 
-/** Shared row chrome for workspace headers and chat rows. */
-export const SIDEBAR_ROW = 'rounded-md px-1.5 py-1 text-sm leading-snug'
+/**
+ * Active-state rules (pick one per surface; do not mix within a list):
+ * - {@link SIDEBAR_ROW_ACTIVE} — scrollable lists (chat rows): left accent bar, no fill.
+ * - {@link SIDEBAR_NAV_ACTIVE} — sparse footer/toolbar nav: filled surface + inset ring.
+ * - {@link SIDEBAR_WORKSPACE_ROW_ACTIVE} — group headers: text emphasis only.
+ */
 
-/** Active sidebar row surface. */
-export const SIDEBAR_ROW_ACTIVE = 'bg-surface text-fg-strong'
+/** Filled ring active state — sidebar footer nav, dock tabs, marketplace tabs. */
+export const SIDEBAR_NAV_ACTIVE =
+  'bg-surface text-fg-strong ring-1 ring-inset ring-border/50'
+
+/** Shared row chrome for chat rows — left accent on active. */
+export const SIDEBAR_ROW =
+  'rounded-lg px-2 py-1.5 text-sm leading-normal border-l-2 border-l-transparent'
+
+/** Workspace header row inside a card — no left accent bar. */
+export const SIDEBAR_WORKSPACE_ROW = 'rounded-lg px-1.5 py-1.5 text-sm leading-normal'
+
+/** Active workspace header row — text emphasis only, no fill chrome. */
+export const SIDEBAR_WORKSPACE_ROW_ACTIVE = 'text-fg-strong font-medium'
+
+/** Active sidebar row — left accent bar, no fill chrome. */
+export const SIDEBAR_ROW_ACTIVE = 'border-l-fg-strong text-fg-strong font-medium'
 
 /** Hover surface for sidebar rows. */
-export const SIDEBAR_ROW_HOVER = 'hover:bg-surface/70 hover:text-fg'
+export const SIDEBAR_ROW_HOVER = 'hover:bg-surface/30 hover:text-fg'
+
+/** Hover surface for workspace headers. */
+export const SIDEBAR_WORKSPACE_ROW_HOVER = 'hover:bg-surface/25 hover:text-fg'
 
 export { RUN_LIST_CAP } from '@shared/domain/runs'
 

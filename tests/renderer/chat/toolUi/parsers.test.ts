@@ -283,6 +283,27 @@ describe('browser parsers', () => {
     expect(data.body).toContain('Example page body text')
   })
 
+  it('parses browser_snapshot refs with multi-word roles', () => {
+    const data = parseBrowserSnapshotData(
+      tool({
+        name: 'browser_snapshot',
+        content: [
+          'Interactive elements (use @eN with browser_click / browser_type):',
+          '- @e3 role="menu item" name="Settings" css="[role=\\"menuitem\\"]"',
+          '',
+          'Body'
+        ].join('\n')
+      })
+    )
+    expect(data.refs).toHaveLength(1)
+    expect(data.refs[0]).toEqual({
+      id: 'e3',
+      role: 'menu item',
+      name: 'Settings',
+      css: '[role="menuitem"]'
+    })
+  })
+
   it('parses browser_tabs list rows', () => {
     const data = parseBrowserTabsData(
       tool({

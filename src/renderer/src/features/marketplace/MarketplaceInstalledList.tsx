@@ -191,7 +191,7 @@ function InstalledMarketplaceItem({
       ) : null}
       {item.kind === 'plugin' && pluginContents && pluginContents.mcp.length > 0 ? (
         <div className="mt-2 flex flex-col gap-2">
-          <p className="m-0 text-[11px] font-medium text-secondary">Plugin MCP servers</p>
+          <p className="m-0 text-caption font-medium text-secondary">Plugin MCP servers</p>
           {pluginContents.mcp.map((nested) => {
             const nestedId = nestedPluginMcpServerId(item.id, nested.id)
             const overlay = settings.mcpServers.find((s) => s.id === nestedId)

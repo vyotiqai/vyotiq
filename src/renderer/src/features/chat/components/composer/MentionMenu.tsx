@@ -66,7 +66,7 @@ function PathTree({ path }: { path: string }) {
         return (
           <div
             key={`${i}:${part}`}
-            className="flex items-center gap-1.5 text-[11px] text-secondary"
+            className="flex items-center gap-1.5 text-caption text-secondary"
             style={{ paddingLeft: i * 8 }}
           >
             {isLast ? (
@@ -139,7 +139,7 @@ function MentionRow({
           {item.label}
         </span>
         {'subtitle' in item && item.subtitle ? (
-          <span className="block truncate text-[11px] text-secondary" title={item.subtitle}>
+          <span className="block truncate text-caption text-secondary" title={item.subtitle}>
             {item.subtitle}
           </span>
         ) : null}
@@ -273,11 +273,11 @@ export function MentionMenu({
             ) : null}
             <span className="min-w-0 flex-1 truncate text-xs font-medium text-fg">{title}</span>
             {loading && items.length > 0 ? (
-              <span className="shrink-0 text-[10px] text-secondary">Searching…</span>
+              <span className="shrink-0 text-2xs text-secondary">Searching…</span>
             ) : null}
           </div>
         ) : loading && items.length > 0 ? (
-          <div className="shrink-0 border-b border-border px-2.5 py-1 text-[10px] text-secondary">
+          <div className="shrink-0 border-b border-border px-2.5 py-1 text-2xs text-secondary">
             Searching…
           </div>
         ) : null}

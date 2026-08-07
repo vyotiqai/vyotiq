@@ -92,7 +92,7 @@ vi.mock('@main/agent/tools', () => ({
 }))
 
 import { runAgent } from '@main/agent/loop'
-import { enqueueFollowUp, resetActiveRunsForTests } from '@main/agent/runRegistry'
+import { enqueueFollowUp, promoteFollowUp, resetActiveRunsForTests } from '@main/agent/runRegistry'
 import { loadMessages } from '@main/agent/state'
 import { executeTool } from '@main/agent/tools'
 
@@ -138,7 +138,9 @@ describe('runAgent mid-run follow-ups', () => {
     })) {
       events.push(ev)
       if (ev.type === 'text_delta' && ev.text === 'working…') {
-        enqueueFollowUp(runId, { role: 'user', content: 'change course' })
+        const queued = enqueueFollowUp(runId, { role: 'user', content: 'change course' })
+        expect(queued.ok).toBe(true)
+        if (queued.ok) promoteFollowUp(runId, queued.id)
       }
     }
 
@@ -195,7 +197,9 @@ describe('runAgent mid-run follow-ups', () => {
       events.push(ev)
       if (ev.type === 'tool_start' && ev.toolCallId === 't1') {
         toolStarted = true
-        enqueueFollowUp(runId, { role: 'user', content: 'change during tool' })
+        const queued = enqueueFollowUp(runId, { role: 'user', content: 'change during tool' })
+        expect(queued.ok).toBe(true)
+        if (queued.ok) promoteFollowUp(runId, queued.id)
       }
     }
 
@@ -222,7 +226,50 @@ describe('runAgent mid-run follow-ups', () => {
     ).toBe(true)
   })
 
-  it('drains a follow-up enqueued during the final flush window before done', async () => {
+  it('does not interrupt mid-stream for a passive enqueue', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (
+      req: ProviderChatRequest
+    ): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield { type: 'text', text: 'working' }
+        while (!req.signal.aborted) {
+          await new Promise((r) => setTimeout(r, 5))
+        }
+        return
+      }
+      yield { type: 'text', text: 'after steer' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+
+    const runId = 'passive-mid-stream'
+    const events: Array<{ type: string }> = []
+    let queuedId: string | undefined
+
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'start' }],
+      workspacePath: workspace
+    })) {
+      events.push(ev)
+      if (ev.type === 'text_delta' && ev.text === 'working' && !queuedId) {
+        const queued = enqueueFollowUp(runId, { role: 'user', content: 'queued only' })
+        expect(queued.ok).toBe(true)
+        if (queued.ok) queuedId = queued.id
+        expect(events.some((e) => e.type === 'follow_up_applied')).toBe(false)
+        expect(call).toBe(1)
+        if (queuedId) promoteFollowUp(runId, queuedId)
+      }
+    }
+
+    expect(events.some((e) => e.type === 'follow_up_applied')).toBe(true)
+    expect(call).toBeGreaterThanOrEqual(2)
+    const messages = loadMessages(workspace, runId)
+    expect(messages.some((m) => m.role === 'user' && m.content === 'queued only')).toBe(true)
+  })
+
+  it('auto-applies passive follow-ups when the turn ends', async () => {
     let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       call += 1
@@ -244,7 +291,7 @@ describe('runAgent mid-run follow-ups', () => {
       workspacePath: workspace
     })) {
       events.push(ev)
-      // Mimic a follow-up landing after the model finished but before terminal done.
+      // Passive queue after the model finishes — should auto-apply and continue.
       if (ev.type === 'assistant_message' && call === 1) {
         enqueueFollowUp(runId, { role: 'user', content: 'one more thing' })
       }
@@ -255,5 +302,43 @@ describe('runAgent mid-run follow-ups', () => {
     expect(call).toBeGreaterThanOrEqual(2)
     const messages = loadMessages(workspace, runId)
     expect(messages.some((m) => m.role === 'user' && m.content === 'one more thing')).toBe(true)
+  })
+
+  it('auto-applies multiple passive follow-ups one by one when the turn ends', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      yield { type: 'text', text: `reply-${call}` }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+
+    const runId = 'follow-up-one-by-one'
+    const appliedEvents: Array<{ type: string; ids?: string[] }> = []
+    let enqueued = false
+
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'start' }],
+      workspacePath: workspace
+    })) {
+      if (ev.type === 'follow_up_applied') appliedEvents.push(ev)
+      if (ev.type === 'assistant_message' && call === 1 && !enqueued) {
+        enqueued = true
+        enqueueFollowUp(runId, { role: 'user', content: 'first queued' })
+        enqueueFollowUp(runId, { role: 'user', content: 'second queued' })
+      }
+    }
+
+    expect(appliedEvents).toHaveLength(2)
+    expect(appliedEvents[0]?.ids).toEqual([expect.any(String)])
+    expect(appliedEvents[1]?.ids).toEqual([expect.any(String)])
+    expect(appliedEvents[0]?.ids?.[0]).not.toBe(appliedEvents[1]?.ids?.[0])
+    expect(call).toBe(3)
+
+    const messages = loadMessages(workspace, runId)
+    const firstIdx = messages.findIndex((m) => m.role === 'user' && m.content === 'first queued')
+    const secondIdx = messages.findIndex((m) => m.role === 'user' && m.content === 'second queued')
+    expect(firstIdx).toBeGreaterThanOrEqual(0)
+    expect(secondIdx).toBeGreaterThan(firstIdx)
   })
 })

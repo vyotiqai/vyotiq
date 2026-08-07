@@ -20,7 +20,7 @@ export function EditBody({ tool, expanded, loading, loadFailed }: ToolBodyProps)
         <p
           className={cn(
             TOOL_BODY_PAD,
-            'm-0 text-[11px] text-fg/80 [overflow-wrap:anywhere]'
+            'm-0 text-caption text-fg/80 [overflow-wrap:anywhere]'
           )}
         >
           {status}

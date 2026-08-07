@@ -280,14 +280,14 @@ export function ThinkingControls({
       </button>
       {showSuggestLower ? (
         <span
-          className="inline-flex h-7 items-center gap-0.5 rounded-md border border-warning/40 bg-warning/10 px-1 text-[10px] leading-tight text-warning"
+          className="inline-flex h-7 max-w-[9rem] shrink-0 items-center gap-0.5 overflow-hidden rounded-md border border-warning/40 bg-warning/10 px-1 text-2xs leading-tight text-warning"
           role="status"
         >
           <button
             type="button"
             disabled={lowerLocked}
             className={cn(
-              'rounded px-1 font-medium vy-transition hover:bg-warning/20',
+              'min-w-0 truncate rounded px-1 font-medium vy-transition hover:bg-warning/20',
               'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
             )}
             title={lowerTitle}
@@ -298,7 +298,8 @@ export function ThinkingControls({
               applyLower()
             }}
           >
-            Lower · {lowerLabel}
+            <span className="@max-[560px]:hidden">Lower · </span>
+            {lowerLabel}
           </button>
           <button
             type="button"

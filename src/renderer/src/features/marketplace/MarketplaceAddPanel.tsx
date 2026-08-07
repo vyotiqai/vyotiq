@@ -93,7 +93,7 @@ export function MarketplaceAddPanel({
     <div className="flex flex-col gap-3">
       <div className="flex flex-col gap-2 rounded-md border border-border bg-surface px-2.5 py-2">
         <p className="m-0 text-xs font-medium text-fg">Add any MCP</p>
-        <p className="m-0 text-[11px] text-secondary">
+        <p className="m-0 text-caption text-secondary">
           Paste a GitHub URL, npm package, npx/uvx command, remote MCP URL, or Cursor/Claude
           mcpServers JSON. Vyotiq detects how to run it and connects tools to the agent.
         </p>
@@ -130,12 +130,12 @@ export function MarketplaceAddPanel({
 
         {detectResult ? (
           <div className="flex flex-col gap-2 rounded-md border border-border/60 bg-bg px-2 py-2">
-            <p className="m-0 text-[11px] text-secondary">
+            <p className="m-0 text-caption text-secondary">
               Kind: {detectResult.kind} · confidence: {detectResult.confidence}
               {detectResult.duplicate ? ' · already configured' : ''}
             </p>
             {detectResult.warnings.map((w) => (
-              <p key={w} className="m-0 text-[11px] text-warning">
+              <p key={w} className="m-0 text-caption text-warning">
                 {w}
               </p>
             ))}
@@ -198,7 +198,7 @@ export function MarketplaceAddPanel({
               </>
             ) : null}
             {detectResult.duplicate && !(detectResult.install && !serverDirty) ? (
-              <label className="flex items-center gap-2 text-[11px] text-secondary">
+              <label className="flex items-center gap-2 text-caption text-secondary">
                 <input
                   type="checkbox"
                   checked={overwriteDup}
@@ -261,7 +261,7 @@ export function MarketplaceAddPanel({
 
       <div className="flex flex-col gap-2 rounded-md border border-border bg-surface px-2.5 py-2">
         <p className="m-0 text-xs font-medium text-fg">Import from Cursor / Claude</p>
-        <p className="m-0 text-[11px] text-secondary">
+        <p className="m-0 text-caption text-secondary">
           Scan local mcp.json / Claude Desktop configs and import selected servers.
         </p>
         <div className="flex flex-wrap gap-2">
@@ -321,7 +321,7 @@ export function MarketplaceAddPanel({
         {importWarnings.length > 0 ? (
           <div className="flex flex-col gap-1">
             {importWarnings.map((w) => (
-              <p key={w} className="m-0 text-[11px] text-warning">
+              <p key={w} className="m-0 text-caption text-warning">
                 {w}
               </p>
             ))}
@@ -330,7 +330,7 @@ export function MarketplaceAddPanel({
         {importPreview && importPreview.length > 0 ? (
           <div className="flex flex-col gap-1.5">
             {importPreview.map((s) => (
-              <label key={s.id} className="flex items-start gap-2 text-[11px] text-secondary">
+              <label key={s.id} className="flex items-start gap-2 text-caption text-secondary">
                 <input
                   type="checkbox"
                   checked={importSelected.has(s.id)}
@@ -392,7 +392,7 @@ export function MarketplaceAddPanel({
         <>
           <div className="flex flex-col gap-2 rounded-md border border-border bg-surface px-2.5 py-2">
             <p className="m-0 text-xs font-medium text-fg">Stdio MCP</p>
-            <p className="m-0 text-[11px] text-secondary">
+            <p className="m-0 text-caption text-secondary">
               Run a local MCP server via command (e.g. npx). Added enabled by default.
             </p>
             <Input
@@ -431,7 +431,7 @@ export function MarketplaceAddPanel({
 
           <div className="flex flex-col gap-2 rounded-md border border-border bg-surface px-2.5 py-2">
             <p className="m-0 text-xs font-medium text-fg">Remote MCP (HTTP / SSE)</p>
-            <p className="m-0 text-[11px] text-secondary">
+            <p className="m-0 text-caption text-secondary">
               Paste a streamable HTTP or SSE MCP endpoint. Auth (Bearer / OAuth) under Installed.
             </p>
             <Input

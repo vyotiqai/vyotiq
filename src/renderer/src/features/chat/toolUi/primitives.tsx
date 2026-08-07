@@ -12,7 +12,7 @@ export function TruncatedBanner({
   failed?: boolean
 }) {
   return (
-    <p className="m-0 px-3 py-1 text-[10px] text-tertiary">
+    <p className="m-0 px-3 py-1 text-2xs text-tertiary">
       {loading
         ? 'Loading full output…'
         : failed
@@ -36,7 +36,7 @@ export function CodeBlock({
   return (
     <div
       className={cn(
-        'overflow-x-auto font-mono text-[11px] leading-[1.6]',
+        'overflow-x-auto font-mono text-caption leading-mono',
         TOOL_BODY_PAD,
         className
       )}
@@ -57,7 +57,7 @@ export function CodeBlock({
 
 export function PathList({ paths }: { paths: string[] }) {
   if (!paths.length) {
-    return <p className={cn(TOOL_BODY_PAD, 'm-0 text-[11px] text-tertiary')}>No matches</p>
+    return <p className={cn(TOOL_BODY_PAD, 'm-0 text-caption text-tertiary')}>No matches</p>
   }
 
   // No inner max-height scrollport — parent tool/group viewport owns scrolling.
@@ -66,7 +66,7 @@ export function PathList({ paths }: { paths: string[] }) {
       {paths.map((path) => (
         <li key={path} className="group flex min-w-0 items-center gap-1.5 py-0.5">
           <FileTypeIcon path={path} size={14} />
-          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-fg/80" title={path}>
+          <span className="min-w-0 flex-1 truncate font-mono text-caption text-fg/80" title={path}>
             {path}
           </span>
           <CopyButton
@@ -85,7 +85,7 @@ export function DirListing({
   entries: { kind: 'dir' | 'file'; name: string; size: string }[]
 }) {
   if (!entries.length) {
-    return <p className={cn(TOOL_BODY_PAD, 'm-0 text-[11px] text-tertiary')}>Empty directory</p>
+    return <p className={cn(TOOL_BODY_PAD, 'm-0 text-caption text-tertiary')}>Empty directory</p>
   }
 
   // Flow with parent scroll; pr-5 clears disclosure chevrons / side chrome so
@@ -95,7 +95,7 @@ export function DirListing({
       {entries.map((entry) => (
         <div
           key={entry.name}
-          className="flex min-w-0 items-center gap-2 py-0.5 font-mono text-[11px]"
+          className="flex min-w-0 items-center gap-2 py-0.5 font-mono text-caption"
         >
           <FileTypeIcon
             path={entry.name}
@@ -126,7 +126,7 @@ export function MatchList({
   groups: { file: string; matches: { line: number; text: string; isMatch: boolean }[] }[]
 }) {
   if (!groups.length) {
-    return <p className={cn(TOOL_BODY_PAD, 'm-0 text-[11px] text-tertiary')}>No matches</p>
+    return <p className={cn(TOOL_BODY_PAD, 'm-0 text-caption text-tertiary')}>No matches</p>
   }
 
   return (
@@ -134,7 +134,7 @@ export function MatchList({
       {groups.map((group) => (
         <div key={group.file}>
           <div
-            className="flex min-w-0 items-center gap-1.5 truncate font-mono text-[10px] font-medium text-tertiary"
+            className="flex min-w-0 items-center gap-1.5 truncate font-mono text-2xs font-medium text-tertiary"
             title={group.file}
           >
             <FileTypeIcon path={group.file} size={12} />
@@ -143,7 +143,7 @@ export function MatchList({
           {group.matches.map((match) => (
             <div
               key={`${group.file}:${match.line}`}
-              className="grid grid-cols-[auto_1fr] gap-x-2 py-px font-mono text-[11px]"
+              className="grid grid-cols-[auto_1fr] gap-x-2 py-px font-mono text-caption"
             >
               <span className="tabular-nums text-tertiary">{match.line}</span>
               <span
@@ -165,7 +165,7 @@ export function MatchList({
 
 export function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex items-center rounded-sm border border-border bg-surface-2/60 px-1.5 py-px font-mono text-[10px] text-tertiary">
+    <span className="inline-flex items-center rounded-sm border border-border bg-surface-2/60 px-1.5 py-px font-mono text-2xs text-tertiary">
       {children}
     </span>
   )
@@ -188,7 +188,7 @@ export function CopyButton({ text, className }: { text: string; className?: stri
     <button
       type="button"
       className={cn(
-        'inline-flex items-center gap-1 rounded-sm border border-border px-1.5 py-0.5 text-[10px] text-tertiary vy-transition hover:text-fg',
+        'inline-flex items-center gap-1 rounded-sm border border-border px-1.5 py-0.5 text-2xs text-tertiary vy-transition hover:text-fg',
         className
       )}
       onClick={() => void copy()}

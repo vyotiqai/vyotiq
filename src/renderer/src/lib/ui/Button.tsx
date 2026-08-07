@@ -18,6 +18,7 @@ export const buttonVariants = {
 
 const buttonBase = cn(
   'inline-flex min-h-8 items-center justify-center gap-1.5 px-3 text-sm tracking-[var(--vy-tracking)]',
+  'focus-visible:vy-focus-ring',
   interactive
 )
 

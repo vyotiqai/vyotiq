@@ -43,7 +43,13 @@ const previewHarnessApplyMock = vi.hoisted(() =>
 const prepareRewindMock = vi.hoisted(() =>
   vi.fn(async () => ({
     messages: [{ role: 'user' as const, content: 'edited' }],
-    writes: { restored: [] as string[], checkpointIds: [] as string[] }
+    writes: { restored: [] as string[], checkpointIds: [] as string[], skipped: [] as string[] }
+  }))
+)
+const prepareRewindToUserMessageMock = vi.hoisted(() =>
+  vi.fn(async () => ({
+    messages: [{ role: 'user' as const, content: 'kept' }],
+    writes: { restored: ['a.txt'], checkpointIds: ['cp-1'], skipped: [] as string[] }
   }))
 )
 const fromWebContents = vi.hoisted(() => vi.fn(() => mockWin))
@@ -103,7 +109,8 @@ vi.mock('@main/agent/loop', () => ({
 }))
 
 vi.mock('@main/agent/rewindRun', () => ({
-  prepareRewindAndReplaceUserMessage: prepareRewindMock
+  prepareRewindAndReplaceUserMessage: prepareRewindMock,
+  prepareRewindToUserMessage: prepareRewindToUserMessageMock
 }))
 
 vi.mock('@main/agent/checkpoints', () => ({
@@ -498,6 +505,69 @@ describe('registerIpc', () => {
       expect(tryRegisterRunAbortMock).toHaveBeenCalledWith('run-edit', '/ws')
       expect(clearRunAbortMock).toHaveBeenCalledWith('run-edit', 42)
       expect(runAgentMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('chatRewind', () => {
+    const rewindPayload = {
+      workspacePath: '/ws',
+      runId: 'run-revert',
+      userMessageIndex: 0
+    }
+
+    it('rewinds without starting a new agent run', async () => {
+      runExistsMock.mockReturnValue(true)
+      isActiveMock.mockReturnValue(false)
+
+      const handler = handlers.get(IPC.chatRewind)
+      const result = await handler!({ sender: mockWc }, rewindPayload)
+
+      expect(result).toEqual({
+        ok: true,
+        data: {
+          messages: [{ role: 'user', content: 'kept' }],
+          restored: ['a.txt'],
+          skipped: []
+        }
+      })
+      expect(prepareRewindToUserMessageMock).toHaveBeenCalledWith({
+        workspacePath: '/ws',
+        runId: 'run-revert',
+        userMessageIndex: 0
+      })
+      expect(tryRegisterRunAbortMock).not.toHaveBeenCalled()
+      expect(runAgentMock).not.toHaveBeenCalled()
+    })
+
+    it('cancels an active run before rewinding', async () => {
+      runExistsMock.mockReturnValue(true)
+      isActiveMock.mockReturnValueOnce(true).mockReturnValue(false)
+      const { chatCancelResult } = await import('@main/agent/runRegistry')
+      vi.mocked(chatCancelResult).mockReturnValue({ ok: true, data: true })
+
+      const handler = handlers.get(IPC.chatRewind)
+      const result = await handler!({ sender: mockWc }, rewindPayload)
+
+      expect(result.ok).toBe(true)
+      expect(chatCancelResult).toHaveBeenCalledWith('run-revert')
+      expect(waitUntilRunInactiveMock).toHaveBeenCalled()
+    })
+
+    it('maps userMessageIndex errors to user-facing fail', async () => {
+      runExistsMock.mockReturnValue(true)
+      isActiveMock.mockReturnValue(false)
+      prepareRewindToUserMessageMock.mockRejectedValueOnce(
+        new Error('userMessageIndex out of range')
+      )
+
+      const handler = handlers.get(IPC.chatRewind)
+      const result = await handler!({ sender: mockWc }, rewindPayload)
+
+      expect(result.ok).toBe(false)
+      if (!result.ok) {
+        expect(result.error).toMatch(/userMessageIndex out of range/i)
+        expect(result.code).not.toBe('IPC_HANDLER')
+      }
     })
   })
 

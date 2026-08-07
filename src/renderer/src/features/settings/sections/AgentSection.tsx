@@ -386,7 +386,7 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
         description="Loaded from AGENTS.md, CLAUDE.md, .cursorrules, .cursor/rules/, and .vyotiq/rules/. File-backed — edit on disk or create via /create-rule in chat."
       >
         <p className="m-0 text-xs text-secondary">
-          Rules with <code className="text-[11px]">alwaysApply: false</code> stay
+          Rules with <code className="text-caption">alwaysApply: false</code> stay
           requestable (slash) and are not auto-injected.
         </p>
       </SettingsRow>

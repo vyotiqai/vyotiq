@@ -118,10 +118,11 @@ export function ChatGitLeading({
   onOpenChanges?: () => void
 }): ReactNode {
   return (
-    <div className="flex w-full items-center gap-2">
-      <div className="min-w-0 flex-1">
-        <GitChangePills chrome={chrome} onOpenChanges={onOpenChanges} />
-      </div>
+    <div
+      className="flex w-full min-w-0 items-center justify-between gap-2"
+      data-composer-git-leading
+    >
+      <GitChangePills chrome={chrome} onOpenChanges={onOpenChanges} />
       <GitBranchStrip chrome={chrome} />
     </div>
   )

@@ -12,12 +12,16 @@ export function UserPrompt({
   editing = false,
   editComposer,
   onBeginEdit,
+  onRevert,
+  canRevert = false,
 }: {
   item: UserItem
   onImageClick: (url: string, label: string) => void
   editing?: boolean
   editComposer?: ReactNode
   onBeginEdit?: () => void
+  onRevert?: () => void
+  canRevert?: boolean
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
   const [overflows, setOverflows] = useState(false)
@@ -50,6 +54,7 @@ export function UserPrompt({
 
   const clamped = overflows && !expanded
   const editable = Boolean(onBeginEdit)
+  const revertable = Boolean(onRevert && canRevert)
   const hasBody = Boolean(content) || Boolean(slashChip)
 
   return (
@@ -57,15 +62,14 @@ export function UserPrompt({
       className={cn(
         USER_PROMPT_SURFACE,
         'relative',
-        editable &&
+        (editable || revertable) &&
           cn(
-            'group/prompt cursor-text vy-transition',
-            'hover:border-border-strong hover:bg-surface/30',
-            'focus-within:vy-focus-ring'
+            'group/prompt vy-transition',
+            editable && 'cursor-text hover:border-border-strong hover:bg-surface/30'
           )
       )}
-      role={editable ? 'button' : undefined}
-      tabIndex={editable ? 0 : undefined}
+      aria-label={editable ? 'User message' : undefined}
+      title={editable ? 'Click to edit' : undefined}
       onClick={
         editable
           ? (e) => {
@@ -75,19 +79,29 @@ export function UserPrompt({
             }
           : undefined
       }
-      onKeyDown={
-        editable
-          ? (e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault()
-                onBeginEdit?.()
-              }
-            }
-          : undefined
-      }
-      title={editable ? 'Click to edit' : undefined}
     >
       {editable ? (
+        <button
+          type="button"
+          className={cn(
+            'absolute top-1 z-[1] inline-grid size-6 place-items-center rounded-md',
+            revertable ? 'right-8' : 'right-1',
+            'text-muted hover:bg-surface hover:text-fg',
+            'opacity-0 vy-transition',
+            'group-hover/prompt:opacity-100 group-focus-within/prompt:opacity-100',
+            'focus-visible:opacity-100 focus-visible:vy-focus-ring'
+          )}
+          aria-label="Edit message"
+          data-no-prompt-edit
+          onClick={(e) => {
+            e.stopPropagation()
+            onBeginEdit?.()
+          }}
+        >
+          <Icon name="edit" size={12} />
+        </button>
+      ) : null}
+      {revertable ? (
         <button
           type="button"
           className={cn(
@@ -97,13 +111,15 @@ export function UserPrompt({
             'group-hover/prompt:opacity-100 group-focus-within/prompt:opacity-100',
             'focus-visible:opacity-100 focus-visible:vy-focus-ring'
           )}
-          aria-label="Edit message"
+          aria-label="Revert back"
+          title="Revert back to this prompt"
+          data-no-prompt-edit
           onClick={(e) => {
             e.stopPropagation()
-            onBeginEdit?.()
+            onRevert?.()
           }}
         >
-          <Icon name="edit" size={12} />
+          <Icon name="revert" size={12} />
         </button>
       ) : null}
 
@@ -112,7 +128,8 @@ export function UserPrompt({
           ref={bodyRef}
           className={cn(
             'relative overflow-hidden',
-            editable && 'pr-8',
+            editable && (revertable ? 'pr-14' : 'pr-8'),
+            revertable && !editable && 'pr-8',
             clamped && 'mask-fade-bottom'
           )}
           style={clamped ? { maxHeight: TOOL_BODY_CLAMP_PX } : undefined}

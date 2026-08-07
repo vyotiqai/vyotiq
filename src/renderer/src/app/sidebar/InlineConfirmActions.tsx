@@ -22,7 +22,7 @@ function ConfirmActionButton({
       ref={buttonRef}
       type="button"
       className={cn(
-        'app-region-no-drag inline-grid place-items-center rounded text-muted vy-transition hover:bg-surface hover:text-fg',
+        'app-region-no-drag inline-grid place-items-center rounded-md text-muted vy-transition hover:bg-surface/60 hover:text-fg',
         size === 'sm' ? 'size-5' : 'size-6',
         className
       )}

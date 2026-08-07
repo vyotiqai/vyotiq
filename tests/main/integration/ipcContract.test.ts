@@ -36,9 +36,12 @@ const VYOTIQ_INVOKE_MAP: Record<
   listModels: IPC.listModels,
   chatStart: IPC.chatStart,
   chatRewindAndStart: IPC.chatRewindAndStart,
+  chatRewind: IPC.chatRewind,
   chatCancel: IPC.chatCancel,
   chatFollowUp: IPC.chatFollowUp,
   chatFollowUpRemove: IPC.chatFollowUpRemove,
+  chatFollowUpUpdate: IPC.chatFollowUpUpdate,
+  chatFollowUpPromote: IPC.chatFollowUpPromote,
   chatQueueMode: IPC.chatQueueMode,
   chatCompact: IPC.chatCompact,
   undoWrites: IPC.runsUndoWrites,
@@ -179,7 +182,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(113)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(116)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {

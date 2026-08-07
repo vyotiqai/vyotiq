@@ -26,25 +26,25 @@ export function DiagnosticsBody({ tool, loading, loadFailed }: ToolBodyProps) {
       <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
         {data.kind ? <Chip>{data.kind}</Chip> : null}
         {data.command ? (
-          <span className="min-w-0 truncate font-mono text-[10px] text-tertiary" title={data.command}>
+          <span className="min-w-0 truncate font-mono text-2xs text-tertiary" title={data.command}>
             {data.command}
           </span>
         ) : null}
         {data.issues.length > 0 ? (
-          <span className="text-[10px] tabular-nums text-tertiary">
+          <span className="text-2xs tabular-nums text-tertiary">
             {data.count}
             {data.truncated ? '+' : ''} {data.count === 1 ? 'issue' : 'issues'}
           </span>
         ) : null}
         {data.exit ? (
-          <span className="text-[10px] tabular-nums text-tertiary">exit {data.exit}</span>
+          <span className="text-2xs tabular-nums text-tertiary">exit {data.exit}</span>
         ) : null}
       </div>
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       {data.issues.length > 0 ? (
         <ul className={`${TOOL_BODY_INNER} ${TOOL_BODY_FLOW} m-0 list-none space-y-1.5 p-0`}>
           {data.issues.map((issue, i) => (
-            <li key={`${issue.file}:${issue.line}:${issue.col}:${i}`} className="min-w-0 text-[11px]">
+            <li key={`${issue.file}:${issue.line}:${issue.col}:${i}`} className="min-w-0 text-caption">
               <div className="flex min-w-0 items-center gap-2 font-mono">
                 <span className={cn('shrink-0 uppercase', severityClass(issue.severity))}>
                   {issue.severity}
@@ -63,7 +63,7 @@ export function DiagnosticsBody({ tool, loading, loadFailed }: ToolBodyProps) {
           {data.rawLines.slice(0, 40).map((line, i) => (
             <li
               key={`${i}:${line.slice(0, 24)}`}
-              className="truncate py-0.5 font-mono text-[11px] text-fg/80"
+              className="truncate py-0.5 font-mono text-caption text-fg/80"
               title={line}
             >
               {line}
@@ -71,7 +71,7 @@ export function DiagnosticsBody({ tool, loading, loadFailed }: ToolBodyProps) {
           ))}
         </ul>
       ) : (
-        <p className={`${TOOL_BODY_PAD} m-0 text-[11px] text-tertiary`}>
+        <p className={`${TOOL_BODY_PAD} m-0 text-caption text-tertiary`}>
           {data.message || 'No diagnostics'}
         </p>
       )}

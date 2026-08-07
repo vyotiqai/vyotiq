@@ -85,12 +85,15 @@ export function Composer({
   onStop,
   pendingFollowUps = [],
   onRemoveFollowUp,
+  onEditFollowUp,
+  onSendFollowUpNow,
   composerPlaceholder,
   bannerError,
   secondaryBannerError,
   errorCode,
   onRetryNetwork,
   offlineHint,
+  networkWait,
   runNotice,
   incomplete,
   onContinue,
@@ -145,12 +148,20 @@ export function Composer({
   onStop: () => void
   pendingFollowUps?: import('@renderer/lib/hooks/createChatStreamController').PendingFollowUpState[]
   onRemoveFollowUp?: (id: string) => void
+  onEditFollowUp?: (id: string, text: string) => boolean | Promise<boolean>
+  onSendFollowUpNow?: (id: string) => void
   composerPlaceholder?: string
   bannerError?: string | null
   secondaryBannerError?: string | null
   errorCode?: string | null
   onRetryNetwork?: () => void
   offlineHint?: string | null
+  networkWait?: {
+    attempt: number
+    maxAttempts: number
+    retryInMs?: number
+    code?: string
+  } | null
   runNotice?: string | null
   incomplete?: import('@renderer/lib/hooks/createChatStreamController').IncompleteTurnState | null
   onContinue?: () => void
@@ -161,7 +172,7 @@ export function Composer({
   metaStore?: import('../../chatStores').ChatMetaStore
   onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   onDismissError?: () => void
-  /** Docked chrome above the composer shell, e.g. Changes + branch strip. */
+  /** Docked git row inside the composer shell header (Changes + branch). */
   leading?: React.ReactNode
   /** Optional docked chrome below status; git strip moved to leading. */
   trailing?: React.ReactNode
@@ -197,6 +208,8 @@ export function Composer({
         ? hotUi.composerDraft
         : (draft ?? '')
   const [cursor, setCursor] = useState(0)
+  const [editingFollowUpId, setEditingFollowUpId] = useState<string | null>(null)
+  const [editingFollowUpText, setEditingFollowUpText] = useState('')
 
   const syncCursor = useCallback((): void => {
     const handle = taRef.current
@@ -606,11 +619,266 @@ export function Composer({
   const slashListId = `slash-command-menu-${variant}`
   const mentionListId = `composer-mention-menu-${variant}`
 
+  const composerShellChrome = cn(
+    FLOATING_CHROME,
+    FLOATING_CHROME_SHADOW_BOTTOM,
+    isDock && 'pointer-events-auto'
+  )
+
   const showRetry =
     Boolean(onRetryNetwork) &&
     (errorCode === 'PROVIDER_NETWORK' ||
       errorCode === 'PROVIDER_STREAM' ||
       incomplete?.reason === 'network_interrupted')
+
+  const composerFields = (
+    <>
+      <input
+        ref={fileRef}
+        type="file"
+        accept={ATTACHMENT_ACCEPT}
+        multiple
+        className="hidden"
+        aria-hidden
+        tabIndex={-1}
+        onChange={(e) => {
+          void onPickAttachments(e.target.files)
+          e.target.value = ''
+        }}
+      />
+
+      {pendingFollowUps.length > 0 ? (
+        <div
+          className="col-span-full flex flex-col gap-1.5"
+          data-follow-up-queue
+          aria-label="Queued follow-ups"
+        >
+          {pendingFollowUps.map((entry) => {
+            const isEditing = editingFollowUpId === entry.id
+            const queueAction =
+              'shrink-0 rounded px-1.5 py-0.5 text-2xs font-medium text-muted vy-transition hover:bg-surface hover:text-fg'
+            return (
+              <div
+                key={entry.id}
+                className="flex flex-wrap items-start gap-2 rounded-lg border border-border/60 bg-surface-2 px-2 py-1.5 text-caption"
+              >
+                {isEditing ? (
+                  <>
+                    <textarea
+                      className="min-h-[32px] min-w-[12rem] flex-1 resize-y rounded-md border border-border bg-bg px-2 py-1 text-md leading-snug text-fg"
+                      value={editingFollowUpText}
+                      onChange={(e) => setEditingFollowUpText(e.target.value)}
+                      aria-label="Edit queued follow-up"
+                      rows={2}
+                    />
+                    <div className="flex shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        className={queueAction}
+                        aria-label="Save queued follow-up edit"
+                        disabled={!editingFollowUpText.trim()}
+                        onClick={async () => {
+                          const trimmed = editingFollowUpText.trim()
+                          if (!trimmed) return
+                          const ok = onEditFollowUp ? await onEditFollowUp(entry.id, trimmed) : true
+                          if (ok) setEditingFollowUpId(null)
+                        }}
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        className={queueAction}
+                        aria-label="Cancel queued follow-up edit"
+                        onClick={() => setEditingFollowUpId(null)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <span className="min-w-0 flex-1 text-fg" title={entry.text}>
+                      {entry.preview}
+                    </span>
+                    <div className="flex shrink-0 items-center gap-0.5">
+                      {onEditFollowUp ? (
+                        <button
+                          type="button"
+                          className={queueAction}
+                          aria-label="Edit queued follow-up"
+                          onClick={() => {
+                            setEditingFollowUpId(entry.id)
+                            setEditingFollowUpText(entry.text)
+                          }}
+                        >
+                          Edit
+                        </button>
+                      ) : null}
+                      {onSendFollowUpNow ? (
+                        <button
+                          type="button"
+                          className={queueAction}
+                          aria-label="Send queued follow-up now"
+                          onClick={() => onSendFollowUpNow(entry.id)}
+                        >
+                          Send now
+                        </button>
+                      ) : null}
+                      {onRemoveFollowUp ? (
+                        <button
+                          type="button"
+                          className={cn(queueAction, 'hover:text-danger')}
+                          aria-label="Remove queued follow-up"
+                          onClick={() => onRemoveFollowUp(entry.id)}
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
+                  </>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      ) : null}
+
+      <ComposerAttachments
+        images={images}
+        imageError={imageError}
+        files={files}
+        nativeFiles={nativeFiles}
+        audio={audio}
+        fileError={fileError}
+        audioError={audioError}
+        extracting={extracting}
+        attachLocked={inputLocked}
+        onRemove={removeImage}
+        onRemoveFile={removeFile}
+        onRemoveNativeFile={removeNativeFile}
+        onRemoveAudio={removeAudio}
+      />
+
+      <div ref={mentionAnchorRef} className="col-span-full min-w-0">
+        <ComposerMentionInput
+          ref={taRef}
+          className="min-h-[32px] max-h-40 min-w-0 border-0 bg-transparent p-0 text-md leading-relaxed shadow-none focus-visible:ring-0"
+          value={text}
+          onChange={(next) => {
+            setText(next)
+            requestAnimationFrame(syncCursor)
+          }}
+          onKeyDown={(e) => {
+            onKeyDown(e)
+            requestAnimationFrame(syncCursor)
+          }}
+          onCaretChange={(offset) => setCursor(offset)}
+          placeholder={resolveComposerPlaceholder({
+            hasWorkspace: Boolean(hasWorkspace),
+            running,
+            agentMode,
+            hasTranscript: Boolean(hasTranscript),
+            override: composerPlaceholder
+          })}
+          disabled={inputLocked}
+          aria-expanded={slash.open || mentions.open}
+          aria-controls={
+            slash.open
+              ? slashListId
+              : mentions.open
+                ? mentionListId
+                : undefined
+          }
+          aria-autocomplete={slash.open || mentions.open ? 'list' : undefined}
+          aria-activedescendant={
+            slash.open && slash.activeCommand
+              ? `${slashListId}-opt-${slash.activeCommand.id}`
+              : mentions.open && mentions.activeItem
+                ? `${mentionListId}-opt-${mentions.activeItem.id}`
+                : undefined
+          }
+        />
+      </div>
+
+      <SlashCommandMenu
+        open={slash.open}
+        commands={slash.filtered}
+        activeIndex={slash.activeIndex}
+        onActiveIndexChange={slash.setActiveIndex}
+        onPick={onSlashAccept}
+        onDismiss={slash.dismiss}
+        anchorRef={mentionAnchorRef}
+        listId={slashListId}
+        loading={slash.loading}
+        listError={slash.listError}
+      />
+
+      <MentionMenu
+        open={mentions.open}
+        view={mentions.view}
+        items={mentions.items}
+        activeIndex={mentions.activeIndex}
+        onActiveIndexChange={mentions.setActiveIndex}
+        onPick={onMentionAccept}
+        onDismiss={mentions.dismiss}
+        onBack={mentions.goBack}
+        anchorRef={mentionAnchorRef}
+        listId={mentionListId}
+        loading={mentions.loading}
+      />
+
+      <ComposerToolbar
+        variant={variant}
+        disabled={disabled}
+        locked={settingsLocked}
+        attachDisabled={inputLocked}
+        imageCount={images.length}
+        fileCount={files.length}
+        onAttachClick={() => {
+          if (images.length >= MAX_IMAGES && files.length >= MAX_FILES) {
+            setImageError(`You can attach up to ${MAX_IMAGES} images and ${MAX_FILES} files.`)
+            return
+          }
+          fileRef.current?.click()
+        }}
+        providers={providers}
+        optionsByProvider={optionsByProvider}
+        seedsByProvider={seedsByProvider}
+        modelMetaByValue={modelMetaByValue}
+        provider={provider}
+        model={model}
+        favoriteModels={favoriteModels}
+        recentModels={recentModels}
+        modelsWarning={modelsWarning}
+        serviceTier={serviceTier}
+        onModelChange={onProviderModel}
+        onToggleFavorite={onToggleFavorite}
+        onServiceTierChange={onServiceTierChange}
+        onRefreshCatalog={() => {
+          setRefreshingCatalog(true)
+          void refreshCatalog({ forceRefresh: true, provider: browsedProvider }).finally(() =>
+            setRefreshingCatalog(false)
+          )
+        }}
+        onBrowseProvider={setBrowsedProvider}
+        catalogLoading={catalogLoading}
+        chatSettings={chatSettings}
+        onChatSettingsChange={onChatSettingsChange}
+        agentMode={agentMode}
+        onAgentModeChange={onAgentModeChange}
+        running={running}
+        canSend={canSend}
+        onStop={onStop}
+        contextUsage={contextUsage}
+        metaStore={metaStore}
+        onCompactContext={onCompactContext}
+        onCancelEdit={isInline ? onCancelEdit : undefined}
+        imageReadyHint={imageReadyHint}
+        focusInput={focusInput}
+      />
+    </>
+  )
 
   return (
     <div
@@ -654,7 +922,7 @@ export function Composer({
                   {showRetry ? (
                     <button
                       type="button"
-                      className="shrink-0 rounded-xl border border-border px-2 py-0.5 text-[11px] font-medium text-fg transition-colors hover:bg-surface"
+                      className="shrink-0 rounded-xl border border-border px-2 py-0.5 text-caption font-medium text-fg transition-colors hover:bg-surface"
                       onClick={onRetryNetwork}
                     >
                       Retry
@@ -666,195 +934,32 @@ export function Composer({
           </div>
         ) : null}
 
-        {isDock ? leading : null}
-
-        <form
-          onSubmit={submit}
-          className={cn(
-            '@container relative grid gap-2 p-2.5',
-            FLOATING_CHROME,
-            FLOATING_CHROME_SHADOW_BOTTOM,
-            isDock && 'pointer-events-auto'
-          )}
-          data-composer-shell
-        >
-          <input
-            ref={fileRef}
-            type="file"
-            accept={ATTACHMENT_ACCEPT}
-            multiple
-            className="hidden"
-            aria-hidden
-            tabIndex={-1}
-            onChange={(e) => {
-              void onPickAttachments(e.target.files)
-              e.target.value = ''
-            }}
-          />
-
-          {pendingFollowUps.length > 0 ? (
-            <div
-              className="col-span-full flex flex-wrap items-center gap-1.5"
-              data-follow-up-queue
-              aria-label="Queued follow-ups"
+        {isDock ? (
+          <div className={composerShellChrome} data-composer-shell>
+            {leading ? (
+              <div className="pointer-events-auto px-2.5 pt-2" data-composer-git-leading-wrap>
+                {leading}
+              </div>
+            ) : null}
+            <form
+              onSubmit={submit}
+              className={cn(
+                '@container relative grid gap-1 px-2.5 pb-2 pt-2',
+                leading ? 'pt-1.5' : undefined
+              )}
             >
-              {pendingFollowUps.map((entry) => (
-                <div
-                  key={entry.id}
-                  className="inline-flex max-w-full items-center gap-1 rounded-lg bg-surface-2 px-2 py-1 text-[11px] text-muted"
-                >
-                  <span className="min-w-0 truncate" title={entry.preview}>
-                    Queued: {entry.preview}
-                  </span>
-                  {onRemoveFollowUp ? (
-                    <button
-                      type="button"
-                      className="shrink-0 rounded px-1 text-muted hover:bg-surface hover:text-fg"
-                      aria-label="Remove queued follow-up"
-                      onClick={() => onRemoveFollowUp(entry.id)}
-                    >
-                      ×
-                    </button>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          ) : null}
-
-          <ComposerAttachments
-            images={images}
-            imageError={imageError}
-            files={files}
-            nativeFiles={nativeFiles}
-            audio={audio}
-            fileError={fileError}
-            audioError={audioError}
-            extracting={extracting}
-            attachLocked={inputLocked}
-            onRemove={removeImage}
-            onRemoveFile={removeFile}
-            onRemoveNativeFile={removeNativeFile}
-            onRemoveAudio={removeAudio}
-          />
-
-          <div ref={mentionAnchorRef} className="col-span-full min-w-0">
-            <ComposerMentionInput
-              ref={taRef}
-              className="min-h-[32px] max-h-40 min-w-0 border-0 bg-transparent p-0 text-md leading-relaxed shadow-none focus-visible:ring-0"
-              value={text}
-              onChange={(next) => {
-                setText(next)
-                requestAnimationFrame(syncCursor)
-              }}
-              onKeyDown={(e) => {
-                onKeyDown(e)
-                requestAnimationFrame(syncCursor)
-              }}
-              onCaretChange={(offset) => setCursor(offset)}
-              placeholder={resolveComposerPlaceholder({
-                hasWorkspace: Boolean(hasWorkspace),
-                running,
-                agentMode,
-                hasTranscript: Boolean(hasTranscript),
-                override: composerPlaceholder
-              })}
-              disabled={inputLocked}
-              aria-expanded={slash.open || mentions.open}
-              aria-controls={
-                slash.open
-                  ? slashListId
-                  : mentions.open
-                    ? mentionListId
-                    : undefined
-              }
-              aria-autocomplete={slash.open || mentions.open ? 'list' : undefined}
-              aria-activedescendant={
-                slash.open && slash.activeCommand
-                  ? `${slashListId}-opt-${slash.activeCommand.id}`
-                  : mentions.open && mentions.activeItem
-                    ? `${mentionListId}-opt-${mentions.activeItem.id}`
-                    : undefined
-              }
-            />
+              {composerFields}
+            </form>
           </div>
-
-          <SlashCommandMenu
-            open={slash.open}
-            commands={slash.filtered}
-            activeIndex={slash.activeIndex}
-            onActiveIndexChange={slash.setActiveIndex}
-            onPick={onSlashAccept}
-            onDismiss={slash.dismiss}
-            anchorRef={mentionAnchorRef}
-            listId={slashListId}
-            loading={slash.loading}
-            listError={slash.listError}
-          />
-
-          <MentionMenu
-            open={mentions.open}
-            view={mentions.view}
-            items={mentions.items}
-            activeIndex={mentions.activeIndex}
-            onActiveIndexChange={mentions.setActiveIndex}
-            onPick={onMentionAccept}
-            onDismiss={mentions.dismiss}
-            onBack={mentions.goBack}
-            anchorRef={mentionAnchorRef}
-            listId={mentionListId}
-            loading={mentions.loading}
-          />
-
-          <ComposerToolbar
-            variant={variant}
-            disabled={disabled}
-            locked={settingsLocked}
-            attachDisabled={inputLocked}
-            imageCount={images.length}
-            fileCount={files.length}
-            onAttachClick={() => {
-              if (images.length >= MAX_IMAGES && files.length >= MAX_FILES) {
-                setImageError(`You can attach up to ${MAX_IMAGES} images and ${MAX_FILES} files.`)
-                return
-              }
-              fileRef.current?.click()
-            }}
-            providers={providers}
-            optionsByProvider={optionsByProvider}
-            seedsByProvider={seedsByProvider}
-            modelMetaByValue={modelMetaByValue}
-            provider={provider}
-            model={model}
-            favoriteModels={favoriteModels}
-            recentModels={recentModels}
-            modelsWarning={modelsWarning}
-            serviceTier={serviceTier}
-            onModelChange={onProviderModel}
-            onToggleFavorite={onToggleFavorite}
-            onServiceTierChange={onServiceTierChange}
-            onRefreshCatalog={() => {
-              setRefreshingCatalog(true)
-              void refreshCatalog({ forceRefresh: true, provider: browsedProvider }).finally(() =>
-                setRefreshingCatalog(false)
-              )
-            }}
-            onBrowseProvider={setBrowsedProvider}
-            catalogLoading={catalogLoading}
-            chatSettings={chatSettings}
-            onChatSettingsChange={onChatSettingsChange}
-            agentMode={agentMode}
-            onAgentModeChange={onAgentModeChange}
-            running={running}
-            canSend={canSend}
-            onStop={onStop}
-            contextUsage={contextUsage}
-            metaStore={metaStore}
-            onCompactContext={onCompactContext}
-            onCancelEdit={isInline ? onCancelEdit : undefined}
-            imageReadyHint={imageReadyHint}
-            focusInput={focusInput}
-          />
-        </form>
+        ) : (
+          <form
+            onSubmit={submit}
+            className={cn('@container relative grid gap-1 px-2.5 pb-2 pt-2', composerShellChrome)}
+            data-composer-shell
+          >
+            {composerFields}
+          </form>
+        )}
 
         <ComposerStatus
           className={isDock ? 'pointer-events-auto' : undefined}
@@ -864,6 +969,7 @@ export function Composer({
           onContinue={onContinue}
           running={running}
           offlineHint={offlineHint}
+          networkWait={networkWait}
         />
 
         {onContinueInAgent ? (

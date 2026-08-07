@@ -4,6 +4,10 @@ import type {
   ChatMessage,
   ChatFollowUpRemoveRequest,
   ChatFollowUpRemoveResult,
+  ChatFollowUpUpdateRequest,
+  ChatFollowUpUpdateResult,
+  ChatFollowUpPromoteRequest,
+  ChatFollowUpPromoteResult,
   ChatFollowUpRequest,
   ChatFollowUpResult,
   ChatQueueModeRequest,
@@ -11,6 +15,8 @@ import type {
   ChatStartRequest,
   ChatStartResult,
   ChatRewindAndStartRequest,
+  ChatRewindRequest,
+  ChatRewindResult,
   CompactRunResult,
   UndoWritesResult,
   ResolveWritesResult,
@@ -94,11 +100,18 @@ export interface VyotiqApi {
   }) => Promise<IpcResult<ListModelsResult>>
   chatStart: (payload: ChatStartRequest) => Promise<IpcResult<ChatStartResult>>
   chatRewindAndStart: (payload: ChatRewindAndStartRequest) => Promise<IpcResult<ChatStartResult>>
+  chatRewind: (payload: ChatRewindRequest) => Promise<IpcResult<ChatRewindResult>>
   chatCancel: (runId: string) => Promise<IpcResult<true>>
   chatFollowUp: (payload: ChatFollowUpRequest) => Promise<IpcResult<ChatFollowUpResult>>
   chatFollowUpRemove: (
     payload: ChatFollowUpRemoveRequest
   ) => Promise<IpcResult<ChatFollowUpRemoveResult>>
+  chatFollowUpUpdate: (
+    payload: ChatFollowUpUpdateRequest
+  ) => Promise<IpcResult<ChatFollowUpUpdateResult>>
+  chatFollowUpPromote: (
+    payload: ChatFollowUpPromoteRequest
+  ) => Promise<IpcResult<ChatFollowUpPromoteResult>>
   chatQueueMode: (payload: ChatQueueModeRequest) => Promise<IpcResult<ChatQueueModeResult>>
   chatCompact: (workspacePath: string, runId: string) => Promise<IpcResult<CompactRunResult>>
   undoWrites: (
@@ -260,7 +273,7 @@ export interface VyotiqApi {
   browserSetBounds: (
     bounds: { x: number; y: number; width: number; height: number } | null
   ) => Promise<IpcResult<true>>
-  browserNavigate: (url: string) => Promise<IpcResult<boolean>>
+  browserNavigate: (url: string, workspacePath?: string) => Promise<IpcResult<boolean>>
   browserReload: () => Promise<IpcResult<boolean>>
   browserTakeScreenshot: (payload: {
     workspacePath: string

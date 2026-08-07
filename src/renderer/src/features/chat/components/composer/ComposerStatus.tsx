@@ -1,6 +1,22 @@
 import { cn } from '@renderer/lib/ui/cn'
 import type { IncompleteTurnState } from '@renderer/lib/hooks/createChatStreamController'
 
+export type ComposerNetworkWaitState = {
+  attempt: number
+  maxAttempts: number
+  retryInMs?: number
+  code?: string
+}
+
+function networkWaitLabel(wait: ComposerNetworkWaitState): string {
+  const attempt = `attempt ${wait.attempt}/${wait.maxAttempts}`
+  if (wait.retryInMs != null && wait.retryInMs > 0) {
+    const secs = Math.max(1, Math.ceil(wait.retryInMs / 1000))
+    return `Reconnecting in ${secs}s (${attempt})…`
+  }
+  return `Reconnecting… (${attempt})`
+}
+
 export function ComposerStatus({
   modelsWarning,
   runNotice,
@@ -8,6 +24,7 @@ export function ComposerStatus({
   onContinue,
   running,
   offlineHint,
+  networkWait,
   className
 }: {
   modelsWarning?: string | null
@@ -17,10 +34,13 @@ export function ComposerStatus({
   /** When true, show truncation notices without a Continue button (auto-continue in flight). */
   running?: boolean
   offlineHint?: string | null
+  networkWait?: ComposerNetworkWaitState | null
   className?: string
 }) {
-  const statusTexts = [offlineHint, runNotice, modelsWarning].filter((text): text is string =>
-    Boolean(text)
+  const reconnectHint =
+    running && networkWait ? networkWaitLabel(networkWait) : null
+  const statusTexts = [reconnectHint, offlineHint, runNotice, modelsWarning].filter(
+    (text): text is string => Boolean(text)
   )
 
   // context_overflow is terminal — Continue would just hit the same wall.
@@ -29,7 +49,7 @@ export function ComposerStatus({
   const statusLines = statusTexts.map((text) => (
     <p
       key={text}
-      className="m-0 line-clamp-2 px-2.5 text-left text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]"
+      className="m-0 line-clamp-2 px-2.5 text-left text-caption leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]"
       role="status"
     >
       {text}
@@ -39,7 +59,7 @@ export function ComposerStatus({
   if (incomplete && onContinue && !running && canContinue) {
     return (
       <div className={cn('flex flex-col gap-1', className)}>
-        <div className="flex items-center justify-start gap-2 px-2.5 text-left text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]">
+        <div className="flex items-center justify-start gap-2 px-2.5 text-left text-caption leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]">
           <p className="m-0 min-w-0 flex-1 line-clamp-2" role="status">
             {incomplete.message}
           </p>
@@ -60,7 +80,7 @@ export function ComposerStatus({
     return (
       <div className={cn('flex flex-col gap-1', className)}>
         <p
-          className="m-0 line-clamp-2 px-2.5 text-left text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]"
+          className="m-0 line-clamp-2 px-2.5 text-left text-caption leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]"
           role="status"
         >
           {incomplete.message}
@@ -74,7 +94,7 @@ export function ComposerStatus({
     return (
       <p
         className={cn(
-          'm-0 line-clamp-2 px-2.5 text-left text-[11px] leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]',
+          'm-0 line-clamp-2 px-2.5 text-left text-caption leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]',
           className
         )}
         role="status"

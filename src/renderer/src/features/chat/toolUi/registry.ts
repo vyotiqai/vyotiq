@@ -164,6 +164,19 @@ const browserActionEntry: ToolRegistryEntry = {
   }
 }
 
+const generateImageEntry: ToolRegistryEntry = {
+  Body: GenerateImageBody,
+  hasBody: generateImageHasBody,
+  headerMeta: (tool) => {
+    const data = parseGenerateImageData(tool)
+    return {
+      verb: toolLabel(tool.name, tool.status),
+      target: data.path || tool.summary,
+      icon: 'sparkles'
+    }
+  }
+}
+
 const mcpIntrospectEntry: ToolRegistryEntry = {
   Body: McpIntrospectBody,
   hasBody: mcpIntrospectHasBody,
@@ -451,30 +464,8 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
       }
     }
   },
-  generate_image: {
-    Body: GenerateImageBody,
-    hasBody: generateImageHasBody,
-    headerMeta: (tool) => {
-      const data = parseGenerateImageData(tool)
-      return {
-        verb: toolLabel(tool.name, tool.status),
-        target: data.path || tool.summary,
-        icon: 'sparkles'
-      }
-    }
-  },
-  edit_image: {
-    Body: GenerateImageBody,
-    hasBody: generateImageHasBody,
-    headerMeta: (tool) => {
-      const data = parseGenerateImageData(tool)
-      return {
-        verb: toolLabel(tool.name, tool.status),
-        target: data.path || tool.summary,
-        icon: 'sparkles'
-      }
-    }
-  },
+  generate_image: generateImageEntry,
+  edit_image: generateImageEntry,
   Skill: {
     Body: SkillBody,
     hasBody: defaultHasBody,

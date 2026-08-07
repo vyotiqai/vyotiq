@@ -8,7 +8,11 @@ import {
   SIDEBAR_ROW,
   SIDEBAR_ROW_ACTIVE,
   SIDEBAR_ROW_HOVER,
-  SIDEBAR_SECTION_LABEL
+  SIDEBAR_SECTION_LABEL,
+  SIDEBAR_WORKSPACE_GROUP,
+  SIDEBAR_WORKSPACE_ROW,
+  SIDEBAR_WORKSPACE_ROW_ACTIVE,
+  SIDEBAR_WORKSPACE_ROW_HOVER
 } from '@renderer/lib/utils/layout'
 import { workspacePathsEqual } from '@shared/workspacePathMatch'
 import { ChatRow } from './ChatRow'
@@ -44,13 +48,15 @@ function WorkspaceHeader({
     <div
       className={cn(
         'group flex items-center gap-1',
-        SIDEBAR_ROW,
-        active ? SIDEBAR_ROW_ACTIVE : cn('text-muted', SIDEBAR_ROW_HOVER)
+        SIDEBAR_WORKSPACE_ROW,
+        active
+          ? SIDEBAR_WORKSPACE_ROW_ACTIVE
+          : cn('text-muted', SIDEBAR_WORKSPACE_ROW_HOVER)
       )}
     >
       <button
         type="button"
-        className="app-region-no-drag inline-grid size-5 shrink-0 place-items-center rounded vy-transition hover:bg-bg"
+        className="app-region-no-drag inline-grid size-6 shrink-0 place-items-center rounded-md vy-transition hover:bg-surface/50"
         aria-label={expanded ? `Collapse ${name}` : `Expand ${name}`}
         aria-expanded={expanded}
         onClick={(e) => {
@@ -61,13 +67,13 @@ function WorkspaceHeader({
         <span className="relative inline-flex size-4 items-center justify-center">
           <Icon
             name="folder"
-            size={12}
-            className="absolute opacity-70 group-hover:opacity-0 vy-transition"
+            size={13}
+            className="absolute opacity-80 group-hover:opacity-0 vy-transition"
             aria-hidden="true"
           />
           <Icon
             name={expanded ? 'chevron' : 'chevronRight'}
-            size={12}
+            size={13}
             className="absolute opacity-0 group-hover:opacity-100 vy-transition"
             aria-hidden="true"
           />
@@ -81,7 +87,7 @@ function WorkspaceHeader({
       >
         {hasActivity ? (
           <span
-            className="size-1 shrink-0 rounded-full bg-fg motion-safe:animate-pulse"
+            className="size-1.5 shrink-0 rounded-full bg-fg motion-safe:animate-pulse"
             title="Active run in workspace"
             aria-hidden
           />
@@ -105,7 +111,7 @@ function WorkspaceHeader({
         <Tooltip content={`Close ${name}`}>
           <button
             type="button"
-            className="app-region-no-drag inline-grid size-5 place-items-center rounded text-muted opacity-0 vy-transition hover:bg-bg hover:text-danger group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"
+            className="app-region-no-drag inline-grid size-6 place-items-center rounded-md text-muted opacity-0 vy-transition hover:bg-surface/70 hover:text-danger group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"
             aria-label={`Close ${name}`}
             onClick={(e) => {
               e.stopPropagation()
@@ -146,22 +152,24 @@ export function ChatList({
   onAddWorkspace: () => void
   activeRuns: { runId: string; workspacePath: string }[]
   workspaceHasBackgroundRun: (path: string) => boolean
-  onDismissRunsError?: (path: string) => void
+  onDismissRunsError?: (path?: string) => void
   onSelectRun: (path: string, runId: string) => void
   onRenameRun: (path: string, runId: string, goal: string) => void
   onDeleteRun: (path: string, runId: string) => void
 }) {
   return (
-    <div className={cn(SIDEBAR_PAD_X, 'pt-0.5 pb-1.5')} role="region" aria-label="Workspace sessions">
+    <div className={cn(SIDEBAR_PAD_X, 'py-2')} role="region" aria-label="Workspace sessions">
       {!workspaceReady ? (
-        <p className="m-0 py-5 text-center text-sm text-muted">Open a workspace to see chats</p>
+        <p className="m-0 py-6 text-center text-sm text-muted">
+          Open a workspace to see chats
+        </p>
       ) : (
         <>
-          <div className="mb-1 flex items-center justify-between">
+          <div className="mb-2 flex items-center justify-between gap-2 px-1">
             <p className={SIDEBAR_SECTION_LABEL}>Workspaces</p>
             <button
               type="button"
-              className="app-region-no-drag inline-grid size-6 place-items-center rounded text-muted vy-transition hover:bg-surface hover:text-fg"
+              className="app-region-no-drag inline-grid size-7 place-items-center rounded-md text-muted vy-transition hover:bg-surface/50 hover:text-fg"
               aria-label="Add workspace"
               title="Add workspace"
               onClick={onAddWorkspace}
@@ -171,16 +179,18 @@ export function ChatList({
           </div>
 
           {filteredRunsCount === 0 && sessionQuery.trim() ? (
-            <p className="m-0 py-5 text-center text-sm text-muted">No matching chats</p>
+            <p className="m-0 py-4 text-center text-sm text-muted">
+              No matching chats
+            </p>
           ) : null}
 
-          <div className="flex flex-col gap-3 pb-0.5">
+          <div className="flex flex-col gap-2 pb-1">
             {workspaceGroups.map((workspace) => {
               const searchActive = Boolean(sessionQuery.trim())
               const globalSearchEmpty = searchActive && filteredRunsCount === 0
 
               return (
-              <div key={workspace.path} className="flex flex-col gap-1">
+              <div key={workspace.path} className={SIDEBAR_WORKSPACE_GROUP}>
                 <WorkspaceHeader
                   name={workspace.label}
                   path={workspace.path}
@@ -235,14 +245,12 @@ export function ChatList({
                       {workspace.groupedRuns.map((group) => (
                         <div key={`${workspace.path}:${group.id}`}>
                           {(workspace.groupedRuns.length > 1 || group.label === 'Results') && (
-                            <p
-                              className={cn(
-                                SIDEBAR_SECTION_LABEL,
-                                'sticky top-0 z-sticky bg-bg/95 py-0.5 backdrop-blur-sm'
-                              )}
-                            >
-                              {group.label}
-                            </p>
+                            <div className="flex items-center gap-2 px-1 py-1">
+                              <p className={cn(SIDEBAR_SECTION_LABEL, 'shrink-0')}>
+                                {group.label}
+                              </p>
+                              <div className="h-px min-w-0 flex-1 bg-border/40" aria-hidden />
+                            </div>
                           )}
                           <div className="flex flex-col gap-px" role="list">
                             {group.runs.map((run) => (
@@ -259,7 +267,7 @@ export function ChatList({
                         </div>
                       ))}
                       {workspace.runsCapped && !searchActive ? (
-                        <p className="py-1.5 text-[10px] text-muted">
+                        <p className="px-1 py-1.5 text-caption text-muted">
                           Showing {RUN_LIST_CAP} most recent
                         </p>
                       ) : null}

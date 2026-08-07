@@ -170,7 +170,7 @@ export function PlanHandoff({
   return (
     <div
       className={cn(
-        'flex items-center gap-3 px-2.5 py-1 text-[11px] leading-tight text-secondary',
+        'flex items-center gap-3 px-2.5 py-1 text-caption leading-tight text-secondary',
         className
       )}
       role="status"

@@ -714,10 +714,21 @@ describe('ipc schemas', () => {
   it('parses browser navigate/screenshot request schemas', async () => {
     const { BrowserNavigateRequestSchema, BrowserTakeScreenshotRequestSchema } =
       await import('@shared/ipc')
-    expect(BrowserNavigateRequestSchema.parse('https://example.com')).toBe('https://example.com')
-    expect(BrowserNavigateRequestSchema.parse({ url: 'https://example.com/x' })).toBe(
-      'https://example.com/x'
-    )
+    expect(BrowserNavigateRequestSchema.parse('https://example.com')).toEqual({
+      url: 'https://example.com'
+    })
+    expect(BrowserNavigateRequestSchema.parse({ url: 'https://example.com/x' })).toEqual({
+      url: 'https://example.com/x'
+    })
+    expect(
+      BrowserNavigateRequestSchema.parse({
+        url: 'https://example.com/x',
+        workspacePath: '/ws'
+      })
+    ).toEqual({
+      url: 'https://example.com/x',
+      workspacePath: '/ws'
+    })
     expect(BrowserNavigateRequestSchema.safeParse('').success).toBe(false)
     expect(BrowserNavigateRequestSchema.safeParse({}).success).toBe(false)
     expect(

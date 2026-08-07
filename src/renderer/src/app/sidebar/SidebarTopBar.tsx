@@ -1,9 +1,12 @@
 import type { RefObject } from 'react'
 import { IconButton, cn } from '@renderer/lib/ui'
 import { shortcutLabel } from '@renderer/lib/shortcuts'
-import { TITLE_BAR_HEIGHT } from '@renderer/lib/utils/layout'
+import {
+  SIDEBAR_SEARCH_ROW,
+  SIDEBAR_TOOLBAR_ROW,
+  TITLE_BAR_HEIGHT
+} from '@renderer/lib/utils/layout'
 import { MACOS_TITLEBAR_INSET_PX, MACOS_TRAFFIC_LIGHT_Y } from '@shared/windowChrome'
-import type { SidebarView } from './types'
 import { SidebarSearchChrome } from './SidebarSearchChrome'
 
 export function SidebarTopBar({
@@ -32,36 +35,52 @@ export function SidebarTopBar({
     ? toggleLabel
     : `${toggleLabel} (${shortcutLabel('sidebar')})`
   const headerStyle = isDarwin ? { paddingLeft: MACOS_TITLEBAR_INSET_PX } : undefined
+  const alignWithTitleBar = !isDrawer
 
   return (
     <header
-      className={cn(
-        'app-region-drag flex shrink-0 items-center gap-0.5 px-1',
-        TITLE_BAR_HEIGHT
-      )}
+      className="app-region-drag shrink-0 flex flex-col border-b border-border/30"
       style={headerStyle}
     >
-      <div className="app-region-no-drag shrink-0">
-        <IconButton
-          icon={isDrawer ? 'close' : 'sidebar'}
-          label={toggleLabel}
-          title={toggleTitle}
-          size="sm"
-          variant="bare"
-          aria-expanded={isDrawer ? true : undefined}
-          aria-controls={isDrawer ? 'app-nav-drawer' : undefined}
-          onClick={onToggleSidebar}
-        />
+      <div
+        className={cn(
+          alignWithTitleBar ? SIDEBAR_TOOLBAR_ROW : 'flex items-center gap-0.5 px-2 py-1.5'
+        )}
+      >
+        <div className="app-region-no-drag shrink-0">
+          <IconButton
+            icon={isDrawer ? 'close' : 'sidebar'}
+            label={toggleLabel}
+            title={toggleTitle}
+            size="sm"
+            variant="bare"
+            aria-expanded={isDrawer ? true : undefined}
+            aria-controls={isDrawer ? 'app-nav-drawer' : undefined}
+            onClick={onToggleSidebar}
+          />
+        </div>
+
+        <div className="app-region-no-drag shrink-0">
+          <IconButton
+            icon="plus"
+            label="New chat"
+            size="sm"
+            variant="bare"
+            disabled={!workspaceReady}
+            title={
+              !workspaceReady ? disabledTitle : `New chat (${shortcutLabel('newChat')})`
+            }
+            onClick={onNewChat}
+          />
+        </div>
       </div>
 
-      <div className="app-region-no-drag min-w-0 flex-1">
+      <div className={SIDEBAR_SEARCH_ROW}>
         <SidebarSearchChrome
           searchRef={searchRef}
           sessionQuery={sessionQuery}
           workspaceReady={workspaceReady}
-          disabledTitle={disabledTitle}
           onSessionQuery={onSessionQuery}
-          onNewChat={onNewChat}
         />
       </div>
     </header>
@@ -97,7 +116,7 @@ export function SidebarCollapsedHeader({
   return (
     <header
       className={cn(
-        'app-region-drag flex shrink-0 items-center',
+        'app-region-drag flex shrink-0 items-center border-b border-border/30',
         isCollapsed && isDarwin ? 'min-h-9' : TITLE_BAR_HEIGHT,
         'justify-center px-1'
       )}
@@ -110,6 +129,7 @@ export function SidebarCollapsedHeader({
           title={toggleTitle}
           size="md"
           variant="bare"
+          className="rounded-lg"
           aria-expanded={isDrawer ? true : !isCollapsed}
           aria-controls={isDrawer ? 'app-nav-drawer' : undefined}
           onClick={onToggleSidebar}

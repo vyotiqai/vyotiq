@@ -21,7 +21,8 @@ export function useNetworkStatus(): { online: boolean; offlineHint: string | nul
   const refresh = useCallback(async (): Promise<void> => {
     const probed = await probeViaMain()
     if (probed !== null) {
-      setOnline(probed)
+      // Probe can fail on blocked endpoints while the browser still reports online.
+      setOnline(probed || (typeof navigator !== 'undefined' && navigator.onLine))
       return
     }
     if (typeof navigator !== 'undefined') {

@@ -165,7 +165,7 @@ export function WorkspaceOverrideCard({
               }}
             />
           ) : null}
-          <p className="m-0 text-[10px] leading-snug text-muted">
+          <p className="m-0 text-2xs leading-snug text-muted">
             Reasoning and thinking effort are in the composer. Compaction and approval settings are in Settings → Agent.
           </p>
         </div>

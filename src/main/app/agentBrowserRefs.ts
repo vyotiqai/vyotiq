@@ -23,7 +23,8 @@ export function formatInteractiveRefs(refs: BrowserElementRef[]): string {
   return refs
     .map((r) => {
       const name = r.name ? JSON.stringify(r.name) : '""'
-      return `- @${r.id} ${r.role || r.tag.toLowerCase()} ${name} css=${JSON.stringify(r.selector)}`
+      const role = r.role || r.tag.toLowerCase()
+      return `- @${r.id} role=${JSON.stringify(role)} name=${name} css=${JSON.stringify(r.selector)}`
     })
     .join('\n')
 }

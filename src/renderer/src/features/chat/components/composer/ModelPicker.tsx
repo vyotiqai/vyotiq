@@ -43,7 +43,7 @@ const optionClass = cn(
 )
 
 const badgeChip =
-  'rounded px-1 py-0.5 text-[9px] uppercase tracking-wide text-muted ring-1 ring-border'
+  'rounded px-1 py-0.5 text-3xs uppercase tracking-wide text-muted ring-1 ring-border'
 
 const PANEL_MAX_PX = 512
 
@@ -414,7 +414,7 @@ export function ModelPicker({
             </div>
 
             {modelsWarning ? (
-              <p className="m-0 shrink-0 border-b border-border bg-surface px-3 py-1.5 text-[10px] leading-snug text-muted">
+              <p className="m-0 shrink-0 border-b border-border bg-surface px-3 py-1.5 text-2xs leading-snug text-muted">
                 {modelsWarning}
               </p>
             ) : null}
@@ -428,7 +428,7 @@ export function ModelPicker({
                     key={p}
                     type="button"
                     className={cn(
-                      'inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-[11px] leading-tight vy-transition',
+                      'inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-caption leading-tight vy-transition',
                       active
                         ? 'bg-surface-2 text-fg-strong'
                         : 'text-secondary hover:bg-surface hover:text-fg'
@@ -475,7 +475,7 @@ export function ModelPicker({
               ) : (
                 visibleOptions.sections.map((section) => (
                   <li key={section.header} role="presentation">
-                    <div className="px-2.5 pt-2 pb-1 text-[10px] font-medium uppercase tracking-wide text-secondary">
+                    <div className="px-2.5 pt-2 pb-1 text-2xs font-medium uppercase tracking-wide text-secondary">
                       {section.header}
                     </div>
                     <ul className="m-0 list-none p-0" role="group" aria-label={section.header}>
@@ -510,7 +510,7 @@ export function ModelPicker({
 
             {supportedTiers.length > 0 ? (
               <div className="shrink-0 border-t border-border px-3 py-2">
-                <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-secondary">
+                <p className="mb-1.5 text-2xs font-medium uppercase tracking-wide text-secondary">
                   Speed
                 </p>
                 <div className="flex flex-wrap gap-1">

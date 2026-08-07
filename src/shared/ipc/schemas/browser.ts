@@ -20,10 +20,19 @@ export const AgentBrowserStateSchema = z.object({
 export type AgentBrowserState = z.infer<typeof AgentBrowserStateSchema>
 export type AgentBrowserTab = z.infer<typeof AgentBrowserTabSchema>
 
-/** Preload passes a bare string; object form kept for callers that wrap `{ url }`. */
+/** Preload passes a bare string; object form includes optional workspace scope. */
 export const BrowserNavigateRequestSchema = z
-  .union([z.string().min(1), z.object({ url: z.string().min(1) })])
-  .transform((raw) => (typeof raw === 'string' ? raw : raw.url))
+  .union([
+    z.string().min(1),
+    z.object({
+      url: z.string().min(1),
+      workspacePath: z.string().min(1).optional()
+    })
+  ])
+  .transform((raw) =>
+    typeof raw === 'string' ? { url: raw } : { url: raw.url, workspacePath: raw.workspacePath }
+  )
+export type BrowserNavigateRequest = z.infer<typeof BrowserNavigateRequestSchema>
 
 export const BrowserTakeScreenshotRequestSchema = z.object({
   workspacePath: z.string().min(1),

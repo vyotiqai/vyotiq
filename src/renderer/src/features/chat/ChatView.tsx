@@ -20,7 +20,7 @@ import {
 } from './components/ChatStreamLeaves'
 import { useGitChrome } from './components/GitChrome'
 import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
-import type { AgentInteractionMode, ChatMessage, ProviderId, ToolApprovalDecision } from '@shared/ipc'
+import type { AgentInteractionMode, ChatMessage, ProviderId, PtySessionInfo, ToolApprovalDecision } from '@shared/ipc'
 import {
   contentAudios,
   contentDisplayText,
@@ -37,7 +37,7 @@ import { usePersistedNumber } from '@renderer/lib/hooks/usePersistedNumber'
 import { useTitleBarAccessory } from '@renderer/lib/context/TitleBarAccessory'
 import {
   BROWSER_PANEL_OPEN_KEY,
-  CHAT_COLUMN_MAX,
+  CHAT_COLUMN,
   CHAT_GUTTER,
   CHAT_RIGHT_PANEL,
   CHAT_STAGE_INSET,
@@ -87,6 +87,8 @@ function TranscriptPane({
   editingUserMessageIndex = null,
   editComposer,
   onBeginEditUserMessage,
+  onRevertUserMessage,
+  messageCount = 0,
   networkWait = null,
   turnFailed = false,
   turnFailureLabel = null
@@ -117,6 +119,8 @@ function TranscriptPane({
   editingUserMessageIndex?: number | null
   editComposer?: React.ReactNode
   onBeginEditUserMessage?: (messageIndex: number) => void
+  onRevertUserMessage?: (messageIndex: number) => void
+  messageCount?: number
   networkWait?: {
     attempt: number
     maxAttempts: number
@@ -163,6 +167,8 @@ function TranscriptPane({
         editingUserMessageIndex={editingUserMessageIndex}
         editComposer={editComposer}
         onBeginEditUserMessage={onBeginEditUserMessage}
+        onRevertUserMessage={onRevertUserMessage}
+        messageCount={messageCount}
       />
     </RunSessionProvider>
   )
@@ -208,9 +214,12 @@ export function ChatView({
   onSend,
   onStop,
   onEditAndResend,
+  onRevertToUserMessage,
   messages = [],
   pendingFollowUps = [],
   onRemoveFollowUp,
+  onEditFollowUp,
+  onSendFollowUpNow,
   onDismissError,
   composerDraft,
   onComposerDraftChange,
@@ -297,11 +306,14 @@ export function ChatView({
     files?: import('@shared/ipc').AttachedFile[],
     extras?: import('@shared/ipc').ComposerSendExtras
   ) => boolean | void | Promise<boolean | void>
+  onRevertToUserMessage?: (userMessageIndex: number) => boolean | Promise<boolean>
   /** Full chat messages for seeding inline edit attachments. */
   messages?: ChatMessage[]
   onStop: () => void
   pendingFollowUps?: import('@renderer/lib/hooks/createChatStreamController').PendingFollowUpState[]
   onRemoveFollowUp?: (id: string) => void
+  onEditFollowUp?: (id: string, text: string) => boolean | Promise<boolean>
+  onSendFollowUpNow?: (id: string) => void
   onDismissError?: () => void
   composerDraft?: string
   onComposerDraftChange?: (draft: string) => void
@@ -338,8 +350,9 @@ export function ChatView({
 }) {
   // Boolean presence only — stays Object.is-stable across pure text_delta frames.
   const hasItems = useHasChatItems(itemsStore, items)
+  const liveItems = useChatLiveItems(itemsStore, items)
   const { offlineHint } = useNetworkStatus()
-  const hasTranscriptRunError = items.some((item) => item.kind === 'run_error')
+  const hasTranscriptRunError = liveItems.some((item) => item.kind === 'run_error')
   const chatBannerError = hasTranscriptRunError ? null : error
   const operationalBannerError = operationalError ?? null
   const turnFailed =
@@ -412,7 +425,6 @@ export function ChatView({
 
   /** Session-scoped: skip auto-open after the user closes a panel until they open it again. */
   const dismissedPanelsRef = useRef<Set<ChatRightPanelId>>(new Set())
-  const liveItems = useChatLiveItems(itemsStore, items)
   const [gitRevision, bumpGitRevision] = useGitRevision(workspacePath, running, liveItems)
   const gitChrome = useGitChrome(workspacePath, gitRevision, Boolean(workspacePath))
   const notifyGitMutated = useCallback(() => {
@@ -648,16 +660,25 @@ export function ChatView({
     }
   }, [workspacePath, activeRunId, agentMode, tryAutoOpenPanel])
 
-  const tabItems = useMemo(
-    () => dockTabs.map((id) => defaultDockTab(id, id === 'pr' ? prNumber : null)),
-    [dockTabs, prNumber]
-  )
-  const immersiveTabItems = useMemo(() => [AGENT_DOCK_TAB, ...tabItems], [tabItems])
   const visiblePanelId: ChatRightPanelId | null = dockImmersive
     ? immersiveTab === 'agent'
       ? null
       : immersiveTab
     : activeRightPanel
+
+  const terminalSessionBarHostRef = useRef<HTMLDivElement>(null)
+  const [terminalSessions, setTerminalSessions] = useState<PtySessionInfo[]>([])
+  const showTerminalSessionChrome =
+    mountedPanels.includes('terminal') && visiblePanelId === 'terminal'
+
+  const tabItems = useMemo(() => {
+    const items = dockTabs.map((id) => defaultDockTab(id, id === 'pr' ? prNumber : null))
+    if (visiblePanelId === 'terminal' && terminalSessions.length > 0) {
+      return items.filter((tab) => tab.id !== 'terminal')
+    }
+    return items
+  }, [dockTabs, prNumber, visiblePanelId, terminalSessions.length])
+  const immersiveTabItems = useMemo(() => [AGENT_DOCK_TAB, ...tabItems], [tabItems])
   // Pad only while the floating side rail is mounted (hidden when a side dock
   // is open or in immersive unified-tabs mode).
   const agentSideRailPad = !dockImmersive && activeRightPanel == null
@@ -717,6 +738,19 @@ export function ChatView({
       return onEditAndResend(index, text, images, files, extras)
     },
     [editingUserMessageIndex, onEditAndResend, cancelPromptEdit]
+  )
+
+  const beginPromptRevert = useCallback(
+    async (messageIndex: number) => {
+      if (!onRevertToUserMessage) return
+      const confirmed = window.confirm(
+        'Revert to this prompt? File changes and messages after it will be removed.'
+      )
+      if (!confirmed) return
+      const ok = await onRevertToUserMessage(messageIndex)
+      if (ok !== false) notifyGitMutated()
+    },
+    [onRevertToUserMessage, notifyGitMutated]
   )
 
   const editing = editingUserMessageIndex != null
@@ -812,6 +846,8 @@ export function ChatView({
     onStop,
     pendingFollowUps,
     onRemoveFollowUp,
+    onEditFollowUp,
+    onSendFollowUpNow,
     runNotice,
     incomplete,
     onContinue,
@@ -821,6 +857,7 @@ export function ChatView({
     bannerError: chatBannerError,
     secondaryBannerError: operationalBannerError,
     offlineHint,
+    networkWait,
     activeRunId,
     onDismissError,
     contextUsage: metaStore ? undefined : contextUsage,
@@ -841,12 +878,12 @@ export function ChatView({
         <div
           className={cn(
             'flex min-h-0 flex-1 flex-col items-center justify-center',
-            agentSideRailPad ? CHAT_STAGE_INSET : CHAT_GUTTER
+            CHAT_GUTTER
           )}
           role="status"
         >
           {(chatBannerError || operationalBannerError) ? (
-            <div className={cn('mb-4 flex w-full flex-col gap-2', CHAT_COLUMN_MAX)}>
+            <div className={cn('mb-4 flex w-full flex-col gap-2', CHAT_COLUMN)}>
               {operationalBannerError ? (
                 <Alert className="w-full">{operationalBannerError}</Alert>
               ) : null}
@@ -858,10 +895,7 @@ export function ChatView({
             </div>
           ) : null}
           <div
-            className={cn(
-              'flex w-full flex-col items-center gap-3 animate-fade-in',
-              CHAT_COLUMN_MAX
-            )}
+            className={cn('w-full animate-fade-in', CHAT_COLUMN)}
             data-composer-hero
           >
             <MemoComposer
@@ -901,20 +935,24 @@ export function ChatView({
             editingUserMessageIndex={editingUserMessageIndex}
             editComposer={editComposer}
             onBeginEditUserMessage={onEditAndResend ? beginPromptEdit : undefined}
+            onRevertUserMessage={onRevertToUserMessage ? beginPromptRevert : undefined}
+            messageCount={messages.length}
             networkWait={networkWait}
             turnFailed={turnFailed}
             turnFailureLabel={turnFailureLabel}
           />
 
-          <MemoComposer
-            key={`composer:${surfaceKey}`}
-            {...composerProps}
-            variant="dock"
-            onDismissError={onDismissError}
-            leading={
-              <ChatGitLeading chrome={gitChrome} onOpenChanges={onOpenUncommittedChanges} />
-            }
-          />
+          {!editing ? (
+            <MemoComposer
+              key={`composer:${surfaceKey}`}
+              {...composerProps}
+              variant="dock"
+              onDismissError={onDismissError}
+              leading={
+                <ChatGitLeading chrome={gitChrome} onOpenChanges={onOpenUncommittedChanges} />
+              }
+            />
+          ) : null}
         </div>
       )}
     </>
@@ -924,6 +962,9 @@ export function ChatView({
     <>
       {mountedPanels.includes('browser') ? (
         <div
+          id="dock-panel-browser"
+          role="tabpanel"
+          aria-label="Browser"
           className={cn(
             'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
             visiblePanelId === 'browser' ? 'flex' : 'hidden'
@@ -941,6 +982,9 @@ export function ChatView({
       ) : null}
       {mountedPanels.includes('terminal') ? (
         <div
+          id="dock-panel-terminal"
+          role="tabpanel"
+          aria-label="Terminal"
           className={cn(
             'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
             visiblePanelId === 'terminal' ? 'flex' : 'hidden'
@@ -951,11 +995,16 @@ export function ChatView({
           <TerminalPanel
             workspacePath={workspacePath}
             visible={visiblePanelId === 'terminal'}
+            sessionBarHostRef={terminalSessionBarHostRef}
+            onSessionsChange={setTerminalSessions}
           />
         </div>
       ) : null}
       {mountedPanels.includes('changes') ? (
         <div
+          id="dock-panel-changes"
+          role="tabpanel"
+          aria-label="Changes"
           className={cn(
             'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
             visiblePanelId === 'changes' ? 'flex' : 'hidden'
@@ -987,6 +1036,9 @@ export function ChatView({
       ) : null}
       {mountedPanels.includes('pr') ? (
         <div
+          id="dock-panel-pr"
+          role="tabpanel"
+          aria-label="Pull request"
           className={cn(
             'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
             visiblePanelId === 'pr' ? 'flex' : 'hidden'
@@ -1005,6 +1057,9 @@ export function ChatView({
       ) : null}
       {mountedPanels.includes('plan') ? (
         <div
+          id="dock-panel-plan"
+          role="tabpanel"
+          aria-label="Plan"
           className={cn(
             'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
             visiblePanelId === 'plan' ? 'flex' : 'hidden'
@@ -1037,6 +1092,9 @@ export function ChatView({
               onOpenPanel={(id) => setRightPanel(id)}
               expanded
               onToggleExpanded={toggleDockExpanded}
+              terminalSessionBarHostRef={
+                showTerminalSessionChrome ? terminalSessionBarHostRef : undefined
+              }
             />,
             titleBarHost
           )
@@ -1059,9 +1117,15 @@ export function ChatView({
                 onOpenPanel={(id) => setRightPanel(id)}
                 expanded
                 onToggleExpanded={toggleDockExpanded}
+                terminalSessionBarHostRef={
+                  showTerminalSessionChrome ? terminalSessionBarHostRef : undefined
+                }
               />
             ) : null}
             <div
+              id="dock-panel-agent"
+              role="tabpanel"
+              aria-label="Agent"
               className={cn(
                 'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
                 immersiveTab === 'agent' ? 'flex' : 'hidden'
@@ -1105,6 +1169,9 @@ export function ChatView({
                     onOpenPanel={(id) => setRightPanel(id)}
                     expanded={false}
                     onToggleExpanded={toggleDockExpanded}
+                    terminalSessionBarHostRef={
+                      showTerminalSessionChrome ? terminalSessionBarHostRef : undefined
+                    }
                   />
                   {panelBodies}
                 </aside>

@@ -122,7 +122,7 @@ export const CompactRow = memo(function CompactRow({
         {status === 'running' ? <TextShimmer>{title}</TextShimmer> : title}
       </span>
       {subtitle ? (
-        <span className="min-w-0 truncate text-tertiary" title={subtitle}>
+        <span className="min-w-0 flex-1 truncate text-tertiary" title={subtitle}>
           {subtitle}
         </span>
       ) : null}

@@ -39,7 +39,10 @@ export function GeneralSection({
             : `${form.displayProviderMeta?.label ?? form.displayProvider} · ${form.displayModel}. Change provider in Providers; pick the model in the composer.`
         }
       >
-        <span className="max-w-[200px] truncate rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs text-secondary">
+        <span
+          className="min-w-0 max-w-full truncate rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs text-secondary"
+          title={form.displayModel}
+        >
           {form.displayModel}
         </span>
       </SettingsRow>
@@ -174,7 +177,7 @@ export function GeneralSection({
             {form.crashSnippets.map((snippet, i) => (
               <li
                 key={`${snippet.at}-${snippet.kind}-${i}`}
-                className="rounded-md border border-border/60 bg-surface px-2.5 py-1.5 text-[11px] text-secondary"
+                className="rounded-md border border-border/60 bg-surface px-2.5 py-1.5 text-caption text-secondary"
               >
                 <span className="font-medium text-fg">
                   {snippet.kind === 'renderer' ? 'Renderer' : 'Child'} · {snippet.reason}

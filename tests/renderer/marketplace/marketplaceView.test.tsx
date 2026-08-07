@@ -282,7 +282,7 @@ describe('MarketplaceView', () => {
     expect(await screen.findByRole('button', { name: /^Add to Vyotiq$/i })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /^Marketplace$/i }))
     await screen.findByRole('heading', { name: /^Featured$/i })
-    const selected = screen.getAllByRole('button', { current: true })
+    const selected = screen.getAllByRole('button', { current: 'page' })
     expect(selected.some((el) => el.textContent?.includes('Filesystem'))).toBe(true)
   })
 

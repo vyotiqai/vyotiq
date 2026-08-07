@@ -7,7 +7,7 @@ import { DirListing, TruncatedBanner } from '../primitives'
 
 /** Quiet section label — distinguishes directory listings from Files Changed receipts. */
 const DIR_SECTION_LABEL =
-  'text-[10px] font-medium uppercase tracking-[0.07em] text-tertiary'
+  'text-2xs font-medium uppercase tracking-[var(--vy-tracking-caps)] text-tertiary'
 
 export function ListDirBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps) {
   const data = useMemo(() => parseListDirData(tool), [tool])
@@ -27,7 +27,7 @@ export function ListDirBody({ tool, loading, loadFailed, inGroup }: ToolBodyProp
     <div data-tool-body="list_dir">
       <div className={`${TOOL_BODY_PAD} flex flex-col gap-0.5 pb-1`}>
         <span className={DIR_SECTION_LABEL}>Directory</span>
-        {detail ? <span className="font-mono text-[10px] text-tertiary">{detail}</span> : null}
+        {detail ? <span className="font-mono text-2xs text-tertiary">{detail}</span> : null}
       </div>
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       <DirListing entries={data.entries} />

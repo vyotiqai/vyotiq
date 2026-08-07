@@ -4,6 +4,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ChatView } from '@renderer/features/chat/ChatView'
+import type { ChatItemsStore } from '@renderer/features/chat/chatStores'
+import type { UiItem } from '@shared/transcript'
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
@@ -87,5 +89,32 @@ describe('ChatView operational errors', () => {
     expect(screen.getByRole('alert').textContent).toContain('Pick workspace failed')
     expect(document.querySelector('[data-composer-hero]')).toBeTruthy()
     expect(screen.queryByText(/No recent workspaces yet/i)).toBeNull()
+  })
+
+  it('suppresses the chat error banner when itemsStore has a run_error but items prop is stale', () => {
+    const runErrorItem = {
+      kind: 'run_error',
+      id: 'err-1',
+      message: 'Run failed in transcript'
+    } as UiItem
+    const itemsStore: ChatItemsStore = {
+      subscribeItems: () => () => {},
+      getItemsRevision: () => 1,
+      getItems: () => [runErrorItem]
+    }
+
+    render(
+      <ChatView
+        {...baseProps}
+        items={[]}
+        itemsStore={itemsStore}
+        error="Stale chat error banner"
+        activeRunId="run-1"
+        onDismissError={vi.fn()}
+      />
+    )
+
+    expect(screen.queryByText('Stale chat error banner')).toBeNull()
+    expect(screen.getByText('Run failed in transcript')).toBeTruthy()
   })
 })

@@ -42,7 +42,7 @@ function McpResultBody({
         {banner}
         <ul className={cn(TOOL_BODY_INNER, TOOL_BODY_FLOW, 'm-0 list-none p-0')}>
           {view.lines.map((line) => (
-            <li key={line} className="truncate py-0.5 font-mono text-[11px] text-fg/80" title={line}>
+            <li key={line} className="truncate py-0.5 font-mono text-caption text-fg/80" title={line}>
               {line}
             </li>
           ))}
@@ -57,7 +57,7 @@ function McpResultBody({
       <div className="flex items-start gap-1">
         <pre
           className={cn(
-            'm-0 min-w-0 flex-1 overflow-visible rounded-sm border border-border bg-surface px-2 py-1 pr-5 font-mono text-[11px] whitespace-pre-wrap text-fg/80 [overflow-wrap:anywhere]',
+            'm-0 min-w-0 flex-1 overflow-visible rounded-sm border border-border bg-surface px-2 py-1 pr-5 font-mono text-caption whitespace-pre-wrap text-fg/80 [overflow-wrap:anywhere]',
             data.isError && 'text-danger'
           )}
         >
@@ -95,13 +95,13 @@ export function McpBody({ tool, loading, loadFailed, mcpServerNames }: ToolBodyP
     <div className="flex flex-col gap-2">
       <div className={`${TOOL_BODY_INNER} flex flex-wrap items-center gap-2`}>
         {showServerChip ? (
-          <span className="rounded-sm border border-border bg-surface-2/60 px-1.5 py-px text-[10px] text-tertiary">
+          <span className="rounded-sm border border-border bg-surface-2/60 px-1.5 py-px text-2xs text-tertiary">
             {data.serverName}
           </span>
         ) : null}
-        <span className="font-medium text-[11px] text-fg">{humanizeSnakeCase(data.toolName)}</span>
+        <span className="font-medium text-caption text-fg">{humanizeSnakeCase(data.toolName)}</span>
         {data.isError ? (
-          <span className="text-[10px] font-medium text-danger">Error</span>
+          <span className="text-2xs font-medium text-danger">Error</span>
         ) : null}
       </div>
       {argChips.length > 0 ? (
@@ -109,7 +109,7 @@ export function McpBody({ tool, loading, loadFailed, mcpServerNames }: ToolBodyP
           {argChips.map((chip) => (
             <span
               key={chip}
-              className="max-w-full truncate rounded-sm border border-border bg-surface px-1.5 py-px font-mono text-[10px] text-tertiary"
+              className="max-w-full truncate rounded-sm border border-border bg-surface px-1.5 py-px font-mono text-2xs text-tertiary"
               title={chip}
             >
               {chip}
@@ -135,13 +135,13 @@ export function FallbackBody({ tool, loading, loadFailed }: ToolBodyProps) {
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
       {content ? (
         <p
-          className={`${TOOL_BODY_PAD} m-0 ${TOOL_BODY_FLOW} text-[11px] leading-relaxed whitespace-pre-wrap text-fg/80 [overflow-wrap:anywhere]`}
+          className={`${TOOL_BODY_PAD} m-0 ${TOOL_BODY_FLOW} text-caption leading-relaxed whitespace-pre-wrap text-fg/80 [overflow-wrap:anywhere]`}
           aria-busy={loading || undefined}
         >
           {content}
         </p>
       ) : loading ? (
-        <p className={`${TOOL_BODY_PAD} m-0 text-[11px] text-tertiary`}>Working…</p>
+        <p className={`${TOOL_BODY_PAD} m-0 text-caption text-tertiary`}>Working…</p>
       ) : null}
     </div>
   )

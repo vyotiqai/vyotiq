@@ -12,13 +12,13 @@ export function WebFetchBody({ tool, loading, loadFailed, inGroup }: ToolBodyPro
     <div>
       {!inGroup ? (
         <div className={`${TOOL_BODY_PAD} border-b border-border pb-2`}>
-          <span className="truncate font-mono text-[10px] text-tertiary" title={data.url}>
+          <span className="truncate font-mono text-2xs text-tertiary" title={data.url}>
             {data.url}
           </span>
         </div>
       ) : null}
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
-      <div className={`${TOOL_BODY_INNER} ${TOOL_BODY_FLOW} text-[11px] text-fg/80`}>
+      <div className={`${TOOL_BODY_INNER} ${TOOL_BODY_FLOW} text-caption text-fg/80`}>
         <MarkdownContent content={data.content} />
       </div>
     </div>
