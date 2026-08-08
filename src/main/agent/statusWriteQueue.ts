@@ -1,8 +1,8 @@
-import { readFile, writeFile, rename, mkdir, unlink } from 'fs/promises'
-import { dirname, join, basename } from 'path'
-import { existsSync } from 'fs'
+import { readFile } from 'fs/promises'
+import { join, basename } from 'path'
 import { RunStatusSchema, type RunStatus } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
+import { atomicWriteJsonAsync } from '../storage/atomicWrite'
 import { invalidateListRunsCache } from './runListCache'
 
 const STATUS_FLUSH_MS = 250
@@ -86,19 +86,6 @@ async function readStatusFile(path: string): Promise<RunStatus> {
     // keep default
   }
   return fallback
-}
-
-async function atomicWriteJsonAsync(target: string, data: unknown): Promise<void> {
-  const dir = dirname(target)
-  if (!existsSync(dir)) await mkdir(dir, { recursive: true })
-  const temp = `${target}.tmp`
-  try {
-    await writeFile(temp, JSON.stringify(data, null, 2), 'utf8')
-    await rename(temp, target)
-  } catch (err) {
-    try { await unlink(temp) } catch { /* ignore */ }
-    throw err
-  }
 }
 
 async function flushDir(dir: string): Promise<void> {

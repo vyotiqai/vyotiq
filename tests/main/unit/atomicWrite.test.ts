@@ -1,0 +1,119 @@
+import { describe, expect, it, vi } from 'vitest'
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import {
+  atomicWriteJson,
+  atomicWriteJsonAsync,
+  isTransientRenameError,
+  renameSyncWithRetry,
+  renameWithRetry
+} from '@main/storage/atomicWrite'
+
+function eperm(): NodeJS.ErrnoException {
+  const err = new Error('EPERM: operation not permitted, rename') as NodeJS.ErrnoException
+  err.code = 'EPERM'
+  err.errno = -4048
+  err.syscall = 'rename'
+  return err
+}
+
+describe('atomicWrite Windows rename retry', () => {
+  it('treats EPERM/EACCES/EBUSY as transient', () => {
+    expect(isTransientRenameError(Object.assign(new Error('x'), { code: 'EPERM' }))).toBe(true)
+    expect(isTransientRenameError(Object.assign(new Error('x'), { code: 'EACCES' }))).toBe(true)
+    expect(isTransientRenameError(Object.assign(new Error('x'), { code: 'EBUSY' }))).toBe(true)
+    expect(isTransientRenameError(Object.assign(new Error('x'), { code: 'ENOENT' }))).toBe(false)
+    expect(isTransientRenameError(new Error('disk full'))).toBe(false)
+  })
+
+  it('renameWithRetry succeeds after transient EPERM on Windows', async () => {
+    const renameFn = vi
+      .fn<(from: string, to: string) => Promise<void>>()
+      .mockRejectedValueOnce(eperm())
+      .mockResolvedValueOnce(undefined)
+    const sleepFn = vi.fn<(ms: number) => Promise<void>>().mockResolvedValue(undefined)
+
+    await renameWithRetry('a.tmp', 'a', {
+      isWindows: true,
+      delaysMs: [1, 2],
+      renameFn,
+      sleepFn
+    })
+
+    expect(renameFn).toHaveBeenCalledTimes(2)
+    expect(sleepFn).toHaveBeenCalledWith(1)
+  })
+
+  it('renameWithRetry does not retry non-transient errors', async () => {
+    const renameFn = vi
+      .fn<(from: string, to: string) => Promise<void>>()
+      .mockRejectedValueOnce(new Error('disk full'))
+    const sleepFn = vi.fn()
+
+    await expect(
+      renameWithRetry('a.tmp', 'a', {
+        isWindows: true,
+        delaysMs: [1],
+        renameFn,
+        sleepFn
+      })
+    ).rejects.toThrow('disk full')
+    expect(renameFn).toHaveBeenCalledTimes(1)
+    expect(sleepFn).not.toHaveBeenCalled()
+  })
+
+  it('renameWithRetry does not retry on non-Windows even for EPERM', async () => {
+    const renameFn = vi
+      .fn<(from: string, to: string) => Promise<void>>()
+      .mockRejectedValueOnce(eperm())
+    const sleepFn = vi.fn()
+
+    await expect(
+      renameWithRetry('a.tmp', 'a', {
+        isWindows: false,
+        delaysMs: [1],
+        renameFn,
+        sleepFn
+      })
+    ).rejects.toMatchObject({ code: 'EPERM' })
+    expect(renameFn).toHaveBeenCalledTimes(1)
+    expect(sleepFn).not.toHaveBeenCalled()
+  })
+
+  it('renameSyncWithRetry succeeds after EPERM on Windows', () => {
+    const renameSyncFn = vi
+      .fn<(from: string, to: string) => void>()
+      .mockImplementationOnce(() => {
+        throw eperm()
+      })
+      .mockImplementationOnce(() => undefined)
+    const sleepSyncFn = vi.fn()
+
+    renameSyncWithRetry('a.tmp', 'a', {
+      isWindows: true,
+      delaysMs: [1],
+      renameSyncFn,
+      sleepSyncFn
+    })
+
+    expect(renameSyncFn).toHaveBeenCalledTimes(2)
+    expect(sleepSyncFn).toHaveBeenCalledWith(1)
+  })
+
+  it('atomicWriteJson / async round-trip with unique tmp cleanup', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-atomic-write-'))
+    try {
+      const target = join(dir, 'status.json')
+      atomicWriteJson(target, { status: 'running', step: 0 })
+      expect(JSON.parse(readFileSync(target, 'utf8'))).toMatchObject({ status: 'running', step: 0 })
+      expect(readdirSync(dir).filter((n) => n.endsWith('.tmp'))).toEqual([])
+
+      await atomicWriteJsonAsync(target, { status: 'done', step: 3 })
+      expect(JSON.parse(readFileSync(target, 'utf8'))).toMatchObject({ status: 'done', step: 3 })
+      expect(readdirSync(dir).filter((n) => n.endsWith('.tmp'))).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
