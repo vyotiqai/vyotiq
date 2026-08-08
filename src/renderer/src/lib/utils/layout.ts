@@ -190,6 +190,23 @@ export const SIDEBAR_COLLAPSED_WIDTH_PX = 44
 export const SIDEBAR_COLLAPSED_WIDTH_DARWIN_PX = 72
 export const TITLE_BAR_HEIGHT = 'h-9'
 export const TITLE_BAR_HEIGHT_PX = 36
+
+/**
+ * Windows/Linux caption-button strip width (3 × `sm:w-11` = 132px).
+ * Side-dock titlebar tabs shrink by this so their left edge lines up with the
+ * dock column while controls stay a TitleBar sibling (no absolute overlay).
+ */
+export const WINDOW_CONTROLS_WIDTH_PX = 132
+
+/** True when the shell draws custom min/max/close (Win/Linux; also jsdom fallback). */
+export function showsWindowControls(
+  platform: string | undefined = typeof window !== 'undefined'
+    ? window.vyotiq?.platform
+    : undefined
+): boolean {
+  return platform === 'win32' || platform === 'linux' || !platform
+}
+
 /**
  * Width class names must be complete static strings so Tailwind can emit them.
  * Template-interpolated `w-[${n}px]` is invisible to the scanner and never ships.

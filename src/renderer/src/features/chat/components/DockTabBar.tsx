@@ -40,6 +40,7 @@ export function DockTabBar({
   onToggleExpanded,
   variant = 'dock',
   terminalSessionBarHostRef,
+  embeddedInTitleBar = false,
   className
 }: {
   active: DockImmersiveTabId
@@ -52,10 +53,13 @@ export function DockTabBar({
   variant?: 'dock' | 'immersive'
   /** Host for {@link TerminalSessionBar} when the terminal panel is active. */
   terminalSessionBarHostRef?: RefObject<HTMLDivElement | null>
+  /** Side-dock tabs portaled into the title bar — fill host height, no second border. */
+  embeddedInTitleBar?: boolean
   className?: string
 }) {
   const [addOpen, setAddOpen] = useState(false)
   const immersive = variant === 'immersive'
+  const inTitleBar = immersive || embeddedInTitleBar
 
   const openIds = useMemo(() => new Set(tabs.map((t) => t.id)), [tabs])
   const addable = useMemo(() => ADDABLE.filter((t) => !openIds.has(t.id)), [openIds])
@@ -80,37 +84,22 @@ export function DockTabBar({
         onOpenChange={setAddOpen}
         placement="down"
         align={immersive ? 'start' : 'end'}
-        aria-label={immersive ? 'Add panel' : 'Open panel'}
+        aria-label="Add panel"
         items={addItems}
-        trigger={(props) =>
-          immersive ? (
-            <IconButton
-              ref={props.ref}
-              icon="plus"
-              label="Add panel"
-              size="sm"
-              variant="bare"
-              className="text-muted"
-              aria-expanded={props['aria-expanded']}
-              aria-controls={props['aria-controls']}
-              aria-haspopup={props['aria-haspopup']}
-              onClick={props.onClick}
-            />
-          ) : (
-            <IconButton
-              ref={props.ref}
-              icon="panels"
-              label="Open panel"
-              variant="bare"
-              size="sm"
-              className="text-muted"
-              aria-expanded={props['aria-expanded']}
-              aria-controls={props['aria-controls']}
-              aria-haspopup={props['aria-haspopup']}
-              onClick={props.onClick}
-            />
-          )
-        }
+        trigger={(props) => (
+          <IconButton
+            ref={props.ref}
+            icon="plus"
+            label="Add panel"
+            size="sm"
+            variant="bare"
+            className="text-muted"
+            aria-expanded={props['aria-expanded']}
+            aria-controls={props['aria-controls']}
+            aria-haspopup={props['aria-haspopup']}
+            onClick={props.onClick}
+          />
+        )}
       />
     ) : null
 
@@ -118,20 +107,21 @@ export function DockTabBar({
     <div
       className={cn(
         'flex min-w-0 shrink-0 flex-row items-center gap-0.5 bg-bg',
-        immersive
+        inTitleBar
           ? 'h-full w-full border-0 px-1 py-0'
           : 'border-b border-border/40 px-1 py-0.5',
         className
       )}
       data-dock-tab-bar
       data-dock-tab-variant={variant}
+      data-dock-embedded={embeddedInTitleBar ? '1' : undefined}
     >
       {/* Tabs hug content; scroll only when they overflow — never stretch a scrollport
           across the empty titlebar (scrollbar dead zone + vertical clip). */}
       <div
         className={cn(
           'flex min-w-0 flex-row items-center gap-1',
-          immersive
+          inTitleBar
             ? 'app-region-no-drag max-w-full shrink overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:h-0 [&::-webkit-scrollbar]:w-0'
             : 'sidebar-scroll-x flex-1 overflow-x-auto'
         )}
@@ -235,7 +225,8 @@ export function DockTabBar({
       <div
         className={cn(
           'relative flex shrink-0 items-center gap-0.5',
-          immersive && 'app-region-no-drag pr-2'
+          immersive && 'app-region-no-drag pr-2',
+          embeddedInTitleBar && 'app-region-no-drag'
         )}
       >
         {!immersive ? addMenu : null}

@@ -59,13 +59,17 @@ test('Ctrl/Cmd+, opens settings', async () => {
   ).toBeVisible({ timeout: 10_000 })
 })
 
-test('hovering Settings IconButton shows custom tooltip; Esc dismisses', async () => {
+test('hovering New chat IconButton shows custom tooltip; Esc dismisses', async () => {
   const { window } = launched
-  const settings = window.getByRole('button', { name: /^settings$/i }).first()
-  await settings.hover()
+  // Settings uses native title=; IconButton (New chat) mounts role=tooltip.
+  const newChat = window.getByRole('button', { name: /^new chat$/i }).first()
+  await expect(newChat).toBeVisible()
+  const box = await newChat.boundingBox()
+  expect(box).toBeTruthy()
+  await window.mouse.move((box?.x ?? 0) + (box?.width ?? 0) / 2, (box?.y ?? 0) + (box?.height ?? 0) / 2)
   const tip = window.locator('[role="tooltip"]')
-  await expect(tip).toBeVisible({ timeout: 3_000 })
-  await expect(tip).toContainText(/settings/i)
+  await expect(tip).toBeVisible({ timeout: 5_000 })
+  await expect(tip).toContainText(/new chat/i)
   await window.keyboard.press('Escape')
   await expect(tip).toHaveCount(0)
 })

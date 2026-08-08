@@ -296,9 +296,10 @@ function mcpServerGate(
   toolName: string,
   serverId: string,
   summary: string,
-  context: ToolExecutionContext
+  context: ToolExecutionContext,
+  workspacePath?: string | null
 ): { ok: true } | { ok: false; result: ToolResult } {
-  const access = assertMcpServerAccess(serverId, context.runEnabledMcpIds)
+  const access = assertMcpServerAccess(serverId, context.runEnabledMcpIds, workspacePath)
   if (!access.ok) {
     return { ok: false, result: toolFail(toolName, summary, access.error) }
   }
@@ -932,14 +933,19 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       lines.join('\n')
     )
   },
-  mcp_list_resources: async (_workspace, args, signal, context) => {
+  mcp_list_resources: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const serverId = optionalMcpServerId(args)
     if (serverId) {
-      const gate = mcpServerGate('mcp_list_resources', serverId, serverId, context)
+      const gate = mcpServerGate('mcp_list_resources', serverId, serverId, context, workspace)
       if (!gate.ok) return gate.result
     }
-    const entries = await listMcpResources(serverId, context.runEnabledMcpIds, signal)
+    const entries = await listMcpResources(
+      serverId,
+      context.runEnabledMcpIds,
+      signal,
+      workspace
+    )
     if (entries.length === 0) {
       return toolOk(
         'mcp_list_resources',
@@ -953,26 +959,37 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       formatMcpResourceLines(entries)
     )
   },
-  mcp_read_resource: async (_workspace, args, signal, context) => {
+  mcp_read_resource: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const serverId = String(args.serverId ?? '').trim()
     const uri = String(args.uri ?? '').trim()
     if (!serverId) return toolFail('mcp_read_resource', uri || 'resource', 'serverId is required')
     if (!uri) return toolFail('mcp_read_resource', serverId, 'uri is required')
-    const gate = mcpServerGate('mcp_read_resource', serverId, uri, context)
+    const gate = mcpServerGate('mcp_read_resource', serverId, uri, context, workspace)
     if (!gate.ok) return gate.result
-    const result = await readMcpResource(serverId, uri, signal, context.runEnabledMcpIds)
+    const result = await readMcpResource(
+      serverId,
+      uri,
+      signal,
+      context.runEnabledMcpIds,
+      workspace
+    )
     if (!result.ok) return toolFail('mcp_read_resource', uri, result.error)
     return toolOk('mcp_read_resource', uri, result.content)
   },
-  mcp_list_prompts: async (_workspace, args, signal, context) => {
+  mcp_list_prompts: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const serverId = optionalMcpServerId(args)
     if (serverId) {
-      const gate = mcpServerGate('mcp_list_prompts', serverId, serverId, context)
+      const gate = mcpServerGate('mcp_list_prompts', serverId, serverId, context, workspace)
       if (!gate.ok) return gate.result
     }
-    const entries = await listMcpPrompts(serverId, context.runEnabledMcpIds, signal)
+    const entries = await listMcpPrompts(
+      serverId,
+      context.runEnabledMcpIds,
+      signal,
+      workspace
+    )
     if (entries.length === 0) {
       return toolOk(
         'mcp_list_prompts',
@@ -982,13 +999,13 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     }
     return toolOk('mcp_list_prompts', `${entries.length} prompts`, formatMcpPromptLines(entries))
   },
-  mcp_get_prompt: async (_workspace, args, signal, context) => {
+  mcp_get_prompt: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const serverId = String(args.serverId ?? '').trim()
     const name = String(args.name ?? '').trim()
     if (!serverId) return toolFail('mcp_get_prompt', name || 'prompt', 'serverId is required')
     if (!name) return toolFail('mcp_get_prompt', serverId, 'name is required')
-    const gate = mcpServerGate('mcp_get_prompt', serverId, name, context)
+    const gate = mcpServerGate('mcp_get_prompt', serverId, name, context, workspace)
     if (!gate.ok) return gate.result
     const promptArgs =
       args.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
@@ -998,7 +1015,14 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
             )
           )
         : undefined
-    const result = await getMcpPrompt(serverId, name, promptArgs, signal, context.runEnabledMcpIds)
+    const result = await getMcpPrompt(
+      serverId,
+      name,
+      promptArgs,
+      signal,
+      context.runEnabledMcpIds,
+      workspace
+    )
     if (!result.ok) return toolFail('mcp_get_prompt', name, result.error)
     return toolOk('mcp_get_prompt', name, result.content)
   },
@@ -1487,7 +1511,8 @@ export async function executeTool(
       parsed,
       signal,
       name,
-      context.runEnabledMcpIds
+      context.runEnabledMcpIds,
+      workspace
     )
   }
 

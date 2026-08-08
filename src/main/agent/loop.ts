@@ -979,7 +979,7 @@ export async function* runAgent(input: {
       yield ev
     }
 
-    // Bind stdio MCP cwd / git --repository once per run (not on every step refresh).
+    // Bind stdio MCP hint for legacy callers; sessions are workspace-scoped per sync.
     setMcpStdioWorkspace(workspace)
 
     const refreshMcpToolsForStep = async (): Promise<void> => {

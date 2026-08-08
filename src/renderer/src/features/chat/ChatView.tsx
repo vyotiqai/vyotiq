@@ -48,13 +48,17 @@ import {
   DOCK_WIDTH_MIN_PX,
   IMMERSIVE_TAB_KEY,
   RIGHT_PANEL_KEY,
+  WINDOW_CONTROLS_WIDTH_PX,
   clampDockWidthPx,
   isChatRightPanelId,
+  showsWindowControls,
   type ChatRightPanelId,
   type DockImmersiveTabId
 } from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui/cn'
 import type { ChatItemsStore, ChatMetaStore } from './chatStores'
+import { ChatPaneHost } from './ChatPaneHost'
+import type { ChatPane, PaneDropZone } from '@renderer/lib/chat/chatPaneLayout'
 
 export type { ChatItemsStore, ChatMetaStore } from './chatStores'
 
@@ -247,7 +251,8 @@ export function ChatView({
   onDiscardWriteFile,
   onKeepAllWrites,
   resolveBlockedReason = null,
-  imageReadyHint = null
+  imageReadyHint = null,
+  multiPane = null
 }: {
   items: UiItem[]
   /** When set, transcript leaves subscribe so ChatView/Composer skip token patches. */
@@ -347,6 +352,21 @@ export function ChatView({
   resolveBlockedReason?: string | null
   /** Composer hint when an image-capable API key is configured. */
   imageReadyHint?: string | null
+  multiPane?: {
+    panes: ChatPane[]
+    focusedPaneId: string
+    sizes: number[]
+    onFocusPane: (paneId: string) => void
+    onClosePane: (paneId: string) => void
+    onSizesChange: (sizes: number[]) => void
+    onSessionDrop: (
+      anchorPaneId: string,
+      zone: PaneDropZone,
+      payload: { workspacePath: string; runId: string }
+    ) => boolean
+    getPaneTitle: (pane: ChatPane) => string
+    renderPane: (pane: ChatPane, focused: boolean) => React.ReactNode
+  } | null
 }) {
   // Boolean presence only — stays Object.is-stable across pure text_delta frames.
   const hasItems = useHasChatItems(itemsStore, items)
@@ -417,11 +437,16 @@ export function ChatView({
   const dockMaxPx = clampDockWidthPx(DOCK_WIDTH_MAX_PX)
   const dockImmersive = dockExpanded && dockTabs.length > 0
   const { host: titleBarHost, setOccupied: setTitleBarOccupied } = useTitleBarAccessory()
+  const dockSideTitleBar = activeRightPanel != null && !dockImmersive && titleBarHost != null
+  const sideDockTitleBarWidthPx = Math.max(
+    DOCK_WIDTH_MIN_PX - WINDOW_CONTROLS_WIDTH_PX,
+    dockWidthPx - (showsWindowControls() ? WINDOW_CONTROLS_WIDTH_PX : 0)
+  )
 
   useLayoutEffect(() => {
-    setTitleBarOccupied(dockImmersive)
+    setTitleBarOccupied(dockImmersive || dockSideTitleBar)
     return () => setTitleBarOccupied(false)
-  }, [dockImmersive, setTitleBarOccupied])
+  }, [dockImmersive, dockSideTitleBar, setTitleBarOccupied])
 
   /** Session-scoped: skip auto-open after the user closes a panel until they open it again. */
   const dismissedPanelsRef = useRef<Set<ChatRightPanelId>>(new Set())
@@ -868,7 +893,25 @@ export function ChatView({
     imageReadyHint
   }
 
-  const agentColumn = (
+  const agentColumn =
+    multiPane && multiPane.panes.length >= 1 ? (
+      <>
+        <h1 ref={headingRef} tabIndex={-1} className="sr-only">
+          Vyotiq chat
+        </h1>
+        <ChatPaneHost
+          panes={multiPane.panes}
+          focusedPaneId={multiPane.focusedPaneId}
+          sizes={multiPane.sizes}
+          onFocusPane={multiPane.onFocusPane}
+          onClosePane={multiPane.onClosePane}
+          onSizesChange={multiPane.onSizesChange}
+          onSessionDrop={multiPane.onSessionDrop}
+          getPaneTitle={multiPane.getPaneTitle}
+          renderPane={multiPane.renderPane}
+        />
+      </>
+    ) : (
     <>
       <h1 ref={headingRef} tabIndex={-1} className="sr-only">
         Vyotiq chat
@@ -956,7 +999,7 @@ export function ChatView({
         </div>
       )}
     </>
-  )
+    )
 
   const panelBodies = (
     <>
@@ -1099,6 +1142,43 @@ export function ChatView({
             titleBarHost
           )
         : null}
+      {dockSideTitleBar && titleBarHost
+        ? createPortal(
+            <div
+              className="flex h-full w-full min-w-0 items-stretch"
+              data-dock-titlebar-portal
+            >
+              <div
+                className="app-region-drag min-w-3 flex-1 self-stretch"
+                aria-hidden
+                data-titlebar-drag-spacer
+                onDoubleClick={() => void window.vyotiq?.windowMaximize()}
+              />
+              <div
+                className="flex h-full min-w-0 shrink-0"
+                style={{ width: sideDockTitleBarWidthPx }}
+                data-dock-titlebar-tabs
+              >
+                <DockTabBar
+                  active={activeRightPanel!}
+                  tabs={tabItems}
+                  onSelect={(id) => {
+                    if (id !== 'agent') setRightPanel(id)
+                  }}
+                  onCloseTab={closeDockTab}
+                  onOpenPanel={(id) => setRightPanel(id)}
+                  expanded={false}
+                  onToggleExpanded={toggleDockExpanded}
+                  embeddedInTitleBar
+                  terminalSessionBarHostRef={
+                    showTerminalSessionChrome ? terminalSessionBarHostRef : undefined
+                  }
+                />
+              </div>
+            </div>,
+            titleBarHost
+          )
+        : null}
       <div className="relative flex min-h-0 min-w-0 flex-1">
         {dockImmersive ? (
           <div
@@ -1159,20 +1239,23 @@ export function ChatView({
                   data-right-dock
                   data-dock-expanded="0"
                 >
-                  <DockTabBar
-                    active={activeRightPanel}
-                    tabs={tabItems}
-                    onSelect={(id) => {
-                      if (id !== 'agent') setRightPanel(id)
-                    }}
-                    onCloseTab={closeDockTab}
-                    onOpenPanel={(id) => setRightPanel(id)}
-                    expanded={false}
-                    onToggleExpanded={toggleDockExpanded}
-                    terminalSessionBarHostRef={
-                      showTerminalSessionChrome ? terminalSessionBarHostRef : undefined
-                    }
-                  />
+                  {/* Fallback when TitleBar host is absent (unit tests / non-shell mounts). */}
+                  {!dockSideTitleBar ? (
+                    <DockTabBar
+                      active={activeRightPanel}
+                      tabs={tabItems}
+                      onSelect={(id) => {
+                        if (id !== 'agent') setRightPanel(id)
+                      }}
+                      onCloseTab={closeDockTab}
+                      onOpenPanel={(id) => setRightPanel(id)}
+                      expanded={false}
+                      onToggleExpanded={toggleDockExpanded}
+                      terminalSessionBarHostRef={
+                        showTerminalSessionChrome ? terminalSessionBarHostRef : undefined
+                      }
+                    />
+                  ) : null}
                   {panelBodies}
                 </aside>
               </>

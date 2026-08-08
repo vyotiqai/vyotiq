@@ -58,6 +58,11 @@ describe('useWorkspaceManager', () => {
 
   beforeEach(() => {
     handler = null
+    try {
+      localStorage.removeItem('vyotiq.chatPaneLayout')
+    } catch {
+      /* ignore */
+    }
     chatStart.mockReset()
     chatCancel.mockReset()
     getWorkspaces.mockReset()
@@ -199,6 +204,88 @@ describe('useWorkspaceManager', () => {
     expect(result.current.activeWorkspace).toBe('/ws-b')
     expect(result.current.activeContext?.activeRunId).toBe('run-b-123')
     expect(result.current.activeContext?.openRunIds).toContain('run-b-123')
+  })
+
+  it('multi-pane click focuses existing session without duplicating', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+      expect(result.current.paneLayout?.panes.length).toBe(1)
+    })
+
+    const anchorPaneId = result.current.paneLayout!.panes[0]!.paneId
+
+    await act(async () => {
+      result.current.openRunTab('run-a')
+    })
+    await act(async () => {
+      const ok = result.current.dropSessionOnPane(anchorPaneId, 'right', {
+        workspacePath: '/ws-b',
+        runId: 'run-b'
+      })
+      expect(ok).toBe(true)
+    })
+
+    await waitFor(() => {
+      expect(result.current.paneLayout?.panes).toHaveLength(2)
+    })
+
+    const focusedBefore = result.current.paneLayout!.focusedPaneId
+    const paneShowingB = result.current.paneLayout!.panes.find((p) => p.runId === 'run-b')
+    expect(paneShowingB).toBeTruthy()
+    expect(focusedBefore).toBe(paneShowingB!.paneId)
+
+    // Focus the other pane, then click the already-open B session from the sidebar path.
+    const paneShowingA = result.current.paneLayout!.panes.find((p) => p.runId === 'run-a')
+    expect(paneShowingA).toBeTruthy()
+    await act(async () => {
+      result.current.focusPaneById(paneShowingA!.paneId)
+    })
+    expect(result.current.paneLayout!.focusedPaneId).toBe(paneShowingA!.paneId)
+
+    await act(async () => {
+      await result.current.openRunInWorkspace('/ws-b', 'run-b')
+    })
+
+    expect(result.current.paneLayout?.panes).toHaveLength(2)
+    expect(result.current.paneLayout?.panes.filter((p) => p.runId === 'run-b')).toHaveLength(1)
+    expect(result.current.paneLayout?.focusedPaneId).toBe(paneShowingB!.paneId)
+  })
+
+  it('removes closed-workspace panes when workspace is removed', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+      expect(result.current.paneLayout?.panes.length).toBe(1)
+    })
+
+    const anchorPaneId = result.current.paneLayout!.panes[0]!.paneId
+    await act(async () => {
+      result.current.openRunTab('run-a')
+    })
+    await act(async () => {
+      expect(
+        result.current.dropSessionOnPane(anchorPaneId, 'right', {
+          workspacePath: '/ws-b',
+          runId: 'run-b'
+        })
+      ).toBe(true)
+    })
+    await waitFor(() => {
+      expect(result.current.paneLayout?.panes).toHaveLength(2)
+    })
+
+    await act(async () => {
+      await result.current.removeWorkspace('/ws-a')
+    })
+
+    await waitFor(() => {
+      expect(result.current.paneLayout?.panes).toHaveLength(1)
+    })
+    expect(result.current.paneLayout?.panes[0]?.workspacePath).toBe('/ws-b')
+    expect(result.current.paneLayout?.panes[0]?.runId).toBe('run-b')
   })
 
   it('refreshes workspace runs when activeRuns poll drops a finished background run', async () => {

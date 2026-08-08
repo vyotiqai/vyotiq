@@ -6,6 +6,7 @@ import {
   SIDEBAR_ROW_HOVER
 } from '@renderer/lib/utils/layout'
 import type { RunSummary } from '@shared/ipc'
+import { writeSessionDragPayload } from '@renderer/lib/chat/chatPaneLayout'
 import { InlineConfirmActions } from './InlineConfirmActions'
 import { runTitle, runTooltip } from './runTitle'
 
@@ -29,19 +30,24 @@ function RunStatusDot({ status }: { status: RunSummary['status'] }) {
 
 export const ChatRow = memo(function ChatRow({
   run,
+  workspacePath,
   active,
+  focused,
   onSelect,
   onRename,
   onDelete
 }: {
   run: RunSummary
+  workspacePath: string
   active: boolean
+  focused?: boolean
   onSelect: () => void
   onRename: (goal: string) => void
   onDelete: () => void
 }) {
   const [renaming, setRenaming] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
+  const [dragging, setDragging] = useState(false)
   const [draft, setDraft] = useState(run.goal ?? '')
   const inputRef = useRef<HTMLInputElement>(null)
   const renameCancelledRef = useRef(false)
@@ -101,16 +107,30 @@ export const ChatRow = memo(function ChatRow({
     >
       <button
         type="button"
+        draggable={!renaming && !confirmingDelete}
         className={cn(
           'app-region-no-drag flex w-full min-w-0 items-center gap-1.5 pr-2 text-left vy-transition',
           'group-hover:pr-10 group-focus-within:pr-10 [@media(hover:none)]:pr-10',
           SIDEBAR_ROW,
           active ? SIDEBAR_ROW_ACTIVE : SIDEBAR_ROW_HOVER,
-          active ? 'font-medium' : 'text-fg/85'
+          active ? (focused ? 'font-semibold' : 'font-medium') : 'text-fg/85',
+          dragging && 'opacity-50'
         )}
-        aria-current={active ? 'page' : undefined}
+        aria-current={focused ? 'page' : undefined}
         title={runTooltip(run)}
         onClick={onSelect}
+        onDragStart={(e) => {
+          if (renaming || confirmingDelete) {
+            e.preventDefault()
+            return
+          }
+          writeSessionDragPayload(e.dataTransfer, {
+            workspacePath,
+            runId: run.runId
+          })
+          setDragging(true)
+        }}
+        onDragEnd={() => setDragging(false)}
       >
         <RunStatusDot status={run.status} />
         <span className="min-w-0 flex-1 truncate">{title}</span>

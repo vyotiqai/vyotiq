@@ -140,7 +140,9 @@ export function ChatList({
   onDismissRunsError,
   onSelectRun,
   onRenameRun,
-  onDeleteRun
+  onDeleteRun,
+  isRunOpenInPane,
+  isRunFocusedInPane
 }: {
   workspaceReady: boolean
   sessionQuery: string
@@ -156,6 +158,8 @@ export function ChatList({
   onSelectRun: (path: string, runId: string) => void
   onRenameRun: (path: string, runId: string, goal: string) => void
   onDeleteRun: (path: string, runId: string) => void
+  isRunOpenInPane?: (path: string, runId: string) => boolean
+  isRunFocusedInPane?: (path: string, runId: string) => boolean
 }) {
   return (
     <div className={cn(SIDEBAR_PAD_X, 'py-2')} role="region" aria-label="Workspace sessions">
@@ -257,7 +261,15 @@ export function ChatList({
                               <ChatRow
                                 key={`${workspace.path}:${run.runId}`}
                                 run={run}
-                                active={workspace.activeRunId === run.runId}
+                                workspacePath={workspace.path}
+                                active={
+                                  isRunOpenInPane?.(workspace.path, run.runId) ??
+                                  workspace.activeRunId === run.runId
+                                }
+                                focused={
+                                  isRunFocusedInPane?.(workspace.path, run.runId) ??
+                                  workspace.activeRunId === run.runId
+                                }
                                 onSelect={() => onSelectRun(workspace.path, run.runId)}
                                 onRename={(goal) => onRenameRun(workspace.path, run.runId, goal)}
                                 onDelete={() => onDeleteRun(workspace.path, run.runId)}

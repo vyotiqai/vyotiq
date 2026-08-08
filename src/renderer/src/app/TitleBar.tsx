@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { IconButton, cn } from '@renderer/lib/ui'
-import { TITLE_BAR_HEIGHT } from '@renderer/lib/utils/layout'
+import { TITLE_BAR_HEIGHT, showsWindowControls } from '@renderer/lib/utils/layout'
 import { useIsDesktop } from '@renderer/lib/context/BreakpointProvider'
 import { useTitleBarAccessory } from '@renderer/lib/context/TitleBarAccessory'
 import { MACOS_TITLEBAR_INSET_PX } from '@shared/windowChrome'
 
 function useShowWindowControls(): boolean {
-  const platform = window.vyotiq?.platform
-  return platform === 'win32' || platform === 'linux' || !platform
+  return showsWindowControls()
 }
 
 function useMaximized(): boolean {

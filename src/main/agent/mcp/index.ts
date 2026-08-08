@@ -41,6 +41,8 @@ import {
   withWorkspaceRepositoryArgs
 } from './uvxCompat'
 import { isGitRepo } from '../../git/git'
+import { readWorkspacesState } from '../../workspace/workspaces'
+import { listActiveRuns } from '../runRegistry'
 import { AppError, formatError, isAbortError, mcpConnectErrorCode } from '../../../shared/errors'
 import { assertPublicUrl } from '../tools/webFetch'
 
@@ -53,25 +55,71 @@ export {
   hasUvxMcpWithConstraint
 } from './uvxCompat'
 
-/** Workspace root for stdio MCP cwd / `--repository` rewrite (git MCP). */
+/** Workspace root fallback when spawning stdio MCP without an explicit path. */
 let mcpStdioWorkspacePath: string | null = null
 
+const STDIO_SESSION_SEP = '::stdio::'
+
+/** Composite session key for workspace-scoped stdio MCP transports. */
+export function mcpStdioSessionKey(serverId: string, workspacePath: string): string {
+  return `${serverId}${STDIO_SESSION_SEP}${workspacePath}`
+}
+
+export function parseMcpStdioSessionKey(
+  key: string
+): { serverId: string; workspacePath: string } | null {
+  const idx = key.indexOf(STDIO_SESSION_SEP)
+  if (idx < 0) return null
+  return { serverId: key.slice(0, idx), workspacePath: key.slice(idx + STDIO_SESSION_SEP.length) }
+}
+
+function isStdioTransport(transport: McpServer['transport'] | undefined): boolean {
+  return (transport ?? 'stdio') === 'stdio'
+}
+
+function resolveStdioWorkspacePath(workspacePath?: string | null): string | null {
+  const explicit = workspacePath?.trim()
+  if (explicit) return explicit
+  return mcpStdioWorkspacePath?.trim() || null
+}
+
+function sessionMapKey(
+  server: Pick<McpServer, 'id' | 'transport'>,
+  workspacePath?: string | null
+): string {
+  if (!isStdioTransport(server.transport)) return server.id
+  const wp = resolveStdioWorkspacePath(workspacePath)
+  return wp ? mcpStdioSessionKey(server.id, wp) : server.id
+}
+
+/** Workspace paths that should keep stdio MCP sessions (active runs + open workspaces). */
+export function collectStdioWorkspacePaths(): string[] {
+  const paths = new Set<string>()
+  for (const run of listActiveRuns()) {
+    if (run.workspacePath?.trim()) paths.add(run.workspacePath.trim())
+  }
+  try {
+    const state = readWorkspacesState()
+    for (const p of state.openPaths ?? []) {
+      if (p?.trim()) paths.add(p.trim())
+    }
+  } catch {
+    // tests / early startup
+  }
+  const hint = mcpStdioWorkspacePath?.trim()
+  if (hint) paths.add(hint)
+  return [...paths]
+}
+
 /**
- * Set the workspace used when spawning stdio MCP servers. Changing the path
- * disconnects existing stdio sessions so the next sync reconnects with the
- * correct cwd/repository.
+ * Hint the default workspace for stdio MCP when no explicit path is passed.
+ * Does not disconnect existing workspace-scoped sessions.
  */
 export function setMcpStdioWorkspace(workspacePath: string | null | undefined): void {
   const next = workspacePath?.trim() || null
   if (next === mcpStdioWorkspacePath) return
   mcpStdioWorkspacePath = next
-  // Bust sync fingerprint so reconnect picks up new cwd/args.
   lastSyncedServersFp = ''
-  for (const [id, session] of sessions) {
-    if (session.transport instanceof StdioClientTransport) {
-      void disconnectMcpServer(id).catch(() => undefined)
-    }
-  }
 }
 
 export function getMcpStdioWorkspace(): string | null {
@@ -181,23 +229,51 @@ async function probeResourcesAndPrompts(client: Client): Promise<{
 
 function resolveTargetServerIds(
   serverId: string | undefined,
-  enabledIds?: ReadonlySet<string>
+  enabledIds?: ReadonlySet<string>,
+  workspacePath?: string | null
 ): string[] {
-  let ids = [...sessions.keys()].sort()
-  if (enabledIds) ids = ids.filter((id) => enabledIds.has(id))
+  const keys = [...sessions.keys()].sort()
+  const ids = new Set<string>()
+  for (const key of keys) {
+    const parsed = parseMcpStdioSessionKey(key)
+    ids.add(parsed?.serverId ?? key)
+  }
+  let list = [...ids].sort()
+  if (enabledIds) list = list.filter((id) => enabledIds.has(id))
   if (serverId?.trim()) {
     const want = serverId.trim().toLowerCase()
-    ids = ids.filter((id) => id.toLowerCase() === want)
+    list = list.filter((id) => id.toLowerCase() === want)
   }
-  return ids
+  return list
+}
+
+function resolveSessionForServer(
+  serverId: string,
+  workspacePath?: string | null
+): { key: string; session: McpSession } | null {
+  const wp = resolveStdioWorkspacePath(workspacePath)
+  if (wp) {
+    const stdioKey = mcpStdioSessionKey(serverId, wp)
+    if (sessions.has(stdioKey)) {
+      return { key: stdioKey, session: sessions.get(stdioKey)! }
+    }
+  }
+  const remote = sessions.get(serverId)
+  if (remote) return { key: serverId, session: remote }
+  for (const [key, session] of sessions) {
+    const parsed = parseMcpStdioSessionKey(key)
+    if (parsed?.serverId === serverId) return { key, session }
+  }
+  return null
 }
 
 export function assertMcpServerAccess(
   serverId: string,
-  enabledIds?: ReadonlySet<string>
-): { ok: true; session: McpSession } | { ok: false; error: string } {
-  const session = sessions.get(serverId)
-  if (!session) {
+  enabledIds?: ReadonlySet<string>,
+  workspacePath?: string | null
+): { ok: true; session: McpSession; sessionKey: string } | { ok: false; error: string } {
+  const resolved = resolveSessionForServer(serverId, workspacePath)
+  if (!resolved) {
     return { ok: false, error: `MCP server not connected: ${serverId}` }
   }
   if (enabledIds && !enabledIds.has(serverId)) {
@@ -206,7 +282,7 @@ export function assertMcpServerAccess(
       error: `MCP server "${serverId}" is not enabled for this workspace run`
     }
   }
-  return { ok: true, session }
+  return { ok: true, session: resolved.session, sessionKey: resolved.key }
 }
 
 function formatResourceContents(
@@ -285,9 +361,11 @@ function sortedRecordEntries(record?: Record<string, string>): Array<[string, st
 export function mcpServerConfigKey(
   server: Pick<McpServer, 'transport' | 'command' | 'args' | 'env' | 'url' | 'headers'> & {
     id?: string
-  }
+  },
+  workspacePath?: string | null
 ): string {
   const transport = server.transport ?? 'stdio'
+  const stdioWorkspace = transport === 'stdio' ? resolveStdioWorkspacePath(workspacePath) : null
   // Auth secrets only apply to remote transports; skip for stdio (also keeps unit tests
   // that don't mock Electron from touching safeStorage).
   const authPresent =
@@ -296,7 +374,7 @@ export function mcpServerConfigKey(
       : false
   const launchArgs = withWorkspaceRepositoryArgs(
     withCompatibleUvxArgs(server.command, server.args),
-    transport === 'stdio' ? mcpStdioWorkspacePath : null
+    stdioWorkspace
   )
   return JSON.stringify({
     transport,
@@ -304,7 +382,7 @@ export function mcpServerConfigKey(
     // Fingerprint the launch args we actually use so repairing `--with mcp<2`
     // in settings does not thrash reconnects against older stored args.
     args: launchArgs,
-    cwd: transport === 'stdio' ? mcpStdioWorkspacePath ?? '' : '',
+    cwd: transport === 'stdio' ? stdioWorkspace ?? '' : '',
     env: sortedRecordEntries(server.env),
     url: server.url ?? '',
     // Never fingerprint secret token values — only presence + non-auth headers.
@@ -357,15 +435,55 @@ export function validateMcpServers(servers: McpServer[]): string | null {
   return null
 }
 
-export function getMcpServerStatus(servers: McpServer[]): McpServerStatus[] {
+function findSessionForStatus(
+  server: McpServer,
+  workspacePath?: string | null
+): { session?: McpSession; error?: string } {
+  const key = sessionMapKey(server, workspacePath)
+  const session = sessions.get(key)
+  if (session) {
+    return { session, error: connectErrors.get(key) }
+  }
+  if (isStdioTransport(server.transport)) {
+    const wp = resolveStdioWorkspacePath(workspacePath)
+    if (wp) {
+      const stdioKey = mcpStdioSessionKey(server.id, wp)
+      const stdioSession = sessions.get(stdioKey)
+      if (stdioSession) {
+        return { session: stdioSession, error: connectErrors.get(stdioKey) }
+      }
+      const stdioErr = connectErrors.get(stdioKey)
+      if (stdioErr) return { error: stdioErr }
+    }
+    for (const [k, s] of sessions) {
+      const parsed = parseMcpStdioSessionKey(k)
+      if (parsed?.serverId === server.id) {
+        return { session: s, error: connectErrors.get(k) }
+      }
+    }
+    for (const [k, err] of connectErrors) {
+      const parsed = parseMcpStdioSessionKey(k)
+      if (parsed?.serverId === server.id) return { error: err }
+    }
+  }
+  return {
+    session: sessions.get(server.id),
+    error: connectErrors.get(server.id)
+  }
+}
+
+export function getMcpServerStatus(
+  servers: McpServer[],
+  workspacePath?: string | null
+): McpServerStatus[] {
   return servers.map((server) => {
-    const error = connectErrors.get(server.id)
+    const { session, error } = findSessionForStatus(server, workspacePath)
     return {
       id: server.id,
       name: server.name,
       enabled: server.enabled,
-      connected: sessions.has(server.id),
-      toolCount: sessions.get(server.id)?.tools.length ?? 0,
+      connected: Boolean(session),
+      toolCount: session?.tools.length ?? 0,
       hasAuthToken: hasMcpAuthToken(server.id) || hasMcpOAuthState(server.id),
       ...(error ? { error } : {})
     }
@@ -384,17 +502,17 @@ export async function refreshMcpServers(servers: McpServer[]): Promise<McpServer
 
 async function createTransport(
   server: McpServer,
-  opts?: { authProvider?: ReturnType<typeof createMcpOAuthProvider> }
+  opts?: { authProvider?: ReturnType<typeof createMcpOAuthProvider>; workspacePath?: string | null }
 ): Promise<Transport> {
   const transport = server.transport ?? 'stdio'
   if (transport === 'stdio') {
     const command = (server.command ?? '').trim()
     if (!command) throw new Error(`MCP server ${server.id}: command required for stdio`)
+    const cwd = resolveStdioWorkspacePath(opts?.workspacePath) ?? undefined
     const env = buildMcpChildEnv(server.env)
-    const cwd = mcpStdioWorkspacePath ?? undefined
     const args = withWorkspaceRepositoryArgs(
       withCompatibleUvxArgs(command, server.args),
-      mcpStdioWorkspacePath
+      cwd ?? null
     )
     return new StdioClientTransport({
       command,
@@ -452,14 +570,15 @@ async function closePendingConnection(connection: PendingMcpConnection): Promise
 
 async function connectWithOptionalOAuth(
   server: McpServer,
-  track: (connection: PendingMcpConnection) => void
+  track: (connection: PendingMcpConnection) => void,
+  workspacePath?: string | null
 ): Promise<{
   client: Client
   transport: Transport
 }> {
   const transportKind = server.transport ?? 'stdio'
   if (transportKind === 'stdio' || hasMcpAuthToken(server.id)) {
-    const transport = await createTransport(server)
+    const transport = await createTransport(server, { workspacePath })
     const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
     track({ client, transport })
     await client.connect(transport)
@@ -550,9 +669,13 @@ async function connectRemoteWithOAuth(
   }
 }
 
-export async function connectMcpServer(server: McpServer): Promise<void> {
-  if (sessions.has(server.id)) return
-  const inflight = connecting.get(server.id)
+export async function connectMcpServer(
+  server: McpServer,
+  workspacePath?: string | null
+): Promise<void> {
+  const key = sessionMapKey(server, workspacePath)
+  if (sessions.has(key)) return
+  const inflight = connecting.get(key)
   if (inflight) {
     await inflight
     return
@@ -566,7 +689,7 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
     let connected: { client: Client; transport: Transport }
     try {
       connected = await Promise.race([
-        connectWithOptionalOAuth(server, (connection) => pending.add(connection)),
+        connectWithOptionalOAuth(server, (connection) => pending.add(connection), workspacePath),
         new Promise<never>((_, reject) => {
           connectAbort.addEventListener(
             'abort',
@@ -588,7 +711,7 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
     }
 
     // Another concurrent path may have won while we were connecting.
-    if (sessions.has(server.id)) {
+    if (sessions.has(key)) {
       try {
         await connected.client.close()
       } catch {
@@ -615,7 +738,8 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
     const desired = resolveEffectiveMcpServers().find((s) => s.id === server.id)
     if (
       desired &&
-      (!desired.enabled || mcpServerConfigKey(desired) !== mcpServerConfigKey(server))
+      (!desired.enabled ||
+        mcpServerConfigKey(desired, workspacePath) !== mcpServerConfigKey(server, workspacePath))
     ) {
       try {
         await client.close()
@@ -624,25 +748,27 @@ export async function connectMcpServer(server: McpServer): Promise<void> {
       }
       return
     }
-    sessions.set(server.id, { client, transport, tools, resources, prompts })
+    sessions.set(key, { client, transport, tools, resources, prompts })
     rebuildToolsByNameIndex()
-    sessionConfigKeys.set(server.id, mcpServerConfigKey(server))
+    sessionConfigKeys.set(key, mcpServerConfigKey(server, workspacePath))
+    connectErrors.delete(key)
     connectErrors.delete(server.id)
     logger.info('MCP server connected', {
       scope: 'mcp',
       serverId: server.id,
       transport: server.transport ?? 'stdio',
+      workspacePath: isStdioTransport(server.transport) ? resolveStdioWorkspacePath(workspacePath) : undefined,
       toolCount: tools.length,
       resourceCount: resources.length,
       promptCount: prompts.length
     })
   })()
 
-  connecting.set(server.id, attempt)
+  connecting.set(key, attempt)
   try {
     await attempt
   } finally {
-    if (connecting.get(server.id) === attempt) connecting.delete(server.id)
+    if (connecting.get(key) === attempt) connecting.delete(key)
   }
 }
 
@@ -663,7 +789,16 @@ export async function startMcpOAuth(serverId: string): Promise<void> {
 }
 
 export async function disconnectMcpServer(serverId: string): Promise<void> {
-  const session = sessions.get(serverId)
+  const keys = [...sessions.keys()].filter(
+    (key) => key === serverId || parseMcpStdioSessionKey(key)?.serverId === serverId
+  )
+  for (const key of keys) {
+    await disconnectMcpSessionByKey(key)
+  }
+}
+
+async function disconnectMcpSessionByKey(sessionKey: string): Promise<void> {
+  const session = sessions.get(sessionKey)
   if (!session) return
   try {
     await session.client.close()
@@ -673,47 +808,70 @@ export async function disconnectMcpServer(serverId: string): Promise<void> {
   for (const tool of session.tools) {
     mcpReadOnlyHints.delete(tool.name)
   }
-  sessions.delete(serverId)
+  sessions.delete(sessionKey)
   rebuildToolsByNameIndex()
-  sessionConfigKeys.delete(serverId)
-  connectErrors.delete(serverId)
+  sessionConfigKeys.delete(sessionKey)
+  connectErrors.delete(sessionKey)
+  const parsed = parseMcpStdioSessionKey(sessionKey)
+  if (parsed) connectErrors.delete(parsed.serverId)
 }
 
 export async function syncMcpServers(
   servers: McpServer[],
   opts?: { forceRetryFailures?: boolean }
 ): Promise<void> {
+  const stdioWorkspaces = collectStdioWorkspacePaths()
   if (opts?.forceRetryFailures) {
     for (const server of servers) {
       if (!server.enabled) continue
-      if (sessions.has(server.id)) continue
-      if (!connectErrors.has(server.id)) continue
-      // Permanent preflight failures (non-git workspace) — do not clear cooldown.
-      if (isGitMcpNotARepoError(connectErrors.get(server.id))) continue
-      connectFailures.delete(server.id)
+      const keysToCheck = isStdioTransport(server.transport)
+        ? stdioWorkspaces.map((wp) => sessionMapKey(server, wp))
+        : [server.id]
+      for (const key of keysToCheck) {
+        if (sessions.has(key)) continue
+        if (!connectErrors.has(key) && !connectErrors.has(server.id)) continue
+        const err = connectErrors.get(key) ?? connectErrors.get(server.id)
+        if (isGitMcpNotARepoError(err)) continue
+        connectFailures.delete(key)
+        connectFailures.delete(server.id)
+      }
     }
-    // Bust fingerprint so a prior failed sync does not early-return.
     if (
-      servers.some(
-        (s) =>
-          s.enabled &&
-          !sessions.has(s.id) &&
-          connectErrors.has(s.id) &&
-          !isGitMcpNotARepoError(connectErrors.get(s.id))
-      )
+      servers.some((s) => {
+        if (!s.enabled) return false
+        const keys = isStdioTransport(s.transport)
+          ? stdioWorkspaces.map((wp) => sessionMapKey(s, wp))
+          : [s.id]
+        return keys.some((key) => {
+          if (sessions.has(key)) return false
+          const err = connectErrors.get(key) ?? connectErrors.get(s.id)
+          return Boolean(err) && !isGitMcpNotARepoError(err)
+        })
+      })
     ) {
       lastSyncedServersFp = ''
     }
   }
-  const fp = servers
-    .map((s) => `${s.id}:${s.enabled ? 1 : 0}:${mcpServerConfigKey(s)}`)
-    .sort()
-    .join('|')
+  const fpParts: string[] = [stdioWorkspaces.sort().join(',')]
+  for (const s of servers) {
+    if (!s.enabled) {
+      fpParts.push(`${s.id}:0`)
+      continue
+    }
+    if (isStdioTransport(s.transport)) {
+      for (const wp of stdioWorkspaces) {
+        fpParts.push(`${s.id}@${wp}:1:${mcpServerConfigKey(s, wp)}`)
+      }
+    } else {
+      fpParts.push(`${s.id}:1:${mcpServerConfigKey(s)}`)
+    }
+  }
+  const fp = fpParts.sort().join('|')
   if (fp === lastSyncedServersFp) {
     if (lastSyncInflight) await lastSyncInflight
     return
   }
-  const run = syncChain.then(() => syncMcpServersUnlocked(servers))
+  const run = syncChain.then(() => syncMcpServersUnlocked(servers, stdioWorkspaces))
   // Keep the chain alive even when a sync rejects so later callers still queue.
   syncChain = run.then(
     () => undefined,
@@ -728,7 +886,10 @@ export async function syncMcpServers(
   await run
 }
 
-async function syncMcpServersUnlocked(servers: McpServer[]): Promise<void> {
+async function syncMcpServersUnlocked(
+  servers: McpServer[],
+  stdioWorkspaces: string[]
+): Promise<void> {
   const duplicateError = validateMcpServers(servers)
   if (duplicateError) {
     throw new Error(duplicateError)
@@ -760,72 +921,97 @@ async function syncMcpServersUnlocked(servers: McpServer[]): Promise<void> {
 
   const enabled = migratedServers.filter((s) => s.enabled)
   const enabledIds = new Set(enabled.map((s) => s.id))
-  for (const id of [...sessions.keys()]) {
-    if (!enabledIds.has(id)) await disconnectMcpServer(id)
-  }
+  const neededKeys = new Set<string>()
   for (const server of enabled) {
-    const configKey = mcpServerConfigKey(server)
-    const connectedKey = sessionConfigKeys.get(server.id)
-    if (sessions.has(server.id) && connectedKey !== configKey) {
-      await disconnectMcpServer(server.id)
+    if (isStdioTransport(server.transport)) {
+      for (const wp of stdioWorkspaces) neededKeys.add(sessionMapKey(server, wp))
+    } else {
+      neededKeys.add(server.id)
+    }
+  }
+
+  for (const key of [...sessions.keys()]) {
+    const parsed = parseMcpStdioSessionKey(key)
+    const serverId = parsed?.serverId ?? key
+    if (!enabledIds.has(serverId) || !neededKeys.has(key)) {
+      await disconnectMcpSessionByKey(key)
+    }
+  }
+
+  const syncOne = async (server: McpServer, workspacePath: string | null): Promise<void> => {
+    const key = sessionMapKey(server, workspacePath)
+    const configKey = mcpServerConfigKey(server, workspacePath)
+    const connectedKey = sessionConfigKeys.get(key)
+    if (sessions.has(key) && connectedKey !== configKey) {
+      await disconnectMcpSessionByKey(key)
+      connectFailures.delete(key)
       connectFailures.delete(server.id)
     }
-    if (!sessions.has(server.id)) {
-      // Cheap preflight: do not spawn mcp-server-git when the workspace has no .git.
-      // Re-checked every sync so git init later can connect without waiting out cooldown.
-      if (isGitMcpServer(server) && mcpStdioWorkspacePath) {
-        if (!isGitRepo(mcpStdioWorkspacePath)) {
-          const message = gitMcpNotARepoMessage(mcpStdioWorkspacePath)
-          const prior = connectErrors.get(server.id)
-          connectErrors.set(server.id, message)
-          // Record failure so forceRetryFailures skips permanent errors; cooldown is
-          // bypassed on the next sync once isGitRepo becomes true (cleared below).
-          connectFailures.set(server.id, { at: Date.now(), configKey })
-          if (prior !== message) {
-            logger.warn('MCP connect skipped — workspace is not a Git repository', {
-              scope: 'mcp',
-              serverId: server.id,
-              reason: message
-            })
-          }
-          continue
+    if (sessions.has(key)) return
+
+    if (isGitMcpServer(server) && workspacePath) {
+      if (!isGitRepo(workspacePath)) {
+        const message = gitMcpNotARepoMessage(workspacePath)
+        const prior = connectErrors.get(key)
+        connectErrors.set(key, message)
+        connectFailures.set(key, { at: Date.now(), configKey })
+        if (prior !== message) {
+          logger.warn('MCP connect skipped — workspace is not a Git repository', {
+            scope: 'mcp',
+            serverId: server.id,
+            workspacePath,
+            reason: message
+          })
         }
-        if (isGitMcpNotARepoError(connectErrors.get(server.id))) {
-          connectFailures.delete(server.id)
-          connectErrors.delete(server.id)
-        }
+        return
       }
-      const priorFail = connectFailures.get(server.id)
-      if (
-        priorFail &&
-        priorFail.configKey === configKey &&
-        Date.now() - priorFail.at < CONNECT_RETRY_COOLDOWN_MS
-      ) {
-        // Keep the last error visible; avoid hammering broken launches (e.g. every agent step).
-        continue
+      if (isGitMcpNotARepoError(connectErrors.get(key))) {
+        connectFailures.delete(key)
+        connectErrors.delete(key)
       }
-      try {
-        await connectMcpServer(server)
-        connectFailures.delete(server.id)
-      } catch (err) {
-        const message = formatError(err)
-        const code = mcpConnectErrorCode(err)
-        connectErrors.set(server.id, message)
-        connectFailures.set(server.id, { at: Date.now(), configKey })
-        const logged = new AppError(message, {
-          code,
-          severity: 'warn',
-          retriable: !isGitMcpNotARepoError(message),
-          cause: err instanceof Error ? err : undefined
-        })
-        logger.warn('MCP connect failed', {
-          scope: 'mcp',
-          serverId: server.id,
-          code,
-          reason: message,
-          err: logged
-        })
+    }
+
+    const priorFail = connectFailures.get(key) ?? connectFailures.get(server.id)
+    if (
+      priorFail &&
+      priorFail.configKey === configKey &&
+      Date.now() - priorFail.at < CONNECT_RETRY_COOLDOWN_MS
+    ) {
+      return
+    }
+    try {
+      await connectMcpServer(server, workspacePath)
+      connectFailures.delete(key)
+      connectFailures.delete(server.id)
+    } catch (err) {
+      const message = formatError(err)
+      const code = mcpConnectErrorCode(err)
+      connectErrors.set(key, message)
+      connectFailures.set(key, { at: Date.now(), configKey })
+      const logged = new AppError(message, {
+        code,
+        severity: 'warn',
+        retriable: !isGitMcpNotARepoError(message),
+        cause: err instanceof Error ? err : undefined
+      })
+      logger.warn('MCP connect failed', {
+        scope: 'mcp',
+        serverId: server.id,
+        workspacePath: workspacePath ?? undefined,
+        code,
+        reason: message,
+        err: logged
+      })
+    }
+  }
+
+  for (const server of enabled) {
+    if (isStdioTransport(server.transport)) {
+      for (const wp of stdioWorkspaces) {
+        await syncOne(server, wp)
       }
+    } else {
+      await syncOne(server, null)
     }
   }
   // MCP tools/status feed /mcp slash availability — bust the 5s list cache.
@@ -833,9 +1019,14 @@ async function syncMcpServersUnlocked(servers: McpServer[]): Promise<void> {
 }
 
 export function listMcpToolDefinitions(): ToolDefinition[] {
+  const seen = new Set<string>()
   const out: ToolDefinition[] = []
   for (const session of sessions.values()) {
-    out.push(...session.tools)
+    for (const tool of session.tools) {
+      if (seen.has(tool.name)) continue
+      seen.add(tool.name)
+      out.push(tool)
+    }
   }
   return out
 }
@@ -843,14 +1034,16 @@ export function listMcpToolDefinitions(): ToolDefinition[] {
 export async function listMcpResources(
   serverId?: string,
   enabledIds?: ReadonlySet<string>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  workspacePath?: string | null
 ): Promise<McpResourceEntry[]> {
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-  const targetIds = resolveTargetServerIds(serverId, enabledIds)
+  const targetIds = resolveTargetServerIds(serverId, enabledIds, workspacePath)
   const out: McpResourceEntry[] = []
   for (const id of targetIds) {
-    const session = sessions.get(id)
-    if (!session) continue
+    const resolved = resolveSessionForServer(id, workspacePath)
+    if (!resolved) continue
+    const session = resolved.session
     try {
       const listed = await session.client.listResources(undefined, { signal })
       for (const resource of listed.resources ?? []) {
@@ -876,10 +1069,11 @@ export async function readMcpResource(
   serverId: string,
   uri: string,
   signal: AbortSignal,
-  enabledIds?: ReadonlySet<string>
+  enabledIds?: ReadonlySet<string>,
+  workspacePath?: string | null
 ): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
   if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
-  const access = assertMcpServerAccess(serverId, enabledIds)
+  const access = assertMcpServerAccess(serverId, enabledIds, workspacePath)
   if (!access.ok) return access
   try {
     const result = await access.session.client.readResource({ uri }, { signal })
@@ -894,8 +1088,8 @@ export async function readMcpResource(
     return { ok: true, content: text || '(empty)' }
   } catch (err) {
     if (signal.aborted || isAbortError(err)) throw err
-    connectErrors.set(serverId, formatError(err))
-    await disconnectMcpServer(serverId)
+    connectErrors.set(access.sessionKey, formatError(err))
+    await disconnectMcpSessionByKey(access.sessionKey)
     return { ok: false, error: formatError(err) }
   }
 }
@@ -903,14 +1097,16 @@ export async function readMcpResource(
 export async function listMcpPrompts(
   serverId?: string,
   enabledIds?: ReadonlySet<string>,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  workspacePath?: string | null
 ): Promise<McpPromptEntry[]> {
   if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
-  const targetIds = resolveTargetServerIds(serverId, enabledIds)
+  const targetIds = resolveTargetServerIds(serverId, enabledIds, workspacePath)
   const out: McpPromptEntry[] = []
   for (const id of targetIds) {
-    const session = sessions.get(id)
-    if (!session) continue
+    const resolved = resolveSessionForServer(id, workspacePath)
+    if (!resolved) continue
+    const session = resolved.session
     try {
       const listed = await session.client.listPrompts(undefined, { signal })
       for (const prompt of listed.prompts ?? []) {
@@ -936,10 +1132,11 @@ export async function getMcpPrompt(
   name: string,
   promptArgs: Record<string, string> | undefined,
   signal: AbortSignal,
-  enabledIds?: ReadonlySet<string>
+  enabledIds?: ReadonlySet<string>,
+  workspacePath?: string | null
 ): Promise<{ ok: true; content: string } | { ok: false; error: string }> {
   if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
-  const access = assertMcpServerAccess(serverId, enabledIds)
+  const access = assertMcpServerAccess(serverId, enabledIds, workspacePath)
   if (!access.ok) return access
   try {
     const result = await access.session.client.getPrompt(
@@ -956,8 +1153,8 @@ export async function getMcpPrompt(
     return { ok: true, content: (header + body).trim() || '(empty)' }
   } catch (err) {
     if (signal.aborted || isAbortError(err)) throw err
-    connectErrors.set(serverId, formatError(err))
-    await disconnectMcpServer(serverId)
+    connectErrors.set(access.sessionKey, formatError(err))
+    await disconnectMcpSessionByKey(access.sessionKey)
     return { ok: false, error: formatError(err) }
   }
 }
@@ -972,11 +1169,12 @@ export async function invokeMcpTool(
   args: Record<string, unknown>,
   signal: AbortSignal,
   fullToolName?: string,
-  enabledIds?: ReadonlySet<string>
+  enabledIds?: ReadonlySet<string>,
+  workspacePath?: string | null
 ): Promise<ToolResult> {
   if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
   const summary = mcpToolSummary(toolName, args)
-  const access = assertMcpServerAccess(serverId, enabledIds)
+  const access = assertMcpServerAccess(serverId, enabledIds, workspacePath)
   if (!access.ok) {
     return { ok: false, summary, content: access.error }
   }
@@ -1003,15 +1201,15 @@ export async function invokeMcpTool(
       /timeout|ETIMEDOUT|ECONNRESET|socket hang up/i.test(message)
     if (transient) {
       // Keep the session; model can retry. Permanent protocol errors still drop it.
-      connectErrors.set(serverId, message)
+      connectErrors.set(access.sessionKey, message)
       return {
         ok: false,
         summary,
         content: `MCP invoke failed on "${serverId}" (session kept for retry): ${message}`
       }
     }
-    connectErrors.set(serverId, message)
-    await disconnectMcpServer(serverId)
+    connectErrors.set(access.sessionKey, message)
+    await disconnectMcpSessionByKey(access.sessionKey)
     return {
       ok: false,
       summary,
@@ -1047,9 +1245,14 @@ export function setMcpReadOnlyHintsForTests(hints: Record<string, boolean>): voi
   }
 }
 
-/** Test helper — connected MCP server ids. */
+/** Test helper — connected MCP server ids (deduped from session keys). */
 export function listConnectedMcpServerIdsForTests(): string[] {
-  return [...sessions.keys()]
+  const ids = new Set<string>()
+  for (const key of sessions.keys()) {
+    const parsed = parseMcpStdioSessionKey(key)
+    ids.add(parsed?.serverId ?? key)
+  }
+  return [...ids]
 }
 
 /** Test helper — register a mock MCP session without a live transport. */

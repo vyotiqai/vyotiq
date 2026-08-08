@@ -10,7 +10,7 @@ import {
 type TitleBarAccessoryContextValue = {
   host: HTMLElement | null
   setHost: (el: HTMLElement | null) => void
-  /** True while immersive dock tabs (or other chrome) occupy the titlebar slot. */
+  /** True while immersive or side-dock tabs occupy the titlebar accessory slot. */
   occupied: boolean
   setOccupied: (occupied: boolean) => void
 }

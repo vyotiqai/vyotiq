@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AppShell } from './AppShell'
 import { ChatView } from '../features/chat/ChatView'
+import { SessionChatColumn } from '../features/chat/SessionChatColumn'
+import type { ChatPane } from '@renderer/lib/chat/chatPaneLayout'
 import { SettingsView, type SettingsSection } from '../features/settings'
 import { MarketplaceView } from '../features/marketplace'
 import { useTheme } from '@renderer/lib/hooks/useTheme'
@@ -22,7 +24,7 @@ import {
 } from '@shared/domain/modelSelection'
 import { resolveImageReadyLabel } from '@shared/domain/imageCapability'
 import { logger } from '@shared/logger'
-import { workspacePathsEqual } from '@shared/workspacePathMatch'
+import { workspacePathsEqual, findByWorkspacePath } from '@shared/workspacePathMatch'
 import { normalizeRelPath } from '../features/chat/utils/turnFileDiffs'
 
 /** Sent as a visible user turn when resuming a run that was cut short. */
@@ -83,7 +85,16 @@ export function App() {
     clearWorkspaceError,
     clearRunsError,
     activeScrollTop,
-    chatSurfaceEpoch
+    chatSurfaceEpoch,
+    paneLayout,
+    focusPaneById,
+    closePaneById,
+    setPaneSizesByIndex,
+    dropSessionOnPane,
+    isSessionOpenInPane,
+    isSessionFocusedInPane,
+    getPaneChatSnapshot,
+    focusedWorkspacePath
   } = workspace
 
   const [view, setView] = useState<'chat' | 'settings' | 'marketplace'>('chat')
@@ -196,6 +207,14 @@ export function App() {
     activeContext?.settingsOverride
   )
 
+  const modelsRefreshKey = `${
+    effectiveChatSettings.provider === 'ollama'
+      ? `ollama:${effectiveChatSettings.ollamaBaseUrl}:${secrets.ollama ? '1' : '0'}`
+      : effectiveChatSettings.provider === 'custom'
+        ? `custom:${effectiveChatSettings.customOpenAiBaseUrl}:${secrets.custom ? '1' : '0'}`
+        : `${effectiveChatSettings.provider}:${secrets[effectiveChatSettings.provider as SecretProvider] ? '1' : '0'}`
+  }:${modelsRefreshNonce}`
+
   const imageReadyHint = useMemo(
     () =>
       resolveImageReadyLabel({
@@ -219,12 +238,43 @@ export function App() {
       return
     }
     await openRunInWorkspace(path, runId)
-    const ctrl = getRunController(runId)
+    const ctrl = getRunController(runId, path)
     if (!ctrl || ctrl.items.length === 0) {
       await loadRunTranscriptIntoTab(path, runId)
     }
     setView('chat')
   }
+
+  const handleSessionDrop = useCallback(
+    (
+      anchorPaneId: string,
+      zone: import('@renderer/lib/chat/chatPaneLayout').PaneDropZone,
+      payload: { workspacePath: string; runId: string }
+    ): boolean => {
+      const ok = dropSessionOnPane(anchorPaneId, zone, payload)
+      if (!ok) return false
+      void (async () => {
+        const ctrl = getRunController(payload.runId, payload.workspacePath)
+        if (!ctrl || ctrl.items.length === 0) {
+          await loadRunTranscriptIntoTab(payload.workspacePath, payload.runId)
+        }
+        setView('chat')
+      })()
+      return true
+    },
+    [dropSessionOnPane, getRunController, loadRunTranscriptIntoTab]
+  )
+
+  const getPaneTitle = useCallback(
+    (pane: ChatPane): string => {
+      if (!pane.runId) return 'New chat'
+      const ctx = findByWorkspacePath(contexts, pane.workspacePath)
+      const run = ctx?.runs.find((r) => r.runId === pane.runId)
+      const goal = run?.goal?.trim()
+      return goal || 'Chat'
+    },
+    [contexts]
+  )
 
   const onNewChat = (): void => {
     openRunTab(null)
@@ -614,6 +664,181 @@ export function App() {
     }
   }
 
+  const renderPaneSession = useCallback(
+    (pane: ChatPane, focused: boolean) => {
+      const snap = getPaneChatSnapshot(pane.workspacePath, pane.runId)
+      const paneContext = findByWorkspacePath(contexts, pane.workspacePath)
+      const paneScroll =
+        paneContext?.ui.scrollTopByRunId[pane.runId ?? '__draft__'] ??
+        paneContext?.ui.scrollTop ??
+        0
+      const paneCollapsed =
+        snap.collapsedTurnIndices.length > 0
+          ? new Set(snap.collapsedTurnIndices)
+          : undefined
+      const paneCtrl = getRunController(pane.runId, pane.workspacePath)
+      return (
+        <SessionChatColumn
+          items={snap.items}
+          itemsStore={{
+            subscribeItems: snap.subscribeItems,
+            getItemsRevision: snap.getItemsRevision,
+            getItems: snap.getItems
+          }}
+          metaStore={{
+            subscribeMeta: snap.subscribeMeta,
+            getMetaRevision: snap.getMetaRevision,
+            getContextUsage: snap.getContextUsage
+          }}
+          running={snap.running}
+          invokeId={snap.invokeId}
+          pendingRun={snap.pendingRun}
+          error={snap.error}
+          errorCode={snap.errorCode}
+          networkWait={snap.networkWait}
+          runNotice={snap.runNotice}
+          incomplete={snap.incomplete}
+          onContinue={onChatContinue}
+          contextUsage={snap.contextUsage}
+          operationalError={focused ? operationalError : null}
+          hasWorkspace={Boolean(pane.workspacePath)}
+          workspacePath={pane.workspacePath}
+          provider={effectiveChatSettings.provider}
+          model={effectiveChatSettings.model}
+          ollamaBaseUrl={effectiveChatSettings.ollamaBaseUrl}
+          customOpenAiBaseUrl={effectiveChatSettings.customOpenAiBaseUrl}
+          modelsRefreshKey={modelsRefreshKey}
+          activeRunId={pane.runId}
+          transcriptLoading={snap.transcriptLoading}
+          onProviderModel={onProviderModel}
+          favoriteModels={settings.favoriteModels}
+          recentModels={settings.recentModels}
+          serviceTier={resolveServiceTier(
+            settings,
+            effectiveChatSettings.provider,
+            effectiveChatSettings.model
+          )}
+          onToggleFavorite={onToggleFavorite}
+          onServiceTierChange={onServiceTierChange}
+          chatSettings={effectiveChatSettings}
+          onChatSettingsChange={onChatSettingsChange}
+          agentMode={paneContext?.ui.agentMode ?? 'agent'}
+          onAgentModeChange={(mode) => {
+            setAgentMode(mode, { syncOnly: true })
+          }}
+          onSend={onChatSend}
+          onStop={onChatStop}
+          onEditAndResend={onChatEditAndResend}
+          onRevertToUserMessage={onChatRevertToUserMessage}
+          messages={snap.messages}
+          pendingFollowUps={snap.pendingFollowUps}
+          onRemoveFollowUp={onRemoveFollowUp}
+          onEditFollowUp={onEditFollowUp}
+          onSendFollowUpNow={onSendFollowUpNow}
+          onDismissError={onDismissChatBanner}
+          composerDraft={paneContext?.ui.composerDraft}
+          onComposerDraftChange={setComposerDraft}
+          restoreScrollTop={paneScroll}
+          scrollRestoreToken={scrollRestoreToken}
+          onScrollTopChange={onMessageListScroll}
+          chatSurfaceEpoch={chatSurfaceEpoch}
+          showThinking={effectiveChatSettings.showThinking}
+          onLoadToolContent={
+            paneCtrl ? (toolCallId) => paneCtrl.loadToolContent(toolCallId) : undefined
+          }
+          onThinkingToggle={
+            paneCtrl
+              ? (messageId, expanded) => paneCtrl.setThinkingExpanded(messageId, expanded)
+              : undefined
+          }
+          onToolToggle={
+            paneCtrl
+              ? (toolCallId, expanded) => paneCtrl.setToolExpanded(toolCallId, expanded)
+              : undefined
+          }
+          onGroupToggle={
+            paneCtrl
+              ? (anchorToolCallId, expanded) =>
+                  paneCtrl.setGroupExpanded(anchorToolCallId, expanded)
+              : undefined
+          }
+          onTurnToggle={
+            paneCtrl ? (turnIndex) => paneCtrl.toggleTurnCollapsed(turnIndex) : undefined
+          }
+          collapsedTurns={paneCollapsed}
+          onApprovalDecision={
+            paneCtrl
+              ? (requestId, decision) => paneCtrl.respondToApproval(requestId, decision)
+              : undefined
+          }
+          onQuestionSubmit={
+            paneCtrl
+              ? (requestId, answers) => paneCtrl.respondToQuestion(requestId, answers)
+              : undefined
+          }
+          mcpServerNames={mcpServerNames}
+          slashHandlers={slashHandlersValue}
+          sideRailPad={false}
+          imageReadyHint={imageReadyHint}
+        />
+      )
+    },
+    [
+      chatSurfaceEpoch,
+      contexts,
+      effectiveChatSettings,
+      getPaneChatSnapshot,
+      getRunController,
+      imageReadyHint,
+      mcpServerNames,
+      modelsRefreshKey,
+      onChatContinue,
+      onChatEditAndResend,
+      onChatRevertToUserMessage,
+      onChatSend,
+      onChatSettingsChange,
+      onChatStop,
+      onDismissChatBanner,
+      onEditFollowUp,
+      onMessageListScroll,
+      onProviderModel,
+      onRemoveFollowUp,
+      onSendFollowUpNow,
+      onServiceTierChange,
+      onToggleFavorite,
+      operationalError,
+      scrollRestoreToken,
+      setAgentMode,
+      setComposerDraft,
+      settings.favoriteModels,
+      settings.recentModels,
+      slashHandlersValue
+    ]
+  )
+
+  const multiPaneConfig = useMemo(() => {
+    if (!paneLayout) return null
+    return {
+      panes: paneLayout.panes,
+      focusedPaneId: paneLayout.focusedPaneId,
+      sizes: paneLayout.sizes,
+      onFocusPane: focusPaneById,
+      onClosePane: closePaneById,
+      onSizesChange: setPaneSizesByIndex,
+      onSessionDrop: handleSessionDrop,
+      getPaneTitle,
+      renderPane: renderPaneSession
+    }
+  }, [
+    closePaneById,
+    focusPaneById,
+    getPaneTitle,
+    handleSessionDrop,
+    paneLayout,
+    renderPaneSession,
+    setPaneSizesByIndex
+  ])
+
   const onRenameRunInWorkspace = async (
     path: string,
     runId: string,
@@ -659,13 +884,6 @@ export function App() {
   }
 
   const chatError = chat.error
-  const modelsRefreshKey = `${
-    effectiveChatSettings.provider === 'ollama'
-      ? `ollama:${effectiveChatSettings.ollamaBaseUrl}:${secrets.ollama ? '1' : '0'}`
-      : effectiveChatSettings.provider === 'custom'
-        ? `custom:${effectiveChatSettings.customOpenAiBaseUrl}:${secrets.custom ? '1' : '0'}`
-        : `${effectiveChatSettings.provider}:${secrets[effectiveChatSettings.provider as SecretProvider] ? '1' : '0'}`
-  }:${modelsRefreshNonce}`
 
   const runsByWorkspacePath = useMemo(
     () =>
@@ -695,7 +913,9 @@ export function App() {
     onSelectRunInWorkspace: (path: string, runId: string) => void onSelectRunInWorkspace(path, runId),
     onRenameRunInWorkspace: (path: string, runId: string, goal: string) =>
       void onRenameRunInWorkspace(path, runId, goal),
-    onDeleteRunInWorkspace: (path: string, runId: string) => void onDeleteRunInWorkspace(path, runId)
+    onDeleteRunInWorkspace: (path: string, runId: string) => void onDeleteRunInWorkspace(path, runId),
+    isRunOpenInPane: isSessionOpenInPane,
+    isRunFocusedInPane: isSessionFocusedInPane
   }
 
   if (loading) {
@@ -824,8 +1044,8 @@ export function App() {
             contextUsage={chat.contextUsage}
             onCompactContext={activeWorkspace && activeRunId ? onCompactContext : undefined}
             operationalError={operationalError}
-            hasWorkspace={Boolean(activeWorkspace)}
-            workspacePath={activeWorkspace}
+            hasWorkspace={Boolean(focusedWorkspacePath ?? activeWorkspace)}
+            workspacePath={focusedWorkspacePath ?? activeWorkspace}
             provider={effectiveChatSettings.provider}
             model={effectiveChatSettings.model}
             ollamaBaseUrl={effectiveChatSettings.ollamaBaseUrl}
@@ -891,6 +1111,7 @@ export function App() {
             onKeepWriteFile={onKeepWriteFile}
             onDiscardWriteFile={onDiscardWriteFile}
             onKeepAllWrites={onKeepAllWrites}
+            multiPane={multiPaneConfig}
           />
         </ErrorBoundary>
       )}

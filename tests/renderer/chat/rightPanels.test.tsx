@@ -370,7 +370,7 @@ describe('DockTabBar', () => {
     )
     fireEvent.click(screen.getByRole('tab', { name: /^Terminal$/i }))
     expect(onSelect).toHaveBeenCalledWith('terminal')
-    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Add panel/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: /Browser/i }))
     expect(onOpenPanel).toHaveBeenCalledWith('browser')
     fireEvent.click(screen.getByRole('button', { name: /Close Changes/i }))

@@ -8,11 +8,13 @@ const require = createRequire(__filename)
 /** Expect `pnpm test:gui-e2e` from repo root after `pnpm build`. */
 const repoRoot = process.cwd()
 const mainEntry = join(repoRoot, 'out/main/index.js')
+const videoDir = join(repoRoot, 'test-results', 'gui-e2e', 'videos')
 
 export type LaunchedApp = {
   app: ElectronApplication
   window: Page
   userDataDir: string
+  videoDir: string
 }
 
 export async function launchApp(): Promise<LaunchedApp> {
@@ -24,23 +26,28 @@ export async function launchApp(): Promise<LaunchedApp> {
 
   const userDataDir = mkdtempSync(join(tmpdir(), 'vyotiq-gui-e2e-'))
   mkdirSync(userDataDir, { recursive: true })
+  mkdirSync(videoDir, { recursive: true })
 
   const electronExecutable = require('electron') as string
+  const env = { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' }
+  // IDE shells export this as "1", which boots Electron as plain Node.
+  delete env.ELECTRON_RUN_AS_NODE
+
   const app = await electron.launch({
     executablePath: electronExecutable,
     args: [mainEntry, `--user-data-dir=${userDataDir}`],
     cwd: repoRoot,
-    env: {
-      ...process.env,
-      // Avoid colliding with a developer instance / shared profile.
-      ELECTRON_DISABLE_SECURITY_WARNINGS: 'true'
-    },
-    timeout: 45_000
+    env,
+    timeout: 45_000,
+    recordVideo: {
+      dir: videoDir,
+      size: { width: 1280, height: 800 }
+    }
   })
 
   const window = await app.firstWindow({ timeout: 45_000 })
   await window.waitForLoadState('domcontentloaded')
-  return { app, window, userDataDir }
+  return { app, window, userDataDir, videoDir }
 }
 
 export async function closeApp(launched: LaunchedApp): Promise<void> {

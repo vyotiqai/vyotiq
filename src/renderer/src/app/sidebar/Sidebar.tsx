@@ -37,6 +37,8 @@ export function Sidebar({
   onSelectRunInWorkspace,
   onRenameRunInWorkspace,
   onDeleteRunInWorkspace,
+  isRunOpenInPane,
+  isRunFocusedInPane,
   onCloseDrawer,
   onToggleSidebar,
   collapsed = false,
@@ -173,6 +175,8 @@ export function Sidebar({
             onDeleteRun={(path, runId) => {
               onDeleteRunInWorkspace?.(path, runId)
             }}
+            isRunOpenInPane={isRunOpenInPane}
+            isRunFocusedInPane={isRunFocusedInPane}
           />
         </div>
       )}

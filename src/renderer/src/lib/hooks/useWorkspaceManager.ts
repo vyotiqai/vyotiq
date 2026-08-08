@@ -27,6 +27,28 @@ import {
   seedWorkspaceHotUi,
   setWorkspaceHotUi
 } from './workspaceHotUiStore'
+import type { ChatPane, ChatPaneLayout, PaneDropZone, SessionDragPayload } from '@renderer/lib/chat/chatPaneLayout'
+import {
+  applyPaneDrop,
+  closePane as closePaneInLayout,
+  createPaneId,
+  focusPane,
+  loadPaneLayoutFromStorage,
+  maxPaneCount,
+  openRunInFocusedPane,
+  removeSessionFromLayout,
+  replaceFocusedPaneSession,
+  sanitizePaneLayout,
+  savePaneLayoutToStorage,
+  setPaneSizes,
+  singlePaneLayout,
+  syncSinglePaneSession,
+  visibleRunIds
+} from '@renderer/lib/chat/chatPaneLayout'
+import { CHAT_SIDE_RAIL_WIDTH_PX, SIDEBAR_WIDTH_MIN_PX } from '@renderer/lib/utils/layout'
+
+/** Chrome always present beside chat columns (sidebar floor + side rail). */
+const PANE_CAPACITY_RESERVED_PX = SIDEBAR_WIDTH_MIN_PX + CHAT_SIDE_RAIL_WIDTH_PX
 
 const ACTIVE_RUNS_POLL_MS = 5_000
 const ACTIVE_RUNS_WARN_INTERVAL_MS = 60_000
@@ -330,8 +352,11 @@ export function useWorkspaceManager() {
   const [scrollRestoreToken, setScrollRestoreToken] = useState(0)
   const [chatSurfaceEpoch, setChatSurfaceEpoch] = useState(0)
   const [workspaceError, setWorkspaceError] = useState<string | null>(null)
+  const [paneLayout, setPaneLayout] = useState<ChatPaneLayout | null>(null)
 
   const controllersRef = useRef(new Map<string, ChatStreamController>())
+  const paneLayoutRef = useRef<ChatPaneLayout | null>(null)
+  const paneLayoutHydratedRef = useRef(false)
   const contextsRef = useRef(contexts)
   const registryRef = useRef(registry)
   const persistTimersRef = useRef(new Map<string, number>())
@@ -360,18 +385,30 @@ export function useWorkspaceManager() {
     ensureChatUiPerfDump()
   }, [])
 
-  /** True when this run's transcript is the mounted chat surface. */
+
+  /** True when this run's transcript is mounted in any open pane. */
   const isRunUiVisible = useCallback((runId: string): boolean => {
     if (backgroundRunIdsRef.current.has(runId)) return false
+    const layout = paneLayoutRef.current
+    if (layout?.panes.some((pane) => pane.runId === runId)) return true
+
     const ws = runIdToWorkspaceRef.current.get(runId)
     if (!ws) return false
+
+    if (layout && layout.panes.length > 1) {
+      for (const pane of layout.panes) {
+        if (pane.runId !== null || !workspacePathsEqual(pane.workspacePath, ws)) continue
+        const ctx = findByWorkspacePath(contextsRef.current, ws)
+        if (ctx?.activeRunId == null) return true
+      }
+      return false
+    }
+
     const activePath = registryRef.current?.activePath
     if (!activePath || !workspacePathsEqual(ws, activePath)) return false
     const ctx = findByWorkspacePath(contextsRef.current, ws)
     if (!ctx) return false
     if (ctx.activeRunId === runId) return true
-    // Draft composer (activeRunId null): accept events for a new/pending run on this
-    // workspace so the chatStart → first-event race is not suspended.
     if (ctx.activeRunId == null) return true
     return false
   }, [])
@@ -387,14 +424,43 @@ export function useWorkspaceManager() {
     [isRunUiVisible]
   )
 
-  const suspendAllExcept = useCallback((visibleRunId: string | null): void => {
+  const suspendAllExceptVisible = useCallback((visible: Set<string>): void => {
     for (const [key, ctrl] of controllersRef.current.entries()) {
       if (key.startsWith('__draft__:')) continue
-      const id = ctrl.runId ?? (key.startsWith('__draft__:') ? null : key)
-      if (!id || id === visibleRunId) continue
-      ctrl.setUiSuspended(true)
+      const id = ctrl.runId ?? null
+      if (!id) continue
+      if (visible.has(id)) {
+        void ctrl.resumeUiIfNeeded()
+      } else {
+        ctrl.setUiSuspended(true)
+      }
     }
   }, [])
+
+  const suspendAllExcept = useCallback(
+    (visibleRunId: string | null): void => {
+      const layout = paneLayoutRef.current
+      if (layout) {
+        suspendAllExceptVisible(visibleRunIds(layout))
+        return
+      }
+      const visible = new Set<string>()
+      if (visibleRunId) visible.add(visibleRunId)
+      suspendAllExceptVisible(visible)
+    },
+    [suspendAllExceptVisible]
+  )
+
+  const commitPaneLayout = useCallback(
+    (next: ChatPaneLayout): void => {
+      paneLayoutRef.current = next
+      setPaneLayout(next)
+      savePaneLayoutToStorage(next)
+      suspendAllExceptVisible(visibleRunIds(next))
+      bump()
+    },
+    [bump, suspendAllExceptVisible]
+  )
 
   useEffect(() => {
     const merged: Record<string, WorkspaceContext> = { ...contexts }
@@ -1163,6 +1229,126 @@ export function useWorkspaceManager() {
     ? findByWorkspacePath(contexts, activeWorkspace)
     : null
 
+  useEffect(() => {
+    if (paneLayoutHydratedRef.current || !activeWorkspace) return
+    paneLayoutHydratedRef.current = true
+    const fallback = singlePaneLayout(
+      activeWorkspace,
+      activeContext?.activeRunId ?? null,
+      createPaneId()
+    )
+    const stored = loadPaneLayoutFromStorage()
+    const openPaths = registryRef.current?.openPaths ?? [activeWorkspace]
+    const maxPanes = maxPaneCount(
+      typeof window !== 'undefined' ? window.innerWidth : 1200,
+      PANE_CAPACITY_RESERVED_PX
+    )
+    const initial =
+      (stored ? sanitizePaneLayout(stored, openPaths, maxPanes) : null) ?? fallback
+    paneLayoutRef.current = initial
+    setPaneLayout(initial)
+    savePaneLayoutToStorage(initial)
+    suspendAllExceptVisible(visibleRunIds(initial))
+    for (const pane of initial.panes) {
+      if (!pane.runId) continue
+      ensureController(pane.workspacePath, pane.runId)
+      void loadRunTranscript(pane.workspacePath, pane.runId)
+    }
+  }, [
+    activeContext?.activeRunId,
+    activeWorkspace,
+    ensureController,
+    loadRunTranscript,
+    suspendAllExceptVisible
+  ])
+
+  useEffect(() => {
+    if (!paneLayoutHydratedRef.current || !activeWorkspace || !paneLayoutRef.current) return
+    if (paneLayoutRef.current.panes.length !== 1) return
+    const pane = paneLayoutRef.current.panes[0]!
+    // Do not overwrite a sole pane that still shows another workspace after close.
+    if (!workspacePathsEqual(pane.workspacePath, activeWorkspace)) return
+    const synced = syncSinglePaneSession(
+      paneLayoutRef.current,
+      activeWorkspace,
+      activeContext?.activeRunId ?? null
+    )
+    if (synced !== paneLayoutRef.current) {
+      commitPaneLayout(synced)
+    }
+  }, [activeContext?.activeRunId, activeWorkspace, commitPaneLayout])
+
+  const getFocusedPane = useCallback((): ChatPane | null => {
+    const layout = paneLayoutRef.current
+    if (!layout) return null
+    return (
+      layout.panes.find((p) => p.paneId === layout.focusedPaneId) ?? layout.panes[0] ?? null
+    )
+  }, [])
+
+  const getMaxPaneCount = useCallback((): number => {
+    return maxPaneCount(
+      typeof window !== 'undefined' ? window.innerWidth : 1200,
+      PANE_CAPACITY_RESERVED_PX
+    )
+  }, [])
+
+  const focusPaneById = useCallback(
+    (paneId: string): void => {
+      const layout = paneLayoutRef.current
+      if (!layout) return
+      commitPaneLayout(focusPane(layout, paneId))
+    },
+    [commitPaneLayout]
+  )
+
+  const setPaneSizesByIndex = useCallback(
+    (sizes: number[]): void => {
+      const layout = paneLayoutRef.current
+      if (!layout) return
+      commitPaneLayout(setPaneSizes(layout, sizes))
+    },
+    [commitPaneLayout]
+  )
+
+  useEffect(() => {
+    const clampToCapacity = (): void => {
+      const layout = paneLayoutRef.current
+      if (!layout || layout.panes.length <= 1) return
+      const openPaths = registryRef.current?.openPaths ?? []
+      const maxPanes = getMaxPaneCount()
+      if (layout.panes.length <= maxPanes) return
+      const next = sanitizePaneLayout(layout, openPaths, maxPanes)
+      if (next) commitPaneLayout(next)
+    }
+    window.addEventListener('resize', clampToCapacity)
+    return () => window.removeEventListener('resize', clampToCapacity)
+  }, [commitPaneLayout, getMaxPaneCount])
+
+  const isSessionOpenInPane = useCallback(
+    (workspacePath: string, runId: string): boolean => {
+      const layout = paneLayoutRef.current
+      if (!layout) return false
+      return layout.panes.some(
+        (p) => workspacePathsEqual(p.workspacePath, workspacePath) && p.runId === runId
+      )
+    },
+    [paneLayout]
+  )
+
+  const isSessionFocusedInPane = useCallback(
+    (workspacePath: string, runId: string): boolean => {
+      const focused = getFocusedPane()
+      if (!focused) return false
+      return (
+        workspacePathsEqual(focused.workspacePath, workspacePath) && focused.runId === runId
+      )
+    },
+    [getFocusedPane, paneLayout]
+  )
+
+  const isMultiPane = (paneLayout?.panes.length ?? 0) > 1
+
   const switchWorkspace = useCallback(
     async (path: string): Promise<void> => {
       if (!window.vyotiq?.setActiveWorkspace) return
@@ -1175,7 +1361,12 @@ export function useWorkspaceManager() {
         applyRegistry(res.data)
         const ctx = contextsRef.current[path]
         const visibleRunId = ctx?.activeRunId ?? null
-        suspendAllExcept(visibleRunId)
+        const layout = paneLayoutRef.current
+        if (layout?.panes.length === 1) {
+          commitPaneLayout(syncSinglePaneSession(layout, path, visibleRunId))
+        } else {
+          suspendAllExcept(visibleRunId)
+        }
         if (visibleRunId) {
           backgroundRunIdsRef.current.delete(visibleRunId)
           const ctrl = ensureController(path, visibleRunId)
@@ -1187,7 +1378,14 @@ export function useWorkspaceManager() {
         setWorkspaceError(res.error)
       }
     },
-    [activeWorkspace, applyRegistry, ensureController, flushPersistUiState, suspendAllExcept]
+    [
+      activeWorkspace,
+      applyRegistry,
+      commitPaneLayout,
+      ensureController,
+      flushPersistUiState,
+      suspendAllExcept
+    ]
   )
 
   const addWorkspace = useCallback(
@@ -1243,23 +1441,51 @@ export function useWorkspaceManager() {
           delete next[path]
           return next
         })
+        const layout = paneLayoutRef.current
+        if (layout) {
+          const sanitized = sanitizePaneLayout(
+            layout,
+            res.data.openPaths,
+            getMaxPaneCount()
+          )
+          if (sanitized) {
+            commitPaneLayout(sanitized)
+          } else if (res.data.activePath) {
+            const ctx = contextsRef.current[res.data.activePath]
+            commitPaneLayout(
+              singlePaneLayout(res.data.activePath, ctx?.activeRunId ?? null)
+            )
+          } else {
+            paneLayoutRef.current = null
+            setPaneLayout(null)
+          }
+        }
       } else {
         setWorkspaceError(res.error)
       }
     },
-    [applyRegistry, flushPersistUiState, forgetRunRouting]
+    [applyRegistry, commitPaneLayout, flushPersistUiState, forgetRunRouting, getMaxPaneCount]
   )
 
   const getRunController = useCallback(
-    (runId: string | null): ChatStreamController | null => {
-      if (!activeWorkspace) return null
-      return ensureController(activeWorkspace, runId)
+    (runId: string | null, workspacePath?: string | null): ChatStreamController | null => {
+      const path =
+        workspacePath ??
+        getFocusedPane()?.workspacePath ??
+        activeWorkspace
+      if (!path) return null
+      return ensureController(path, runId)
     },
-    [activeWorkspace, ensureController]
+    [activeWorkspace, ensureController, getFocusedPane]
   )
 
   const openRunTabInWorkspace = useCallback(
-    (workspacePath: string, runId: string | null): void => {
+    (
+      workspacePath: string,
+      runId: string | null,
+      options?: { syncLayout?: boolean }
+    ): void => {
+      const syncLayout = options?.syncLayout !== false
       const entryKey =
         contextsRef.current[workspacePath] !== undefined
           ? workspacePath
@@ -1285,7 +1511,24 @@ export function useWorkspaceManager() {
         [entryKey]: nextCtx
       }))
       schedulePersistUiState(entryKey, nextCtx)
-      suspendAllExcept(runId)
+      const layout = paneLayoutRef.current
+      if (syncLayout && layout && layout.panes.length === 1) {
+        const synced = syncSinglePaneSession(layout, entryKey, runId)
+        paneLayoutRef.current = synced
+        setPaneLayout(synced)
+        savePaneLayoutToStorage(synced)
+        suspendAllExceptVisible(visibleRunIds(synced))
+      } else if (syncLayout && layout) {
+        const next = replaceFocusedPaneSession(layout, entryKey, runId)
+        paneLayoutRef.current = next
+        setPaneLayout(next)
+        savePaneLayoutToStorage(next)
+        suspendAllExceptVisible(visibleRunIds(next))
+      } else if (layout) {
+        suspendAllExceptVisible(visibleRunIds(layout))
+      } else {
+        suspendAllExcept(runId)
+      }
       if (runId) {
         void ctrl.resumeUiIfNeeded()
       }
@@ -1302,7 +1545,8 @@ export function useWorkspaceManager() {
       flushPersistUiState,
       maybeEvictControllers,
       schedulePersistUiState,
-      suspendAllExcept
+      suspendAllExcept,
+      suspendAllExceptVisible
     ]
   )
 
@@ -1316,12 +1560,69 @@ export function useWorkspaceManager() {
 
   const openRunInWorkspace = useCallback(
     async (path: string, runId: string): Promise<void> => {
-      if (!activeWorkspace || !workspacePathsEqual(activeWorkspace, path)) {
-        await switchWorkspace(path)
+      const multi = (paneLayoutRef.current?.panes.length ?? 0) > 1
+      if (!multi) {
+        if (!activeWorkspace || !workspacePathsEqual(activeWorkspace, path)) {
+          await switchWorkspace(path)
+        }
+        openRunTabInWorkspace(path, runId)
+        if (paneLayoutRef.current) {
+          commitPaneLayout(
+            syncSinglePaneSession(paneLayoutRef.current, path, runId)
+          )
+        }
+        return
       }
-      openRunTabInWorkspace(path, runId)
+      // Layout owns focus/replace; syncLayout here would replace the focused pane
+      // before openRunInFocusedPane can focus an already-open session.
+      openRunTabInWorkspace(path, runId, { syncLayout: false })
+      const layout =
+        paneLayoutRef.current ??
+        singlePaneLayout(path, runId, createPaneId())
+      commitPaneLayout(openRunInFocusedPane(layout, { workspacePath: path, runId }))
     },
-    [activeWorkspace, openRunTabInWorkspace, switchWorkspace]
+    [activeWorkspace, commitPaneLayout, openRunTabInWorkspace, switchWorkspace]
+  )
+
+  const openSessionInFocusedPane = useCallback(
+    (workspacePath: string, runId: string): void => {
+      openRunTabInWorkspace(workspacePath, runId, { syncLayout: false })
+      const layout =
+        paneLayoutRef.current ??
+        singlePaneLayout(workspacePath, runId, createPaneId())
+      commitPaneLayout(openRunInFocusedPane(layout, { workspacePath, runId }))
+    },
+    [commitPaneLayout, openRunTabInWorkspace]
+  )
+
+  const dropSessionOnPane = useCallback(
+    (anchorPaneId: string, zone: PaneDropZone, payload: SessionDragPayload): boolean => {
+      const layout = paneLayoutRef.current
+      if (!layout) return false
+      const next = applyPaneDrop(layout, anchorPaneId, zone, payload, getMaxPaneCount())
+      if (!next) return false
+      openRunTabInWorkspace(payload.workspacePath, payload.runId, { syncLayout: false })
+      commitPaneLayout(next)
+      return true
+    },
+    [commitPaneLayout, getMaxPaneCount, openRunTabInWorkspace]
+  )
+
+  const closePaneById = useCallback(
+    (paneId: string): void => {
+      const layout = paneLayoutRef.current
+      if (!layout) return
+      const next = closePaneInLayout(layout, paneId)
+      commitPaneLayout(next)
+      const remaining =
+        next.panes.find((p) => p.paneId === next.focusedPaneId) ?? next.panes[0] ?? null
+      if (remaining?.runId) {
+        openRunTabInWorkspace(remaining.workspacePath, remaining.runId, {
+          syncLayout: next.panes.length === 1
+        })
+      }
+    },
+    [commitPaneLayout, openRunTabInWorkspace]
   )
 
   const closeRunTab = useCallback(
@@ -1346,6 +1647,12 @@ export function useWorkspaceManager() {
         [activeWorkspace]: nextCtx
       }))
       schedulePersistUiState(activeWorkspace, nextCtx)
+      const layout = paneLayoutRef.current
+      if (layout) {
+        commitPaneLayout(
+          removeSessionFromLayout(layout, { workspacePath: activeWorkspace, runId })
+        )
+      }
       if (activeRunId) {
         const nextCtrl = controllersRef.current.get(activeRunId)
         if (nextCtrl) void nextCtrl.resumeUiIfNeeded()
@@ -1356,12 +1663,16 @@ export function useWorkspaceManager() {
       }
       bump()
     },
-    [activeWorkspace, bump, forgetRunRouting, schedulePersistUiState]
+    [activeWorkspace, bump, commitPaneLayout, forgetRunRouting, schedulePersistUiState]
   )
 
   const purgeDeletedRunUi = useCallback(
     (workspacePath: string, runId: string): void => {
       const ctx = contextsRef.current[workspacePath]
+      const layout = paneLayoutRef.current
+      if (layout) {
+        commitPaneLayout(removeSessionFromLayout(layout, { workspacePath, runId }))
+      }
       if (!ctx) return
       const scrollTopByRunId = omitRunScrollTop(ctx.ui.scrollTopByRunId, runId)
       if (scrollTopByRunId === ctx.ui.scrollTopByRunId) return
@@ -1373,13 +1684,14 @@ export function useWorkspaceManager() {
       setContexts((prev) => ({ ...prev, [workspacePath]: nextCtx }))
       schedulePersistUiState(workspacePath, nextCtx)
     },
-    [schedulePersistUiState]
+    [commitPaneLayout, schedulePersistUiState]
   )
 
   const setComposerDraft = useCallback(
     (draft: string) => {
-      if (!activeWorkspace) return
-      const ctx = contextsRef.current[activeWorkspace]
+      const path = getFocusedPane()?.workspacePath ?? activeWorkspace
+      if (!path) return
+      const ctx = contextsRef.current[path]
       if (!ctx) return
       if (ctx.ui.composerDraft === draft) return
       const nextCtx: WorkspaceContext = {
@@ -1388,19 +1700,20 @@ export function useWorkspaceManager() {
       }
       contextsRef.current = {
         ...contextsRef.current,
-        [activeWorkspace]: nextCtx
+        [path]: nextCtx
       }
-      setContexts((prev) => ({ ...prev, [activeWorkspace]: nextCtx }))
-      setWorkspaceHotUi(activeWorkspace, { composerDraft: draft })
-      schedulePersistUiState(activeWorkspace, nextCtx)
+      setContexts((prev) => ({ ...prev, [path]: nextCtx }))
+      setWorkspaceHotUi(path, { composerDraft: draft })
+      schedulePersistUiState(path, nextCtx)
     },
-    [activeWorkspace, schedulePersistUiState]
+    [activeWorkspace, getFocusedPane, schedulePersistUiState]
   )
 
   const setAgentMode = useCallback(
     (mode: AgentInteractionMode, options?: { syncOnly?: boolean }) => {
-      if (!activeWorkspace) return
-      const ctx = contextsRef.current[activeWorkspace]
+      const path = getFocusedPane()?.workspacePath ?? activeWorkspace
+      if (!path) return
+      const ctx = contextsRef.current[path]
       if (!ctx) return
       if (ctx.ui.agentMode === mode) return
       const runId = ctx.activeRunId
@@ -1427,20 +1740,22 @@ export function useWorkspaceManager() {
       }
       contextsRef.current = {
         ...contextsRef.current,
-        [activeWorkspace]: nextCtx
+        [path]: nextCtx
       }
-      setContexts((prev) => ({ ...prev, [activeWorkspace]: nextCtx }))
-      schedulePersistUiState(activeWorkspace, nextCtx)
+      setContexts((prev) => ({ ...prev, [path]: nextCtx }))
+      schedulePersistUiState(path, nextCtx)
     },
-    [activeWorkspace, schedulePersistUiState]
+    [activeWorkspace, getFocusedPane, schedulePersistUiState]
   )
 
   const onMessageListScroll = useCallback(
     (scrollTop: number) => {
-      if (!activeWorkspace) return
-      const ctx = contextsRef.current[activeWorkspace]
+      const focused = getFocusedPane()
+      const path = focused?.workspacePath ?? activeWorkspace
+      if (!path) return
+      const ctx = contextsRef.current[path]
       if (!ctx) return
-      const key = scrollKeyForRun(ctx.activeRunId)
+      const key = scrollKeyForRun(focused?.runId ?? ctx.activeRunId)
       if (ctx.ui.scrollTopByRunId[key] === scrollTop && ctx.ui.scrollTop === scrollTop) return
       const nextCtx: WorkspaceContext = {
         ...ctx,
@@ -1450,10 +1765,10 @@ export function useWorkspaceManager() {
           scrollTopByRunId: { ...ctx.ui.scrollTopByRunId, [key]: scrollTop }
         }
       }
-      contextsRef.current = { ...contextsRef.current, [activeWorkspace]: nextCtx }
-      schedulePersistUiState(activeWorkspace, nextCtx)
+      contextsRef.current = { ...contextsRef.current, [path]: nextCtx }
+      schedulePersistUiState(path, nextCtx)
     },
-    [activeWorkspace, schedulePersistUiState]
+    [activeWorkspace, getFocusedPane, schedulePersistUiState]
   )
 
   const setSessionQuery = useCallback(
@@ -1489,8 +1804,15 @@ export function useWorkspaceManager() {
     [applyRegistry, bump]
   )
 
-  const activeController = activeWorkspace
-    ? ensureController(activeWorkspace, activeContext?.activeRunId ?? null)
+  const focusedPane = getFocusedPane()
+  const focusedWorkspacePath = focusedPane?.workspacePath ?? activeWorkspace
+  const focusedRunId =
+    focusedPane?.runId !== undefined
+      ? focusedPane.runId
+      : (activeContext?.activeRunId ?? null)
+
+  const activeController = focusedWorkspacePath
+    ? ensureController(focusedWorkspacePath, focusedRunId)
     : null
 
   const activeControllerRef = useRef(activeController)
@@ -1661,10 +1983,48 @@ export function useWorkspaceManager() {
 
   const clearWorkspaceError = useCallback(() => setWorkspaceError(null), [])
 
-  const activeScrollTop = activeContext
-    ? (activeContext.ui.scrollTopByRunId[scrollKeyForRun(activeContext.activeRunId)] ??
-      activeContext.ui.scrollTop)
+  const activeScrollTop = focusedWorkspacePath
+    ? (() => {
+        const ctx = findByWorkspacePath(contexts, focusedWorkspacePath)
+        if (!ctx) return 0
+        return (
+          ctx.ui.scrollTopByRunId[scrollKeyForRun(focusedRunId)] ?? ctx.ui.scrollTop
+        )
+      })()
     : 0
+
+  const getPaneChatSnapshot = useCallback(
+    (workspacePath: string, runId: string | null) => {
+      const ctrl = ensureController(workspacePath, runId)
+      return {
+        items: ctrl.items,
+        messages: ctrl.messages,
+        running: ctrl.running,
+        invokeId: ctrl.getInvokeId(),
+        runId: ctrl.runId,
+        error: ctrl.error,
+        errorCode: ctrl.errorCode,
+        runNotice: ctrl.runNotice,
+        incomplete: ctrl.incomplete,
+        networkWait: ctrl.networkWait,
+        contextUsage: ctrl.contextUsage,
+        runStartedAt: ctrl.runStartedAt,
+        runTerminalTick: ctrl.runTerminalTick,
+        pendingRun: ctrl.pendingRun,
+        transcriptLoading: ctrl.transcriptLoading,
+        collapsedTurnIndices: ctrl.collapsedTurnIndices,
+        writeCheckpoint: ctrl.writeCheckpoint,
+        pendingFollowUps: ctrl.pendingFollowUps,
+        subscribeItems: ctrl.subscribeItems.bind(ctrl),
+        getItemsRevision: ctrl.getItemsRevision.bind(ctrl),
+        getItems: () => ctrl.items,
+        subscribeMeta: ctrl.subscribeMeta.bind(ctrl),
+        getMetaRevision: ctrl.getMetaRevision.bind(ctrl),
+        getContextUsage: ctrl.getContextUsage.bind(ctrl)
+      }
+    },
+    [ensureController]
+  )
 
   const chatActions = useMemo(
     () =>
@@ -1732,6 +2092,19 @@ export function useWorkspaceManager() {
     onQuestionSubmit,
     collapsedTurns,
     chatActions,
-    purgeDeletedRunUi
+    purgeDeletedRunUi,
+    paneLayout,
+    isMultiPane,
+    focusPaneById,
+    closePaneById,
+    setPaneSizesByIndex,
+    dropSessionOnPane,
+    openSessionInFocusedPane,
+    isSessionOpenInPane,
+    isSessionFocusedInPane,
+    getFocusedPane,
+    getPaneChatSnapshot,
+    focusedWorkspacePath,
+    focusedRunId
   }
 }

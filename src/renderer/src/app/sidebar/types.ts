@@ -26,6 +26,8 @@ export type SidebarProps = {
   onSelectRunInWorkspace?: (path: string, runId: string) => void
   onRenameRunInWorkspace?: (path: string, runId: string, goal: string) => void
   onDeleteRunInWorkspace?: (path: string, runId: string) => void
+  isRunOpenInPane?: (path: string, runId: string) => boolean
+  isRunFocusedInPane?: (path: string, runId: string) => boolean
   onCloseDrawer: () => void
   onToggleSidebar: () => void
   collapsed?: boolean

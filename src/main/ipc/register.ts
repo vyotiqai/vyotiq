@@ -1913,7 +1913,7 @@ export function registerIpc(): void {
         ? findWorkspaceSettingsOverride(workspaces, workspacePath)?.marketplaceOverrides ?? null
         : null
       const servers = resolveEffectiveMcpServers(overrides)
-      return ok({ servers: getMcpServerStatus(servers) })
+      return ok({ servers: getMcpServerStatus(servers, workspacePath) })
     } catch (err) {
       return failFrom(err, IPC.mcpStatus)
     }
@@ -1934,7 +1934,7 @@ export function registerIpc(): void {
         ? findWorkspaceSettingsOverride(workspaces, workspacePath)?.marketplaceOverrides ?? null
         : null
       await refreshMcpServers(resolveMcpServersForSessionMap())
-      return ok({ servers: getMcpServerStatus(resolveEffectiveMcpServers(overrides)) })
+      return ok({ servers: getMcpServerStatus(resolveEffectiveMcpServers(overrides), workspacePath) })
     } catch (err) {
       return failFrom(err, IPC.mcpRefresh)
     }

@@ -44,6 +44,8 @@ function AppShellInner({
   onSelectRunInWorkspace,
   onRenameRunInWorkspace,
   onDeleteRunInWorkspace,
+  isRunOpenInPane,
+  isRunFocusedInPane,
   onSwitchWorkspace,
   onCloseWorkspace,
   onAddWorkspace,
@@ -68,6 +70,8 @@ function AppShellInner({
   onSelectRunInWorkspace?: (path: string, runId: string) => void
   onRenameRunInWorkspace?: (path: string, runId: string, goal: string) => void
   onDeleteRunInWorkspace?: (path: string, runId: string) => void
+  isRunOpenInPane?: (path: string, runId: string) => boolean
+  isRunFocusedInPane?: (path: string, runId: string) => boolean
   onSwitchWorkspace?: (path: string) => void
   onCloseWorkspace?: (path: string) => void
   onAddWorkspace?: () => void
@@ -264,6 +268,8 @@ function AppShellInner({
     onSelectRunInWorkspace,
     onRenameRunInWorkspace,
     onDeleteRunInWorkspace,
+    isRunOpenInPane,
+    isRunFocusedInPane,
     onCloseDrawer: closeDrawer,
     onToggleSidebar
   }

@@ -157,7 +157,7 @@ describe('ChatView composer placement', () => {
   it('closes one dock tab without clearing the remaining tabs', () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
-    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Add panel/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
     expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
@@ -185,9 +185,9 @@ describe('ChatView composer placement', () => {
     expect(screen.queryByText(/Agent commands/i)).toBeNull()
     expect(screen.queryByRole('button', { name: /Split terminal/i })).toBeNull()
     expect(screen.getByRole('button', { name: /Expand panel/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Open panel/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Add panel/i })).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Add panel/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
     // Keep-alive: prior panels stay mounted but hidden.
@@ -388,7 +388,7 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
-    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Add panel/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
   })
@@ -556,7 +556,7 @@ describe('ChatView composer placement', () => {
   it('switches panels via dock tabs while keeping prior panels mounted', () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
-    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Add panel/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
     expect(document.querySelector('[data-dock-tab-bar]')).toBeTruthy()
@@ -573,10 +573,10 @@ describe('ChatView composer placement', () => {
     ).toMatch(/\bhidden\b/)
   })
 
-  it('opens a missing panel from the dock Open panel menu', () => {
+  it('opens a missing panel from the dock Add panel menu', () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
-    fireEvent.click(screen.getByRole('button', { name: /Open panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Add panel/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: /Browser/i }))
     expect(document.querySelector('[data-agent-browser-panel]')).toBeTruthy()
     expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
@@ -659,6 +659,51 @@ describe('ChatView composer placement', () => {
     expect(screen.getByRole('button', { name: /^Add panel$/i })).toBeTruthy()
     const collapse = screen.getByRole('button', { name: /^Collapse panel$/i })
     expect(collapse.parentElement?.className).toMatch(/\bpr-2\b/)
+  })
+
+  it('portals side-dock tabs into the titlebar aligned to the dock column', () => {
+    render(
+      <BreakpointProvider>
+        <TitleBarAccessoryProvider>
+          <TitleBar drawerOpen={false} onToggleSidebar={() => {}} />
+          <ChatView {...baseProps} items={[]} />
+        </TitleBarAccessoryProvider>
+      </BreakpointProvider>
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
+
+    const accessory = document.querySelector('[data-titlebar-accessory]')
+    const portal = document.querySelector('[data-dock-titlebar-portal]')
+    const tabsHost = document.querySelector('[data-dock-titlebar-tabs]')
+    const dock = document.querySelector('[data-right-dock]')
+    expect(accessory?.contains(portal)).toBe(true)
+    expect(portal?.querySelector('[data-titlebar-drag-spacer]')).toBeTruthy()
+    expect(tabsHost).toBeTruthy()
+    expect(document.querySelector('[data-dock-embedded="1"]')).toBeTruthy()
+    expect(document.querySelector('[data-dock-column-portal]')).toBeNull()
+    expect(dock?.querySelector('[data-dock-tab-bar]')).toBeNull()
+    expect(screen.getByRole('tab', { name: /^Browser$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Expand panel$/i })).toBeTruthy()
+    expect(screen.getByPlaceholderText('Search or enter URL')).toBeTruthy()
+
+    // Tabs strip is dock width minus caption buttons so left edge matches the panel.
+    const dockWidth = Number.parseFloat(
+      (dock as HTMLElement | null)?.style.width?.replace('px', '') ?? ''
+    )
+    const tabsWidth = Number.parseFloat(
+      (tabsHost as HTMLElement | null)?.style.width?.replace('px', '') ?? ''
+    )
+    expect(dockWidth).toBeGreaterThan(0)
+    expect(tabsWidth).toBe(dockWidth - 132)
+  })
+
+  it('keeps side-dock tabs in the aside when the titlebar host is absent', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
+
+    expect(document.querySelector('[data-dock-titlebar-portal]')).toBeNull()
+    expect(document.querySelector('[data-right-dock] [data-dock-tab-bar]')).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Browser$/i })).toBeTruthy()
   })
 
   it('collapsing immersive from Agent restores full chat without a side dock', () => {
