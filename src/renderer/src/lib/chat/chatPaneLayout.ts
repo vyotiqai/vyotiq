@@ -30,6 +30,21 @@ export type ChatPaneLayout = {
 export type PaneDropZone = 'left' | 'center' | 'right'
 
 let paneIdCounter = 0
+let sessionDragActive = false
+
+/** Set while a sidebar session row is mid-drag (Electron dragover MIME quirk). */
+export function markSessionDragStart(): void {
+  sessionDragActive = true
+}
+
+export function markSessionDragEnd(): void {
+  sessionDragActive = false
+}
+
+export function isSessionDragEvent(dataTransfer: DataTransfer): boolean {
+  if (dataTransfer.types.includes(SESSION_DRAG_MIME)) return true
+  return sessionDragActive && dataTransfer.types.includes('text/plain')
+}
 
 export function createPaneId(): string {
   paneIdCounter += 1
@@ -211,7 +226,20 @@ export function sanitizePaneLayout(
     openWorkspacePaths.some((path) => workspacePathsEqual(path, pane.workspacePath))
   )
   if (open.length === 0) return null
-  const panes = open.slice(0, Math.max(1, maxPanes))
+
+  let panes = open
+  if (panes.length > maxPanes) {
+    const focusedId = panes.some((p) => p.paneId === layout.focusedPaneId)
+      ? layout.focusedPaneId
+      : panes[0]!.paneId
+    const keepIds = new Set<string>([focusedId])
+    for (const pane of panes) {
+      if (keepIds.size >= maxPanes) break
+      if (!keepIds.has(pane.paneId)) keepIds.add(pane.paneId)
+    }
+    panes = panes.filter((p) => keepIds.has(p.paneId))
+  }
+
   const sizes =
     layout.sizes.length === layout.panes.length
       ? normalizeSizes(

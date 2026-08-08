@@ -114,7 +114,8 @@ export function Composer({
   seedAudio,
   seedNativeFiles,
   onCancelEdit,
-  imageReadyHint = null
+  imageReadyHint = null,
+  onFocus
 }: {
   provider: ProviderId
   model: string
@@ -190,6 +191,7 @@ export function Composer({
   onCancelEdit?: () => void
   /** Shown in toolbar when image generation keys are configured. */
   imageReadyHint?: string | null
+  onFocus?: () => void
 }) {
   const taRef = useRef<ComposerMentionInputHandle>(null)
   const focusInput = useCallback(() => taRef.current?.focus(), [])
@@ -782,6 +784,7 @@ export function Composer({
             override: composerPlaceholder
           })}
           disabled={inputLocked}
+          onFocus={onFocus}
           aria-expanded={slash.open || mentions.open}
           aria-controls={
             slash.open

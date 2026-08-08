@@ -317,16 +317,50 @@ export type DockImmersiveTabId = 'agent' | ChatRightPanelId
 export const CHAT_RIGHT_PANEL_BODY =
   'flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden'
 
+/** Read live sidebar width for pane-capacity math (localStorage-backed). */
+export function readSidebarWidthPxForCapacity(): number {
+  if (typeof window === 'undefined') return SIDEBAR_WIDTH_MIN_PX
+  try {
+    if (localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true') {
+      return SIDEBAR_COLLAPSED_WIDTH_PX
+    }
+    const raw = localStorage.getItem(SIDEBAR_WIDTH_KEY)
+    const n = raw ? Number(raw) : SIDEBAR_WIDTH_PX
+    const w = Number.isFinite(n) ? n : SIDEBAR_WIDTH_PX
+    return clampSidebarWidthPx(w)
+  } catch {
+    return SIDEBAR_WIDTH_PX
+  }
+}
+
+/** Chrome width subtracted before counting how many panes fit. */
+export function paneCapacityReservedPx(options?: {
+  sidebarWidthPx?: number
+  dockWidthPx?: number
+  dockOpen?: boolean
+}): number {
+  const sidebar = options?.sidebarWidthPx ?? readSidebarWidthPxForCapacity()
+  const dockOpen = options?.dockOpen && (options.dockWidthPx ?? 0) > 0
+  const dock = dockOpen ? options!.dockWidthPx! : 0
+  // Side rail overlays the pane edge only while the dock is closed.
+  const rail = dockOpen ? 0 : CHAT_SIDE_RAIL_WIDTH_PX
+  return sidebar + rail + dock
+}
+
 /**
- * Clamp dock width so a usable chat column remains beside the sidebar floor.
- * Reserves {@link SIDEBAR_WIDTH_MIN_PX} (not live sidebar width) so three-pane
- * layouts cannot push the agent column below {@link CHAT_COLUMN_MIN_USABLE_PX}.
+ * Clamp dock width so usable chat column(s) remain beside the sidebar.
+ * With multiple panes, reserves {@link CHAT_COLUMN_MIN_USABLE_PX} per pane plus side rail.
  */
 export function clampDockWidthPx(
   width: number,
-  viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280
+  viewportWidth = typeof window !== 'undefined' ? window.innerWidth : 1280,
+  options?: { paneCount?: number; sidebarWidthPx?: number; dockOpen?: boolean }
 ): number {
-  const reservedChrome = CHAT_COLUMN_MIN_USABLE_PX + SIDEBAR_WIDTH_MIN_PX
+  const paneCount = Math.max(1, options?.paneCount ?? 1)
+  const sidebar = options?.sidebarWidthPx ?? readSidebarWidthPxForCapacity()
+  const dockOpen = options?.dockOpen ?? true
+  const rail = dockOpen ? 0 : CHAT_SIDE_RAIL_WIDTH_PX
+  const reservedChrome = paneCount * CHAT_COLUMN_MIN_USABLE_PX + sidebar + rail
   const maxByViewport = Math.max(
     DOCK_WIDTH_MIN_PX,
     Math.min(DOCK_WIDTH_MAX_PX, viewportWidth - reservedChrome)

@@ -454,6 +454,7 @@ export function MessageList({
   restoreScrollTop,
   scrollRestoreToken,
   onScrollTopChange,
+  onActivate,
   onLoadToolContent,
   onThinkingToggle,
   onToolToggle,
@@ -482,6 +483,7 @@ export function MessageList({
   restoreScrollTop?: number
   scrollRestoreToken?: number
   onScrollTopChange?: (scrollTop: number) => void
+  onActivate?: () => void
   onLoadToolContent?: (toolCallId: string) => Promise<string | null>
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
   onToolToggle?: (toolCallId: string, expanded: boolean) => void
@@ -981,6 +983,8 @@ export function MessageList({
             sideRailPad ? CHAT_STAGE_INSET : CHAT_GUTTER
           )}
           onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
+          onPointerDownCapture={() => onActivate?.()}
+          onFocus={() => onActivate?.()}
         >
           <div className="sr-only" role="status" aria-live="polite">
             {streamingAnnouncement}

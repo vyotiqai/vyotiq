@@ -245,6 +245,7 @@ export const ComposerMentionInput = forwardRef<
     'aria-controls'?: string
     'aria-autocomplete'?: 'list' | 'none' | 'inline' | 'both'
     'aria-activedescendant'?: string
+    onFocus?: () => void
   }
 >(function ComposerMentionInput(
   {
@@ -255,6 +256,7 @@ export const ComposerMentionInput = forwardRef<
     placeholder,
     disabled,
     className,
+    onFocus,
     'aria-expanded': ariaExpanded,
     'aria-controls': ariaControls,
     'aria-autocomplete': ariaAutocomplete,
@@ -363,6 +365,10 @@ export const ComposerMentionInput = forwardRef<
         }}
         onKeyUp={syncCaret}
         onClick={syncCaret}
+        onFocus={() => {
+          syncCaret()
+          onFocus?.()
+        }}
         onBlur={syncCaret}
         onCompositionStart={() => {
           composingRef.current = true

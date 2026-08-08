@@ -33,6 +33,7 @@ harness, code, and tests only — no speculative guidance.
 | [13-feature-inventory.md](./13-feature-inventory.md) | Tools, providers, panels, modes |
 | [14-codebase-audit-snapshot.md](./14-codebase-audit-snapshot.md) | Full audit snapshot, gaps, working-tree delta |
 | [15-architecture.md](./15-architecture.md) | Process boundaries, aliases, folder conventions |
+| [16-chat-pane-layout.md](./16-chat-pane-layout.md) | Multi-pane chat layout, capacity, drop zones, resize |
 
 Canonical short summary: [`docs/agent-practices-2026.md`](../../agent-practices-2026.md).
 

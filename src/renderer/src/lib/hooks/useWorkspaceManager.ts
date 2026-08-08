@@ -45,10 +45,14 @@ import {
   syncSinglePaneSession,
   visibleRunIds
 } from '@renderer/lib/chat/chatPaneLayout'
-import { CHAT_SIDE_RAIL_WIDTH_PX, SIDEBAR_WIDTH_MIN_PX } from '@renderer/lib/utils/layout'
+import {
+  paneCapacityReservedPx
+} from '@renderer/lib/utils/layout'
 
-/** Chrome always present beside chat columns (sidebar floor + side rail). */
-const PANE_CAPACITY_RESERVED_PX = SIDEBAR_WIDTH_MIN_PX + CHAT_SIDE_RAIL_WIDTH_PX
+export type PaneCapacityContext = {
+  dockOpen: boolean
+  dockWidthPx: number
+}
 
 const ACTIVE_RUNS_POLL_MS = 5_000
 const ACTIVE_RUNS_WARN_INTERVAL_MS = 60_000
@@ -197,6 +201,7 @@ export type WorkspaceUiSlice = {
   scrollTop: number
   scrollTopByRunId: Record<string, number>
   composerDraft: string
+  composerDraftByRunId: Record<string, string>
   agentMode: AgentInteractionMode
 }
 
@@ -204,6 +209,21 @@ const DRAFT_SCROLL_KEY = '__draft__'
 
 function scrollKeyForRun(runId: string | null): string {
   return runId ?? DRAFT_SCROLL_KEY
+}
+
+function draftKeyForRun(runId: string | null): string {
+  return runId ?? DRAFT_SCROLL_KEY
+}
+
+/** @internal */
+export function resolveComposerDraft(
+  ui: Pick<WorkspaceUiSlice, 'composerDraft' | 'composerDraftByRunId'>,
+  runId: string | null
+): string {
+  const key = draftKeyForRun(runId)
+  if (key in ui.composerDraftByRunId) return ui.composerDraftByRunId[key] ?? ''
+  if (!runId) return ui.composerDraft
+  return ''
 }
 
 /** Keep scroll entries for open tabs and active run; draft only while drafting. @internal */
@@ -280,6 +300,7 @@ function defaultUiState(): WorkspaceUiState {
     scrollTop: 0,
     scrollTopByRunId: {},
     composerDraft: '',
+    composerDraftByRunId: {},
     agentMode: 'agent'
   }
 }
@@ -300,6 +321,7 @@ function uiStateFromContext(ctx: WorkspaceContext): WorkspaceUiState {
       activeRunId: ctx.activeRunId
     }),
     composerDraft: ctx.ui.composerDraft,
+    composerDraftByRunId: { ...ctx.ui.composerDraftByRunId },
     agentMode: ctx.ui.agentMode
   }
 }
@@ -330,6 +352,7 @@ function contextFromRegistry(path: string, registry: WorkspacesState): Workspace
       scrollTop: ui.scrollTop,
       scrollTopByRunId,
       composerDraft: ui.composerDraft,
+      composerDraftByRunId: { ...(ui.composerDraftByRunId ?? {}) },
       agentMode: ui.agentMode ?? 'agent'
     },
     settingsOverride:
@@ -357,6 +380,10 @@ export function useWorkspaceManager() {
   const controllersRef = useRef(new Map<string, ChatStreamController>())
   const paneLayoutRef = useRef<ChatPaneLayout | null>(null)
   const paneLayoutHydratedRef = useRef(false)
+  const paneCapacityContextRef = useRef<PaneCapacityContext>({
+    dockOpen: false,
+    dockWidthPx: 0
+  })
   const contextsRef = useRef(contexts)
   const registryRef = useRef(registry)
   const persistTimersRef = useRef(new Map<string, number>())
@@ -485,6 +512,7 @@ export function useWorkspaceManager() {
         ui: {
           ...stateCtx.ui,
           composerDraft: refCtx.ui.composerDraft,
+          composerDraftByRunId: { ...stateCtx.ui.composerDraftByRunId, ...refCtx.ui.composerDraftByRunId },
           scrollTop: scrollChanged ? refCtx.ui.scrollTop : stateCtx.ui.scrollTop,
           scrollTopByRunId: scrollChanged
             ? { ...stateScroll, ...refScroll }
@@ -1039,6 +1067,11 @@ export function useWorkspaceManager() {
             existing.ui.composerDraft !== ''
               ? existing.ui.composerDraft
               : (refUi?.composerDraft || ui.composerDraft)
+          const composerDraftByRunId = {
+            ...(ui.composerDraftByRunId ?? {}),
+            ...existing.ui.composerDraftByRunId,
+            ...(refUi?.composerDraftByRunId ?? {})
+          }
           next[path] = {
             ...existing,
             activeRunId: existing.activeRunId ?? ui.activeRunId,
@@ -1052,6 +1085,7 @@ export function useWorkspaceManager() {
                 ...(refUi?.scrollTopByRunId ?? {})
               },
               composerDraft,
+              composerDraftByRunId,
               agentMode: existing.ui.agentMode ?? refUi?.agentMode ?? ui.agentMode ?? 'agent'
             },
             settingsOverride: findSettingsOverride(state.settingsOverridesByPath, path)
@@ -1241,7 +1275,10 @@ export function useWorkspaceManager() {
     const openPaths = registryRef.current?.openPaths ?? [activeWorkspace]
     const maxPanes = maxPaneCount(
       typeof window !== 'undefined' ? window.innerWidth : 1200,
-      PANE_CAPACITY_RESERVED_PX
+      paneCapacityReservedPx({
+        dockOpen: paneCapacityContextRef.current.dockOpen,
+        dockWidthPx: paneCapacityContextRef.current.dockWidthPx
+      })
     )
     const initial =
       (stored ? sanitizePaneLayout(stored, openPaths, maxPanes) : null) ?? fallback
@@ -1286,20 +1323,38 @@ export function useWorkspaceManager() {
     )
   }, [])
 
+  const getReservedPx = useCallback((): number => {
+    const ctx = paneCapacityContextRef.current
+    return paneCapacityReservedPx({
+      dockOpen: ctx.dockOpen,
+      dockWidthPx: ctx.dockWidthPx
+    })
+  }, [])
+
   const getMaxPaneCount = useCallback((): number => {
     return maxPaneCount(
       typeof window !== 'undefined' ? window.innerWidth : 1200,
-      PANE_CAPACITY_RESERVED_PX
+      getReservedPx()
     )
+  }, [getReservedPx])
+
+  const setPaneCapacityContext = useCallback((ctx: PaneCapacityContext): void => {
+    paneCapacityContextRef.current = ctx
+    // Dock open/close shrinks the chat row — clamp dock width in ChatView instead
+    // of dropping existing panes here.
   }, [])
 
   const focusPaneById = useCallback(
     (paneId: string): void => {
       const layout = paneLayoutRef.current
-      if (!layout) return
-      commitPaneLayout(focusPane(layout, paneId))
+      if (!layout || layout.focusedPaneId === paneId) return
+      const next = focusPane(layout, paneId)
+      paneLayoutRef.current = next
+      setPaneLayout(next)
+      savePaneLayoutToStorage(next)
+      bump()
     },
-    [commitPaneLayout]
+    [bump]
   )
 
   const setPaneSizesByIndex = useCallback(
@@ -1311,19 +1366,8 @@ export function useWorkspaceManager() {
     [commitPaneLayout]
   )
 
-  useEffect(() => {
-    const clampToCapacity = (): void => {
-      const layout = paneLayoutRef.current
-      if (!layout || layout.panes.length <= 1) return
-      const openPaths = registryRef.current?.openPaths ?? []
-      const maxPanes = getMaxPaneCount()
-      if (layout.panes.length <= maxPanes) return
-      const next = sanitizePaneLayout(layout, openPaths, maxPanes)
-      if (next) commitPaneLayout(next)
-    }
-    window.addEventListener('resize', clampToCapacity)
-    return () => window.removeEventListener('resize', clampToCapacity)
-  }, [commitPaneLayout, getMaxPaneCount])
+  // Pane count is preserved on resize/dock; overflow scroll handles tight rows.
+  // New splits are refused via getMaxPaneCount in applyPaneDrop.
 
   const isSessionOpenInPane = useCallback(
     (workspacePath: string, runId: string): boolean => {
@@ -1687,26 +1731,38 @@ export function useWorkspaceManager() {
     [commitPaneLayout, schedulePersistUiState]
   )
 
-  const setComposerDraft = useCallback(
-    (draft: string) => {
-      const path = getFocusedPane()?.workspacePath ?? activeWorkspace
-      if (!path) return
-      const ctx = contextsRef.current[path]
+  const setComposerDraftForPane = useCallback(
+    (workspacePath: string, runId: string | null, draft: string): void => {
+      const ctx = contextsRef.current[workspacePath]
       if (!ctx) return
-      if (ctx.ui.composerDraft === draft) return
+      const key = draftKeyForRun(runId)
+      const prev = resolveComposerDraft(ctx.ui, runId)
+      if (prev === draft) return
+      const composerDraftByRunId = { ...ctx.ui.composerDraftByRunId, [key]: draft }
+      const composerDraft = runId ? ctx.ui.composerDraft : draft
       const nextCtx: WorkspaceContext = {
         ...ctx,
-        ui: { ...ctx.ui, composerDraft: draft }
+        ui: { ...ctx.ui, composerDraft, composerDraftByRunId }
       }
       contextsRef.current = {
         ...contextsRef.current,
-        [path]: nextCtx
+        [workspacePath]: nextCtx
       }
-      setContexts((prev) => ({ ...prev, [path]: nextCtx }))
-      setWorkspaceHotUi(path, { composerDraft: draft })
-      schedulePersistUiState(path, nextCtx)
+      setContexts((prev) => ({ ...prev, [workspacePath]: nextCtx }))
+      setWorkspaceHotUi(workspacePath, { composerDraft: runId ? ctx.ui.composerDraft : draft })
+      schedulePersistUiState(workspacePath, nextCtx)
     },
-    [activeWorkspace, getFocusedPane, schedulePersistUiState]
+    [schedulePersistUiState]
+  )
+
+  const setComposerDraft = useCallback(
+    (draft: string) => {
+      const focused = getFocusedPane()
+      const path = focused?.workspacePath ?? activeWorkspace
+      if (!path) return
+      setComposerDraftForPane(path, focused?.runId ?? null, draft)
+    },
+    [activeWorkspace, getFocusedPane, setComposerDraftForPane]
   )
 
   const setAgentMode = useCallback(
@@ -1748,14 +1804,11 @@ export function useWorkspaceManager() {
     [activeWorkspace, getFocusedPane, schedulePersistUiState]
   )
 
-  const onMessageListScroll = useCallback(
-    (scrollTop: number) => {
-      const focused = getFocusedPane()
-      const path = focused?.workspacePath ?? activeWorkspace
-      if (!path) return
-      const ctx = contextsRef.current[path]
+  const onMessageListScrollForPane = useCallback(
+    (workspacePath: string, runId: string | null, scrollTop: number): void => {
+      const ctx = contextsRef.current[workspacePath]
       if (!ctx) return
-      const key = scrollKeyForRun(focused?.runId ?? ctx.activeRunId)
+      const key = scrollKeyForRun(runId)
       if (ctx.ui.scrollTopByRunId[key] === scrollTop && ctx.ui.scrollTop === scrollTop) return
       const nextCtx: WorkspaceContext = {
         ...ctx,
@@ -1765,10 +1818,20 @@ export function useWorkspaceManager() {
           scrollTopByRunId: { ...ctx.ui.scrollTopByRunId, [key]: scrollTop }
         }
       }
-      contextsRef.current = { ...contextsRef.current, [path]: nextCtx }
-      schedulePersistUiState(path, nextCtx)
+      contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
+      schedulePersistUiState(workspacePath, nextCtx)
     },
-    [activeWorkspace, getFocusedPane, schedulePersistUiState]
+    [schedulePersistUiState]
+  )
+
+  const onMessageListScroll = useCallback(
+    (scrollTop: number) => {
+      const focused = getFocusedPane()
+      const path = focused?.workspacePath ?? activeWorkspace
+      if (!path) return
+      onMessageListScrollForPane(path, focused?.runId ?? null, scrollTop)
+    },
+    [activeWorkspace, getFocusedPane, onMessageListScrollForPane]
   )
 
   const setSessionQuery = useCallback(
@@ -2080,8 +2143,10 @@ export function useWorkspaceManager() {
     clearWorkspaceError,
     clearRunsError,
     setComposerDraft,
+    setComposerDraftForPane,
     setAgentMode,
     onMessageListScroll,
+    onMessageListScrollForPane,
     setSettingsOverride,
     onLoadToolContent,
     onThinkingToggle,
@@ -2104,6 +2169,8 @@ export function useWorkspaceManager() {
     isSessionFocusedInPane,
     getFocusedPane,
     getPaneChatSnapshot,
+    getMaxPaneCount,
+    setPaneCapacityContext,
     focusedWorkspacePath,
     focusedRunId
   }

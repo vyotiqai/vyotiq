@@ -97,6 +97,8 @@ export function SessionChatColumn({
   slashHandlers,
   sideRailPad = false,
   imageReadyHint = null,
+  showPageHeading = true,
+  onActivate,
   onOpenChanges,
   onOpenUncommittedChanges
 }: {
@@ -181,6 +183,8 @@ export function SessionChatColumn({
   slashHandlers?: import('./components/composer/slashCommandExecute').SlashClientHandlers
   sideRailPad?: boolean
   imageReadyHint?: string | null
+  showPageHeading?: boolean
+  onActivate?: () => void
   onOpenChanges?: () => void
   onOpenUncommittedChanges?: () => void
 }) {
@@ -386,7 +390,8 @@ export function SessionChatColumn({
     onCompactContext,
     slashHandlers,
     sideRailPad,
-    imageReadyHint
+    imageReadyHint,
+    onFocus: onActivate
   }
 
   const runSession = useMemo(
@@ -400,9 +405,11 @@ export function SessionChatColumn({
 
   return (
     <>
-      <h1 ref={headingRef} tabIndex={-1} className="sr-only">
-        Vyotiq chat
-      </h1>
+      {showPageHeading ? (
+        <h1 ref={headingRef} tabIndex={-1} className="sr-only">
+          Vyotiq chat
+        </h1>
+      ) : null}
       {showHero ? (
         <div
           className={cn('flex min-h-0 flex-1 flex-col items-center justify-center', CHAT_GUTTER)}
@@ -444,6 +451,7 @@ export function SessionChatColumn({
               restoreScrollTop={restoreScrollTop}
               scrollRestoreToken={scrollRestoreToken}
               onScrollTopChange={onScrollTopChange}
+              onActivate={onActivate}
               onLoadToolContent={onLoadToolContent}
               onThinkingToggle={onThinkingToggle}
               onToolToggle={onToolToggle}

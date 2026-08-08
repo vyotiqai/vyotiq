@@ -4,13 +4,17 @@ import {
   closePane,
   createPaneId,
   insertPaneBeside,
+  isSessionDragEvent,
+  markSessionDragEnd,
+  markSessionDragStart,
   maxPaneCount,
   openRunInFocusedPane,
   removeSessionFromLayout,
   resolvePaneDropZone,
   sanitizePaneLayout,
   singlePaneLayout,
-  syncSinglePaneSession
+  syncSinglePaneSession,
+  SESSION_DRAG_MIME
 } from '@renderer/lib/chat/chatPaneLayout'
 
 describe('chatPaneLayout', () => {
@@ -117,6 +121,25 @@ describe('chatPaneLayout', () => {
     expect(next?.focusedPaneId).toBe(paneA)
   })
 
+  it('sanitize preserves focused pane when clamping to capacity', () => {
+    const paneA = createPaneId()
+    const paneB = createPaneId()
+    const paneC = createPaneId()
+    const layout = {
+      panes: [
+        { paneId: paneA, workspacePath: '/open', runId: '1' },
+        { paneId: paneB, workspacePath: '/open', runId: '2' },
+        { paneId: paneC, workspacePath: '/open', runId: '3' }
+      ],
+      focusedPaneId: paneC,
+      sizes: [1, 1, 1]
+    }
+    const next = sanitizePaneLayout(layout, ['/open'], 2)
+    expect(next?.panes).toHaveLength(2)
+    expect(next?.focusedPaneId).toBe(paneC)
+    expect(next?.panes.some((p) => p.paneId === paneC)).toBe(true)
+  })
+
   it('removeSessionFromLayout closes matching panes', () => {
     const paneA = createPaneId()
     const paneB = createPaneId()
@@ -170,5 +193,18 @@ describe('chatPaneLayout', () => {
     const next = openRunInFocusedPane(layout, { workspacePath: '/b', runId: '2' })
     expect(next.focusedPaneId).toBe(paneB)
     expect(next.panes).toHaveLength(2)
+  })
+
+  it('detects session drag via custom MIME or active text/plain fallback', () => {
+    const custom = { types: [SESSION_DRAG_MIME] } as DataTransfer
+    expect(isSessionDragEvent(custom)).toBe(true)
+
+    const plainOnly = { types: ['text/plain'] } as DataTransfer
+    expect(isSessionDragEvent(plainOnly)).toBe(false)
+
+    markSessionDragStart()
+    expect(isSessionDragEvent(plainOnly)).toBe(true)
+    markSessionDragEnd()
+    expect(isSessionDragEvent(plainOnly)).toBe(false)
   })
 })

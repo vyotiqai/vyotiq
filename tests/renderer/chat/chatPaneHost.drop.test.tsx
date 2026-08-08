@@ -4,7 +4,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createEvent, fireEvent, render, screen } from '@testing-library/react'
 import { ChatPaneHost } from '@renderer/features/chat/ChatPaneHost'
-import { SESSION_DRAG_MIME } from '@renderer/lib/chat/chatPaneLayout'
+import {
+  markSessionDragEnd,
+  markSessionDragStart,
+  SESSION_DRAG_MIME
+} from '@renderer/lib/chat/chatPaneLayout'
 import type { ChatPane } from '@renderer/lib/chat/chatPaneLayout'
 
 const pane: ChatPane = {
@@ -42,6 +46,32 @@ function dropAt(host: HTMLElement, clientX: number, payload: string): void {
 }
 
 describe('ChatPaneHost drop', () => {
+  it('splits on left-third drop', () => {
+    const onSessionDrop = vi.fn(() => true)
+    render(
+      <ChatPaneHost
+        panes={[pane]}
+        focusedPaneId="pane-1"
+        sizes={[1]}
+        onFocusPane={() => {}}
+        onClosePane={() => {}}
+        onSizesChange={() => {}}
+        onSessionDrop={onSessionDrop}
+        getPaneTitle={() => 'Chat A'}
+        renderPane={() => <div data-testid="pane-body">body</div>}
+      />
+    )
+
+    const host = screen.getByTestId('pane-body').closest('[data-chat-pane]') as HTMLElement
+    mockPaneRect(host)
+    dropAt(host, 80, JSON.stringify({ workspacePath: '/ws/b', runId: 'run-b' }))
+
+    expect(onSessionDrop).toHaveBeenCalledWith('pane-1', 'left', {
+      workspacePath: '/ws/b',
+      runId: 'run-b'
+    })
+  })
+
   it('splits on right-third drop instead of replacing', () => {
     const onSessionDrop = vi.fn(() => true)
     render(
@@ -89,6 +119,50 @@ describe('ChatPaneHost drop', () => {
     dropAt(host, 300, JSON.stringify({ workspacePath: '/ws/b', runId: 'run-b' }))
 
     expect(onSessionDrop).toHaveBeenCalledWith('pane-1', 'center', {
+      workspacePath: '/ws/b',
+      runId: 'run-b'
+    })
+  })
+
+  it('accepts dragover with text/plain while a session drag is active', () => {
+    const onSessionDrop = vi.fn(() => true)
+    render(
+      <ChatPaneHost
+        panes={[pane]}
+        focusedPaneId="pane-1"
+        sizes={[1]}
+        onFocusPane={() => {}}
+        onClosePane={() => {}}
+        onSizesChange={() => {}}
+        onSessionDrop={onSessionDrop}
+        getPaneTitle={() => 'Chat A'}
+        renderPane={() => <div data-testid="pane-body">body</div>}
+      />
+    )
+
+    const host = screen.getByTestId('pane-body').closest('[data-chat-pane]') as HTMLElement
+    mockPaneRect(host)
+    markSessionDragStart()
+    const dragOver = createEvent.dragOver(host, {
+      dataTransfer: { types: ['text/plain'] }
+    })
+    Object.defineProperty(dragOver, 'clientX', { configurable: true, value: 520 })
+    fireEvent(host, dragOver)
+    markSessionDragEnd()
+
+    const drop = createEvent.drop(host, {
+      dataTransfer: {
+        types: ['text/plain'],
+        getData: (type: string) =>
+          type === 'text/plain'
+            ? JSON.stringify({ workspacePath: '/ws/b', runId: 'run-b' })
+            : ''
+      }
+    })
+    Object.defineProperty(drop, 'clientX', { configurable: true, value: 520 })
+    fireEvent(host, drop)
+
+    expect(onSessionDrop).toHaveBeenCalledWith('pane-1', 'right', {
       workspacePath: '/ws/b',
       runId: 'run-b'
     })

@@ -50,6 +50,7 @@ import {
   RIGHT_PANEL_KEY,
   WINDOW_CONTROLS_WIDTH_PX,
   clampDockWidthPx,
+  readSidebarWidthPxForCapacity,
   isChatRightPanelId,
   showsWindowControls,
   type ChatRightPanelId,
@@ -58,6 +59,7 @@ import {
 import { cn } from '@renderer/lib/ui/cn'
 import type { ChatItemsStore, ChatMetaStore } from './chatStores'
 import { ChatPaneHost } from './ChatPaneHost'
+import type { PaneCapacityContext } from '@renderer/lib/hooks/useWorkspaceManager'
 import type { ChatPane, PaneDropZone } from '@renderer/lib/chat/chatPaneLayout'
 
 export type { ChatItemsStore, ChatMetaStore } from './chatStores'
@@ -252,7 +254,9 @@ export function ChatView({
   onKeepAllWrites,
   resolveBlockedReason = null,
   imageReadyHint = null,
-  multiPane = null
+  multiPane = null,
+  paneCount: paneCountProp = 1,
+  onPaneCapacityChange
 }: {
   items: UiItem[]
   /** When set, transcript leaves subscribe so ChatView/Composer skip token patches. */
@@ -367,7 +371,34 @@ export function ChatView({
     getPaneTitle: (pane: ChatPane) => string
     renderPane: (pane: ChatPane, focused: boolean) => React.ReactNode
   } | null
+  paneCount?: number
+  onPaneCapacityChange?: (ctx: PaneCapacityContext) => void
 }) {
+  const paneCount = paneCountProp ?? multiPane?.panes.length ?? 1
+  const [activeRightPanel, setActiveRightPanel] = useState<ChatRightPanelId | null>(() => {
+    try {
+      const raw = localStorage.getItem(RIGHT_PANEL_KEY)
+      if (isChatRightPanelId(raw)) return raw
+      // Legacy Files rail → Changes (list + Keep/Discard in one panel).
+      if (raw === 'files') return 'changes'
+      // Migrate legacy browser-open preference.
+      const legacy = localStorage.getItem(BROWSER_PANEL_OPEN_KEY)
+      if (legacy === '1' || legacy === 'true') return 'browser'
+    } catch {
+      /* ignore */
+    }
+    return null
+  })
+  const clampDock = useCallback(
+    (width: number) =>
+      clampDockWidthPx(width, undefined, {
+        paneCount,
+        sidebarWidthPx: readSidebarWidthPxForCapacity(),
+        // Dock width is only shown while open; rail is hidden then.
+        dockOpen: true
+      }),
+    [paneCount]
+  )
   // Boolean presence only — stays Object.is-stable across pure text_delta frames.
   const hasItems = useHasChatItems(itemsStore, items)
   const liveItems = useChatLiveItems(itemsStore, items)
@@ -384,20 +415,6 @@ export function ChatView({
     (turnFailed ? error ?? 'Connection lost' : null)
   const showHero = !hasItems && !activeRunId && !transcriptLoading
   const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
-  const [activeRightPanel, setActiveRightPanel] = useState<ChatRightPanelId | null>(() => {
-    try {
-      const raw = localStorage.getItem(RIGHT_PANEL_KEY)
-      if (isChatRightPanelId(raw)) return raw
-      // Legacy Files rail → Changes (list + Keep/Discard in one panel).
-      if (raw === 'files') return 'changes'
-      // Migrate legacy browser-open preference.
-      const legacy = localStorage.getItem(BROWSER_PANEL_OPEN_KEY)
-      if (legacy === '1' || legacy === 'true') return 'browser'
-    } catch {
-      /* ignore */
-    }
-    return null
-  })
   const [prNumber, setPrNumber] = useState<number | null>(null)
   /** Accumulated dock title tabs (multi-panel strip). */
   const [dockTabs, setDockTabs] = useState<ChatRightPanelId[]>(() =>
@@ -410,7 +427,7 @@ export function ChatView({
   const [dockWidthPx, setDockWidthPx] = usePersistedNumber(
     DOCK_WIDTH_KEY,
     DOCK_WIDTH_DEFAULT_PX,
-    clampDockWidthPx
+    clampDock
   )
   /** Immersive unified tabs (Expand panel) — not a wider side dock. */
   const [dockExpanded, setDockExpanded] = usePersistedBoolean(DOCK_EXPANDED_KEY, false)
@@ -434,7 +451,7 @@ export function ChatView({
       return resolved
     })
   }, [])
-  const dockMaxPx = clampDockWidthPx(DOCK_WIDTH_MAX_PX)
+  const dockMaxPx = clampDock(DOCK_WIDTH_MAX_PX)
   const dockImmersive = dockExpanded && dockTabs.length > 0
   const { host: titleBarHost, setOccupied: setTitleBarOccupied } = useTitleBarAccessory()
   const dockSideTitleBar = activeRightPanel != null && !dockImmersive && titleBarHost != null
@@ -641,12 +658,23 @@ export function ChatView({
   )
 
   useEffect(() => {
+    onPaneCapacityChange?.({
+      dockOpen: activeRightPanel != null,
+      dockWidthPx: activeRightPanel != null ? dockWidthPx : 0
+    })
+  }, [activeRightPanel, dockWidthPx, onPaneCapacityChange])
+
+  useEffect(() => {
+    setDockWidthPx((w) => clampDock(w))
+  }, [clampDock, setDockWidthPx])
+
+  useEffect(() => {
     const onResize = (): void => {
-      setDockWidthPx((w) => clampDockWidthPx(w))
+      setDockWidthPx((w) => clampDock(w))
     }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
-  }, [setDockWidthPx])
+  }, [clampDock, setDockWidthPx])
 
   // Drop immersive only when the dock has no panels left (not merely Agent-focused).
   useEffect(() => {

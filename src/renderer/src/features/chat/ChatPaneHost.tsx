@@ -1,10 +1,11 @@
-import { useCallback, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { ChatPane, PaneDropZone } from '@renderer/lib/chat/chatPaneLayout'
 import {
+  isSessionDragEvent,
   parseSessionDragPayload,
-  resolvePaneDropZone,
-  SESSION_DRAG_MIME
+  resolvePaneDropZone
 } from '@renderer/lib/chat/chatPaneLayout'
+import { CHAT_COLUMN_MIN_USABLE_PX } from '@renderer/lib/utils/layout'
 import { PanelResizeHandle } from '@renderer/lib/ui'
 import { cn } from '@renderer/lib/ui/cn'
 
@@ -52,61 +53,96 @@ export function ChatPaneHost({
   renderPane: (pane: ChatPane, focused: boolean) => ReactNode
 }) {
   const [dropHighlight, setDropHighlight] = useState<DropHighlight>(null)
+  const dropHighlightRef = useRef<DropHighlight>(null)
   const rowRef = useRef<HTMLDivElement>(null)
+  const [rowWidth, setRowWidth] = useState(0)
+
+  useEffect(() => {
+    const row = rowRef.current
+    if (!row || typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? row.clientWidth
+      if (width > 0) setRowWidth(width)
+    })
+    observer.observe(row)
+    setRowWidth(row.clientWidth)
+    return () => observer.disconnect()
+  }, [])
+
+  const setHighlight = useCallback((next: DropHighlight) => {
+    const prev = dropHighlightRef.current
+    if (prev?.paneId === next?.paneId && prev?.zone === next?.zone) return
+    dropHighlightRef.current = next
+    setDropHighlight(next)
+  }, [])
 
   const handleDragOver = useCallback((e: React.DragEvent, paneId: string) => {
-    if (!e.dataTransfer.types.includes(SESSION_DRAG_MIME)) return
+    if (!isSessionDragEvent(e.dataTransfer)) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
-    setDropHighlight({ paneId, zone: zoneFromEvent(e) })
-  }, [])
+    setHighlight({ paneId, zone: zoneFromEvent(e) })
+  }, [setHighlight])
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     if (e.currentTarget.contains(e.relatedTarget as Node)) return
-    setDropHighlight(null)
-  }, [])
+    setHighlight(null)
+  }, [setHighlight])
 
   const handleDrop = useCallback(
     (e: React.DragEvent, paneId: string) => {
       e.preventDefault()
       const payload = parseSessionDragPayload(e.dataTransfer)
       const zone = zoneFromEvent(e)
-      setDropHighlight(null)
+      setHighlight(null)
       if (!payload) return
       onSessionDrop(paneId, zone, payload)
     },
-    [onSessionDrop]
+    [onSessionDrop, setHighlight]
   )
 
   const resizePane = useCallback(
     (index: number, nextPx: number) => {
-      const row = rowRef.current
-      if (!row || panes.length < 2) return
-      const total = row.clientWidth
-      if (total <= 0) return
+      const total = rowWidth || rowRef.current?.clientWidth || 0
+      if (total <= 0 || panes.length < 2) return
       const pairSum = (sizes[index] ?? 0) + (sizes[index + 1] ?? 0)
       if (pairSum <= 0) return
-      const minWeight = Math.min(0.15, pairSum / 2)
+      const minWeight = Math.min(pairSum / 2, CHAT_COLUMN_MIN_USABLE_PX / total)
       const left = Math.min(Math.max(nextPx / total, minWeight), pairSum - minWeight)
       const nextSizes = [...sizes]
       nextSizes[index] = left
       nextSizes[index + 1] = pairSum - left
       onSizesChange(nextSizes)
     },
-    [onSizesChange, panes.length, sizes]
+    [onSizesChange, panes.length, rowWidth, sizes]
   )
 
+  const minPanePx = CHAT_COLUMN_MIN_USABLE_PX
+
   return (
-    <div ref={rowRef} className="flex min-h-0 min-w-0 flex-1" data-chat-pane-host>
+    <div
+      ref={rowRef}
+      className="flex min-h-0 min-w-0 flex-1 overflow-x-auto"
+      data-chat-pane-host
+    >
       {panes.map((pane, index) => {
         const focused = pane.paneId === focusedPaneId
         const flexGrow = sizes[index] ?? 1
         const highlight =
           dropHighlight?.paneId === pane.paneId ? dropHighlight.zone : null
-        const rowWidth = rowRef.current?.clientWidth ?? 0
+        const paneTitle = getPaneTitle(pane)
+        const pairSum =
+          index < panes.length - 1
+            ? (sizes[index] ?? 0) + (sizes[index + 1] ?? 0)
+            : 0
         return (
-          <div key={pane.paneId} className="flex min-h-0 min-w-0" style={{ flex: `${flexGrow} 1 0` }}>
+          <div
+            key={pane.paneId}
+            className="flex min-h-0 min-w-0"
+            style={{ flex: `${flexGrow} 1 0`, minWidth: minPanePx }}
+          >
             <div
+              role="region"
+              aria-label={paneTitle}
               className={cn(
                 'group/pane relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
                 focused ? 'bg-bg' : 'bg-bg/95',
@@ -134,18 +170,17 @@ export function ChatPaneHost({
                 <div
                   className={cn(
                     'absolute inset-x-0 top-0 z-20 flex h-7 items-center justify-between gap-2 px-2',
-                    // Rightmost pane sits under the shared side rail (w-10).
                     index === panes.length - 1 && 'pr-10',
                     'opacity-0 vy-transition group-hover/pane:opacity-100 group-focus-within/pane:opacity-100',
                     focused && 'opacity-100',
                     '[@media(hover:none)]:opacity-100'
                   )}
                 >
-                  <span className="min-w-0 truncate text-xs text-muted">{getPaneTitle(pane)}</span>
+                  <span className="min-w-0 truncate text-xs text-muted">{paneTitle}</span>
                   <button
                     type="button"
                     className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted vy-transition hover:bg-surface/70 hover:text-fg"
-                    aria-label={`Close ${getPaneTitle(pane)}`}
+                    aria-label={`Close ${paneTitle}`}
                     onClick={(e) => {
                       e.stopPropagation()
                       onClosePane(pane.paneId)
@@ -168,9 +203,12 @@ export function ChatPaneHost({
               <PanelResizeHandle
                 label="Resize chat panes"
                 value={Math.round(rowWidth * (sizes[index] ?? 0))}
-                min={120}
-                max={Math.max(240, Math.round(rowWidth * ((sizes[index] ?? 0) + (sizes[index + 1] ?? 0)) - 120))}
-                edge="start"
+                min={minPanePx}
+                max={Math.max(
+                  minPanePx * 2,
+                  Math.round(rowWidth * pairSum - minPanePx)
+                )}
+                edge="end"
                 onChange={(next) => resizePane(index, next)}
               />
             ) : null}

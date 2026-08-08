@@ -7,6 +7,7 @@ import { ChatView } from '@renderer/features/chat/ChatView'
 import { TitleBar } from '@renderer/app/TitleBar'
 import { BreakpointProvider } from '@renderer/lib/context/BreakpointProvider'
 import { TitleBarAccessoryProvider } from '@renderer/lib/context/TitleBarAccessory'
+import { clampDockWidthPx, DOCK_WIDTH_DEFAULT_PX, readSidebarWidthPxForCapacity } from '@renderer/lib/utils/layout'
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
@@ -588,7 +589,14 @@ describe('ChatView composer placement', () => {
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
     const dock = document.querySelector('[data-right-dock]') as HTMLElement | null
     expect(dock?.getAttribute('data-dock-expanded')).toBe('0')
-    expect(dock?.style.width).toBe('400px')
+    const dockWidthPx = Number.parseInt(dock?.style.width ?? '0', 10)
+    expect(dockWidthPx).toBe(
+      clampDockWidthPx(DOCK_WIDTH_DEFAULT_PX, window.innerWidth, {
+        paneCount: 1,
+        sidebarWidthPx: readSidebarWidthPxForCapacity(),
+        dockOpen: true
+      })
+    )
     expect(document.querySelector('[data-dock-immersive]')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
     expect(document.querySelector('[data-right-dock]')).toBeNull()

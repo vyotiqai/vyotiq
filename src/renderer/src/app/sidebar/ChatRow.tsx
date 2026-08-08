@@ -6,7 +6,11 @@ import {
   SIDEBAR_ROW_HOVER
 } from '@renderer/lib/utils/layout'
 import type { RunSummary } from '@shared/ipc'
-import { writeSessionDragPayload } from '@renderer/lib/chat/chatPaneLayout'
+import {
+  markSessionDragEnd,
+  markSessionDragStart,
+  writeSessionDragPayload
+} from '@renderer/lib/chat/chatPaneLayout'
 import { InlineConfirmActions } from './InlineConfirmActions'
 import { runTitle, runTooltip } from './runTitle'
 
@@ -128,9 +132,13 @@ export const ChatRow = memo(function ChatRow({
             workspacePath,
             runId: run.runId
           })
+          markSessionDragStart()
           setDragging(true)
         }}
-        onDragEnd={() => setDragging(false)}
+        onDragEnd={() => {
+          markSessionDragEnd()
+          setDragging(false)
+        }}
       >
         <RunStatusDot status={run.status} />
         <span className="min-w-0 flex-1 truncate">{title}</span>

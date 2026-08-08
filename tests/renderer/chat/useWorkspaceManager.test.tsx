@@ -8,7 +8,8 @@ import {
   WORKSPACE_MANAGER_LIMITS,
   pruneScrollTopByRunId,
   omitRunScrollTop,
-  reconcileOpenRunIds
+  reconcileOpenRunIds,
+  resolveComposerDraft
 } from '@renderer/lib/hooks/useWorkspaceManager'
 import type { AgentEvent, WorkspacesState } from '@shared/ipc'
 
@@ -1123,5 +1124,17 @@ describe('reconcileOpenRunIds', () => {
     expect(result.changed).toBe(false)
     expect(result.openRunIds).toEqual(['run-new'])
     expect(result.activeRunId).toBe('run-new')
+  })
+})
+
+describe('resolveComposerDraft', () => {
+  it('reads per-run drafts and falls back to workspace draft for new chat', () => {
+    const ui = {
+      composerDraft: 'workspace-draft',
+      composerDraftByRunId: { 'run-1': 'run-one' }
+    }
+    expect(resolveComposerDraft(ui, 'run-1')).toBe('run-one')
+    expect(resolveComposerDraft(ui, 'run-2')).toBe('')
+    expect(resolveComposerDraft(ui, null)).toBe('workspace-draft')
   })
 })

@@ -39,6 +39,8 @@ test.beforeAll(async () => {
   workspacePath = openPath
   await launched.window.evaluate(() => {
     localStorage.removeItem('vyotiq.chatPaneLayout')
+    localStorage.removeItem('vyotiq.rightPanel')
+    localStorage.removeItem('vyotiq.browserPanelOpen')
   })
   await launched.window.reload()
   await launched.window.waitForLoadState('domcontentloaded')
@@ -97,7 +99,52 @@ test('drag sidebar session onto right third splits into two panes', async () => 
   await expect(window.locator('[data-chat-pane-focused="1"]')).toHaveCount(1)
 
   const betaPane = window.locator('[data-chat-pane]').nth(1)
-  await betaPane.hover()
+  await beta.click()
+  await expect(betaPane).toHaveAttribute('data-chat-pane-focused', '1')
   await window.getByRole('button', { name: /Close Pane Session Beta/i }).click()
   await expect(window.locator('[data-chat-pane]')).toHaveCount(1, { timeout: 10_000 })
+})
+
+test('opening right dock panel keeps multi-pane layout', async () => {
+  const { window } = launched
+
+  const expand = window.getByRole('button', { name: /expand sidebar/i })
+  if (await expand.isVisible().catch(() => false)) {
+    await expand.click()
+  }
+
+  const alpha = window.getByTitle('Pane Session Alpha').first()
+  const beta = window.getByTitle('Pane Session Beta').first()
+  await expect(alpha).toBeVisible({ timeout: 20_000 })
+  await expect(beta).toBeVisible({ timeout: 20_000 })
+
+  await alpha.click()
+  await expect(window.locator('[data-chat-pane-host]')).toBeVisible({ timeout: 15_000 })
+  await expect(window.locator('[data-chat-pane]')).toHaveCount(1)
+
+  const host = window.locator('[data-chat-pane-host]')
+  const box = await host.boundingBox()
+  expect(box).toBeTruthy()
+
+  await beta.dragTo(host, {
+    targetPosition: {
+      x: Math.floor((box?.width ?? 600) * 0.85),
+      y: Math.floor((box?.height ?? 400) * 0.5)
+    }
+  })
+  await expect(window.locator('[data-chat-pane]')).toHaveCount(2, { timeout: 15_000 })
+  await expect
+    .poll(async () => {
+      return window.evaluate(() => {
+        const raw = localStorage.getItem('vyotiq.chatPaneLayout')
+        if (!raw) return 0
+        const parsed = JSON.parse(raw) as { panes?: unknown[] }
+        return parsed.panes?.length ?? 0
+      })
+    })
+    .toBe(2)
+
+  await window.getByRole('button', { name: /show terminal panel/i }).click()
+  await expect(window.locator('[data-right-dock]')).toBeVisible({ timeout: 10_000 })
+  await expect(window.locator('[data-chat-pane]')).toHaveCount(2)
 })

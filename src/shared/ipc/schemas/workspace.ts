@@ -12,6 +12,7 @@ export const WorkspaceUiStateSchema = z.object({
   scrollTop: z.number(),
   scrollTopByRunId: z.record(z.string(), z.number()).default({}),
   composerDraft: z.string(),
+  composerDraftByRunId: z.record(z.string(), z.string()).default({}),
   /** Per-workspace composer Ask / Plan / Agent mode. */
   agentMode: AgentInteractionModeSchema.default('agent'),
   /**

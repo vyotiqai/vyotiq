@@ -65,6 +65,8 @@ Letter-spacing: `--vy-tracking`, `--vy-tracking-tight`, `--vy-tracking-body`, `-
 
 `CHAT_STAGE_INSET` keeps transcript/composer clear of the floating `ChatSideRail` icon strip (`CHAT_SIDE_RAIL_WIDTH` = `w-10`).
 
+Multi-pane side-by-side sessions: see [16-chat-pane-layout.md](./16-chat-pane-layout.md).
+
 ## Composer
 
 `Composer.tsx` — largest UI surface:

@@ -7,7 +7,7 @@ import { SettingsView, type SettingsSection } from '../features/settings'
 import { MarketplaceView } from '../features/marketplace'
 import { useTheme } from '@renderer/lib/hooks/useTheme'
 import { useSettings } from '@renderer/lib/hooks/useSettings'
-import { useWorkspaceManager } from '@renderer/lib/hooks/useWorkspaceManager'
+import { useWorkspaceManager, resolveComposerDraft } from '@renderer/lib/hooks/useWorkspaceManager'
 import { ErrorBoundary } from '@renderer/lib/ErrorBoundary'
 import { ToastHost, pushToast } from '@renderer/lib/ui'
 import type { ProviderId, SecretProvider, ServiceTier, AttachedFile } from '@shared/ipc'
@@ -78,8 +78,11 @@ export function App() {
     workspaceHasBackgroundRun,
     scrollRestoreToken,
     setComposerDraft,
+    setComposerDraftForPane,
     setAgentMode,
     onMessageListScroll,
+    onMessageListScrollForPane,
+    setPaneCapacityContext,
     setSettingsOverride,
     workspaceError,
     clearWorkspaceError,
@@ -252,7 +255,10 @@ export function App() {
       payload: { workspacePath: string; runId: string }
     ): boolean => {
       const ok = dropSessionOnPane(anchorPaneId, zone, payload)
-      if (!ok) return false
+      if (!ok) {
+        pushToast('Not enough room for another chat pane.')
+        return false
+      }
       void (async () => {
         const ctrl = getRunController(payload.runId, payload.workspacePath)
         if (!ctrl || ctrl.items.length === 0) {
@@ -677,6 +683,9 @@ export function App() {
           ? new Set(snap.collapsedTurnIndices)
           : undefined
       const paneCtrl = getRunController(pane.runId, pane.workspacePath)
+      const paneDraft = paneContext
+        ? resolveComposerDraft(paneContext.ui, pane.runId)
+        : undefined
       return (
         <SessionChatColumn
           items={snap.items}
@@ -698,7 +707,9 @@ export function App() {
           networkWait={snap.networkWait}
           runNotice={snap.runNotice}
           incomplete={snap.incomplete}
-          onContinue={onChatContinue}
+          onContinue={() => {
+            void paneCtrl?.send(CONTINUE_PROMPT)
+          }}
           contextUsage={snap.contextUsage}
           operationalError={focused ? operationalError : null}
           hasWorkspace={Boolean(pane.workspacePath)}
@@ -710,6 +721,8 @@ export function App() {
           modelsRefreshKey={modelsRefreshKey}
           activeRunId={pane.runId}
           transcriptLoading={snap.transcriptLoading}
+          showPageHeading={false}
+          onActivate={() => focusPaneById(pane.paneId)}
           onProviderModel={onProviderModel}
           favoriteModels={settings.favoriteModels}
           recentModels={settings.recentModels}
@@ -726,21 +739,37 @@ export function App() {
           onAgentModeChange={(mode) => {
             setAgentMode(mode, { syncOnly: true })
           }}
-          onSend={onChatSend}
-          onStop={onChatStop}
-          onEditAndResend={onChatEditAndResend}
-          onRevertToUserMessage={onChatRevertToUserMessage}
+          onSend={(text, images, files, extras) =>
+            paneCtrl?.send(text, images, files, extras) ?? false
+          }
+          onStop={() => {
+            void paneCtrl?.stop()
+          }}
+          onEditAndResend={(editMessageIndex, text, images, files, extras) =>
+            paneCtrl?.editAndResend(editMessageIndex, text, images, files, extras) ?? false
+          }
+          onRevertToUserMessage={(userMessageIndex) =>
+            paneCtrl?.revertToUserMessage(userMessageIndex) ?? false
+          }
           messages={snap.messages}
           pendingFollowUps={snap.pendingFollowUps}
-          onRemoveFollowUp={onRemoveFollowUp}
-          onEditFollowUp={onEditFollowUp}
-          onSendFollowUpNow={onSendFollowUpNow}
+          onRemoveFollowUp={(id) => {
+            void paneCtrl?.removeFollowUp(id)
+          }}
+          onEditFollowUp={(id, text) => paneCtrl?.editFollowUp(id, text) ?? false}
+          onSendFollowUpNow={(id) => {
+            void paneCtrl?.sendFollowUpNow(id)
+          }}
           onDismissError={onDismissChatBanner}
-          composerDraft={paneContext?.ui.composerDraft}
-          onComposerDraftChange={setComposerDraft}
+          composerDraft={paneDraft}
+          onComposerDraftChange={(draft) =>
+            setComposerDraftForPane(pane.workspacePath, pane.runId, draft)
+          }
           restoreScrollTop={paneScroll}
           scrollRestoreToken={scrollRestoreToken}
-          onScrollTopChange={onMessageListScroll}
+          onScrollTopChange={(scrollTop) =>
+            onMessageListScrollForPane(pane.workspacePath, pane.runId, scrollTop)
+          }
           chatSurfaceEpoch={chatSurfaceEpoch}
           showThinking={effectiveChatSettings.showThinking}
           onLoadToolContent={
@@ -792,24 +821,17 @@ export function App() {
       imageReadyHint,
       mcpServerNames,
       modelsRefreshKey,
-      onChatContinue,
-      onChatEditAndResend,
-      onChatRevertToUserMessage,
-      onChatSend,
+      focusPaneById,
       onChatSettingsChange,
-      onChatStop,
       onDismissChatBanner,
-      onEditFollowUp,
-      onMessageListScroll,
+      onMessageListScrollForPane,
       onProviderModel,
-      onRemoveFollowUp,
-      onSendFollowUpNow,
+      setComposerDraftForPane,
       onServiceTierChange,
       onToggleFavorite,
       operationalError,
       scrollRestoreToken,
       setAgentMode,
-      setComposerDraft,
       settings.favoriteModels,
       settings.recentModels,
       slashHandlersValue
@@ -1112,6 +1134,8 @@ export function App() {
             onDiscardWriteFile={onDiscardWriteFile}
             onKeepAllWrites={onKeepAllWrites}
             multiPane={multiPaneConfig}
+            onPaneCapacityChange={setPaneCapacityContext}
+            paneCount={paneLayout?.panes.length ?? 1}
           />
         </ErrorBoundary>
       )}
