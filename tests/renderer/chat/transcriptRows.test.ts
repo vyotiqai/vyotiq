@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildTranscriptRows,
-  isLiveTurnSummaryRedundantChrome,
   isTurnWorkRow,
   rowLeadingGap,
   stabilizeTranscriptRows,
   transcriptRowFingerprint,
+  turnHasVisibleToolWork,
   TURN_GAP_PX
 } from '@renderer/features/chat/utils/transcriptRows'
 import type { UiItem } from '@shared/transcript'
@@ -896,59 +896,79 @@ describe('buildTranscriptRows', () => {
     ).toBe(false)
   })
 
-  it('marks activity/card as live-turn summary redundant chrome', () => {
+  it('detects visible tool work rows for a turn', () => {
     expect(
-      isLiveTurnSummaryRedundantChrome({
-        kind: 'activity',
-        id: 'a-run',
-        turnIndex: 0,
-        tools: [
+      turnHasVisibleToolWork(
+        [
           {
-            kind: 'tool',
-            id: 't1',
-            tool: { id: 't1', name: 'read', summary: 'a.ts', status: 'running' }
+            kind: 'activity',
+            id: 'a-run',
+            turnIndex: 0,
+            tools: [
+              {
+                kind: 'tool',
+                id: 't1',
+                tool: { id: 't1', name: 'read', summary: 'a.ts', status: 'running' }
+              }
+            ]
           }
-        ]
-      })
+        ],
+        0
+      )
     ).toBe(true)
     expect(
-      isLiveTurnSummaryRedundantChrome({
-        kind: 'card',
-        id: 'c1',
-        turnIndex: 0,
-        item: {
-          kind: 'tool',
-          id: 'c1',
-          tool: { id: 'c1', name: 'terminal', summary: 'npm test', status: 'running' }
-        }
-      })
+      turnHasVisibleToolWork(
+        [
+          {
+            kind: 'card',
+            id: 'c1',
+            turnIndex: 1,
+            item: {
+              kind: 'tool',
+              id: 'c1',
+              tool: { id: 'c1', name: 'terminal', summary: 'npm test', status: 'running' }
+            }
+          }
+        ],
+        1
+      )
     ).toBe(true)
     expect(
-      isLiveTurnSummaryRedundantChrome({
-        kind: 'approval',
-        id: 'apr',
-        turnIndex: 0,
-        approval: {
-          requestId: 'r1',
-          toolName: 'edit',
-          summary: 'edit',
-          mutating: true
-        }
-      })
+      turnHasVisibleToolWork(
+        [
+          {
+            kind: 'approval',
+            id: 'apr',
+            turnIndex: 0,
+            approval: {
+              requestId: 'r1',
+              toolName: 'edit',
+              summary: 'edit',
+              mutating: true
+            }
+          }
+        ],
+        0
+      )
     ).toBe(false)
     expect(
-      isLiveTurnSummaryRedundantChrome({
-        kind: 'thinking',
-        id: 'th',
-        turnIndex: 0,
-        item: {
-          kind: 'message',
-          id: 'th',
-          role: 'assistant',
-          content: '',
-          thinking: 'plan'
-        }
-      })
+      turnHasVisibleToolWork(
+        [
+          {
+            kind: 'thinking',
+            id: 'th',
+            turnIndex: 0,
+            item: {
+              kind: 'message',
+              id: 'th',
+              role: 'assistant',
+              content: '',
+              thinking: 'plan'
+            }
+          }
+        ],
+        0
+      )
     ).toBe(false)
   })
 

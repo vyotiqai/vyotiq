@@ -314,7 +314,7 @@ describe('executeStepToolCalls', () => {
     expect(outcome.messages[0]?.ok).toBe(false)
   })
 
-  it('persists full tool output before emitting the live result', async () => {
+  it('emits the live tool_result before waiting on message persist', async () => {
     const order: string[] = []
     executeTool.mockResolvedValue({ ok: true, summary: 'big', content: 'full output' })
     const { ctx } = makeCtx(new AbortController().signal)
@@ -331,7 +331,7 @@ describe('executeStepToolCalls', () => {
       ctx
     )
 
-    expect(order).toEqual(['persisted', 'emitted'])
+    expect(order).toEqual(['emitted', 'persisted'])
   })
 
   it('stops later serial tools when appendMessage rejects (persist failure)', async () => {

@@ -175,8 +175,8 @@ export const ToolGroup = memo(function ToolGroup({
       el.scrollHeight - el.scrollTop - el.clientHeight <= LIST_PIN_PX
   }
 
-  // While pending the TurnSummary owns the one ticking clock; the group's
-  // duration appears only once settled, as a static receipt.
+  // While pending, tools own live phase detail; TurnSummary owns collapse +
+  // elapsed. Group duration appears only once settled, as a static receipt.
   const elapsedDisplay = isPending ? '' : props.elapsedDisplay
 
   const headerLabel = isPending ? props.runningLabel : props.doneLabel

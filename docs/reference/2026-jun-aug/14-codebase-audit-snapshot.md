@@ -45,9 +45,11 @@ Full sequential gate after P0–P3 remediations (fixture replay: `VYOTIQ_E2E_FIX
 | **P0** | Multi-pane onboarding gate; offline enqueue vs onboarding order; single `useOfflineSendQueue` owner; `ask_question` reject without ids | **done** |
 | **P1** | `listRuns` cache / stale reconcile throttle; `interruptOrphanRuns` logger; `secretsLoadError` on IPC fail | **done** |
 | **P2** | `browser_search` toolUi/meta/summary; remove orphan `webSearch.ts`; ollamaBaseUrl strip + offline clear UI tests | **done** |
-| **P3** | surfaceKey align, multi-pane handlers, live turn chrome dedup, approval error local, shared hooks | **done** |
+| **P3** | surfaceKey align, multi-pane handlers, live turn chrome dedup, approval error local, shared hooks | **done** (live-chrome hide later reversed — tools stream inline again) |
 
 Gate fix during follow-up verify: `messageList.test.tsx` live-turn flow assertion updated for P3 redundant chrome (TurnSummary owns phase; activity/card hidden).
+
+**Later reversal:** live expanded turns show `activity`/`card` inline again; TurnSummary suppresses duplicate phase label when tool chrome is visible (elapsed + collapse only).
 
 ## Stack (from `package.json`)
 

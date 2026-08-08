@@ -6,21 +6,41 @@ import { render, screen } from '@testing-library/react'
 import { TurnSummary } from '@renderer/features/chat/components/TurnSummary'
 
 describe('TurnSummary', () => {
-  it('shows a failure label when the turn span failed', () => {
+  it('suppresses phase label when live tools own the detail', () => {
     render(
       <TurnSummary
         span={{
-          startedAt: 1_000,
-          endedAt: 5_000,
-          active: false,
-          failed: true,
-          failureLabel: 'Connection lost'
+          startedAt: Date.now() - 500,
+          endedAt: null,
+          active: true,
+          activity: { kind: 'tool', label: 'Reading', detail: 'file.ts' }
         }}
         collapsed={false}
+        suppressPhaseLabel
         onToggle={() => undefined}
       />
     )
 
-    expect(screen.getByText(/Connection lost · 4s/)).toBeTruthy()
+    expect(screen.queryByText('Reading')).toBeNull()
+    expect(screen.queryByText(/file\.ts/)).toBeNull()
+    expect(screen.getByRole('button', { name: /^Collapse turn work$/i })).toBeTruthy()
+  })
+
+  it('shows phase shimmer when collapsed during a live turn', () => {
+    render(
+      <TurnSummary
+        span={{
+          startedAt: Date.now() - 500,
+          endedAt: null,
+          active: true,
+          activity: { kind: 'tool', label: 'Reading', detail: 'file.ts' }
+        }}
+        collapsed
+        suppressPhaseLabel
+        onToggle={() => undefined}
+      />
+    )
+
+    expect(screen.getByText('Reading file.ts')).toBeTruthy()
   })
 })

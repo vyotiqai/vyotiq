@@ -13,11 +13,14 @@ const MIN_REPORTABLE_MS = 1000
 export const TurnSummary = memo(function TurnSummary({
   span,
   collapsed,
-  onToggle
+  onToggle,
+  /** Live expanded with tool chrome visible — elapsed + collapse only (no phase label). */
+  suppressPhaseLabel = false
 }: {
   span: TurnSpan
   collapsed: boolean
   onToggle: () => void
+  suppressPhaseLabel?: boolean
 }) {
   const { startedAt, endedAt, active, activity } = span
   const [now, setNow] = useState(() => Date.now())
@@ -38,8 +41,13 @@ export const TurnSummary = memo(function TurnSummary({
     [turnElapsedMs]
   )
 
+  const hidePhase = suppressPhaseLabel && active && !collapsed
   const phaseLabel = turnSummaryActiveLabel(activity)
-  const activeText = turnDuration ? `${phaseLabel} · ${turnDuration}` : phaseLabel
+  const activeText = hidePhase
+    ? turnDuration
+    : turnDuration
+      ? `${phaseLabel} · ${turnDuration}`
+      : phaseLabel
 
   const doneLabel = span.failed
     ? span.failureLabel
@@ -52,8 +60,12 @@ export const TurnSummary = memo(function TurnSummary({
       : 'Worked'
   const accessibleName = active
     ? collapsed
-      ? activeText
-      : `Collapse turn work, ${activeText}`
+      ? activeText || phaseLabel
+      : hidePhase
+        ? turnDuration
+          ? `Collapse turn work, ${turnDuration}`
+          : 'Collapse turn work'
+        : `Collapse turn work, ${activeText}`
     : doneLabel
 
   return (
@@ -65,16 +77,22 @@ export const TurnSummary = memo(function TurnSummary({
       onClick={onToggle}
     >
       {active ? (
-        <>
-          {collapsed ? (
-            <TextShimmer className="shrink-0">{phaseLabel}</TextShimmer>
-          ) : (
-            <span className="shrink-0">{phaseLabel}</span>
-          )}
-          {turnDuration ? (
-            <span className="shrink-0 tabular-nums">· {turnDuration}</span>
-          ) : null}
-        </>
+        hidePhase ? (
+          turnDuration ? (
+            <span className="shrink-0 tabular-nums">{turnDuration}</span>
+          ) : null
+        ) : (
+          <>
+            {collapsed ? (
+              <TextShimmer className="shrink-0">{phaseLabel}</TextShimmer>
+            ) : (
+              <span className="shrink-0">{phaseLabel}</span>
+            )}
+            {turnDuration ? (
+              <span className="shrink-0 tabular-nums">· {turnDuration}</span>
+            ) : null}
+          </>
+        )
       ) : (
         <span className={cn('shrink-0 tabular-nums', span.failed && 'text-danger')}>{doneLabel}</span>
       )}

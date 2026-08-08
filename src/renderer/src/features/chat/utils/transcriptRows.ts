@@ -59,19 +59,22 @@ export type TurnSpan = {
 export function isTurnWorkRow(row: TranscriptRow): boolean {
   if (row.kind === 'approval' || row.kind === 'question') return false
   // Collapsed turns rely on TurnSummary for live phase; hide cards/activity so
-  // running tools are not duplicated beside the timeline label.
+  // tool chrome is not shown beside the collapsed timeline label.
   if (row.kind === 'thinking' || row.kind === 'activity' || row.kind === 'card') {
     return true
   }
   return row.kind === 'text' && !row.final
 }
 
-/**
- * Live expanded turns still render TurnSummary with the ticking phase label.
- * Activity/card chrome duplicates that label — hide them (approvals/questions stay).
- */
-export function isLiveTurnSummaryRedundantChrome(row: TranscriptRow): boolean {
-  return row.kind === 'activity' || row.kind === 'card'
+/** True when the turn has activity/card rows (real tool chrome in the timeline). */
+export function turnHasVisibleToolWork(
+  rows: readonly TranscriptRow[],
+  turnIndex: number
+): boolean {
+  return rows.some(
+    (row) =>
+      row.turnIndex === turnIndex && (row.kind === 'activity' || row.kind === 'card')
+  )
 }
 
 /** Extra lead-in above a user prompt that opens a new turn (matches TRANSCRIPT_TURN_GAP). */

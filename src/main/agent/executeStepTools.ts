@@ -536,10 +536,11 @@ export async function executeStepToolCalls(
   flushBatch()
 
   const collect = async (outcome: ToolOutcome): Promise<void> => {
-    // Full output must be durable before the truncated live event can be expanded.
+    // Live result first so the timeline flips to done/fail without waiting on disk.
+    // IPC truncates; load-full still hits durable storage after appendMessage.
+    for (const ev of outcome.events) emitToolResult(ctx, ev)
     await ctx.appendMessage(outcome.message)
     persistToolResult(ctx, outcome)
-    for (const ev of outcome.events) emitToolResult(ctx, ev)
     messages.push(outcome.message)
     events.push(...outcome.events)
     if (!outcome.ok) stepToolsOk = false

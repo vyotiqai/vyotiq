@@ -230,7 +230,7 @@ describe('MessageList', () => {
     vi.unstubAllGlobals()
   })
 
-  it('renders the live turn summary inline after work in the transcript', () => {
+  it('renders live tool chrome inline with a collapse-only turn summary', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'u1', role: 'user', content: 'go' },
       {
@@ -244,16 +244,15 @@ describe('MessageList', () => {
     expect(document.querySelector('[data-turn-summary-chrome]')).toBeNull()
     const scroll = document.querySelector('[data-transcript-scroll]')
     expect(scroll).toBeTruthy()
-    const working = screen.getByRole('button', { name: /Collapse turn work/i })
+    const working = screen.getByRole('button', { name: /^Collapse turn work$/i })
     expect(scroll!.contains(working)).toBe(true)
+    expect(screen.getByText('file.ts')).toBeTruthy()
 
     const column = scroll!.querySelector('[data-chat-column]')
     const order = [...(column?.querySelectorAll('[data-chat-column] > div') ?? [])]
-    // Live expanded: activity/card chrome is hidden; TurnSummary owns the phase.
-    // Flow children: user prompt, then turn summary (collapse control).
-    expect(order.length).toBe(2)
-    expect(order[1]?.querySelector('button[aria-label*="Collapse turn work"]')).toBeTruthy()
-    expect(screen.queryByText('file.ts')).toBeNull()
+    // Live expanded: user → tool activity → TurnSummary (elapsed/collapse only).
+    expect(order.length).toBe(3)
+    expect(order[2]?.querySelector('button[aria-label="Collapse turn work"]')).toBeTruthy()
   })
 
   it('follows content growth on the same message id while streaming and pinned', async () => {

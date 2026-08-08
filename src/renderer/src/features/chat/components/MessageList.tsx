@@ -18,14 +18,14 @@ import {
 } from '@renderer/lib/utils/layout'
 import {
   buildTranscriptRows,
-  isLiveTurnSummaryRedundantChrome,
   isTurnWorkRow,
   rowLeadingGap,
   stabilizeTranscriptRows,
   transcriptRowFingerprint,
+  turnHasVisibleToolWork,
   type TranscriptRow
 } from '../utils/transcriptRows'
-import { formatRunActivityLabel } from '../utils/runActivity'
+import { deriveRunActivity, formatRunActivityLabel } from '../utils/runActivity'
 import { ChangeSummary, COMPACT_PREVIEW_COUNT } from './ChangeSummary'
 import { MessageFooter } from './MessageFooter'
 import { ThinkingBlock } from './ThinkingBlock'
@@ -275,6 +275,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   showThinking = true,
   live = false,
   keepOpen = false,
+  suppressPhaseLabel = false,
   mcpServerNames,
   onOpenChanges,
   editingUserMessageIndex = null,
@@ -299,6 +300,8 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   live?: boolean
   /** Last turn stays expanded after settle so tool chrome remains visible. */
   keepOpen?: boolean
+  /** Live expanded with tool rows visible — TurnSummary skips duplicate phase label. */
+  suppressPhaseLabel?: boolean
   mcpServerNames?: ReadonlyMap<string, string>
   onOpenChanges?: () => void
   editingUserMessageIndex?: number | null
@@ -354,6 +357,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
       <TurnSummary
         span={row.span}
         collapsed={turnCollapsed}
+        suppressPhaseLabel={suppressPhaseLabel}
         onToggle={() => onTurnToggle?.(row.turnIndex)}
       />
     )
@@ -587,15 +591,6 @@ export function MessageList({
   const displayRows = useMemo(() => {
     const visible = allRows.filter((row) => {
       if (collapsedTurnSet.has(row.turnIndex) && isTurnWorkRow(row)) return false
-      // Live expanded: TurnSummary owns the phase label — hide duplicate tool chrome.
-      if (
-        activeLiveTurnIndex != null &&
-        row.turnIndex === activeLiveTurnIndex &&
-        !collapsedTurnSet.has(row.turnIndex) &&
-        isLiveTurnSummaryRedundantChrome(row)
-      ) {
-        return false
-      }
       return true
     })
     // Hide thinking when showThinking is off; otherwise drop empty rows ThinkingBlock skips.
@@ -606,7 +601,7 @@ export function MessageList({
       if (row.kind !== 'thinking') return true
       return shouldRenderThinking(row.item.thinking, row.item.thinkingStreaming)
     })
-  }, [allRows, collapsedTurnSet, showThinking, activeLiveTurnIndex])
+  }, [allRows, collapsedTurnSet, showThinking])
 
   const lastTurnIndex = useMemo(() => {
     let max = -1
@@ -798,13 +793,21 @@ export function MessageList({
         return `Assistant: ${formatRunActivityLabel({ kind: 'thinking' })}`
       }
     }
+    // Prefer phase from visible tool chrome over the turn-summary span.
+    if (activeLiveTurnIndex != null) {
+      const turnVisible = displayRows.filter((row) => row.turnIndex === activeLiveTurnIndex)
+      if (turnVisible.some((row) => row.kind === 'activity' || row.kind === 'card')) {
+        const phase = deriveRunActivity(turnVisible, false)
+        return `Assistant: ${formatRunActivityLabel(phase)}`
+      }
+    }
     for (let i = allRows.length - 1; i >= 0; i--) {
       const row = allRows[i]
       if (row?.kind !== 'turn' || !row.span.activity) continue
       return `Assistant: ${formatRunActivityLabel(row.span.activity)}`
     }
     return ''
-  }, [displayRows, allRows])
+  }, [displayRows, allRows, activeLiveTurnIndex])
 
   const rowsContentRevision = useMemo(
     () => transcriptRowsContentRevision(displayRows),
@@ -971,6 +974,12 @@ export function MessageList({
       showThinking={showThinking}
       live={activeLiveTurnIndex != null && row.turnIndex === activeLiveTurnIndex}
       keepOpen={lastTurnIndex >= 0 && row.turnIndex === lastTurnIndex}
+      suppressPhaseLabel={
+        row.kind === 'turn' &&
+        row.span.active === true &&
+        !collapsedTurnSet.has(row.turnIndex) &&
+        turnHasVisibleToolWork(allRows, row.turnIndex)
+      }
       mcpServerNames={mcpServerNames}
       onOpenChanges={onOpenChanges}
       editingUserMessageIndex={editingUserMessageIndex}

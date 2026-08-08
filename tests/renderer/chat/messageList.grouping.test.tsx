@@ -104,18 +104,16 @@ describe('MessageList', () => {
     ]
     rerender(<MessageList items={liveItems} running />)
 
-    // Live expanded turn hides activity/card chrome (TurnSummary owns the phase).
-    // Prior settled turn keeps its tool group.
+    // Live expanded turn streams tool chrome inline; prior settled turn stays collapsed.
     const toggles = screen
       .getAllByRole('button', { name: /Read(?:ing)? 2 files/i })
       .filter((btn) => !/turn work|Collapse turn work/i.test(btn.getAttribute('aria-label') ?? ''))
-    expect(toggles).toHaveLength(1)
+    expect(toggles).toHaveLength(2)
     expect(toggles[0]!.getAttribute('aria-expanded')).toBe('false')
+    expect(toggles[1]!.getAttribute('aria-expanded')).toBe('true')
     expect(screen.queryByText('alpha-one.ts')).toBeNull()
-    expect(screen.queryByText('beta-one.ts')).toBeNull()
-    expect(
-      screen.getByRole('button', { name: /Collapse turn work|Reading 2 files/i })
-    ).toBeTruthy()
+    expect(screen.getByText('beta-one.ts')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Collapse turn work$/i })).toBeTruthy()
   })
 
   it('does not render timestamps in the transcript', () => {
