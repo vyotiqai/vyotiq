@@ -302,39 +302,20 @@ const todoWriteArgs = z
     path: ['todos']
   })
 
-const webFetchArgs = z
+const browserSearchArgs = z
   .object({
-    url: z.string().describe('Absolute http(s) URL. Private and loopback hosts are rejected.'),
+    query: z.string().min(1).describe('Search query string.'),
     maxChars: z
       .number()
       .int()
       .min(1000)
-      .describe('Cap on returned text (default 40000)')
+      .describe('Cap on snapshot text (default 40000)')
       .optional(),
     timeoutMs: z
       .number()
       .int()
       .min(1000)
-      .describe('Request timeout in ms (default 20000)')
-      .optional()
-  })
-  .strict()
-
-const webSearchArgs = z
-  .object({
-    query: z.string().min(1).describe('Search query string.'),
-    maxResults: z
-      .number()
-      .int()
-      .min(1)
-      .max(15)
-      .describe('Max results to return (default 8, max 15)')
-      .optional(),
-    timeoutMs: z
-      .number()
-      .int()
-      .min(1000)
-      .describe('Request timeout in ms (default 20000)')
+      .describe('Navigation timeout in ms (default 30000)')
       .optional()
   })
   .strict()
@@ -356,7 +337,7 @@ const browserNavigateArgs = z
   .object({
     url: z
       .string()
-      .describe('Absolute http(s) URL to open in the built-in agent browser. Private/loopback hosts are rejected.'),
+      .describe('Absolute http(s) URL to open in the built-in agent browser.'),
     timeoutMs: z
       .number()
       .int()
@@ -922,19 +903,14 @@ const TOOL_REGISTRY = {
     description: "Record and update this run's visible task list.",
     schema: todoWriteArgs
   },
-  web_fetch: {
+  browser_search: {
     description:
-      'Fetch a public http(s) URL as text. HTML responses are converted to markdown; other text types are returned as trimmed text.',
-    schema: webFetchArgs
-  },
-  web_search: {
-    description:
-      'Search the public web (DuckDuckGo HTML). Returns titles, URLs, and snippets. Prefer web_fetch or browser_navigate to read a specific result.',
-    schema: webSearchArgs
+      'Search the web in the built-in agent browser using the configured search engine, then return a page snapshot.',
+    schema: browserSearchArgs
   },
   browser_navigate: {
     description:
-      'Open a public http(s) URL in the built-in live browser window (JS rendered). Prefer for SPAs; use web_fetch for static text.',
+      'Open a URL in the built-in live browser window (JS rendered). Use browser_snapshot to read page content.',
     schema: browserNavigateArgs
   },
   browser_snapshot: {

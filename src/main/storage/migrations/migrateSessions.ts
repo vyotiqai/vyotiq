@@ -35,8 +35,12 @@ function listSessionRunIds(): string[] {
       if (!statSync(dir).isDirectory()) continue
       if (!existsSync(join(dir, 'status.json'))) continue
       ids.push(name)
-    } catch {
-      // skip
+    } catch (err) {
+      logger.warn('Legacy session listing skipped entry', {
+        scope: 'migrateSessions',
+        runId: name,
+        err
+      })
     }
   }
   return ids
@@ -59,8 +63,12 @@ function patchRunWorkspacePath(runDir: string, workspacePath: string): void {
     if (!parsed.success) return
     const next = { ...parsed.data, workspacePath }
     atomicWriteJson(statusPath, next)
-  } catch {
-    // skip
+  } catch (err) {
+    logger.warn('Legacy session status patch skipped', {
+      scope: 'migrateSessions',
+      runDir,
+      err
+    })
   }
 }
 

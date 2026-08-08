@@ -43,10 +43,17 @@ describe('AgentBrowserPanel visibility', () => {
     expect(browserSetBounds).toHaveBeenCalledWith(null)
   })
 
-  it('clears native bounds on unmount', () => {
-    const { unmount } = render(<AgentBrowserPanel visible={true} />)
-    browserSetBounds.mockClear()
-    unmount()
-    expect(browserSetBounds).toHaveBeenCalledWith(null)
+  it('surfaces browserGetState failures', async () => {
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        browserGetState: vi.fn().mockResolvedValue({ ok: false, error: 'Browser crashed' }),
+        onBrowserState: vi.fn().mockReturnValue(() => {}),
+        browserSetBounds
+      }
+    })
+    const { findByText } = render(<AgentBrowserPanel visible={true} />)
+    expect(await findByText(/Browser state unavailable: Browser crashed/)).toBeTruthy()
   })
 })

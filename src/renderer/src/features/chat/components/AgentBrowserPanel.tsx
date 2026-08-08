@@ -42,6 +42,7 @@ export function AgentBrowserPanel({
   onClose?: () => void
 }) {
   const [state, setState] = useState<AgentBrowserState>(EMPTY)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [urlInput, setUrlInput] = useState('')
   const [urlFocused, setUrlFocused] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -64,7 +65,12 @@ export function AgentBrowserPanel({
   useEffect(() => {
     let cancelled = false
     void window.vyotiq.browserGetState?.().then((res) => {
-      if (cancelled || !res.ok) return
+      if (cancelled) return
+      if (!res.ok) {
+        setLoadError(res.error)
+        return
+      }
+      setLoadError(null)
       setState(res.data)
     })
     const unsub = window.vyotiq.onBrowserState?.((next) => {
@@ -470,6 +476,12 @@ export function AgentBrowserPanel({
               {item.title?.trim() || item.url}
             </button>
           ))}
+        </div>
+      ) : null}
+
+      {loadError ? (
+        <div className="px-2.5 py-1 text-caption text-warning" role="alert">
+          Browser state unavailable: {loadError}
         </div>
       ) : null}
 

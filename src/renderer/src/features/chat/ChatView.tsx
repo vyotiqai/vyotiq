@@ -21,17 +21,8 @@ import {
 import { useGitChrome } from './components/GitChrome'
 import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
 import type { AgentInteractionMode, ChatMessage, ProviderId, PtySessionInfo, ToolApprovalDecision } from '@shared/ipc'
-import {
-  contentAudios,
-  contentDisplayText,
-  contentFiles,
-  contentImages,
-  contentNativeFiles
-} from '@shared/ipc'
-import { userMessageEditDraft } from './utils/slashEditDraft'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert, PanelResizeHandle } from '@renderer/lib/ui'
-import { useNetworkStatus } from '@renderer/lib/hooks/useNetworkStatus'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
 import { usePersistedNumber } from '@renderer/lib/hooks/usePersistedNumber'
 import { useTitleBarAccessory } from '@renderer/lib/context/TitleBarAccessory'
@@ -58,7 +49,12 @@ import {
 } from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui/cn'
 import type { ChatItemsStore, ChatMetaStore } from './chatStores'
-import { ChatPaneHost } from './ChatPaneHost'
+import { ChatPaneHost, type PaneRenderOptions } from './ChatPaneHost'
+import {
+  buildComposerSendProps,
+  useComposerEditState,
+  useSuppressedChatError
+} from './hooks/composerShared'
 import type { PaneCapacityContext } from '@renderer/lib/hooks/useWorkspaceManager'
 import type { ChatPane, PaneDropZone } from '@renderer/lib/chat/chatPaneLayout'
 
@@ -218,6 +214,8 @@ export function ChatView({
   onAgentModeChange = () => {},
   onContinueInAgent,
   onSend,
+  offlineHint = null,
+  onClearOfflineQueue,
   onStop,
   onEditAndResend,
   onRevertToUserMessage,
@@ -308,6 +306,9 @@ export function ChatView({
     files?: import('@shared/ipc').AttachedFile[],
     extras?: import('@shared/ipc').ComposerSendExtras
   ) => boolean | void | Promise<boolean | void>
+  /** Owned by App (single flush per workspace). */
+  offlineHint?: string | null
+  onClearOfflineQueue?: () => void
   onEditAndResend?: (
     editMessageIndex: number,
     text: string,
@@ -369,7 +370,7 @@ export function ChatView({
       payload: { workspacePath: string; runId: string }
     ) => boolean
     getPaneTitle: (pane: ChatPane) => string
-    renderPane: (pane: ChatPane, focused: boolean) => React.ReactNode
+    renderPane: (pane: ChatPane, options: PaneRenderOptions) => React.ReactNode
   } | null
   paneCount?: number
   onPaneCapacityChange?: (ctx: PaneCapacityContext) => void
@@ -402,9 +403,7 @@ export function ChatView({
   // Boolean presence only — stays Object.is-stable across pure text_delta frames.
   const hasItems = useHasChatItems(itemsStore, items)
   const liveItems = useChatLiveItems(itemsStore, items)
-  const { offlineHint } = useNetworkStatus()
-  const hasTranscriptRunError = liveItems.some((item) => item.kind === 'run_error')
-  const chatBannerError = hasTranscriptRunError ? null : error
+  const chatBannerError = useSuppressedChatError(liveItems, error)
   const operationalBannerError = operationalError ?? null
   const turnFailed =
     incomplete?.reason === 'network_interrupted' ||
@@ -736,77 +735,25 @@ export function ChatView({
   // is open or in immersive unified-tabs mode).
   const agentSideRailPad = !dockImmersive && activeRightPanel == null
 
-  const [editingUserMessageIndex, setEditingUserMessageIndex] = useState<number | null>(null)
-  const [editDraft, setEditDraft] = useState('')
-  const [editSeeds, setEditSeeds] = useState<{
-    images?: string[]
-    files?: import('@shared/ipc').AttachedFile[]
-    audio?: import('@shared/ipc').AttachedAudio[]
-    nativeFiles?: import('@shared/ipc').AttachedNativeFile[]
-  }>({})
-
-  useEffect(() => {
-    setEditingUserMessageIndex(null)
-    setEditDraft('')
-    setEditSeeds({})
-  }, [surfaceKey])
-
-  const cancelPromptEdit = useCallback(() => {
-    setEditingUserMessageIndex(null)
-    setEditDraft('')
-    setEditSeeds({})
-  }, [])
-
-  const beginPromptEdit = useCallback(
-    (messageIndex: number) => {
-      const msg = messages[messageIndex]
-      if (!msg || msg.role !== 'user') return
-      const images = contentImages(msg.content)
-      const files = contentFiles(msg.content)
-      const audio = contentAudios(msg.content)
-      const nativeFiles = contentNativeFiles(msg.content)
-      const rawText = contentDisplayText(msg.content)
-      setEditDraft(userMessageEditDraft(rawText))
-      setEditSeeds({
-        images: images.length ? images : undefined,
-        files: files.length ? files : undefined,
-        audio: audio.length ? audio : undefined,
-        nativeFiles: nativeFiles.length ? nativeFiles : undefined
-      })
-      setEditingUserMessageIndex(messageIndex)
-    },
-    [messages]
-  )
-
-  const submitPromptEdit = useCallback(
-    async (
-      text: string,
-      images?: string[],
-      files?: import('@shared/ipc').AttachedFile[],
-      extras?: import('@shared/ipc').ComposerSendExtras
-    ) => {
-      if (editingUserMessageIndex == null || !onEditAndResend) return false
-      const index = editingUserMessageIndex
-      cancelPromptEdit()
-      return onEditAndResend(index, text, images, files, extras)
-    },
-    [editingUserMessageIndex, onEditAndResend, cancelPromptEdit]
-  )
-
-  const beginPromptRevert = useCallback(
-    async (messageIndex: number) => {
-      if (!onRevertToUserMessage) return
-      const confirmed = window.confirm(
-        'Revert to this prompt? File changes and messages after it will be removed.'
-      )
-      if (!confirmed) return
-      const ok = await onRevertToUserMessage(messageIndex)
-      if (ok !== false) notifyGitMutated()
-    },
-    [onRevertToUserMessage, notifyGitMutated]
-  )
-
-  const editing = editingUserMessageIndex != null
+  const {
+    editingUserMessageIndex,
+    editDraft,
+    setEditDraft,
+    editSeeds,
+    editing,
+    cancelPromptEdit,
+    beginPromptEdit,
+    submitPromptEdit,
+    beginPromptRevert,
+    sendFromDock
+  } = useComposerEditState({
+    surfaceKey,
+    messages,
+    onSend,
+    onEditAndResend,
+    onRevertToUserMessage,
+    onAfterRevert: notifyGitMutated
+  })
 
   const editComposer =
     editing && onEditAndResend ? (
@@ -847,6 +794,7 @@ export function ChatView({
         errorCode={errorCode}
         onRetryNetwork={onContinue}
         offlineHint={offlineHint}
+        onClearOfflineQueue={onClearOfflineQueue}
         onDismissError={onDismissError}
         className="w-full"
         seedImages={editSeeds.images}
@@ -858,33 +806,18 @@ export function ChatView({
       />
     ) : null
 
-  const sendFromDock = useCallback(
-    async (
-      text: string,
-      images?: string[],
-      files?: import('@shared/ipc').AttachedFile[],
-      extras?: import('@shared/ipc').ComposerSendExtras
-    ) => {
-      // Dock stays usable while editing; sending a new turn exits edit mode.
-      if (editingUserMessageIndex != null) cancelPromptEdit()
-      return onSend(text, images, files, extras)
-    },
-    [editingUserMessageIndex, cancelPromptEdit, onSend]
-  )
-
-  const composerProps = {
+  const composerProps = buildComposerSendProps({
     provider,
     model,
     running,
-    disabled: !hasWorkspace,
-    hasTranscript: hasItems,
     hasWorkspace,
+    hasTranscript: hasItems,
+    workspacePath,
     ollamaBaseUrl,
     customOpenAiBaseUrl,
     modelsRefreshKey,
     draft: composerDraft,
     onDraftChange: onComposerDraftChange,
-    workspacePath,
     onProviderModel,
     favoriteModels,
     recentModels,
@@ -905,21 +838,31 @@ export function ChatView({
     incomplete,
     onContinue,
     onContinueInAgent,
-    onRetryNetwork: onContinue,
     errorCode,
     bannerError: chatBannerError,
     secondaryBannerError: operationalBannerError,
     offlineHint,
+    onClearOfflineQueue,
     networkWait,
     activeRunId,
     onDismissError,
-    contextUsage: metaStore ? undefined : contextUsage,
+    contextUsage,
     metaStore,
     onCompactContext,
     slashHandlers,
     sideRailPad: agentSideRailPad,
     imageReadyHint
-  }
+  })
+
+  const renderMultiPane = useCallback(
+    (pane: ChatPane, options: PaneRenderOptions) =>
+      multiPane!.renderPane(pane, {
+        ...options,
+        onOpenChanges: onOpenAgentChanges,
+        onOpenUncommittedChanges
+      }),
+    [multiPane, onOpenAgentChanges, onOpenUncommittedChanges]
+  )
 
   const agentColumn =
     multiPane && multiPane.panes.length >= 1 ? (
@@ -931,12 +874,13 @@ export function ChatView({
           panes={multiPane.panes}
           focusedPaneId={multiPane.focusedPaneId}
           sizes={multiPane.sizes}
+          sideRailPad={agentSideRailPad}
           onFocusPane={multiPane.onFocusPane}
           onClosePane={multiPane.onClosePane}
           onSizesChange={multiPane.onSizesChange}
           onSessionDrop={multiPane.onSessionDrop}
           getPaneTitle={multiPane.getPaneTitle}
-          renderPane={multiPane.renderPane}
+          renderPane={renderMultiPane}
         />
       </>
     ) : (

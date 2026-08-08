@@ -43,12 +43,15 @@ Memory tools constrained to `.vyotiq/memory/` under workspace.
 
 ## SSRF / URL blocking
 
-`src/main/agent/tools/webFetch.ts`:
+**Agent browser tools** (`browser_navigate`, `browser_search`, etc.) accept any `http:`/`https:` URL including localhost and private networks — intentional full network access per product direction. URL normalization: `normalizeBrowserUrl` in `agentBrowser.ts`.
+
+**Server-side fetch helpers** (`src/main/agent/tools/webFetch.ts`) — still used for marketplace catalog, provider HTTP, and MCP OAuth (not agent tools):
 
 - `assertPublicUrl` blocks loopback/private ranges unless `allowLocal`
 - DNS resolution pinned for connect (rebinding-resistant)
 - `WEB_FETCH_MAX_BYTES = 2 MiB`
-- Browser navigation reuses same checks (`agentBrowser.ts` imports `assertPublicUrl`, `isSyncBlockedUrl`)
+
+**Renderer external links** (`security.ts`): `https://` only via `shell.openExternal`; in-app navigation locked.
 
 ## Secrets
 

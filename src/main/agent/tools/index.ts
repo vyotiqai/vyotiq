@@ -16,8 +16,6 @@ import { toolMultiEdit, type MultiEditEntry } from './multiEdit'
 import { toolStrReplace } from './strReplace'
 import { toolDelete } from './deletePath'
 import { toolTodoWrite, type TodoItem } from './todo'
-import { toolWebFetch } from './webFetch'
-import { toolWebSearch } from './webSearch'
 import { isFindstrNoMatchContent, isDirMissingPathContent, toolTerminal, TERMINAL_MAX_TIMEOUT_MS } from './terminal'
 import { toolMemoryList, toolMemoryRead, toolMemoryWrite } from './memory'
 import { toolSkill, summarizeSkillArgs } from './skill'
@@ -27,6 +25,7 @@ import { toolGenerateImage } from './generateImage'
 import { toolEditImage } from './editImage'
 import { normalizeOutputFormat } from '../providers/imageGen/mime'
 import { getSettings } from '@main/settings/settings'
+import { buildSearchUrl } from '../../../shared/utils/searchEngine'
 import { getWriteCheckpoint } from '../checkpoints'
 import { needsOpaqueWatch, recordTerminalCommandPriors } from './terminalCheckpoint'
 import { recordMcpFilesystemPriors } from './mcpCheckpoint'
@@ -450,33 +449,26 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const { content } = toolTodoWrite(context.runDir ?? '', todos, args.merge === true)
     return toolOk('todo_write', `${todos.length} tasks`, content)
   },
-  web_fetch: async (_workspace, args, signal) => {
+  browser_search: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
-    const url = String(args.url ?? '')
-    const content = await toolWebFetch(
-      url,
-      {
-        maxChars: typeof args.maxChars === 'number' ? args.maxChars : undefined,
-        timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined
-      },
-      signal
-    )
+    const query = String(args.query ?? '').trim()
+    if (!query) {
+      return toolFail('browser_search', 'search', 'query is required')
+    }
+    const settings = getSettings()
+    const url = buildSearchUrl(settings.searchEngine, query)
+    const timeoutMs = typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined
+    const { navigateUrl, snapshotPage } = await import('@main/app/agentBrowser')
+    const nav = await navigateUrl(url, { signal, timeoutMs, workspacePath: workspace })
     throwIfAborted(signal)
-    return toolOk('web_fetch', url, content)
-  },
-  web_search: async (_workspace, args, signal) => {
+    const snap = await snapshotPage({
+      signal,
+      workspacePath: workspace,
+      runDir: context.runDir,
+      maxChars: typeof args.maxChars === 'number' ? args.maxChars : undefined
+    })
     throwIfAborted(signal)
-    const query = String(args.query ?? '')
-    const content = await toolWebSearch(
-      query,
-      {
-        maxResults: typeof args.maxResults === 'number' ? args.maxResults : undefined,
-        timeoutMs: typeof args.timeoutMs === 'number' ? args.timeoutMs : undefined
-      },
-      signal
-    )
-    throwIfAborted(signal)
-    return toolOk('web_search', query, content)
+    return toolOk('browser_search', query, `${nav}\n\n${snap}`)
   },
   browser_navigate: async (workspace, args, signal) => {
     throwIfAborted(signal)

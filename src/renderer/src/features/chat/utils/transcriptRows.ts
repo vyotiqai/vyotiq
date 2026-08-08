@@ -66,6 +66,14 @@ export function isTurnWorkRow(row: TranscriptRow): boolean {
   return row.kind === 'text' && !row.final
 }
 
+/**
+ * Live expanded turns still render TurnSummary with the ticking phase label.
+ * Activity/card chrome duplicates that label — hide them (approvals/questions stay).
+ */
+export function isLiveTurnSummaryRedundantChrome(row: TranscriptRow): boolean {
+  return row.kind === 'activity' || row.kind === 'card'
+}
+
 /** Extra lead-in above a user prompt that opens a new turn (matches TRANSCRIPT_TURN_GAP). */
 export const TURN_GAP_PX = 32
 

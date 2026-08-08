@@ -13,6 +13,7 @@ export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
   const [secrets, setSecrets] = useState<Record<SecretProvider, boolean>>(emptySecretStatus)
   const [encryptionAvailable, setEncryptionAvailable] = useState(true)
+  const [secretsLoadError, setSecretsLoadError] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   /** Monotonic generation so out-of-order IPC replies cannot revert newer state. */
@@ -30,9 +31,12 @@ export function useSettings() {
     if (k.ok) {
       setSecrets(k.data.keys)
       setEncryptionAvailable(k.data.encryptionAvailable)
+      setSecretsLoadError(Boolean(k.data.loadError))
     } else {
       logger.warn('secretStatus failed', { scope: 'settings', err: k.error })
       setError((prev) => prev ?? k.error)
+      // Clear stale banner — loadError only comes from a successful response.
+      setSecretsLoadError(false)
     }
     setLoading(false)
   }, [])
@@ -107,6 +111,7 @@ export function useSettings() {
     settings,
     secrets,
     encryptionAvailable,
+    secretsLoadError,
     loading,
     error,
     setError,

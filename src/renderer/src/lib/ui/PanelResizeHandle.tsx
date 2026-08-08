@@ -131,8 +131,8 @@ export function PanelResizeHandle({
       <span
         aria-hidden
         className={cn(
-          'pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent',
-          'group-hover:bg-border group-focus-visible:bg-accent',
+          'pointer-events-none absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-border/50',
+          'group-hover:bg-border-strong group-focus-visible:bg-accent',
           dragging && 'bg-accent'
         )}
       />

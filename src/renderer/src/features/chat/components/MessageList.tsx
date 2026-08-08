@@ -18,6 +18,7 @@ import {
 } from '@renderer/lib/utils/layout'
 import {
   buildTranscriptRows,
+  isLiveTurnSummaryRedundantChrome,
   isTurnWorkRow,
   rowLeadingGap,
   stabilizeTranscriptRows,
@@ -574,20 +575,6 @@ export function MessageList({
   useLayoutEffect(() => {
     prevRowsRef.current = allRows
   }, [allRows])
-  const displayRows = useMemo(() => {
-    const visible = collapsedTurnSet.size === 0
-      ? allRows
-      : allRows.filter((row) => !(collapsedTurnSet.has(row.turnIndex) && isTurnWorkRow(row)))
-    // Hide thinking when showThinking is off; otherwise drop empty rows ThinkingBlock skips.
-    if (!showThinking) {
-      return visible.filter((row) => row.kind !== 'thinking')
-    }
-    return visible.filter((row) => {
-      if (row.kind !== 'thinking') return true
-      return shouldRenderThinking(row.item.thinking, row.item.thinkingStreaming)
-    })
-  }, [allRows, collapsedTurnSet, showThinking])
-
   const activeLiveTurnIndex = useMemo(() => {
     if (!(pendingRun || running)) return null
     let max = -1
@@ -596,6 +583,30 @@ export function MessageList({
     }
     return max < 0 ? null : max
   }, [allRows, pendingRun, running])
+
+  const displayRows = useMemo(() => {
+    const visible = allRows.filter((row) => {
+      if (collapsedTurnSet.has(row.turnIndex) && isTurnWorkRow(row)) return false
+      // Live expanded: TurnSummary owns the phase label — hide duplicate tool chrome.
+      if (
+        activeLiveTurnIndex != null &&
+        row.turnIndex === activeLiveTurnIndex &&
+        !collapsedTurnSet.has(row.turnIndex) &&
+        isLiveTurnSummaryRedundantChrome(row)
+      ) {
+        return false
+      }
+      return true
+    })
+    // Hide thinking when showThinking is off; otherwise drop empty rows ThinkingBlock skips.
+    if (!showThinking) {
+      return visible.filter((row) => row.kind !== 'thinking')
+    }
+    return visible.filter((row) => {
+      if (row.kind !== 'thinking') return true
+      return shouldRenderThinking(row.item.thinking, row.item.thinkingStreaming)
+    })
+  }, [allRows, collapsedTurnSet, showThinking, activeLiveTurnIndex])
 
   const lastTurnIndex = useMemo(() => {
     let max = -1

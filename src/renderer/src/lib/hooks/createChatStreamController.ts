@@ -3065,31 +3065,25 @@ export function createChatStreamController(
     requestId: string,
     decision: ToolApprovalDecision
   ): Promise<void> => {
+    // Failures throw for ToolApprovalCard localError only — do not patch composer error.
     if (!runId) {
-      const message = 'No active run for approval response.'
-      patch({ error: message })
-      throw new Error(message)
+      throw new Error('No active run for approval response.')
     }
     const res = await window.vyotiq?.respondToolApproval?.(requestId, decision, runId)
     if (!res) {
-      const message = 'Tool approval response is unavailable.'
       logger.warn('Tool approval response unavailable', { scope: 'chat' })
-      patch({ error: message })
-      throw new Error(message)
+      throw new Error('Tool approval response is unavailable.')
     }
     if (!res.ok) {
       logger.warn('Tool approval response rejected', {
         scope: 'chat',
         err: toLogErr(res.error)
       })
-      patch({ error: res.error })
       throw new Error(res.error)
     }
     if (res.data !== true) {
-      const message = 'Tool approval was not accepted. Try again.'
       logger.warn('Tool approval response not accepted', { scope: 'chat' })
-      patch({ error: message })
-      throw new Error(message)
+      throw new Error('Tool approval was not accepted. Try again.')
     }
     patch({ items: clearApprovals(state.items, requestId), error: null })
   }

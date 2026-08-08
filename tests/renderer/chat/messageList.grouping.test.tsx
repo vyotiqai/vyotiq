@@ -104,15 +104,18 @@ describe('MessageList', () => {
     ]
     rerender(<MessageList items={liveItems} running />)
 
-    // Exclude TurnSummary buttons that now mirror the same phase label when expanded.
+    // Live expanded turn hides activity/card chrome (TurnSummary owns the phase).
+    // Prior settled turn keeps its tool group.
     const toggles = screen
       .getAllByRole('button', { name: /Read(?:ing)? 2 files/i })
-      .filter((btn) => !/turn work/i.test(btn.getAttribute('aria-label') ?? btn.textContent ?? ''))
-    expect(toggles).toHaveLength(2)
+      .filter((btn) => !/turn work|Collapse turn work/i.test(btn.getAttribute('aria-label') ?? ''))
+    expect(toggles).toHaveLength(1)
     expect(toggles[0]!.getAttribute('aria-expanded')).toBe('false')
-    expect(toggles[1]!.getAttribute('aria-expanded')).toBe('true')
     expect(screen.queryByText('alpha-one.ts')).toBeNull()
-    expect(screen.getByText('beta-one.ts')).toBeTruthy()
+    expect(screen.queryByText('beta-one.ts')).toBeNull()
+    expect(
+      screen.getByRole('button', { name: /Collapse turn work|Reading 2 files/i })
+    ).toBeTruthy()
   })
 
   it('does not render timestamps in the transcript', () => {
@@ -172,5 +175,45 @@ describe('MessageList', () => {
     expect(
       screen.getByRole('button', { name: /^Awaiting approval$/i }).getAttribute('aria-expanded')
     ).toBe('false')
+  })
+
+  it('hides live expanded activity chrome but keeps approval cards', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u-1', role: 'user', content: 'Edit the file' },
+      {
+        kind: 'tool',
+        id: 'read-1',
+        tool: { id: 'read-1', name: 'read', summary: 'src/a.ts', status: 'running' },
+        groupTiming: { startedAt: 1_000 }
+      },
+      {
+        kind: 'tool',
+        id: 'edit-1',
+        tool: {
+          id: 'edit-1',
+          name: 'edit',
+          summary: 'src/a.ts',
+          status: 'running',
+          argsPreview: '{"path":"src/a.ts"}'
+        },
+        approval: {
+          requestId: 'apr-1',
+          toolName: 'edit',
+          summary: 'src/a.ts',
+          argsPreview: '{"path":"src/a.ts"}',
+          mutating: true
+        },
+        groupTiming: { startedAt: 1_000 }
+      }
+    ]
+
+    render(<MessageList items={items} running />)
+
+    // Activity chrome for the read tool is hidden; approval gate stays.
+    expect(screen.queryByRole('button', { name: /^Read(?:ing)?\b/i })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Allow once' })).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: /Collapse turn work|Awaiting approval/i })
+    ).toBeTruthy()
   })
 })

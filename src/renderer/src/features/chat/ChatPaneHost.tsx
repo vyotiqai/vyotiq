@@ -14,6 +14,16 @@ type DropHighlight = {
   zone: PaneDropZone
 } | null
 
+export type PaneRenderOptions = {
+  focused: boolean
+  /** Clear shared ChatSideRail on the rightmost column when the rail is visible. */
+  sideRailPad: boolean
+  /** Open Changes dock (agent scope) — injected by ChatView when multi-pane. */
+  onOpenChanges?: () => void
+  /** Open Changes dock (uncommitted) — git-leading in pane composer. */
+  onOpenUncommittedChanges?: () => void
+}
+
 function zoneFromEvent(e: React.DragEvent): PaneDropZone {
   const el =
     (e.currentTarget as HTMLElement | null) ??
@@ -32,6 +42,7 @@ export function ChatPaneHost({
   panes,
   focusedPaneId,
   sizes,
+  sideRailPad = false,
   onFocusPane,
   onClosePane,
   onSizesChange,
@@ -42,6 +53,8 @@ export function ChatPaneHost({
   panes: ChatPane[]
   focusedPaneId: string
   sizes: number[]
+  /** When true, rightmost pane clears the shared side rail. */
+  sideRailPad?: boolean
   onFocusPane: (paneId: string) => void
   onClosePane: (paneId: string) => void
   onSizesChange: (sizes: number[]) => void
@@ -50,7 +63,7 @@ export function ChatPaneHost({
     runId: string
   }) => boolean
   getPaneTitle: (pane: ChatPane) => string
-  renderPane: (pane: ChatPane, focused: boolean) => ReactNode
+  renderPane: (pane: ChatPane, options: PaneRenderOptions) => ReactNode
 }) {
   const [dropHighlight, setDropHighlight] = useState<DropHighlight>(null)
   const dropHighlightRef = useRef<DropHighlight>(null)
@@ -117,12 +130,14 @@ export function ChatPaneHost({
   )
 
   const minPanePx = CHAT_COLUMN_MIN_USABLE_PX
+  const multi = panes.length > 1
 
   return (
     <div
       ref={rowRef}
-      className="flex min-h-0 min-w-0 flex-1 overflow-x-auto"
+      className="flex min-h-0 min-w-0 flex-1 overflow-x-auto overflow-y-hidden"
       data-chat-pane-host
+      data-chat-pane-count={panes.length}
     >
       {panes.map((pane, index) => {
         const focused = pane.paneId === focusedPaneId
@@ -130,6 +145,7 @@ export function ChatPaneHost({
         const highlight =
           dropHighlight?.paneId === pane.paneId ? dropHighlight.zone : null
         const paneTitle = getPaneTitle(pane)
+        const isRightmost = index === panes.length - 1
         const pairSum =
           index < panes.length - 1
             ? (sizes[index] ?? 0) + (sizes[index + 1] ?? 0)
@@ -137,19 +153,25 @@ export function ChatPaneHost({
         return (
           <div
             key={pane.paneId}
-            className="flex min-h-0 min-w-0"
-            style={{ flex: `${flexGrow} 1 0`, minWidth: minPanePx }}
+            className="flex min-h-0"
+            style={{
+              flex: `${flexGrow} 0 ${minPanePx}px`,
+              minWidth: minPanePx
+            }}
+            data-chat-pane-shell
           >
             <div
               role="region"
               aria-label={paneTitle}
               className={cn(
-                'group/pane relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+                'relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
                 focused ? 'bg-bg' : 'bg-bg/95',
-                index > 0 && 'border-l border-border/50'
+                index > 0 && 'border-l border-border/50',
+                focused && multi && 'ring-1 ring-inset ring-border-strong/60'
               )}
               data-chat-pane
               data-chat-pane-focused={focused ? '1' : '0'}
+              data-chat-pane-title={paneTitle}
               onPointerDownCapture={() => onFocusPane(pane.paneId)}
               onDragOverCapture={(e) => handleDragOver(e, pane.paneId)}
               onDragLeave={handleDragLeave}
@@ -166,17 +188,15 @@ export function ChatPaneHost({
                   )}
                 />
               ) : null}
-              {panes.length > 1 ? (
+              {multi ? (
                 <div
                   className={cn(
-                    'absolute inset-x-0 top-0 z-20 flex h-7 items-center justify-between gap-2 px-2',
-                    index === panes.length - 1 && 'pr-10',
-                    'opacity-0 vy-transition group-hover/pane:opacity-100 group-focus-within/pane:opacity-100',
-                    focused && 'opacity-100',
-                    '[@media(hover:none)]:opacity-100'
+                    'absolute inset-x-0 top-0 z-20 flex h-7 items-center justify-between gap-2 border-b border-border/40 bg-bg/90 px-2 backdrop-blur-sm',
+                    isRightmost && sideRailPad && 'pr-10'
                   )}
+                  data-chat-pane-header
                 >
-                  <span className="min-w-0 truncate text-xs text-muted">{paneTitle}</span>
+                  <span className="min-w-0 truncate text-xs text-fg/80">{paneTitle}</span>
                   <button
                     type="button"
                     className="shrink-0 rounded px-1.5 py-0.5 text-xs text-muted vy-transition hover:bg-surface/70 hover:text-fg"
@@ -192,11 +212,14 @@ export function ChatPaneHost({
               ) : null}
               <div
                 className={cn(
-                  'flex min-h-0 min-w-0 flex-1 flex-col',
-                  panes.length > 1 && 'pt-7'
+                  'flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+                  multi && 'pt-7'
                 )}
               >
-                {renderPane(pane, focused)}
+                {renderPane(pane, {
+                  focused,
+                  sideRailPad: Boolean(sideRailPad && isRightmost)
+                })}
               </div>
             </div>
             {index < panes.length - 1 ? (
@@ -210,6 +233,7 @@ export function ChatPaneHost({
                 )}
                 edge="end"
                 onChange={(next) => resizePane(index, next)}
+                className="w-1"
               />
             ) : null}
           </div>

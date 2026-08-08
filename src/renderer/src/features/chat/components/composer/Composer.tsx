@@ -93,6 +93,7 @@ export function Composer({
   errorCode,
   onRetryNetwork,
   offlineHint,
+  onClearOfflineQueue,
   networkWait,
   runNotice,
   incomplete,
@@ -157,6 +158,7 @@ export function Composer({
   errorCode?: string | null
   onRetryNetwork?: () => void
   offlineHint?: string | null
+  onClearOfflineQueue?: () => void
   networkWait?: {
     attempt: number
     maxAttempts: number
@@ -889,12 +891,13 @@ export function Composer({
         isDock
           ? // In-flow dock under the transcript — never overlays plan/chat text.
             // Scrollbar-gutter matches the transcript; side-rail pad clears the rail.
-            'shrink-0 overflow-y-hidden pb-3 pt-1 [scrollbar-gutter:stable]'
+            'shrink-0 overflow-x-hidden overflow-y-hidden pb-2 pt-1 [scrollbar-gutter:stable]'
           : 'shrink-0 w-full pb-0 pt-0',
         isDock ? (sideRailPad ? CHAT_STAGE_INSET : CHAT_GUTTER) : '',
         className
       )}
       data-composer-dock={isDock ? true : undefined}
+      data-composer-side-rail-pad={isDock && sideRailPad ? '1' : '0'}
       data-composer-hero={variant === 'hero' ? true : undefined}
       data-composer-inline={isInline ? true : undefined}
       onKeyDown={
@@ -972,6 +975,7 @@ export function Composer({
           onContinue={onContinue}
           running={running}
           offlineHint={offlineHint}
+          onClearOfflineQueue={onClearOfflineQueue}
           networkWait={networkWait}
         />
 

@@ -5,8 +5,6 @@ const PARALLEL_SAFE_BUILTIN = new Set([
   'glob',
   'grep',
   'list_dir',
-  'web_fetch',
-  'web_search',
   'memory_list',
   'memory_read',
   'Skill',
@@ -17,15 +15,12 @@ const PARALLEL_SAFE_BUILTIN = new Set([
 
 /**
  * Tools that skip approval in `mutating` mode.
- * Same as parallel-safe except network egress (`web_fetch`, `web_search`) and
- * MCP catalog/meta builtins (`mcp_list_tools`, resources/prompts, pin tools).
- * Browser tools are serial (shared BrowserWindow) and always gated.
+ * Same as parallel-safe except MCP catalog/meta builtins (`mcp_list_tools`, resources/prompts, pin tools).
+ * Browser tools (including `browser_search`) are serial (shared BrowserWindow) and always gated.
  * Interactive gates (`ask_question`, `switch_mode`) have their own flow.
  */
 const APPROVAL_EXEMPT_BUILTIN = new Set(
-  [...PARALLEL_SAFE_BUILTIN].filter(
-    (name) => name !== 'web_fetch' && name !== 'web_search' && name !== 'mcp_list_tools'
-  )
+  [...PARALLEL_SAFE_BUILTIN].filter((name) => name !== 'mcp_list_tools')
 )
 
 /** Serial interactive tools — not parallel-safe, but not tool-approval gated. */
@@ -43,7 +38,6 @@ export function isParallelSafeTool(name: string): boolean {
 
 /**
  * Tools that do not require approval when mode is `mutating`.
- * `web_fetch` / `web_search` are parallel-safe but not approval-exempt (outbound network).
  * `browser_*` tools are serial-only and always gated (shared window + egress).
  * MCP builtins and MCP server tools always require approval in `mutating`/`all`.
  */

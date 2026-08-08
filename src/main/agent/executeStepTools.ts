@@ -508,7 +508,6 @@ export async function executeStepToolCalls(
 
   const canParallelBatch = (name: string): boolean => {
     if (!isParallelSafeTool(name)) return false
-    if (hasApprovalGate && (name === 'web_fetch' || name === 'web_search')) return false
     return true
   }
 

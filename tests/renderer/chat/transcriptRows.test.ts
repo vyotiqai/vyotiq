@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   buildTranscriptRows,
+  isLiveTurnSummaryRedundantChrome,
   isTurnWorkRow,
   rowLeadingGap,
   stabilizeTranscriptRows,
@@ -890,6 +891,62 @@ describe('buildTranscriptRows', () => {
           toolName: 'edit',
           summary: 'edit',
           mutating: true
+        }
+      })
+    ).toBe(false)
+  })
+
+  it('marks activity/card as live-turn summary redundant chrome', () => {
+    expect(
+      isLiveTurnSummaryRedundantChrome({
+        kind: 'activity',
+        id: 'a-run',
+        turnIndex: 0,
+        tools: [
+          {
+            kind: 'tool',
+            id: 't1',
+            tool: { id: 't1', name: 'read', summary: 'a.ts', status: 'running' }
+          }
+        ]
+      })
+    ).toBe(true)
+    expect(
+      isLiveTurnSummaryRedundantChrome({
+        kind: 'card',
+        id: 'c1',
+        turnIndex: 0,
+        item: {
+          kind: 'tool',
+          id: 'c1',
+          tool: { id: 'c1', name: 'terminal', summary: 'npm test', status: 'running' }
+        }
+      })
+    ).toBe(true)
+    expect(
+      isLiveTurnSummaryRedundantChrome({
+        kind: 'approval',
+        id: 'apr',
+        turnIndex: 0,
+        approval: {
+          requestId: 'r1',
+          toolName: 'edit',
+          summary: 'edit',
+          mutating: true
+        }
+      })
+    ).toBe(false)
+    expect(
+      isLiveTurnSummaryRedundantChrome({
+        kind: 'thinking',
+        id: 'th',
+        turnIndex: 0,
+        item: {
+          kind: 'message',
+          id: 'th',
+          role: 'assistant',
+          content: '',
+          thinking: 'plan'
         }
       })
     ).toBe(false)

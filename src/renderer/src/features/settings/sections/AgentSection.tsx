@@ -232,6 +232,27 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
       </SettingsRow>
 
       <SettingsRow
+        title="Search engine"
+        description="Used by the browser_search tool in the embedded agent browser."
+      >
+        <Menu
+          aria-label="Search engine"
+          value={form.settings.searchEngine}
+          options={[
+            { value: 'duckduckgo', label: 'DuckDuckGo' },
+            { value: 'bing', label: 'Bing' },
+            { value: 'google', label: 'Google' }
+          ]}
+          searchable={false}
+          placement="down"
+          disabled={form.formLocked}
+          onChange={(v) => {
+            void form.runUpdate({ searchEngine: v as 'duckduckgo' | 'bing' | 'google' })
+          }}
+        />
+      </SettingsRow>
+
+      <SettingsRow
         title="Tool approval"
         description="Ask before the agent runs tools. Off by default; allowlisted tools never ask."
       >
@@ -265,10 +286,24 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
             ) : null}
           </div>
           {form.toolApproval.allowlist.length > 0 ? (
-            <ul className="m-0 list-inside list-disc pl-1 text-xs text-tertiary">
+            <ul className="m-0 list-none space-y-1 pl-0 text-xs text-tertiary">
               {form.toolApproval.allowlist.map((name) => (
-                <li key={name} className="font-mono">
-                  {name}
+                <li key={name} className="flex items-center justify-between gap-2 font-mono">
+                  <span className="min-w-0 truncate">{name}</span>
+                  <Button
+                    variant="subtle"
+                    disabled={form.formLocked}
+                    onClick={() => {
+                      void form.runAgentUpdate({
+                        toolApproval: {
+                          ...form.toolApproval,
+                          allowlist: form.toolApproval.allowlist.filter((entry) => entry !== name)
+                        }
+                      })
+                    }}
+                  >
+                    Remove
+                  </Button>
                 </li>
               ))}
             </ul>

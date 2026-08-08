@@ -112,6 +112,9 @@ export type TerminalShell = z.infer<typeof TerminalShellSchema>
 export const AgentInteractionModeSchema = z.enum(['ask', 'plan', 'agent'])
 export type AgentInteractionMode = z.infer<typeof AgentInteractionModeSchema>
 
+export const SearchEngineSchema = z.enum(['duckduckgo', 'bing', 'google'])
+export type SearchEngineId = z.infer<typeof SearchEngineSchema>
+
 export const ToolApprovalSettingsSchema = z.object({
   mode: ToolApprovalModeSchema.default('off'),
   /** Tool names the user chose to always allow, persisted per workspace. */
@@ -141,6 +144,10 @@ export const SettingsSchema = z.object({
   serviceTierByModel: z.record(z.string(), ServiceTierSchema).default({}),
   serviceTier: ServiceTierSchema.default('default'),
   toolApproval: ToolApprovalSettingsSchema.default(DEFAULT_TOOL_APPROVAL),
+  /** Default search engine for browser_search. */
+  searchEngine: SearchEngineSchema.default('duckduckgo'),
+  /** Set after first-send tool approval onboarding modal is shown or dismissed. */
+  toolApprovalOnboardingDone: z.boolean().default(false),
   /** Shell used by the terminal tool. `auto` prefers PowerShell on Windows when available. */
   terminalShell: TerminalShellSchema.default('auto'),
   /**
@@ -201,6 +208,8 @@ export const DEFAULT_SETTINGS: Settings = {
   serviceTierByModel: {},
   serviceTier: 'default',
   toolApproval: DEFAULT_TOOL_APPROVAL,
+  searchEngine: 'duckduckgo',
+  toolApprovalOnboardingDone: false,
   terminalShell: 'auto',
   diagnosticsCommand: '',
   harnessProposalRewriter: false,

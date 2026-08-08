@@ -13,7 +13,7 @@ export type WebSearchParsed = {
 }
 
 /**
- * Parse web_search tool content produced by formatHits in main/agent/tools/webSearch.ts:
+ * Parse legacy web_search tool content (agent tool removed; keep for old transcripts):
  *
  *   # Web search: query
  *   Found N result(s):

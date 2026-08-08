@@ -418,6 +418,7 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
     })
   },
   browser_navigate: browserActionEntry,
+  browser_search: browserActionEntry,
   browser_click: browserActionEntry,
   browser_type: browserActionEntry,
   browser_scroll: browserActionEntry,

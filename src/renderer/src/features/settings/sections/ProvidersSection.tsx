@@ -10,16 +10,27 @@ import { ApiKeyEditor } from '../components/ApiKeyEditor'
 export function ProvidersSection({
   settings,
   secrets,
+  secretsLoadError = false,
   form,
   onClearSecret
 }: {
   settings: Settings
   secrets: SettingsViewProps['secrets']
+  secretsLoadError?: boolean
   form: SettingsFormState
   onClearSecret: SettingsViewProps['onClearSecret']
 }) {
   return (
     <>
+      {secretsLoadError ? (
+        <p
+          className="m-0 border-b border-border py-3 text-xs leading-snug text-warning [overflow-wrap:anywhere]"
+          role="status"
+        >
+          Could not read saved API keys. They may still be on disk. Re-enter keys or check
+          secrets.json.
+        </p>
+      ) : null}
       <SettingsRow
         title="Active provider"
         description="Used for chat and Refresh models. Selecting a provider here (or an API key chip) makes it active."

@@ -8,15 +8,18 @@ export type ModePolicyOptions = {
   autoModeSwitch?: boolean
 }
 
-/** Built-in tools allowed in Ask mode (read-only / parallel-safe). */
+/**
+ * Built-in tools allowed in Ask mode (read-only / parallel-safe).
+ * `browser_search` intentionally navigates the agent browser to a search URL
+ * (browse-only — same egress as `browser_navigate`; not click/type/fill).
+ */
 export const ASK_SAFE_BUILTIN = new Set([
   'read',
   'search',
   'glob',
   'grep',
   'list_dir',
-  'web_fetch',
-  'web_search',
+  'browser_search',
   'ask_question',
   // Browse-only: click/type/fill/press_key/select can mutate live sites.
   'browser_navigate',

@@ -7,7 +7,8 @@ import {
   listPendingAgentQuestions,
   registerQuestionSender,
   resetAgentQuestionForTests,
-  resolveAgentQuestion
+  resolveAgentQuestion,
+  rejectAgentQuestion
 } from '@main/agent/agentQuestion'
 import type { AgentQuestionRequest } from '@shared/ipc'
 
@@ -154,6 +155,50 @@ describe('agentQuestion', () => {
       })
     ).toBe(true)
     await expect(pending).resolves.toEqual([])
+  })
+
+  it('rejects invalid IPC payload immediately instead of waiting for timeout', async () => {
+    registerQuestionSender('run-1', () => {})
+    const pending = askQuestionThroughRenderer(REQUEST, new AbortController().signal)
+    await Promise.resolve()
+    expect(
+      rejectAgentQuestion({
+        requestId: 'req-1',
+        runId: 'run-1',
+        reason: 'questions required'
+      })
+    ).toBe(true)
+    await expect(pending).rejects.toThrow(/AGENT_QUESTION_INVALID|invalid agent question/i)
+  })
+
+  it('rejects by runId alone when requestId is missing from malformed payload', async () => {
+    registerQuestionSender('run-1', () => {})
+    const pending = askQuestionThroughRenderer(REQUEST, new AbortController().signal)
+    await Promise.resolve()
+    expect(
+      rejectAgentQuestion({
+        runId: 'run-1',
+        reason: 'Invalid agent question payload'
+      })
+    ).toBe(true)
+    await expect(pending).rejects.toThrow(/AGENT_QUESTION_INVALID|invalid agent question/i)
+  })
+
+  it('rejects by requestId alone when runId is missing from malformed payload', async () => {
+    registerQuestionSender('run-1', () => {})
+    const pending = askQuestionThroughRenderer(REQUEST, new AbortController().signal)
+    await Promise.resolve()
+    expect(
+      rejectAgentQuestion({
+        requestId: 'req-1',
+        reason: 'Invalid agent question payload'
+      })
+    ).toBe(true)
+    await expect(pending).rejects.toThrow(/AGENT_QUESTION_INVALID|invalid agent question/i)
+  })
+
+  it('returns false for reject-by-runId when nothing is pending', () => {
+    expect(rejectAgentQuestion({ runId: 'run-1', reason: 'orphan' })).toBe(false)
   })
 
   it('resolves with empty answers after the question timeout', async () => {

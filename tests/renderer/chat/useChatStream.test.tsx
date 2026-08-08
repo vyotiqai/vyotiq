@@ -2027,7 +2027,8 @@ describe('useChatStream', () => {
     expect(
       result.current.items.some((i) => i.kind === 'tool' && i.approval?.requestId === 'req-fail')
     ).toBe(true)
-    expect(result.current.error).toBe('approval expired')
+    // Card-local only — composer banner stays clear for approval IPC failures.
+    expect(result.current.error).toBeNull()
   })
 
   it('keeps approval visible when respondToolApproval returns data false', async () => {

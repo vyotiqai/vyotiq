@@ -65,12 +65,15 @@ Dock width: `clampDockWidthPx(width, viewport, { paneCount, sidebarWidthPx })` r
 
 Multi-pane only (`panes.length > 1`):
 
-- Subtle hover header with session title + Close button
-- Rightmost pane header `pr-10` clears shared `ChatSideRail`
-- Content `pt-7` clears header overlap
+- Always-visible header with session title + Close (`New chat` for drafts)
+- Focused pane: inset ring; rightmost header/composer clear shared `ChatSideRail` when rail is mounted
+- Content `pt-7` clears header; empty drafts use docked composer (no centered hero)
+- Panes use `flex-shrink: 0` + `minWidth: 360`; host scrolls horizontally when the row is tight
 - No tab bar, badges, or split chrome strip
 
 Single-pane: identical to pre-split layout (no header).
+
+Sidebar: open-in-pane (`SIDEBAR_ROW_OPEN`) vs focused (`SIDEBAR_ROW_FOCUSED`).
 
 ## Sanitization
 

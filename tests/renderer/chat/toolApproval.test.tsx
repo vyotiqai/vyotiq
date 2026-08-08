@@ -94,4 +94,18 @@ describe('tool approval card', () => {
     })
     expect(screen.getByRole('button', { name: 'Deny' }).hasAttribute('disabled')).toBe(true)
   })
+
+  it('reports deny and recovers when onApprovalDecision rejects', async () => {
+    const onApprovalDecision = vi.fn().mockRejectedValue(new Error('IPC offline'))
+    render(<MessageList items={gatedItems()} onApprovalDecision={onApprovalDecision} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Deny' }))
+    await waitFor(() => {
+      expect(onApprovalDecision).toHaveBeenCalledWith('req-1', 'deny')
+    })
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toBe('IPC offline')
+    })
+    expect(screen.getByRole('button', { name: 'Deny' }).hasAttribute('disabled')).toBe(false)
+  })
 })

@@ -274,6 +274,17 @@ export const SIDEBAR_WORKSPACE_ROW_ACTIVE = 'text-fg-strong font-medium'
 /** Active sidebar row — left accent bar, no fill chrome. */
 export const SIDEBAR_ROW_ACTIVE = 'border-l-fg-strong text-fg-strong font-medium'
 
+/**
+ * Session open in a pane but not focused — accent + light fill so multi-open
+ * is glanceable beside the focused row.
+ */
+export const SIDEBAR_ROW_OPEN =
+  'border-l-fg/55 text-fg bg-surface/20 font-medium'
+
+/** Session in the focused pane — stronger fill + accent. */
+export const SIDEBAR_ROW_FOCUSED =
+  'border-l-fg-strong text-fg-strong bg-surface/45 font-semibold'
+
 /** Hover surface for sidebar rows. */
 export const SIDEBAR_ROW_HOVER = 'hover:bg-surface/30 hover:text-fg'
 

@@ -524,8 +524,8 @@ async function createTransport(
 
   const urlRaw = (server.url ?? '').trim()
   if (!urlRaw) throw new Error(`MCP server ${server.id}: url required for ${transport}`)
-  // Same SSRF posture as web_fetch / catalog — remote MCP is public HTTP(S) only.
-  // Local MCP uses stdio; no product exception for loopback HTTP/SSE.
+  // Same SSRF posture as marketplace/catalog fetchPublicResponse — remote MCP is
+  // public HTTP(S) only. Local MCP uses stdio; no product exception for loopback HTTP/SSE.
   const url = await assertPublicUrl(urlRaw)
 
   // Static Bearer takes precedence. With OAuth authProvider, do not set Authorization

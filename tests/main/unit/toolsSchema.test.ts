@@ -19,7 +19,7 @@ describe('toolsSchema', () => {
   it('covers every executable built-in with a short description', () => {
     const names = AGENT_TOOLS.map((t) => t.name).sort()
     expect(names).toEqual([...BUILTIN_TOOL_NAMES].sort())
-    expect(names.length).toBe(45)
+    expect(names.length).toBe(44)
 
     for (const tool of AGENT_TOOLS) {
       expect(tool.description.trim().length, `${tool.name} empty description`).toBeGreaterThan(0)

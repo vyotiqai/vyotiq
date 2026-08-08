@@ -53,6 +53,7 @@ const SEARCH_TOOLS = new Set([
 ])
 const BROWSER_TOOLS = new Set([
   'browser_navigate',
+  'browser_search',
   'browser_snapshot',
   'browser_click',
   'browser_type',
@@ -212,6 +213,7 @@ const TOOL_ICON_BY_NAME: Record<string, IconName> = {
   web_fetch: 'globe',
   web_search: 'globe',
   browser_navigate: 'globe',
+  browser_search: 'globe',
   browser_snapshot: 'globe',
   browser_click: 'globe',
   browser_type: 'globe',

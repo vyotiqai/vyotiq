@@ -252,15 +252,30 @@ function upgradeWorkspacesStateV1(raw: Record<string, unknown>): WorkspacesState
   }
 }
 
+function stripDeprecatedWorkspaceOverrides(state: WorkspacesState): WorkspacesState {
+  const overrides = { ...state.settingsOverridesByPath }
+  let stripped = false
+  for (const [path, override] of Object.entries(overrides)) {
+    if (!override || !('ollamaBaseUrl' in override)) continue
+    const { ollamaBaseUrl: _removed, ...rest } = override as WorkspaceSettingsOverride & {
+      ollamaBaseUrl?: string
+    }
+    overrides[path] = rest as WorkspaceSettingsOverride
+    stripped = true
+  }
+  return stripped ? { ...state, settingsOverridesByPath: overrides } : state
+}
+
 function migrateLegacyWorkspacePath(state: WorkspacesState): WorkspacesState {
-  if (state.openPaths.length > 0) return state
+  const stripped = stripDeprecatedWorkspaceOverrides(state)
+  if (stripped.openPaths.length > 0) return stripped
   const legacy = readLegacyWorkspacePath()
-  if (!legacy || !existsSync(legacy)) return state
+  if (!legacy || !existsSync(legacy)) return stripped
   const next: WorkspacesState = {
-    ...state,
+    ...stripped,
     openPaths: [legacy],
     activePath: legacy,
-    recentPaths: dedupeRecent([legacy, ...state.recentPaths])
+    recentPaths: dedupeRecent([legacy, ...stripped.recentPaths])
   }
   writeWorkspacesAtomic(next)
   logger.info('Migrated legacy settings.workspacePath to workspaces.json', {

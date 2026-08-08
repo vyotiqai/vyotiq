@@ -278,6 +278,37 @@ describe('workspaces registry', () => {
     })
   })
 
+  it('strips deprecated ollamaBaseUrl from workspace settings overrides on read', () => {
+    mkdirSync(userData, { recursive: true })
+    writeFileSync(
+      join(userData, 'workspaces.json'),
+      JSON.stringify({
+        ...defaultWorkspacesState(),
+        openPaths: [workspaceA],
+        activePath: workspaceA,
+        recentPaths: [workspaceA],
+        settingsOverridesByPath: {
+          [workspaceA]: {
+            useOverride: true,
+            provider: 'openai',
+            model: 'gpt-4.1',
+            ollamaBaseUrl: 'http://127.0.0.1:11434'
+          }
+        }
+      }),
+      'utf8'
+    )
+
+    const state = readWorkspacesState()
+    const override = state.settingsOverridesByPath[workspaceA]
+    expect(override).toEqual({
+      useOverride: true,
+      provider: 'openai',
+      model: 'gpt-4.1'
+    })
+    expect(override).not.toHaveProperty('ollamaBaseUrl')
+  })
+
   it('recovers partial workspaces.json and opens home when openPaths empty', () => {
     mkdirSync(userData, { recursive: true })
     writeFileSync(

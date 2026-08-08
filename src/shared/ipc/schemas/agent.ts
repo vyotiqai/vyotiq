@@ -904,6 +904,18 @@ export const AgentQuestionResponseSchema = z.object({
 })
 export type AgentQuestionResponse = z.infer<typeof AgentQuestionResponseSchema>
 
+/** Preload → main when a question payload fails Zod validation (fail fast, no 15m wait). */
+export const AgentQuestionRejectSchema = z
+  .object({
+    requestId: z.string().min(1).optional(),
+    runId: z.string().min(1).optional(),
+    reason: z.string().min(1).optional()
+  })
+  .refine((v) => Boolean(v.requestId || v.runId), {
+    message: 'requestId or runId required'
+  })
+export type AgentQuestionReject = z.infer<typeof AgentQuestionRejectSchema>
+
 export const ListPendingAgentQuestionsRequestSchema = z.object({
   runId: RunIdSchema
 })

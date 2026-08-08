@@ -10,6 +10,8 @@ import {
   SETTINGS_COLUMN_MAX,
   SETTINGS_GUTTER,
   SIDEBAR_ROW_ACTIVE,
+  SIDEBAR_ROW_FOCUSED,
+  SIDEBAR_ROW_OPEN,
   SIDEBAR_SEARCH_ROW,
   SIDEBAR_SECTION_LABEL,
   SIDEBAR_TOOLBAR_ROW,
@@ -58,6 +60,9 @@ describe('layout typography and spacing tokens', () => {
 
   it('documents sidebar list active accent', () => {
     expect(SIDEBAR_ROW_ACTIVE).toContain('border-l-fg-strong')
+    expect(SIDEBAR_ROW_OPEN).toContain('bg-surface/20')
+    expect(SIDEBAR_ROW_FOCUSED).toContain('bg-surface/45')
+    expect(SIDEBAR_ROW_FOCUSED).toContain('font-semibold')
   })
 
   it('exports sidebar toolbar row aligned with main title bar', () => {

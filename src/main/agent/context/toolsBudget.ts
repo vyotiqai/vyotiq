@@ -18,7 +18,7 @@ const OPTIONAL_BUILTIN_NAMES = new Set(
   AGENT_TOOLS.map((t) => t.name).filter(
     (name) =>
       name.startsWith('browser_') ||
-      name === 'web_search' ||
+      name === 'browser_search' ||
       name === 'diagnostics' ||
       name === 'generate_image' ||
       name === 'edit_image'

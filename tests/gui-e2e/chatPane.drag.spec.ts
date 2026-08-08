@@ -8,6 +8,37 @@ import { seedRunsInUserData } from './helpers/seedWorkspace'
 let launched: LaunchedApp
 let workspacePath: string
 
+async function ensureSidebarExpanded(): Promise<void> {
+  const expand = launched.window.getByRole('button', { name: /expand sidebar/i })
+  if (await expand.isVisible().catch(() => false)) {
+    await expand.click()
+  }
+}
+
+async function splitBetaBesideAlpha(): Promise<void> {
+  const { window } = launched
+  const alpha = window.getByTitle('Pane Session Alpha').first()
+  const beta = window.getByTitle('Pane Session Beta').first()
+  await expect(alpha).toBeVisible({ timeout: 20_000 })
+  await expect(beta).toBeVisible({ timeout: 20_000 })
+
+  await alpha.click()
+  await expect(window.locator('[data-chat-pane-host]')).toBeVisible({ timeout: 15_000 })
+  await expect(window.locator('[data-chat-pane]')).toHaveCount(1)
+
+  const host = window.locator('[data-chat-pane-host]')
+  const box = await host.boundingBox()
+  expect(box).toBeTruthy()
+
+  await beta.dragTo(host, {
+    targetPosition: {
+      x: Math.floor((box?.width ?? 600) * 0.85),
+      y: Math.floor((box?.height ?? 400) * 0.5)
+    }
+  })
+  await expect(window.locator('[data-chat-pane]')).toHaveCount(2, { timeout: 15_000 })
+}
+
 test.beforeAll(async () => {
   workspacePath = mkdtempSync(join(tmpdir(), 'vyotiq-pane-ws-'))
   mkdirSync(workspacePath, { recursive: true })
@@ -64,75 +95,94 @@ test.afterAll(async () => {
 
 test('drag sidebar session onto right third splits into two panes', async () => {
   const { window } = launched
+  await ensureSidebarExpanded()
+  await splitBetaBesideAlpha()
 
-  const expand = window.getByRole('button', { name: /expand sidebar/i })
-  if (await expand.isVisible().catch(() => false)) {
-    await expand.click()
-  }
-
-  const alpha = window.getByTitle('Pane Session Alpha').first()
-  const beta = window.getByTitle('Pane Session Beta').first()
-  await expect(alpha).toBeVisible({ timeout: 20_000 })
-  await expect(beta).toBeVisible({ timeout: 20_000 })
-
-  await alpha.click()
-  await expect(window.locator('[data-chat-pane-host]')).toBeVisible({ timeout: 15_000 })
-  await expect(window.locator('[data-chat-pane]')).toHaveCount(1)
-
-  const host = window.locator('[data-chat-pane-host]')
-  const box = await host.boundingBox()
-  expect(box).toBeTruthy()
-
-  await beta.dragTo(host, {
-    targetPosition: {
-      x: Math.floor((box?.width ?? 600) * 0.85),
-      y: Math.floor((box?.height ?? 400) * 0.5)
-    }
-  })
-
-  await expect(window.locator('[data-chat-pane]')).toHaveCount(2, { timeout: 15_000 })
   await expect(window.locator('[data-chat-pane-focused="1"]')).toHaveCount(1)
+  await expect(window.locator('[data-chat-pane-header]')).toHaveCount(2)
+  await expect(window.locator('[data-chat-pane-title="Pane Session Alpha"]')).toBeVisible()
+  await expect(window.locator('[data-chat-pane-title="Pane Session Beta"]')).toBeVisible()
 
   // Clicking an already-open session focuses its pane; does not add a third.
-  await alpha.click()
+  await window.getByTitle('Pane Session Alpha').first().click()
   await expect(window.locator('[data-chat-pane]')).toHaveCount(2)
   await expect(window.locator('[data-chat-pane-focused="1"]')).toHaveCount(1)
 
   const betaPane = window.locator('[data-chat-pane]').nth(1)
-  await beta.click()
+  await window.getByTitle('Pane Session Beta').first().click()
   await expect(betaPane).toHaveAttribute('data-chat-pane-focused', '1')
   await window.getByRole('button', { name: /Close Pane Session Beta/i }).click()
   await expect(window.locator('[data-chat-pane]')).toHaveCount(1, { timeout: 10_000 })
 })
 
-test('opening right dock panel keeps multi-pane layout', async () => {
+test('multi-pane polish: min widths, sidebar open state, docked empty, rail pad', async () => {
   const { window } = launched
+  await ensureSidebarExpanded()
 
-  const expand = window.getByRole('button', { name: /expand sidebar/i })
-  if (await expand.isVisible().catch(() => false)) {
-    await expand.click()
+  await window.evaluate(() => {
+    localStorage.removeItem('vyotiq.chatPaneLayout')
+    localStorage.removeItem('vyotiq.rightPanel')
+  })
+  await window.reload()
+  await window.waitForLoadState('domcontentloaded')
+  await expect(window.locator('body')).toBeVisible({ timeout: 30_000 })
+  await ensureSidebarExpanded()
+  await splitBetaBesideAlpha()
+
+  // Hard min width on every pane shell.
+  const shellWidths = await window.locator('[data-chat-pane-shell]').evaluateAll((els) =>
+    els.map((el) => (el as HTMLElement).getBoundingClientRect().width)
+  )
+  expect(shellWidths.length).toBe(2)
+  for (const width of shellWidths) {
+    expect(width).toBeGreaterThanOrEqual(360)
   }
 
-  const alpha = window.getByTitle('Pane Session Alpha').first()
-  const beta = window.getByTitle('Pane Session Beta').first()
-  await expect(alpha).toBeVisible({ timeout: 20_000 })
-  await expect(beta).toBeVisible({ timeout: 20_000 })
+  // Always-visible headers (not hover-only).
+  await expect(window.locator('[data-chat-pane-header]')).toHaveCount(2)
+  await expect(window.getByRole('button', { name: /Close Pane Session Alpha/i })).toBeVisible()
+  await expect(window.getByRole('button', { name: /Close Pane Session Beta/i })).toBeVisible()
 
-  await alpha.click()
-  await expect(window.locator('[data-chat-pane-host]')).toBeVisible({ timeout: 15_000 })
-  await expect(window.locator('[data-chat-pane]')).toHaveCount(1)
+  // Sidebar: both open; focused marked distinctly.
+  const alphaRow = window.getByTitle('Pane Session Alpha').first()
+  const betaRow = window.getByTitle('Pane Session Beta').first()
+  await expect(alphaRow).toHaveAttribute('data-session-open', '1')
+  await expect(betaRow).toHaveAttribute('data-session-open', '1')
+  await expect(betaRow).toHaveAttribute('data-session-focused', '1')
+  await expect(alphaRow).toHaveAttribute('data-session-focused', '0')
 
-  const host = window.locator('[data-chat-pane-host]')
-  const box = await host.boundingBox()
-  expect(box).toBeTruthy()
+  // Resize gutter between panes (sidebar may have its own handle elsewhere).
+  await expect(
+    window.locator('[data-chat-pane-host] [data-panel-resize-handle]')
+  ).toHaveCount(1)
 
-  await beta.dragTo(host, {
-    targetPosition: {
-      x: Math.floor((box?.width ?? 600) * 0.85),
-      y: Math.floor((box?.height ?? 400) * 0.5)
-    }
+  // Rightmost composer clears the side rail while the rail is mounted.
+  const rightComposer = window.locator('[data-chat-pane]').nth(1).locator('[data-composer-dock]')
+  await expect(rightComposer).toHaveAttribute('data-composer-side-rail-pad', '1')
+
+  // New chat in multi-pane stays docked (no centered hero).
+  await window.getByRole('button', { name: /^new chat$/i }).click()
+  await expect(window.locator('[data-chat-pane]')).toHaveCount(2)
+  await expect(window.locator('[data-chat-pane-title="New chat"]')).toBeVisible({ timeout: 10_000 })
+  const newPane = window.locator('[data-chat-pane-title="New chat"]')
+  await expect(newPane.locator('[data-composer-dock]')).toBeVisible()
+  await expect(newPane.locator('[data-composer-hero]')).toHaveCount(0)
+})
+
+test('opening right dock panel keeps multi-pane layout', async () => {
+  const { window } = launched
+  await ensureSidebarExpanded()
+
+  await window.evaluate(() => {
+    localStorage.removeItem('vyotiq.chatPaneLayout')
+    localStorage.removeItem('vyotiq.rightPanel')
   })
-  await expect(window.locator('[data-chat-pane]')).toHaveCount(2, { timeout: 15_000 })
+  await window.reload()
+  await window.waitForLoadState('domcontentloaded')
+  await expect(window.locator('body')).toBeVisible({ timeout: 30_000 })
+  await ensureSidebarExpanded()
+  await splitBetaBesideAlpha()
+
   await expect
     .poll(async () => {
       return window.evaluate(() => {
@@ -147,4 +197,8 @@ test('opening right dock panel keeps multi-pane layout', async () => {
   await window.getByRole('button', { name: /show terminal panel/i }).click()
   await expect(window.locator('[data-right-dock]')).toBeVisible({ timeout: 10_000 })
   await expect(window.locator('[data-chat-pane]')).toHaveCount(2)
+
+  // With dock open the rail is gone — composer pad drops on the rightmost pane.
+  const rightComposer = window.locator('[data-chat-pane]').nth(1).locator('[data-composer-dock]')
+  await expect(rightComposer).toHaveAttribute('data-composer-side-rail-pad', '0')
 })

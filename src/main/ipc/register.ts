@@ -57,6 +57,7 @@ import {
   PtyResizeRequestSchema,
   ToolApprovalResponseSchema,
   AgentQuestionResponseSchema,
+  AgentQuestionRejectSchema,
   ListPendingAgentQuestionsRequestSchema,
   ListPendingToolApprovalsRequestSchema,
   ExtractAttachmentRequestSchema,
@@ -183,6 +184,7 @@ import {
 import { ChatEventBatcher, getChatEventBatchStats, getChatEventDispatcher, resetChatEventBatchStats } from './streamBatch'
 import { installIpcTiming, timeSyncIpc } from '../perf/ipcTiming'
 import { runAgent, createRunId } from '../agent/loop'
+import { isChatFixtureReplayEnabled, replayChatFixture } from '../e2e/chatFixtureReplay'
 import { compactRunNow, CompactionUnavailableError } from '../agent/compactRun'
 import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
 import { prepareRewindAndReplaceUserMessage, prepareRewindToUserMessage } from '../agent/rewindRun'
@@ -198,8 +200,10 @@ import {
 import {
   cancelPendingQuestions,
   listPendingAgentQuestions,
+  pendingQuestionRunId,
   registerQuestionSender,
-  resolveAgentQuestion
+  resolveAgentQuestion,
+  rejectAgentQuestion
 } from '../agent/agentQuestion'
 import { listProviderModels } from '../agent/providers'
 import { clearModelCache } from '../agent/providers/modelCache'
@@ -744,7 +748,16 @@ export function registerIpc(): void {
           sendToCurrentRenderer(IPC.agentQuestionRequest, request, wc)
         })
         try {
-          for await (const ev of runAgent(agentInput)) {
+          const runSignal = registered.controller.signal
+          const eventStream = isChatFixtureReplayEnabled()
+            ? replayChatFixture({
+                runId,
+                invokeId,
+                workspacePath: req.workspacePath,
+                runSignal
+              })
+            : runAgent(agentInput)
+          for await (const ev of eventStream) {
             const terminal = isTerminalChatEvent(ev as AgentEvent)
             if (terminal) terminalSent = true
             batcher.push(ev as AgentEvent)
@@ -1030,6 +1043,23 @@ export function registerIpc(): void {
       return ok(resolveAgentQuestion(response))
     } catch (err) {
       return failFrom(err, IPC.agentQuestionResponse)
+    }
+  })
+
+  ipcMain.handle(IPC.agentQuestionReject, async (event, raw): Promise<IpcResult<boolean>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const payload = AgentQuestionRejectSchema.parse(raw)
+      const runId =
+        payload.runId ??
+        (payload.requestId ? pendingQuestionRunId(payload.requestId) : undefined)
+      if (!runId) return fail('No pending agent question for reject')
+      if (!isActive(runId)) return fail('Run is not active')
+      const workspace = getRunWorkspace(runId)
+      if (!workspace || !isOpenWorkspace(workspace)) return fail('Workspace is not open')
+      return ok(rejectAgentQuestion({ ...payload, runId }))
+    } catch (err) {
+      return failFrom(err, IPC.agentQuestionReject)
     }
   })
 

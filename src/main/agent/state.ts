@@ -705,7 +705,6 @@ export async function loadEventsForRunAsync(
 
 async function collectRunsFromRoot(root: string): Promise<RunSummary[]> {
   const summaries: RunSummary[] = []
-  if (!existsSync(root)) return summaries
   let entries
   try {
     entries = await readdir(root, { withFileTypes: true })
@@ -717,7 +716,6 @@ async function collectRunsFromRoot(root: string): Promise<RunSummary[]> {
     const dir = join(root, entry.name)
     try {
       const statusPath = join(dir, 'status.json')
-      if (!existsSync(statusPath)) continue
       const raw = JSON.parse(await readFile(statusPath, 'utf8')) as unknown
       const parsed = RunStatusSchema.safeParse(raw)
       if (!parsed.success) {
@@ -734,16 +732,21 @@ async function collectRunsFromRoot(root: string): Promise<RunSummary[]> {
         updatedAt: status.updatedAt,
         goal: status.goal
       })
-    } catch {
-      // skip
+    } catch (err) {
+      logger.warn('Run listing skipped entry', {
+        scope: 'runs',
+        runDir: entry.name,
+        err
+      })
     }
   }
   return summaries
 }
 
 export async function listRuns(workspacePath: string): Promise<ListRunsResult> {
-  await reconcileStaleRuns(workspacePath)
   return getCachedListRuns(workspacePath, async () => {
+    // Reconcile only on cache miss/TTL expiry — avoids disk walk every sidebar poll.
+    await reconcileStaleRuns(workspacePath)
     const summaries = await collectRunsFromRoot(workspaceSessionsRoot(workspacePath))
     const sorted = summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     return {
@@ -843,8 +846,12 @@ export async function interruptOrphanRuns(
         if (!isRunStaleByAge(parsed.data.updatedAt, maxAgeMs)) continue
         await interruptRunningRunOnDisk(workspacePath, name, dir, parsed.data)
         workspaceCount += 1
-      } catch {
-        // skip
+      } catch (err) {
+        logger.warn('Orphan interrupt skipped entry', {
+          scope: 'runs',
+          runId: name,
+          err
+        })
       }
     }
     if (workspaceCount > 0) invalidateListRunsCache(workspacePath)
@@ -906,26 +913,45 @@ export async function reconcileStaleRuns(
 ): Promise<number> {
   let count = 0
   const runs = workspaceSessionsRoot(workspacePath)
-  if (!existsSync(runs)) return 0
-  for (const name of readdirSync(runs)) {
-    const dir = join(runs, name)
+  let entries
+  try {
+    entries = await readdir(runs, { withFileTypes: true })
+  } catch (err) {
+    logger.warn('Run reconcile skipped workspace sessions root', {
+      scope: 'runs',
+      workspacePath,
+      err
+    })
+    return 0
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const dir = join(runs, entry.name)
     try {
-      if (!statSync(dir).isDirectory()) continue
       const statusPath = join(dir, 'status.json')
-      if (!existsSync(statusPath)) continue
-      const raw = JSON.parse(readFileSync(statusPath, 'utf8')) as unknown
+      const raw = JSON.parse(await readFile(statusPath, 'utf8')) as unknown
       const parsed = RunStatusSchema.safeParse(raw)
-      if (!parsed.success) continue
+      if (!parsed.success) {
+        logger.warn('Run reconcile skipped invalid status.json', {
+          scope: 'runs',
+          runId: entry.name
+        })
+        continue
+      }
       if (parsed.data.status !== 'running') continue
-      if (isActive(name)) continue
+      if (isActive(entry.name)) continue
       if (!isRunStaleByAge(parsed.data.updatedAt, maxAgeMs)) continue
-      await interruptRunningRunOnDisk(workspacePath, name, dir, parsed.data)
+      await interruptRunningRunOnDisk(workspacePath, entry.name, dir, parsed.data)
       count += 1
-    } catch {
-      // skip
+    } catch (err) {
+      logger.warn('Run reconcile skipped entry', {
+        scope: 'runs',
+        runId: entry.name,
+        err
+      })
     }
   }
-  if (count > 0) invalidateListRunsCache(workspacePath)
+  // Called from listRuns cache miss only — caller writes fresh cache after.
   return count
 }
 

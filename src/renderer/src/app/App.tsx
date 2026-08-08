@@ -10,7 +10,7 @@ import { useSettings } from '@renderer/lib/hooks/useSettings'
 import { useWorkspaceManager, resolveComposerDraft } from '@renderer/lib/hooks/useWorkspaceManager'
 import { ErrorBoundary } from '@renderer/lib/ErrorBoundary'
 import { ToastHost, pushToast } from '@renderer/lib/ui'
-import type { ProviderId, SecretProvider, ServiceTier, AttachedFile } from '@shared/ipc'
+import type { ProviderId, SecretProvider, ServiceTier, AttachedFile, ToolApprovalMode } from '@shared/ipc'
 import { defaultModelFor } from '@shared/providers'
 import {
   resolveEffectiveSettings,
@@ -26,6 +26,8 @@ import { resolveImageReadyLabel } from '@shared/domain/imageCapability'
 import { logger } from '@shared/logger'
 import { workspacePathsEqual, findByWorkspacePath } from '@shared/workspacePathMatch'
 import { normalizeRelPath } from '../features/chat/utils/turnFileDiffs'
+import { ToolApprovalOnboardingModal } from '../features/chat/components/ToolApprovalOnboardingModal'
+import { useOfflineSendQueue } from '@renderer/lib/hooks/useOfflineSendQueue'
 
 /** Sent as a visible user turn when resuming a run that was cut short. */
 const CONTINUE_PROMPT = 'Continue from where you stopped.'
@@ -35,6 +37,7 @@ export function App() {
     settings,
     secrets,
     encryptionAvailable,
+    secretsLoadError,
     loading,
     refresh,
     update,
@@ -97,7 +100,8 @@ export function App() {
     isSessionOpenInPane,
     isSessionFocusedInPane,
     getPaneChatSnapshot,
-    focusedWorkspacePath
+    focusedWorkspacePath,
+    getFocusedPane
   } = workspace
 
   const [view, setView] = useState<'chat' | 'settings' | 'marketplace'>('chat')
@@ -297,7 +301,99 @@ export function App() {
 
   const chatActionsRef = useRef(chatActions)
   chatActionsRef.current = chatActions
+  const getRunControllerRef = useRef(getRunController)
+  getRunControllerRef.current = getRunController
+  const getFocusedPaneRef = useRef(getFocusedPane)
+  getFocusedPaneRef.current = getFocusedPane
+  const [approvalOnboardingOpen, setApprovalOnboardingOpen] = useState(false)
+  const pendingSendRef = useRef<{
+    text: string
+    images?: string[]
+    files?: AttachedFile[]
+    extras?: import('@shared/ipc').ComposerSendExtras
+    deliver: (
+      text: string,
+      images?: string[],
+      files?: AttachedFile[],
+      extras?: import('@shared/ipc').ComposerSendExtras
+    ) => boolean | void | Promise<boolean | void>
+  } | null>(null)
 
+  const offlineWorkspacePath = focusedWorkspacePath ?? activeWorkspace ?? ''
+
+  const flushOfflineDeliver = useCallback(
+    (
+      text: string,
+      images?: string[],
+      files?: AttachedFile[],
+      extras?: import('@shared/ipc').ComposerSendExtras
+    ) => {
+      const focused = getFocusedPaneRef.current()
+      if (focused) {
+        return (
+          getRunControllerRef.current(focused.runId, focused.workspacePath)?.send(
+            text,
+            images,
+            files,
+            extras
+          ) ?? false
+        )
+      }
+      return chatActionsRef.current?.send(text, images, files, extras) ?? false
+    },
+    []
+  )
+
+  const {
+    offlineHint,
+    sendWithOfflineQueue,
+    clearOfflineQueueForWorkspace
+  } = useOfflineSendQueue(offlineWorkspacePath, flushOfflineDeliver)
+
+  const flushPendingSend = useCallback(async () => {
+    const pending = pendingSendRef.current
+    pendingSendRef.current = null
+    if (!pending) return false
+    const { deliver, text, images, files, extras } = pending
+    return Boolean(await deliver(text, images, files, extras))
+  }, [])
+
+  const gateSendWithOnboarding = useCallback(
+    async (
+      deliver: (
+        text: string,
+        images?: string[],
+        files?: AttachedFile[],
+        extras?: import('@shared/ipc').ComposerSendExtras
+      ) => boolean | void | Promise<boolean | void>,
+      text: string,
+      images?: string[],
+      files?: AttachedFile[],
+      extras?: import('@shared/ipc').ComposerSendExtras
+    ) => {
+      if (!settings.toolApprovalOnboardingDone) {
+        pendingSendRef.current = { text, images, files, extras, deliver }
+        setApprovalOnboardingOpen(true)
+        return false
+      }
+      return Boolean(await deliver(text, images, files, extras))
+    },
+    [settings.toolApprovalOnboardingDone]
+  )
+
+  const completeApprovalOnboarding = useCallback(
+    async (mode: ToolApprovalMode) => {
+      await update({
+        toolApproval: { ...settings.toolApproval, mode },
+        toolApprovalOnboardingDone: true
+      })
+      setApprovalOnboardingOpen(false)
+      await flushPendingSend()
+    },
+    [flushPendingSend, settings.toolApproval, update]
+  )
+
+  /** Onboarding gate runs before offline enqueue (deliver is sendWithOfflineQueue). */
   const onChatSend = useCallback(
     async (
       text: string,
@@ -305,9 +401,22 @@ export function App() {
       files?: AttachedFile[],
       extras?: import('@shared/ipc').ComposerSendExtras
     ) => {
-      return chatActionsRef.current?.send(text, images, files, extras) ?? false
+      return gateSendWithOnboarding(
+        (sendText, sendImages, sendFiles, sendExtras) =>
+          sendWithOfflineQueue(
+            sendText,
+            sendImages,
+            sendFiles,
+            sendExtras,
+            (t, i, f, e) => chatActionsRef.current?.send(t, i, f, e) ?? false
+          ),
+        text,
+        images,
+        files,
+        extras
+      )
     },
-    []
+    [gateSendWithOnboarding, sendWithOfflineQueue]
   )
 
   const onChatEditAndResend = useCallback(
@@ -671,7 +780,16 @@ export function App() {
   }
 
   const renderPaneSession = useCallback(
-    (pane: ChatPane, focused: boolean) => {
+    (
+      pane: ChatPane,
+      options: {
+        focused: boolean
+        sideRailPad: boolean
+        onOpenChanges?: () => void
+        onOpenUncommittedChanges?: () => void
+      }
+    ) => {
+      const { focused, sideRailPad, onOpenChanges, onOpenUncommittedChanges } = options
       const snap = getPaneChatSnapshot(pane.workspacePath, pane.runId)
       const paneContext = findByWorkspacePath(contexts, pane.workspacePath)
       const paneScroll =
@@ -686,6 +804,18 @@ export function App() {
       const paneDraft = paneContext
         ? resolveComposerDraft(paneContext.ui, pane.runId)
         : undefined
+      const paneCompact =
+        pane.workspacePath && pane.runId
+          ? async () => {
+              const res = await window.vyotiq.chatCompact(pane.workspacePath!, pane.runId!)
+              if (!res.ok) return { ok: false as const, message: res.error }
+              paneCtrl?.applyManualCompaction?.(res.data)
+              return {
+                ok: true as const,
+                message: `Summarized ${res.data.messagesBefore - res.data.keptMessages} messages; ${res.data.keptMessages} kept verbatim.`
+              }
+            }
+          : undefined
       return (
         <SessionChatColumn
           items={snap.items}
@@ -711,6 +841,7 @@ export function App() {
             void paneCtrl?.send(CONTINUE_PROMPT)
           }}
           contextUsage={snap.contextUsage}
+          onCompactContext={paneCompact}
           operationalError={focused ? operationalError : null}
           hasWorkspace={Boolean(pane.workspacePath)}
           workspacePath={pane.workspacePath}
@@ -722,6 +853,7 @@ export function App() {
           activeRunId={pane.runId}
           transcriptLoading={snap.transcriptLoading}
           showPageHeading={false}
+          dockEmptyComposer
           onActivate={() => focusPaneById(pane.paneId)}
           onProviderModel={onProviderModel}
           favoriteModels={settings.favoriteModels}
@@ -740,7 +872,45 @@ export function App() {
             setAgentMode(mode, { syncOnly: true })
           }}
           onSend={(text, images, files, extras) =>
-            paneCtrl?.send(text, images, files, extras) ?? false
+            gateSendWithOnboarding(
+              (sendText, sendImages, sendFiles, sendExtras) => {
+                const paneDeliver = (
+                  t: string,
+                  i?: string[],
+                  f?: AttachedFile[],
+                  e?: import('@shared/ipc').ComposerSendExtras
+                ) => paneCtrl?.send(t, i, f, e) ?? false
+                if (
+                  !offlineWorkspacePath ||
+                  !workspacePathsEqual(pane.workspacePath, offlineWorkspacePath)
+                ) {
+                  return paneDeliver(sendText, sendImages, sendFiles, sendExtras)
+                }
+                return sendWithOfflineQueue(
+                  sendText,
+                  sendImages,
+                  sendFiles,
+                  sendExtras,
+                  paneDeliver
+                )
+              },
+              text,
+              images,
+              files,
+              extras
+            )
+          }
+          offlineHint={
+            offlineWorkspacePath &&
+            workspacePathsEqual(pane.workspacePath, offlineWorkspacePath)
+              ? offlineHint
+              : null
+          }
+          onClearOfflineQueue={
+            offlineWorkspacePath &&
+            workspacePathsEqual(pane.workspacePath, offlineWorkspacePath)
+              ? clearOfflineQueueForWorkspace
+              : undefined
           }
           onStop={() => {
             void paneCtrl?.stop()
@@ -807,8 +977,10 @@ export function App() {
           }
           mcpServerNames={mcpServerNames}
           slashHandlers={slashHandlersValue}
-          sideRailPad={false}
+          sideRailPad={sideRailPad}
           imageReadyHint={imageReadyHint}
+          onOpenChanges={onOpenChanges}
+          onOpenUncommittedChanges={onOpenUncommittedChanges}
         />
       )
     },
@@ -822,6 +994,11 @@ export function App() {
       mcpServerNames,
       modelsRefreshKey,
       focusPaneById,
+      gateSendWithOnboarding,
+      sendWithOfflineQueue,
+      offlineHint,
+      offlineWorkspacePath,
+      clearOfflineQueueForWorkspace,
       onChatSettingsChange,
       onDismissChatBanner,
       onMessageListScrollForPane,
@@ -992,6 +1169,7 @@ export function App() {
             settings={settings}
             secrets={secrets}
             encryptionAvailable={encryptionAvailable}
+            secretsLoadError={secretsLoadError}
             appError={settingsError}
             onDismissAppError={() => setSettingsError(null)}
             backRef={settingsBackRef}
@@ -1097,6 +1275,8 @@ export function App() {
               )
             }}
             onSend={onChatSend}
+            offlineHint={offlineHint}
+            onClearOfflineQueue={clearOfflineQueueForWorkspace}
             onEditAndResend={onChatEditAndResend}
             onRevertToUserMessage={onChatRevertToUserMessage}
             messages={chat.messages}
@@ -1140,6 +1320,15 @@ export function App() {
         </ErrorBoundary>
       )}
       <ToastHost />
+      <ToolApprovalOnboardingModal
+        open={approvalOnboardingOpen}
+        onChoose={(mode) => {
+          void completeApprovalOnboarding(mode)
+        }}
+        onDismiss={() => {
+          void completeApprovalOnboarding('off')
+        }}
+      />
     </AppShell>
   )
 }

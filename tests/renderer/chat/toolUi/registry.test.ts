@@ -5,6 +5,7 @@ import type { UiToolRow } from '@shared/transcript'
 
 const FORMER_FALLBACK_TOOLS = [
   'browser_navigate',
+  'browser_search',
   'browser_snapshot',
   'browser_click',
   'browser_type',

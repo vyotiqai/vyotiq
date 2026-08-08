@@ -139,6 +139,8 @@ const VYOTIQ_INVOKE_MAP: Record<
   probeNetwork: IPC.networkProbe
 }
 
+const PRELOAD_INTERNAL_INVOKE_CHANNELS = new Set<string>([IPC.agentQuestionReject])
+
 const PUSH_CHANNELS = new Set<string>([
   IPC.chatEvent,
   IPC.toolApprovalRequest,
@@ -198,7 +200,8 @@ describe('main/renderer IPC contract', () => {
     const accounted = new Set([
       ...Object.values(VYOTIQ_INVOKE_MAP),
       ...Object.values(VYOTIQ_PUSH_MAP),
-      ...Object.values(VYOTIQ_SYNC_SEND_MAP)
+      ...Object.values(VYOTIQ_SYNC_SEND_MAP),
+      ...PRELOAD_INTERNAL_INVOKE_CHANNELS
     ])
     for (const channel of Object.values(IPC)) {
       expect(accounted.has(channel)).toBe(true)
@@ -230,6 +233,13 @@ describe('main/renderer IPC contract', () => {
     for (const [method, channel] of Object.entries(VYOTIQ_PUSH_MAP)) {
       expect(preloadSrc).toContain(`${method}:`)
       expect(preloadSrc).toContain(`ipcRenderer.on(IPC.${channelKey(channel)}`)
+    }
+  })
+
+  it('preload invokes internal-only channels', () => {
+    const preloadSrc = readFileSync(join(process.cwd(), 'src/preload/index.ts'), 'utf8')
+    for (const channel of PRELOAD_INTERNAL_INVOKE_CHANNELS) {
+      expect(preloadSrc).toContain(`ipcRenderer.invoke(IPC.${channelKey(channel)}`)
     }
   })
 

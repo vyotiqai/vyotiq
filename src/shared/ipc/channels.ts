@@ -30,6 +30,7 @@ export const IPC = {
   toolApprovalListPending: 'tool:approval-list-pending',
   agentQuestionRequest: 'agent:question-request',
   agentQuestionResponse: 'agent:question-response',
+  agentQuestionReject: 'agent:question-reject',
   agentQuestionListPending: 'agent:question-list-pending',
   attachmentExtract: 'attachment:extract',
   listRuns: 'runs:list',

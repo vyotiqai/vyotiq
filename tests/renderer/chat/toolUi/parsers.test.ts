@@ -331,6 +331,18 @@ describe('browser parsers', () => {
     expect(data.message).toContain('Navigated to')
   })
 
+  it('parses browser_search query as target', () => {
+    const data = parseBrowserActionData(
+      tool({
+        name: 'browser_search',
+        argsPreview: JSON.stringify({ query: 'agent browser SSRF' }),
+        summary: 'agent browser SSRF',
+        content: 'Navigated to https://duckduckgo.com/?q=agent+browser+SSRF'
+      })
+    )
+    expect(data.target).toBe('agent browser SSRF')
+  })
+
   it('parses browser_wait_for_url match as target', () => {
     const data = parseBrowserActionData(
       tool({

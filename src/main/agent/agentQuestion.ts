@@ -67,6 +67,72 @@ export function resolveAgentQuestion(response: AgentQuestionResponse): boolean {
   return true
 }
 
+function invalidQuestionPayloadError(reason?: string): Error {
+  const detail = reason?.trim()
+  const message = detail
+    ? `AGENT_QUESTION_INVALID: ${detail}`
+    : 'AGENT_QUESTION_INVALID: Invalid agent question payload.'
+  const err = new Error(message)
+  err.name = 'AgentQuestionInvalidError'
+  return err
+}
+
+/** Resolve runId for a pending question when preload only extracted requestId. */
+export function pendingQuestionRunId(requestId: string): string | undefined {
+  return pending.get(requestId)?.runId
+}
+
+/**
+ * Preload invokes when AgentQuestionRequestSchema fails — rejects the pending
+ * ask_question wait immediately instead of timing out after ~15 minutes.
+ * Looks up by requestId when present; otherwise rejects pending for runId.
+ */
+export function rejectAgentQuestion(payload: {
+  requestId?: string
+  runId?: string
+  reason?: string
+}): boolean {
+  if (payload.requestId) {
+    const entry = pending.get(payload.requestId)
+    if (!entry) return false
+    if (payload.runId && entry.runId !== payload.runId) return false
+    logger.warn('Agent question rejected — invalid IPC payload', {
+      scope: 'agent',
+      code: 'AGENT_QUESTION_INVALID',
+      correlationId: entry.runId,
+      id: payload.requestId,
+      reason: payload.reason
+    })
+    entry.cancel(invalidQuestionPayloadError(payload.reason))
+    return true
+  }
+
+  if (!payload.runId) return false
+
+  let rejected = false
+  for (const [requestId, entry] of pending) {
+    if (entry.runId !== payload.runId) continue
+    logger.warn('Agent question rejected — invalid IPC payload', {
+      scope: 'agent',
+      code: 'AGENT_QUESTION_INVALID',
+      correlationId: payload.runId,
+      id: requestId,
+      reason: payload.reason
+    })
+    entry.cancel(invalidQuestionPayloadError(payload.reason))
+    rejected = true
+  }
+  if (!rejected) {
+    logger.warn('Agent question reject found no pending entry', {
+      scope: 'agent',
+      code: 'AGENT_QUESTION_INVALID',
+      correlationId: payload.runId,
+      reason: payload.reason
+    })
+  }
+  return rejected
+}
+
 /**
  * Cancelling a run must not leave question prompts waiting forever.
  * When `invokeId` is set, only that turn's prompts are cleared.

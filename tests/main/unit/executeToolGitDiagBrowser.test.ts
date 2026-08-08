@@ -57,21 +57,12 @@ vi.mock('@main/app/agentBrowser', () => ({
 }))
 
 const toolWebFetch = vi.fn(async () => '# Fetched page')
-const toolWebSearch = vi.fn(async () => '1. Example\nhttps://example.com/')
 
 vi.mock('@main/agent/tools/webFetch', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@main/agent/tools/webFetch')>()
   return {
     ...actual,
     toolWebFetch: (...args: unknown[]) => toolWebFetch(...args)
-  }
-})
-
-vi.mock('@main/agent/tools/webSearch', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@main/agent/tools/webSearch')>()
-  return {
-    ...actual,
-    toolWebSearch: (...args: unknown[]) => toolWebSearch(...args)
   }
 })
 
@@ -92,7 +83,6 @@ describe('executeTool git / diagnostics / browser', () => {
     clickSelector.mockClear()
     commitAll.mockClear()
     toolWebFetch.mockClear()
-    toolWebSearch.mockClear()
   })
 
   afterEach(() => {
@@ -311,27 +301,17 @@ describe('executeTool git / diagnostics / browser', () => {
     expect(selectOption).not.toHaveBeenCalled()
   })
 
-  it('web_fetch and web_search go through executeTool', async () => {
+  it('browser_search goes through executeTool', async () => {
     const signal = new AbortController().signal
-    const fetched = await executeTool(
-      'web_fetch',
-      JSON.stringify({ url: 'https://example.com/' }),
-      workspace,
-      signal
-    )
-    expect(fetched.ok).toBe(true)
-    expect(toolWebFetch).toHaveBeenCalled()
-    expect(fetched.content).toContain('Fetched page')
-
     const searched = await executeTool(
-      'web_search',
+      'browser_search',
       JSON.stringify({ query: 'vyotiq agent' }),
       workspace,
       signal
     )
     expect(searched.ok).toBe(true)
-    expect(toolWebSearch).toHaveBeenCalled()
-    expect(searched.content).toContain('example.com')
+    expect(navigateUrl).toHaveBeenCalled()
+    expect(snapshotPage).toHaveBeenCalled()
   })
 })
 

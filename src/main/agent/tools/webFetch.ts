@@ -684,7 +684,7 @@ async function readCapped(res: Response, cap: number): Promise<Buffer> {
   return Buffer.concat(chunks).subarray(0, cap)
 }
 
-/** Shared by web_search — public SSRF-safe fetch with redirect validation. */
+/** Shared marketplace/MCP helper — public SSRF-safe fetch with redirect validation. */
 export async function fetchPublicResponse(
   startUrl: URL,
   signal: AbortSignal,

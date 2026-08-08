@@ -44,18 +44,8 @@ try {
 // Crashpad must start before any renderer is created; prefer before ready.
 initCrashReporter()
 
-// Windows: Chromium network/renderer cascade crashes have been observed at
-// startup (Network service gone → RENDERER_CRASH). Prefer software GL until
-// a Crashpad dump identifies a different root cause.
-// Win11 25H2 (build 26200+) also sees GPU sandbox exits that kill the app;
-// disable-gpu-sandbox is the verified workaround (Electron #51761 / Desktop #22424).
-if (process.platform === 'win32') {
-  app.disableHardwareAcceleration()
-  app.commandLine.appendSwitch('disable-gpu')
-  app.commandLine.appendSwitch('disable-gpu-compositing')
-  app.commandLine.appendSwitch('disable-direct-composition')
-  app.commandLine.appendSwitch('disable-gpu-sandbox')
-}
+// Windows: GPU sandbox re-enabled — Chromium uses default GPU path on Win 11 26200+.
+// If startup crashes return, bisect flags here (do not leave permanent disable-gpu-sandbox).
 
 const QUIT_FLUSH_MS = 5000
 

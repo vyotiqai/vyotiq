@@ -3,7 +3,6 @@ import { mkdirSync, writeFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { IPC } from '../../shared/channels'
 import { workspacePathsEqual } from '../../shared/workspacePath'
-import { assertPublicUrl, isSyncBlockedUrl } from '@main/agent/tools/webFetch'
 import { getMainWindow } from '@main/app/window'
 import { isAbortError } from '../../shared/errors'
 import {
@@ -11,17 +10,19 @@ import {
   parseBrowserTarget,
   type BrowserElementRef
 } from './agentBrowserRefs'
+import { DEFAULT_SNAPSHOT_CHARS, normalizeBrowserUrl } from './browserUrl'
 
-const PARTITION = 'persist:vyotiq-agent-browser'
-const DEFAULT_NAV_TIMEOUT_MS = 30_000
-const MAX_NAV_TIMEOUT_MS = 60_000
-const DEFAULT_SNAPSHOT_CHARS = 40_000
+export { DEFAULT_SNAPSHOT_CHARS, normalizeBrowserUrl } from './browserUrl'
 const MAX_INTERACTIVE_REFS = 80
 const SNAPSHOT_JPEG_QUALITY = 55
 const PREVIEW_MAX_WIDTH = 960
 const DEFAULT_WAIT_TIMEOUT_MS = 15_000
 const MAX_WAIT_TIMEOUT_MS = 60_000
 export const MAX_BROWSER_TABS = 16
+
+const PARTITION = 'persist:vyotiq-agent-browser'
+const DEFAULT_NAV_TIMEOUT_MS = 30_000
+const MAX_NAV_TIMEOUT_MS = 60_000
 
 type BrowserTab = {
   id: string
@@ -246,30 +247,6 @@ function attachAgentSecurity(wc: WebContents): void {
   wc.session.setPermissionRequestHandler((_contents, _permission, callback) => {
     callback(false)
   })
-
-  const blockPrivateNav = (event: Electron.Event, url: string): void => {
-    if (isSyncBlockedUrl(url)) event.preventDefault()
-  }
-  wc.on('will-navigate', blockPrivateNav)
-  wc.on('will-redirect', blockPrivateNav)
-
-  wc.on('did-finish-load', () => {
-    void enforcePublicPage(wc)
-  })
-}
-
-/** Blank the page if the settled URL is private/loopback (async DNS). */
-async function enforcePublicPage(wc: WebContents): Promise<void> {
-  if (wc.isDestroyed()) return
-  const url = wc.getURL()
-  if (!url || url === 'about:blank' || url.startsWith('chrome-error://')) return
-  try {
-    await assertPublicUrl(url)
-  } catch {
-    if (wc.isDestroyed()) return
-    void wc.loadURL('about:blank')
-    emitCurrent()
-  }
 }
 
 function createTab(workspacePath?: string): BrowserTab {
@@ -472,7 +449,7 @@ async function navigateUrlUnlocked(
   rawUrl: string,
   opts: { signal?: AbortSignal; timeoutMs?: number; tabId?: string; workspacePath?: string } = {}
 ): Promise<string> {
-  const url = await assertPublicUrl(rawUrl)
+  const url = normalizeBrowserUrl(rawUrl)
   throwIfAborted(opts.signal)
 
   const timeoutMs = Math.min(
@@ -498,14 +475,6 @@ async function navigateUrlUnlocked(
   }
 
   const finalUrl = wc.getURL()
-  try {
-    await assertPublicUrl(finalUrl)
-  } catch (err) {
-    void wc.loadURL('about:blank')
-    emitCurrent({ navigating: false })
-    throw err
-  }
-
   tab.lastRefs = new Map()
   emitCurrent({ navigating: false })
   const title = wc.getTitle()
@@ -1402,13 +1371,6 @@ async function goHistoryUnlocked(
   }
 
   const finalUrl = wc.getURL()
-  try {
-    await assertPublicUrl(finalUrl)
-  } catch (err) {
-    void wc.loadURL('about:blank')
-    emitCurrent({ navigating: false })
-    throw err
-  }
   tab.lastRefs = new Map()
   emitCurrent({ navigating: false })
   return `Went ${dir} to ${finalUrl}`

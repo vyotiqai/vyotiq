@@ -16,6 +16,36 @@ const run: RunSummary = {
 }
 
 describe('ChatRow drag', () => {
+  it('marks open vs focused session rows for multi-pane sidebar', () => {
+    const { rerender } = render(
+      <ChatRow
+        run={run}
+        workspacePath="/ws/home"
+        active
+        focused={false}
+        onSelect={() => {}}
+        onRename={() => {}}
+        onDelete={() => {}}
+      />
+    )
+    const row = screen.getByTitle('List files')
+    expect(row.getAttribute('data-session-open')).toBe('1')
+    expect(row.getAttribute('data-session-focused')).toBe('0')
+
+    rerender(
+      <ChatRow
+        run={run}
+        workspacePath="/ws/home"
+        active
+        focused
+        onSelect={() => {}}
+        onRename={() => {}}
+        onDelete={() => {}}
+      />
+    )
+    expect(screen.getByTitle('List files').getAttribute('data-session-focused')).toBe('1')
+  })
+
   it('sets session drag payload on dragstart', () => {
     render(
       <ChatRow

@@ -48,13 +48,14 @@ export function applyCertificateLogging(): void {
  * which must NOT get unsafe-eval — that triggers Electron's security warning
  * and is unnecessary without Vite HMR.
  */
-function needsViteHmrCsp(): boolean {
-  // electron-vite sets this only for `electron-vite dev` (HTTP + HMR).
-  return Boolean(process.env.ELECTRON_RENDERER_URL)
+export function needsViteHmrCsp(env: { electronRendererUrl?: string } = {}): boolean {
+  const url = env.electronRendererUrl ?? process.env.ELECTRON_RENDERER_URL
+  return Boolean(url)
 }
 
-function cspPolicy(): string {
-  if (needsViteHmrCsp()) {
+/** Build Content-Security-Policy header value for the renderer session. */
+export function buildCspPolicy(env: { electronRendererUrl?: string } = {}): string {
+  if (needsViteHmrCsp(env)) {
     // Vite injects inline module scripts for HMR; avoid unsafe-eval — modern
     // Vite ESM HMR does not require it, and Electron warns when it is present.
     return [
@@ -74,6 +75,10 @@ function cspPolicy(): string {
     "img-src 'self' data:",
     "connect-src 'self' http://127.0.0.1:* http://localhost:* https:"
   ].join('; ')
+}
+
+function cspPolicy(): string {
+  return buildCspPolicy()
 }
 
 export function applyCsp(): void {

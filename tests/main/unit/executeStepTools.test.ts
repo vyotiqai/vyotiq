@@ -421,7 +421,7 @@ describe('executeStepToolCalls', () => {
     expect(maxConcurrent).toBeGreaterThan(1)
   })
 
-  it('serializes gated web_fetch / web_search when an approval gate is present', async () => {
+  it('serializes gated browser_search calls when an approval gate is present', async () => {
     let concurrent = 0
     let maxConcurrent = 0
     let authorizeOverlapping = 0
@@ -448,9 +448,9 @@ describe('executeStepToolCalls', () => {
 
     await executeStepToolCalls(
       [
-        { id: 'f1', name: 'web_fetch', arguments: '{"url":"https://example.com/a"}' },
-        { id: 'f2', name: 'web_fetch', arguments: '{"url":"https://example.com/b"}' },
-        { id: 's1', name: 'web_search', arguments: '{"query":"vyotiq"}' }
+        { id: 'f1', name: 'browser_search', arguments: '{"query":"vyotiq a"}' },
+        { id: 'f2', name: 'browser_search', arguments: '{"query":"vyotiq b"}' },
+        { id: 's1', name: 'browser_navigate', arguments: '{"url":"https://example.com"}' }
       ],
       ctx
     )

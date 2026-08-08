@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { IPC } from '../shared/channels'
-import { AgentEventSchema, ToolApprovalRequestSchema, AgentQuestionRequestSchema, AgentBrowserStateSchema } from '../shared/ipc'
+import { AgentEventSchema, ToolApprovalRequestSchema, AgentQuestionRequestSchema, AgentQuestionRejectSchema, AgentBrowserStateSchema } from '../shared/ipc'
 import type { VyotiqApi } from '../shared/vyotiqApi'
 
 export type { HostPlatform, VyotiqApi } from '../shared/vyotiqApi'
@@ -89,8 +89,30 @@ const api: VyotiqApi = {
           '[vyotiq] Invalid question request dropped',
           parsed.error.issues[0]?.message
         )
-        // Do not auto-dismiss: empty answers can look like a user skip. Main-side
-        // ask_question wait times out (~15m) if the payload never validates.
+        const rejectParsed = AgentQuestionRejectSchema.safeParse(raw)
+        if (rejectParsed.success) {
+          void ipcRenderer.invoke(IPC.agentQuestionReject, rejectParsed.data)
+          return
+        }
+        if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+          const partial = raw as { requestId?: unknown; runId?: unknown }
+          const requestId =
+            typeof partial.requestId === 'string' && partial.requestId.trim()
+              ? partial.requestId
+              : undefined
+          const runId =
+            typeof partial.runId === 'string' && partial.runId.trim()
+              ? partial.runId
+              : undefined
+          // Either id is enough — main looks up pending by requestId or runId.
+          if (requestId || runId) {
+            void ipcRenderer.invoke(IPC.agentQuestionReject, {
+              ...(requestId ? { requestId } : {}),
+              ...(runId ? { runId } : {}),
+              reason: parsed.error.issues[0]?.message
+            })
+          }
+        }
         return
       }
       handler(parsed.data)

@@ -40,7 +40,7 @@ export function resolveEffectiveSettings(
   return {
     provider: override.provider ?? global.provider,
     model: override.model ?? global.model,
-    ollamaBaseUrl: override.ollamaBaseUrl ?? global.ollamaBaseUrl,
+    ollamaBaseUrl: global.ollamaBaseUrl,
     customOpenAiBaseUrl: override.customOpenAiBaseUrl ?? global.customOpenAiBaseUrl,
     compactionTriggerRatio: override.compactionTriggerRatio ?? global.compactionTriggerRatio,
     keepRecentTurns: override.keepRecentTurns ?? global.keepRecentTurns,

@@ -46,6 +46,47 @@ function dropAt(host: HTMLElement, clientX: number, payload: string): void {
 }
 
 describe('ChatPaneHost drop', () => {
+  it('keeps multi-pane headers visible with titles and min width shells', () => {
+    const panes: ChatPane[] = [
+      pane,
+      { paneId: 'pane-2', workspacePath: '/ws/a', runId: null }
+    ]
+    render(
+      <ChatPaneHost
+        panes={panes}
+        focusedPaneId="pane-1"
+        sizes={[0.5, 0.5]}
+        sideRailPad
+        onFocusPane={() => {}}
+        onClosePane={() => {}}
+        onSizesChange={() => {}}
+        onSessionDrop={() => true}
+        getPaneTitle={(p) => (p.runId ? 'Chat A' : 'New chat')}
+        renderPane={(_p, opts) => (
+          <div data-testid="pane-body" data-rail={opts.sideRailPad ? '1' : '0'}>
+            body
+          </div>
+        )}
+      />
+    )
+
+    const headers = screen.getAllByRole('button', { name: /Close /i })
+    expect(headers).toHaveLength(2)
+    expect(screen.getByText('Chat A')).toBeTruthy()
+    expect(screen.getByText('New chat')).toBeTruthy()
+    expect(document.querySelectorAll('[data-chat-pane-header]')).toHaveLength(2)
+
+    const shells = document.querySelectorAll('[data-chat-pane-shell]')
+    expect(shells).toHaveLength(2)
+    for (const shell of shells) {
+      expect((shell as HTMLElement).style.minWidth).toBe('360px')
+    }
+
+    const bodies = screen.getAllByTestId('pane-body')
+    expect(bodies[0]!.getAttribute('data-rail')).toBe('0')
+    expect(bodies[1]!.getAttribute('data-rail')).toBe('1')
+  })
+
   it('splits on left-third drop', () => {
     const onSessionDrop = vi.fn(() => true)
     render(

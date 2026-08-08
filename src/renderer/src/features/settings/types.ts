@@ -21,6 +21,7 @@ export type SettingsViewProps = {
   settings: Settings
   secrets: Record<SecretProvider, boolean>
   encryptionAvailable?: boolean
+  secretsLoadError?: boolean
   /** Errors from App (pick workspace, harness, theme persist, etc.). */
   appError?: string | null
   onDismissAppError?: () => void

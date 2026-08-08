@@ -17,7 +17,6 @@ describe('tool classify', () => {
     expect(isParallelSafeTool('glob')).toBe(true)
     expect(isParallelSafeTool('grep')).toBe(true)
     expect(isParallelSafeTool('list_dir')).toBe(true)
-    expect(isParallelSafeTool('web_fetch')).toBe(true)
     expect(isParallelSafeTool('memory_read')).toBe(true)
     expect(isParallelSafeTool('Skill')).toBe(true)
   })
@@ -30,22 +29,15 @@ describe('tool classify', () => {
     expect(isParallelSafeTool('edit_image')).toBe(false)
   })
 
-  it('gates web_fetch for approval while keeping it parallel-safe', () => {
-    expect(isParallelSafeTool('web_fetch')).toBe(true)
-    expect(isApprovalExemptTool('web_fetch')).toBe(false)
-    expect(isApprovalExemptTool('read')).toBe(true)
-    expect(isToolGated('web_fetch', 'mutating', new Set(), [])).toBe(true)
-    expect(isToolGated('read', 'mutating', new Set(), [])).toBe(false)
-  })
-
-  it('gates web_search like web_fetch', () => {
-    expect(isParallelSafeTool('web_search')).toBe(true)
-    expect(isApprovalExemptTool('web_search')).toBe(false)
-    expect(isToolGated('web_search', 'mutating', new Set(), [])).toBe(true)
+  it('serializes browser_search with other browser tools', () => {
+    expect(isParallelSafeTool('browser_search')).toBe(false)
+    expect(isApprovalExemptTool('browser_search')).toBe(false)
+    expect(isToolGated('browser_search', 'mutating', new Set(), [])).toBe(true)
   })
 
   it('serializes browser tools on the shared window and gates approval', () => {
     for (const name of [
+      'browser_search',
       'browser_navigate',
       'browser_snapshot',
       'browser_click',

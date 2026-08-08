@@ -249,10 +249,11 @@ describe('MessageList', () => {
 
     const column = scroll!.querySelector('[data-chat-column]')
     const order = [...(column?.querySelectorAll('[data-chat-column] > div') ?? [])]
-    // Flow children: user, tool work, turn summary
-    expect(order.length).toBeGreaterThanOrEqual(3)
-    expect(order[1]?.id).toBe('turn-work-0')
-    expect(order[2]?.querySelector('button[aria-label*="Collapse turn work"]')).toBeTruthy()
+    // Live expanded: activity/card chrome is hidden; TurnSummary owns the phase.
+    // Flow children: user prompt, then turn summary (collapse control).
+    expect(order.length).toBe(2)
+    expect(order[1]?.querySelector('button[aria-label*="Collapse turn work"]')).toBeTruthy()
+    expect(screen.queryByText('file.ts')).toBeNull()
   })
 
   it('follows content growth on the same message id while streaming and pinned', async () => {

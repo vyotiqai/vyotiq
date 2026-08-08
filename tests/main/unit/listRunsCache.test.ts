@@ -44,7 +44,7 @@ describe('listRuns cache', () => {
     resetListRunsCacheForTests()
   })
 
-  it('reuses cached results within TTL', async () => {
+  it('reuses cached results within TTL and skips re-reconcile walks', async () => {
     writeStatus(resolveRunDir(workspace, 'run-a'), {
       status: 'done',
       updatedAt: '2026-01-01T00:00:00.000Z',

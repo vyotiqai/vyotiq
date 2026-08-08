@@ -17,7 +17,12 @@ export type LaunchedApp = {
   videoDir: string
 }
 
-export async function launchApp(): Promise<LaunchedApp> {
+export type LaunchOptions = {
+  /** Replay chat-send fixture instead of calling a live LLM provider. */
+  e2eFixture?: boolean
+}
+
+export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedApp> {
   if (!existsSync(mainEntry)) {
     throw new Error(
       `Missing ${mainEntry}. Run \`pnpm build\` before \`pnpm test:gui-e2e\`.`
@@ -30,6 +35,9 @@ export async function launchApp(): Promise<LaunchedApp> {
 
   const electronExecutable = require('electron') as string
   const env = { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: 'true' }
+  if (options.e2eFixture ?? process.env.VYOTIQ_E2E_FIXTURE === '1') {
+    env.VYOTIQ_E2E_FIXTURE = '1'
+  }
   // IDE shells export this as "1", which boots Electron as plain Node.
   delete env.ELECTRON_RUN_AS_NODE
 

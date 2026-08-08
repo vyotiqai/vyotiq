@@ -29,12 +29,16 @@ function mcpOauthKey(serverId: string): string {
   return `${MCP_OAUTH_PREFIX}${serverId}`
 }
 
+let secretsFileLoadError = false
+
 function readFile(): SecretsFile {
+  secretsFileLoadError = false
   const p = secretsPath()
   if (!existsSync(p)) return {}
   try {
     return JSON.parse(readFileSync(p, 'utf8')) as SecretsFile
   } catch (err) {
+    secretsFileLoadError = true
     logger.warn('Failed to read secrets file', { scope: 'secrets', code: 'SECRETS', err })
     return {}
   }
@@ -186,7 +190,7 @@ export function secretStatus(): SecretsStatus {
       keys[provider] = false
     }
   }
-  return { encryptionAvailable, keys }
+  return { encryptionAvailable, keys, loadError: secretsFileLoadError || undefined }
 }
 
 /** Store a Bearer token for an MCP server id (OS encrypted). */

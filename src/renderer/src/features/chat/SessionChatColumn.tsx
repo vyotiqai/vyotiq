@@ -1,5 +1,5 @@
 import type { Ref } from 'react'
-import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useMemo } from 'react'
 import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
 import type {
   AgentInteractionMode,
@@ -8,13 +8,6 @@ import type {
   ProviderId,
   ToolApprovalDecision
 } from '@shared/ipc'
-import {
-  contentAudios,
-  contentDisplayText,
-  contentFiles,
-  contentImages,
-  contentNativeFiles
-} from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Composer } from './components/composer'
 import { ChatGitLeading, useChatLiveItems, useHasChatItems } from './components/ChatStreamLeaves'
@@ -22,11 +15,14 @@ import { useGitChrome } from './components/GitChrome'
 import { useGitRevision } from './components/ChatStreamLeaves'
 import { RunSessionProvider } from './RunSessionContext'
 import { MessageList } from './components/MessageList'
-import { userMessageEditDraft } from './utils/slashEditDraft'
+import {
+  buildComposerSendProps,
+  useComposerEditState,
+  useSuppressedChatError
+} from './hooks/composerShared'
 import { Alert } from '@renderer/lib/ui'
 import { CHAT_COLUMN, CHAT_GUTTER } from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui/cn'
-import { useNetworkStatus } from '@renderer/lib/hooks/useNetworkStatus'
 import type { ChatItemsStore, ChatMetaStore } from './chatStores'
 
 const MemoComposer = memo(Composer)
@@ -69,6 +65,8 @@ export function SessionChatColumn({
   onAgentModeChange = () => {},
   onContinueInAgent,
   onSend,
+  offlineHint = null,
+  onClearOfflineQueue,
   onStop,
   onEditAndResend,
   onRevertToUserMessage,
@@ -98,6 +96,8 @@ export function SessionChatColumn({
   sideRailPad = false,
   imageReadyHint = null,
   showPageHeading = true,
+  /** Multi-pane: keep empty sessions docked (no centered hero). */
+  dockEmptyComposer = false,
   onActivate,
   onOpenChanges,
   onOpenUncommittedChanges
@@ -149,6 +149,9 @@ export function SessionChatColumn({
     files?: AttachedFile[],
     extras?: import('@shared/ipc').ComposerSendExtras
   ) => boolean | void | Promise<boolean | void>
+  /** Owned by App (single flush per workspace). */
+  offlineHint?: string | null
+  onClearOfflineQueue?: () => void
   onStop: () => void
   onEditAndResend?: (
     editMessageIndex: number,
@@ -184,15 +187,14 @@ export function SessionChatColumn({
   sideRailPad?: boolean
   imageReadyHint?: string | null
   showPageHeading?: boolean
+  dockEmptyComposer?: boolean
   onActivate?: () => void
   onOpenChanges?: () => void
   onOpenUncommittedChanges?: () => void
 }) {
   const hasItems = useHasChatItems(itemsStore, items)
   const liveItems = useChatLiveItems(itemsStore, items)
-  const { offlineHint } = useNetworkStatus()
-  const hasTranscriptRunError = liveItems.some((item) => item.kind === 'run_error')
-  const chatBannerError = hasTranscriptRunError ? null : error
+  const chatBannerError = useSuppressedChatError(liveItems, error)
   const operationalBannerError = operationalError ?? null
   const turnFailed =
     incomplete?.reason === 'network_interrupted' ||
@@ -200,8 +202,10 @@ export function SessionChatColumn({
     errorCode === 'PROVIDER_STREAM'
   const turnFailureLabel =
     incomplete?.message ?? (turnFailed ? (error ?? 'Connection lost') : null)
-  const showHero = !hasItems && !activeRunId && !transcriptLoading
-  const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}:${activeRunId ?? 'draft'}`
+  const showHero =
+    !dockEmptyComposer && !hasItems && !activeRunId && !transcriptLoading
+  // Match ChatView: remount on workspace/epoch only — not draft→run (avoids composer wipe).
+  const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
   const [gitRevision, bumpGitRevision] = useGitRevision(workspacePath, running, liveItems)
   const gitChrome = useGitChrome(workspacePath, gitRevision, Boolean(workspacePath))
   const notifyGitMutated = useCallback(() => {
@@ -209,77 +213,25 @@ export function SessionChatColumn({
     bumpGitRevision()
   }, [gitChrome, bumpGitRevision])
 
-  const [editingUserMessageIndex, setEditingUserMessageIndex] = useState<number | null>(null)
-  const [editDraft, setEditDraft] = useState('')
-  const [editSeeds, setEditSeeds] = useState<{
-    images?: string[]
-    files?: AttachedFile[]
-    audio?: import('@shared/ipc').AttachedAudio[]
-    nativeFiles?: import('@shared/ipc').AttachedNativeFile[]
-  }>({})
-
-  useEffect(() => {
-    setEditingUserMessageIndex(null)
-    setEditDraft('')
-    setEditSeeds({})
-  }, [surfaceKey])
-
-  const cancelPromptEdit = useCallback(() => {
-    setEditingUserMessageIndex(null)
-    setEditDraft('')
-    setEditSeeds({})
-  }, [])
-
-  const beginPromptEdit = useCallback(
-    (messageIndex: number) => {
-      const msg = messages[messageIndex]
-      if (!msg || msg.role !== 'user') return
-      const images = contentImages(msg.content)
-      const files = contentFiles(msg.content)
-      const audio = contentAudios(msg.content)
-      const nativeFiles = contentNativeFiles(msg.content)
-      const rawText = contentDisplayText(msg.content)
-      setEditDraft(userMessageEditDraft(rawText))
-      setEditSeeds({
-        images: images.length ? images : undefined,
-        files: files.length ? files : undefined,
-        audio: audio.length ? audio : undefined,
-        nativeFiles: nativeFiles.length ? nativeFiles : undefined
-      })
-      setEditingUserMessageIndex(messageIndex)
-    },
-    [messages]
-  )
-
-  const submitPromptEdit = useCallback(
-    async (
-      text: string,
-      images?: string[],
-      files?: AttachedFile[],
-      extras?: import('@shared/ipc').ComposerSendExtras
-    ) => {
-      if (editingUserMessageIndex == null || !onEditAndResend) return false
-      const index = editingUserMessageIndex
-      cancelPromptEdit()
-      return onEditAndResend(index, text, images, files, extras)
-    },
-    [editingUserMessageIndex, onEditAndResend, cancelPromptEdit]
-  )
-
-  const beginPromptRevert = useCallback(
-    async (messageIndex: number) => {
-      if (!onRevertToUserMessage) return
-      const confirmed = window.confirm(
-        'Revert to this prompt? File changes and messages after it will be removed.'
-      )
-      if (!confirmed) return
-      const ok = await onRevertToUserMessage(messageIndex)
-      if (ok !== false) notifyGitMutated()
-    },
-    [onRevertToUserMessage, notifyGitMutated]
-  )
-
-  const editing = editingUserMessageIndex != null
+  const {
+    editingUserMessageIndex,
+    editDraft,
+    setEditDraft,
+    editSeeds,
+    editing,
+    cancelPromptEdit,
+    beginPromptEdit,
+    submitPromptEdit,
+    beginPromptRevert,
+    sendFromDock
+  } = useComposerEditState({
+    surfaceKey,
+    messages,
+    onSend,
+    onEditAndResend,
+    onRevertToUserMessage,
+    onAfterRevert: notifyGitMutated
+  })
 
   const editComposer =
     editing && onEditAndResend ? (
@@ -320,6 +272,7 @@ export function SessionChatColumn({
         errorCode={errorCode}
         onRetryNetwork={onContinue}
         offlineHint={offlineHint}
+        onClearOfflineQueue={onClearOfflineQueue}
         onDismissError={onDismissError}
         className="w-full"
         seedImages={editSeeds.images}
@@ -331,32 +284,18 @@ export function SessionChatColumn({
       />
     ) : null
 
-  const sendFromDock = useCallback(
-    async (
-      text: string,
-      images?: string[],
-      files?: AttachedFile[],
-      extras?: import('@shared/ipc').ComposerSendExtras
-    ) => {
-      if (editingUserMessageIndex != null) cancelPromptEdit()
-      return onSend(text, images, files, extras)
-    },
-    [editingUserMessageIndex, cancelPromptEdit, onSend]
-  )
-
-  const composerProps = {
+  const composerProps = buildComposerSendProps({
     provider,
     model,
     running,
-    disabled: !hasWorkspace,
-    hasTranscript: hasItems,
     hasWorkspace,
+    hasTranscript: hasItems,
+    workspacePath,
     ollamaBaseUrl,
     customOpenAiBaseUrl,
     modelsRefreshKey,
     draft: composerDraft,
     onDraftChange: onComposerDraftChange,
-    workspacePath,
     onProviderModel,
     favoriteModels,
     recentModels,
@@ -377,22 +316,22 @@ export function SessionChatColumn({
     incomplete,
     onContinue,
     onContinueInAgent,
-    onRetryNetwork: onContinue,
     errorCode,
     bannerError: chatBannerError,
     secondaryBannerError: operationalBannerError,
     offlineHint,
+    onClearOfflineQueue,
     networkWait,
     activeRunId,
     onDismissError,
-    contextUsage: metaStore ? undefined : contextUsage,
+    contextUsage,
     metaStore,
     onCompactContext,
     slashHandlers,
     sideRailPad,
     imageReadyHint,
     onFocus: onActivate
-  }
+  })
 
   const runSession = useMemo(
     () => ({

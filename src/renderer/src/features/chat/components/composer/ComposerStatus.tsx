@@ -17,6 +17,10 @@ function networkWaitLabel(wait: ComposerNetworkWaitState): string {
   return `Reconnecting… (${attempt})`
 }
 
+function isQueuedOfflineHint(hint: string): boolean {
+  return /\bqueued\b/i.test(hint)
+}
+
 export function ComposerStatus({
   modelsWarning,
   runNotice,
@@ -24,6 +28,7 @@ export function ComposerStatus({
   onContinue,
   running,
   offlineHint,
+  onClearOfflineQueue,
   networkWait,
   className
 }: {
@@ -34,11 +39,14 @@ export function ComposerStatus({
   /** When true, show truncation notices without a Continue button (auto-continue in flight). */
   running?: boolean
   offlineHint?: string | null
+  onClearOfflineQueue?: () => void
   networkWait?: ComposerNetworkWaitState | null
   className?: string
 }) {
   const reconnectHint =
     running && networkWait ? networkWaitLabel(networkWait) : null
+  const showClear =
+    Boolean(offlineHint && onClearOfflineQueue && isQueuedOfflineHint(offlineHint))
   const statusTexts = [reconnectHint, offlineHint, runNotice, modelsWarning].filter(
     (text): text is string => Boolean(text)
   )
@@ -46,15 +54,37 @@ export function ComposerStatus({
   // context_overflow is terminal — Continue would just hit the same wall.
   const canContinue = incomplete?.reason !== 'context_overflow'
 
-  const statusLines = statusTexts.map((text) => (
-    <p
-      key={text}
-      className="m-0 line-clamp-2 px-2.5 text-left text-caption leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]"
-      role="status"
-    >
-      {text}
-    </p>
-  ))
+  const statusLines = statusTexts.map((text) => {
+    const isQueuedLine = text === offlineHint && showClear
+    if (isQueuedLine) {
+      return (
+        <div
+          key={text}
+          className="flex items-center justify-start gap-2 px-2.5 text-left text-caption leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]"
+        >
+          <p className="m-0 min-w-0 flex-1 line-clamp-2" role="status">
+            {text}
+          </p>
+          <button
+            type="button"
+            onClick={onClearOfflineQueue}
+            className="shrink-0 rounded-xl border border-border px-1.5 py-0.5 font-medium text-fg transition-colors hover:bg-surface"
+          >
+            Clear
+          </button>
+        </div>
+      )
+    }
+    return (
+      <p
+        key={text}
+        className="m-0 line-clamp-2 px-2.5 text-left text-caption leading-snug tracking-[var(--vy-tracking)] text-secondary [overflow-wrap:anywhere]"
+        role="status"
+      >
+        {text}
+      </p>
+    )
+  })
 
   if (incomplete && onContinue && !running && canContinue) {
     return (

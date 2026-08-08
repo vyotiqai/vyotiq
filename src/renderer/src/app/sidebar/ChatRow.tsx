@@ -2,8 +2,9 @@ import { memo, useEffect, useRef, useState } from 'react'
 import { IconButton, cn } from '@renderer/lib/ui'
 import {
   SIDEBAR_ROW,
-  SIDEBAR_ROW_ACTIVE,
-  SIDEBAR_ROW_HOVER
+  SIDEBAR_ROW_FOCUSED,
+  SIDEBAR_ROW_HOVER,
+  SIDEBAR_ROW_OPEN
 } from '@renderer/lib/utils/layout'
 import type { RunSummary } from '@shared/ipc'
 import {
@@ -116,11 +117,17 @@ export const ChatRow = memo(function ChatRow({
           'app-region-no-drag flex w-full min-w-0 items-center gap-1.5 pr-2 text-left vy-transition',
           'group-hover:pr-10 group-focus-within:pr-10 [@media(hover:none)]:pr-10',
           SIDEBAR_ROW,
-          active ? SIDEBAR_ROW_ACTIVE : SIDEBAR_ROW_HOVER,
-          active ? (focused ? 'font-semibold' : 'font-medium') : 'text-fg/85',
+          active
+            ? focused
+              ? SIDEBAR_ROW_FOCUSED
+              : SIDEBAR_ROW_OPEN
+            : SIDEBAR_ROW_HOVER,
+          !active && 'text-fg/85',
           dragging && 'opacity-50'
         )}
         aria-current={focused ? 'page' : undefined}
+        data-session-open={active ? '1' : '0'}
+        data-session-focused={focused ? '1' : '0'}
         title={runTooltip(run)}
         onClick={onSelect}
         onDragStart={(e) => {

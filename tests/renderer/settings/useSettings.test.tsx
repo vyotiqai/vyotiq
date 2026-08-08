@@ -56,4 +56,28 @@ describe('useSettings sequencing', () => {
 
     expect(result.current.settings.diagnosticsCommand).toBe('fast')
   })
+
+  it('clears secretsLoadError when secretStatus IPC fails after a prior loadError', async () => {
+    window.vyotiq.secretStatus = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true as const,
+        data: { keys: emptySecretStatus(), encryptionAvailable: true, loadError: true }
+      })
+      .mockResolvedValueOnce({
+        ok: false as const,
+        error: 'IPC failed'
+      })
+
+    const { result } = renderHook(() => useSettings())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.secretsLoadError).toBe(true)
+
+    await act(async () => {
+      await result.current.refresh()
+    })
+
+    expect(result.current.secretsLoadError).toBe(false)
+    expect(result.current.error).toBe('IPC failed')
+  })
 })

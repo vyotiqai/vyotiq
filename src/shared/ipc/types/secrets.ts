@@ -30,6 +30,8 @@ export function secretStatusFromKeys(
 export type SecretsStatus = {
   encryptionAvailable: boolean
   keys: Record<SecretProvider, boolean>
+  /** True when secrets.json exists but could not be parsed. */
+  loadError?: boolean
 }
 
 export function emptySecretsStatus(encryptionAvailable = true): SecretsStatus {

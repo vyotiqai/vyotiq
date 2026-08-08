@@ -46,6 +46,7 @@ export function SettingsView(props: SettingsViewProps) {
           <ProvidersSection
             settings={settings}
             secrets={secrets}
+            secretsLoadError={props.secretsLoadError}
             form={form}
             onClearSecret={onClearSecret}
           />

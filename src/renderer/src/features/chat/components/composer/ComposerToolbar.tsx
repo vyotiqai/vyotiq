@@ -309,7 +309,7 @@ export function ComposerToolbar({
           className="shrink-0"
         />
         <ModelPicker
-          className="min-w-0 max-w-[14rem] flex-1 shrink"
+          className="min-w-0 max-w-[7rem] flex-1 shrink @min-[380px]:max-w-[10rem] @min-[480px]:max-w-[14rem]"
           triggerClassName={modelPillTrigger}
           providers={providers}
           optionsByProvider={optionsByProvider}
@@ -340,7 +340,7 @@ export function ComposerToolbar({
         ) : null}
       </div>
 
-      {/* Right: thinking + context + send */}
+      {/* Right: thinking + context + send — hide meter/thinking on narrow panes */}
       <div className={cn(zone, 'shrink-0 justify-end')}>
         <ThinkingControlsWithSteps
           metaStore={metaStore}
@@ -352,16 +352,18 @@ export function ComposerToolbar({
           onChatSettingsChange={onChatSettingsChange}
           disabled={disabled}
           running={running}
-          className="shrink-0"
+          className="hidden shrink-0 @min-[360px]:inline-flex"
         />
-        <ContextMeterLeaf
-          metaStore={metaStore}
-          usage={contextUsage}
-          modelWindow={modelWindow}
-          compactionTriggerRatio={chatSettings.compactionTriggerRatio}
-          onCompact={onCompactContext}
-          compactDisabled={running}
-        />
+        <span className="hidden @min-[420px]:contents">
+          <ContextMeterLeaf
+            metaStore={metaStore}
+            usage={contextUsage}
+            modelWindow={modelWindow}
+            compactionTriggerRatio={chatSettings.compactionTriggerRatio}
+            onCompact={onCompactContext}
+            compactDisabled={running}
+          />
+        </span>
         {sendOrStop}
       </div>
     </div>

@@ -42,4 +42,10 @@ describe('toolSummary', () => {
     ).toContain('linear')
     expect(summarizeToolArgs('mcp_list_tools', '{}')).toBe('mcp')
   })
+
+  it('summarizes browser_search with query as target', () => {
+    expect(
+      summarizeToolArgs('browser_search', JSON.stringify({ query: 'vyotiq agent browser' }))
+    ).toBe('vyotiq agent browser')
+  })
 })
