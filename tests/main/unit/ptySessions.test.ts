@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import type { BrowserWindow } from 'electron'
@@ -7,6 +7,7 @@ import {
   createPtySession,
   disposeAllPtySessions,
   disposePtySessionsForWorkspace,
+  disposePtySessionsUnderPath,
   killPty,
   listPtySessions,
   replayPtySessionsToWindow,
@@ -21,7 +22,9 @@ vi.mock('@main/settings/settings', () => ({
 
 vi.mock('@main/agent/tools/terminal', () => ({
   resolveTerminalShell: () => 'cmd',
-  sanitizedTerminalEnv: () => ({ PATH: '/usr/bin' })
+  sanitizedTerminalEnv: () => ({ PATH: '/usr/bin' }),
+  commandOnPath: () => false,
+  killProcessTreeAndWait: async () => undefined
 }))
 
 vi.mock('@main/app/window', () => ({
@@ -81,6 +84,20 @@ describe('ptySessions', () => {
     expect(listPtySessions().map((s) => s.id)).toEqual([b.id])
     expect(writePty(a.id, 'x')).toBe(false)
     expect(writePty(b.id, 'x')).toBe(true)
+  })
+
+  it('disposes sessions whose cwd sits under a worktree path', async () => {
+    const win = fakeWindow()
+    const root = mkdtempSync(join(tmpdir(), 'vyotiq-pty-root-'))
+    const nested = join(root, 'nested')
+    const other = mkdtempSync(join(tmpdir(), 'vyotiq-pty-other-'))
+    tempDirs.push(root, other)
+    mkdirSync(nested, { recursive: true })
+    const inside = createPtySession({ cwd: nested, cols: 80, rows: 24, sendTo: win })
+    const outside = createPtySession({ cwd: other, cols: 80, rows: 24, sendTo: win })
+    await expect(disposePtySessionsUnderPath(root)).resolves.toBe(1)
+    expect(listPtySessions().map((s) => s.id)).toEqual([outside.id])
+    expect(writePty(inside.id, 'x')).toBe(false)
   })
 
   it('replays buffered scrollback to a recreated window', () => {

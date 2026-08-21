@@ -155,6 +155,22 @@ describe('DiffPreview', () => {
     expect(container.querySelector('.diff-row-add')).toBeTruthy()
     expect(container.querySelector('.diff-row-del')).toBeTruthy()
     const gutter = screen.getByText('12')
-    expect(gutter.className).toMatch(/w-5/)
+    expect(gutter.style.width).toMatch(/^\d+ch$/)
+    expect(Number.parseInt(gutter.style.width, 10)).toBeGreaterThanOrEqual(2)
+  })
+
+  it('skips syntax highlight while followEnd is streaming, then highlights when settled', async () => {
+    highlightToLines.mockImplementation((source: string) =>
+      Promise.resolve(colorEachLine(source))
+    )
+    const lines = [line('add', 'const a = 1', 1)]
+    const { rerender } = render(<DiffPreview lines={lines} path="a.ts" followEnd />)
+
+    expect(screen.getByText('const a = 1')).toBeTruthy()
+    await new Promise((resolve) => setTimeout(resolve, 40))
+    expect(highlightToLines).not.toHaveBeenCalled()
+
+    rerender(<DiffPreview lines={lines} path="a.ts" />)
+    await waitFor(() => expect(highlightToLines).toHaveBeenCalled())
   })
 })

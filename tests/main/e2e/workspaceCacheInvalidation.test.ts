@@ -48,6 +48,7 @@ vi.mock('@main/settings/secrets', () => ({
 }))
 
 import { executeTool } from '@main/agent/tools'
+import { toolTodoWrite } from '@main/agent/tools/todo'
 import { toolGlob } from '@main/agent/tools/glob'
 import { clearGitignoreMatcherCache } from '@main/agent/tools/gitignore'
 import {
@@ -65,6 +66,7 @@ describe('e2e workspace mutation caches', () => {
     writeFileSync(join(workspace, 'visible.ts'), 'export const visible = 1\n', 'utf8')
     writeFileSync(join(workspace, 'hidden', 'secret.ts'), 'export const secret = 1\n', 'utf8')
     writeFileSync(join(workspace, '.gitignore'), '', 'utf8')
+    toolTodoWrite(workspace, [{ id: '1', content: 'Update .gitignore ignore rules', status: 'in_progress' }])
     clearGitignoreMatcherCache()
     resetGitStatusCacheForTests()
     clearWorkspaceSnapshotCache()
@@ -79,7 +81,7 @@ describe('e2e workspace mutation caches', () => {
 
   it('edit .gitignore via executeTool refreshes ignore rules for glob', async () => {
     const signal = new AbortController().signal
-    const ctx = { skipWriteCheckpoint: true, agentMode: 'agent' as const }
+    const ctx = { skipWriteCheckpoint: true, agentMode: 'agent' as const, runDir: workspace }
 
     const before = await toolGlob(workspace, '**/*.ts')
     expect(before).toContain('visible.ts')

@@ -2,6 +2,7 @@ import type { UiToolRow } from '@shared/transcript'
 import {
   MCP_TOOL_PREFIX,
   TOOL_LABELS,
+  inferFileWriteAction,
   isUnresolvedToolName,
   parseArgsRecord,
   parseMcpToolDisplay
@@ -16,9 +17,7 @@ const PROMINENT_TOOLS = new Set([
   'terminal',
   'edit',
   'multi_edit',
-  'str_replace',
-  'generate_image',
-  'edit_image'
+  'str_replace'
 ])
 
 const FILE_TOOLS = new Set(['read', 'memory_read'])
@@ -27,14 +26,12 @@ const EDIT_TOOLS = new Set([
   'multi_edit',
   'str_replace',
   'memory_write',
-  'delete',
-  'todo_write',
-  'generate_image',
-  'edit_image'
+  'delete'
 ])
 const SEARCH_TOOLS = new Set([
   'search',
   'grep',
+  'codebase_search',
   'glob',
   'web_fetch',
   'web_search',
@@ -47,6 +44,11 @@ const SEARCH_TOOLS = new Set([
   'release_mcp_tools',
   'ask_question',
   'switch_mode',
+  'todo_write',
+  'spawn_agent_instance',
+  'await_agent_instance',
+  'pull_agent_instance',
+  'merge_agent_instance',
   'git_status',
   'git_diff',
   'Skill'
@@ -64,6 +66,9 @@ const BROWSER_TOOLS = new Set([
   'browser_forward',
   'browser_wait_for_selector',
   'browser_wait_for_url',
+  'browser_wait_for_text',
+  'browser_hover',
+  'browser_handle_dialog',
   'browser_press_key',
   'browser_select_option'
 ])
@@ -153,7 +158,13 @@ export function toolCategory(name: string): ToolCategory {
 }
 
 /** Settled tool content written when a run is aborted before the tool finishes. */
-const INTERRUPTED_TOOL_CONTENT = new Set(['Cancelled', 'Interrupted', 'Stopped'])
+const INTERRUPTED_TOOL_CONTENT = new Set([
+  'Cancelled',
+  'Interrupted',
+  'Stopped',
+  'Not completed',
+  'Connection lost'
+])
 
 export function isInterruptedToolContent(content: string | undefined | null): boolean {
   return INTERRUPTED_TOOL_CONTENT.has(content ?? '')
@@ -179,10 +190,18 @@ export function toolLabel(
       ? mcpRunningLabel(mcp.toolName)
       : mcpDoneLabel(mcp.toolName)
   }
+  if (effectiveStatus === 'fail') {
+    // Known builtins: Failed. Unknown names keep the humanized tool id so the row is identifiable.
+    if (TOOL_LABELS[name]) return 'Failed'
+    return humanizeSnakeCase(name)
+  }
   const labels = TOOL_LABELS[name]
   if (!labels) {
     const human = humanizeSnakeCase(name)
     return effectiveStatus === 'running' ? `Running ${human}` : human
+  }
+  if (effectiveStatus !== 'running' && inferFileWriteAction(name, content) === 'created') {
+    return 'Created'
   }
   return effectiveStatus === 'running' ? labels.running : labels.done
 }
@@ -206,6 +225,7 @@ const TOOL_ICON_BY_NAME: Record<string, IconName> = {
   str_replace: 'edit',
   search: 'fileSearch',
   grep: 'scanSearch',
+  codebase_search: 'scanSearch',
   glob: 'folderSearch',
   list_dir: 'folderOpen',
   delete: 'trash',
@@ -224,6 +244,9 @@ const TOOL_ICON_BY_NAME: Record<string, IconName> = {
   browser_forward: 'globe',
   browser_wait_for_selector: 'globe',
   browser_wait_for_url: 'globe',
+  browser_wait_for_text: 'globe',
+  browser_hover: 'globe',
+  browser_handle_dialog: 'globe',
   browser_press_key: 'globe',
   browser_select_option: 'globe',
   mcp_list_tools: 'plug',
@@ -243,9 +266,11 @@ const TOOL_ICON_BY_NAME: Record<string, IconName> = {
   git_status: 'branch',
   git_diff: 'branch',
   git_commit: 'branch',
-  diagnostics: 'scanSearch',
-  generate_image: 'sparkles',
-  edit_image: 'sparkles'
+  spawn_agent_instance: 'bot',
+  await_agent_instance: 'cpu',
+  pull_agent_instance: 'cpu',
+  merge_agent_instance: 'branch',
+  diagnostics: 'scanSearch'
 }
 
 export function toolIconName(name: string): IconName {

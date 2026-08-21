@@ -28,58 +28,47 @@ describe('loop safety policy', () => {
   })
 
   it('does not stop on step count alone', () => {
-    expect(
-      loopStopDecision({
-        step: 101,
-        consecutiveToolFailureSteps: 0,
-        identicalStepStreak: 0
-      })
-    ).toBeUndefined()
-    expect(
-      loopStopDecision({
-        step: 10_000,
-        consecutiveToolFailureSteps: 0,
-        identicalStepStreak: 0
-      })
-    ).toBeUndefined()
+    expect(loopStopDecision({ step: 101, identicalStepStreak: 0 })).toBeUndefined()
+    expect(loopStopDecision({ step: 10_000, identicalStepStreak: 0 })).toBeUndefined()
   })
 
-  it('stops after too many consecutive failed tool steps', () => {
-    const stop = loopStopDecision({
-      step: 3,
-      consecutiveToolFailureSteps: MAX_CONSECUTIVE_TOOL_FAILURE_STEPS,
-      identicalStepStreak: 0
-    })
-    expect(stop?.reason).toBe('tool_failure_streak')
-    expect(
-      loopStopDecision({
-        step: 3,
-        consecutiveToolFailureSteps: MAX_CONSECUTIVE_TOOL_FAILURE_STEPS - 1,
-        identicalStepStreak: 0
-      })
-    ).toBeUndefined()
-  })
-
-  it('stops when the same step repeats too many times', () => {
-    const stop = loopStopDecision({
-      step: 9,
-      consecutiveToolFailureSteps: 0,
-      identicalStepStreak: MAX_IDENTICAL_STEP_STREAK
-    })
-    expect(stop?.reason).toBe('identical_step_streak')
-    expect(stop?.message).toMatch(/consecutive tool steps/i)
+  it('never stops the run on identical-step or tool-failure streaks', () => {
     expect(
       loopStopDecision({
         step: 9,
-        consecutiveToolFailureSteps: 0,
-        identicalStepStreak: MAX_IDENTICAL_STEP_STREAK - 1
+        identicalStepStreak: MAX_IDENTICAL_STEP_STREAK
+      })
+    ).toBeUndefined()
+    expect(
+      loopStopDecision({
+        step: 9,
+        identicalStepStreak: MAX_IDENTICAL_STEP_STREAK * 10
+      })
+    ).toBeUndefined()
+    expect(
+      loopStopDecision({
+        step: 12,
+        consecutiveToolFailureSteps: MAX_CONSECUTIVE_TOOL_FAILURE_STEPS,
+        identicalStepStreak: 1
+      })
+    ).toBeUndefined()
+    expect(
+      loopStopDecision({
+        step: 12,
+        consecutiveToolFailureSteps: MAX_CONSECUTIVE_TOOL_FAILURE_STEPS * 10,
+        identicalStepStreak: 1
       })
     ).toBeUndefined()
   })
 
   it('lets healthy long runs continue', () => {
+    expect(loopStopDecision({ step: 40, identicalStepStreak: 2 })).toBeUndefined()
     expect(
-      loopStopDecision({ step: 40, consecutiveToolFailureSteps: 2, identicalStepStreak: 3 })
+      loopStopDecision({
+        step: 40,
+        consecutiveToolFailureSteps: 0,
+        identicalStepStreak: 2
+      })
     ).toBeUndefined()
   })
 })

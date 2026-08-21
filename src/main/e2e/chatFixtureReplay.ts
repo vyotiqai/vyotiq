@@ -1,5 +1,5 @@
 import { readFileSync } from 'fs'
-import { join } from 'path'
+import { isAbsolute, join } from 'path'
 import type { AgentEvent } from '../../shared/ipc'
 import { isAbortError } from '../../shared/errors'
 import { clearRunAbort, streamSignalFor } from '../agent/runRegistry'
@@ -8,7 +8,7 @@ type FixtureFile = {
   events: unknown[]
 }
 
-const FIXTURE_REL = join('tests', 'gui-e2e', 'fixtures', 'chat-send-stream.json')
+const DEFAULT_FIXTURE_REL = join('tests', 'gui-e2e', 'fixtures', 'chat-send-stream.json')
 
 export function isChatFixtureReplayEnabled(): boolean {
   // Vitest sets VITEST=true; never hijack chatStart during unit/integration runs
@@ -17,8 +17,17 @@ export function isChatFixtureReplayEnabled(): boolean {
   return process.env.VYOTIQ_E2E_FIXTURE === '1'
 }
 
+/** Absolute path or path relative to repo cwd (`VYOTIQ_E2E_FIXTURE_FILE`). */
+export function resolveChatFixturePath(): string {
+  const override = process.env.VYOTIQ_E2E_FIXTURE_FILE?.trim()
+  if (override) {
+    return isAbsolute(override) ? override : join(process.cwd(), override)
+  }
+  return join(process.cwd(), DEFAULT_FIXTURE_REL)
+}
+
 function loadFixtureTemplates(): Omit<AgentEvent, 'runId' | 'invokeId'>[] {
-  const fixturePath = join(process.cwd(), FIXTURE_REL)
+  const fixturePath = resolveChatFixturePath()
   const raw = JSON.parse(readFileSync(fixturePath, 'utf8')) as FixtureFile
   if (!Array.isArray(raw.events) || raw.events.length === 0) {
     throw new Error(`Fixture ${fixturePath} must contain a non-empty events array`)
@@ -65,6 +74,9 @@ export async function* replayChatFixture(input: {
       } as AgentEvent
       if (event.type === 'text_delta') {
         await sleep(8)
+      } else if (event.type === 'tool_call_delta') {
+        // Wide enough for the renderer + Playwright to observe mid-stream paints.
+        await sleep(350)
       }
       yield event
       if (signal.aborted) {

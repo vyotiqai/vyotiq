@@ -92,7 +92,6 @@ export const HELD_OUT_CASES: readonly HeldOutCase[] = [
     receipts: [
       baseReceipt({
         runId: 'held-out-fail',
-        consecutiveToolFailureSteps: 4,
         toolStats: {
           totalCalls: 5,
           ok: 1,

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { cn } from '@renderer/lib/ui'
 import type { GitChangedFile, GitStatus } from '@shared/ipc'
 
@@ -29,9 +30,10 @@ export function CommitComposer({
   message,
   onMessageChange,
   busy,
+  generating = false,
   hasRemote,
-  primaryPushes,
   onCommit,
+  onCreatePr,
   onCancel,
   className,
   inputClassName,
@@ -40,34 +42,47 @@ export function CommitComposer({
   message: string
   onMessageChange: (value: string) => void
   busy: boolean
+  generating?: boolean
   hasRemote: boolean
-  /** When true, primary button is Commit & Push. */
-  primaryPushes?: boolean
   onCommit: (push: boolean) => void
+  onCreatePr?: () => void
   onCancel?: () => void
   className?: string
   inputClassName?: string
   compact?: boolean
 }) {
-  const primaryPush = primaryPushes ?? hasRemote
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [])
+
   return (
     <div className={cn('flex min-w-0 items-center gap-1.5', className)}>
       <input
+        ref={inputRef}
         type="text"
         value={message}
-        autoFocus
         className={
           inputClassName ??
           'min-w-0 flex-1 rounded-md bg-transparent px-1.5 py-1 text-xs text-fg outline-none focus-visible:vy-focus-ring'
         }
-        placeholder="Commit message"
+        placeholder={generating ? 'Generating commit message…' : 'Commit message'}
         aria-label="Commit message"
         onChange={(event) => onMessageChange(event.target.value)}
         onKeyDown={(event) => {
-          if (event.key === 'Enter') onCommit(primaryPush)
+          if (event.key === 'Enter') {
+            // Ctrl/Cmd+Enter commits and pushes when a remote exists (VS Code style).
+            if (event.metaKey || event.ctrlKey) onCommit(hasRemote)
+            else onCommit(false)
+          }
           if (event.key === 'Escape') onCancel?.()
         }}
       />
+      {generating ? (
+        <span className="shrink-0 text-2xs text-muted" aria-live="polite">
+          Agent suggestion…
+        </span>
+      ) : null}
       <button
         type="button"
         className={cn(
@@ -94,6 +109,21 @@ export function CommitComposer({
           onClick={() => onCommit(true)}
         >
           Commit &amp; Push
+        </button>
+      ) : null}
+      {onCreatePr ? (
+        <button
+          type="button"
+          className={cn(
+            compact
+              ? 'h-6 rounded-md px-2 text-caption text-fg hover:bg-surface-2'
+              : cn(PILL, 'text-fg hover:bg-surface-2'),
+            'disabled:opacity-50'
+          )}
+          disabled={busy || !message.trim()}
+          onClick={onCreatePr}
+        >
+          Commit &amp; Create PR
         </button>
       ) : null}
     </div>

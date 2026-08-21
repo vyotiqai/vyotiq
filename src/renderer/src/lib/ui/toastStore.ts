@@ -1,4 +1,5 @@
 import { useCallback, useSyncExternalStore } from 'react'
+import { announceLive } from '@renderer/lib/a11y'
 
 /**
  * Global transient notifications. One surface for app-level notices that do
@@ -11,6 +12,12 @@ export type ToastItem = {
   id: number
   kind: ToastKind
   message: string
+  onClick?: () => void
+  durationMs: number
+  /** Timestamp when the toast will auto-dismiss. Null while paused. */
+  expiresAt: number | null
+  /** Remaining milliseconds when paused. */
+  remainingMs: number
 }
 
 const MAX_TOASTS = 4
@@ -36,7 +43,33 @@ export function dismissToast(id: number): void {
   emit()
 }
 
-export function pushToast(message: string, kind: ToastKind = 'info', durationMs = DEFAULT_DURATION_MS): number {
+export function pauseToast(id: number): void {
+  const toast = toasts.find((t) => t.id === id)
+  if (!toast || toast.durationMs <= 0 || toast.expiresAt == null) return
+  const timer = timers.get(id)
+  if (timer) {
+    clearTimeout(timer)
+    timers.delete(id)
+  }
+  toast.remainingMs = Math.max(0, toast.expiresAt - Date.now())
+  toast.expiresAt = null
+  emit()
+}
+
+export function resumeToast(id: number): void {
+  const toast = toasts.find((t) => t.id === id)
+  if (!toast || toast.durationMs <= 0 || toast.expiresAt != null) return
+  toast.expiresAt = Date.now() + toast.remainingMs
+  timers.set(id, setTimeout(() => dismissToast(id), toast.remainingMs))
+  emit()
+}
+
+export function pushToast(
+  message: string,
+  kind: ToastKind = 'info',
+  durationMs = DEFAULT_DURATION_MS,
+  onClick?: () => void
+): number {
   const text = message.trim()
   if (!text) return -1
   const id = nextId++
@@ -45,12 +78,20 @@ export function pushToast(message: string, kind: ToastKind = 'info', durationMs 
   if (dupe) {
     dismissToast(dupe.id)
   }
-  toasts = [...toasts, { id, kind, message: text }].slice(-MAX_TOASTS)
+  const now = Date.now()
+  const item: ToastItem = {
+    id,
+    kind,
+    message: text,
+    durationMs,
+    expiresAt: durationMs > 0 ? now + durationMs : null,
+    remainingMs: durationMs > 0 ? durationMs : 0,
+    ...(onClick ? { onClick } : {})
+  }
+  toasts = [...toasts, item].slice(-MAX_TOASTS)
+  announceLive(text, kind === 'error' ? 'assertive' : 'polite')
   if (durationMs > 0) {
-    timers.set(
-      id,
-      setTimeout(() => dismissToast(id), durationMs)
-    )
+    timers.set(id, setTimeout(() => dismissToast(id), durationMs))
   }
   emit()
   return id

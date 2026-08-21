@@ -1,2 +1,2 @@
 export * from './utils/workspacePath'
-export { workspacePathsEqual } from './utils/workspacePathMatch'
+export { workspacePathIsInside, workspacePathsEqual } from './utils/workspacePathMatch'

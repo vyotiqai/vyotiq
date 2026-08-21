@@ -1,22 +1,17 @@
 import { resolveInsideWorkspace } from '../../workspace/safePath'
 import {
+  closeSync,
   existsSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   statSync
 } from 'fs'
 import { basename, dirname, join } from 'path'
 
-const MAX_BYTES = 512 * 1024
-/** Shared with the tools dispatcher — model-facing content cap matches disk read cap. */
-export const READ_CONTENT_CAP = MAX_BYTES
-/** Line slicing needs the whole file in memory, so it gets a wider but finite cap. */
-export const READ_LINE_RANGE_MAX_BYTES = 8 * 1024 * 1024
-const LINE_RANGE_MAX_BYTES = READ_LINE_RANGE_MAX_BYTES
-/** Directory listing when `read` is pointed at a directory. */
-export const READ_DIR_LIST_CAP = 80
-const DIR_LIST_CAP = READ_DIR_LIST_CAP
 const SUGGEST_CAP = 8
+const LINE_STREAM_CHUNK = 64 * 1024
 
 export type ReadOptions = {
   offset?: number
@@ -26,17 +21,14 @@ export type ReadOptions = {
 }
 
 function listDirectoryEntries(resolved: string, relPath: string): string {
-  const entries = readdirSync(resolved, { withFileTypes: true })
-    .slice(0, DIR_LIST_CAP)
-    .map((e) => `${e.isDirectory() ? '[dir]' : '[file]'} ${e.name}`)
-  const suffix =
-    entries.length >= DIR_LIST_CAP ? `\n… (listing capped at ${DIR_LIST_CAP})` : ''
+  const entries = readdirSync(resolved, { withFileTypes: true }).map(
+    (e) => `${e.isDirectory() ? '[dir]' : '[file]'} ${e.name}`
+  )
   return [
     `Path is a directory, not a file: ${relPath}`,
     'Contents:',
     ...entries,
-    suffix,
-    'Use read on a file path, or search/terminal to explore further.'
+    'Use read on a file path, or list_dir / glob / search to explore further.'
   ]
     .filter(Boolean)
     .join('\n')
@@ -143,44 +135,85 @@ export function toolRead(
     return readLineRange(resolved, pathArg, st.size, options)
   }
 
-  const offset = Math.max(0, options.offset ?? 0)
-  const limit = options.limit
+  const offset = Math.max(0, Math.trunc(options.offset ?? 0))
+  const limit = options.limit === undefined ? undefined : Math.trunc(options.limit)
 
   if (limit !== undefined || offset > 0) {
-    if (st.size > MAX_BYTES) {
-      throw new Error(
-        `File too large (${st.size} bytes, cap ${MAX_BYTES}). Use startLine/endLine to read a portion.`
-      )
-    }
-    const buf = readFileSync(resolved)
-    if (!isUtf16Bom(buf) && buf.includes(0)) {
-      throw new Error(`Binary file detected: ${pathArg}. Read is text-only.`)
-    }
-    const slice = buf.subarray(offset, limit !== undefined ? offset + limit : undefined)
-    const header = `--- offset ${offset}${limit !== undefined ? `, limit ${limit}` : ''} of ${st.size} bytes ---\n`
-    const utf16 = isUtf16Bom(buf)
-    const body =
-      utf16 && offset >= 2
-        ? decodeTextBuffer(slice, pathArg, 'utf16le')
-        : utf16
-          ? decodeTextBuffer(slice, pathArg)
-          : slice.toString('utf8')
-    return header + body
+    return readByteRange(resolved, pathArg, st.size, offset, limit)
   }
 
-  if (st.size > MAX_BYTES) {
-    throw new Error(
-      `File too large (${st.size} bytes, cap ${MAX_BYTES}). Use startLine/endLine to read a portion.`
-    )
-  }
   const buf = readFileSync(resolved)
   return decodeTextBuffer(buf, pathArg)
 }
 
 /**
- * Read an inclusive, 1-based line range. The header states the range actually
- * returned, which is both what the model needs to cite and what the transcript
- * shows next to the file name.
+ * Read a byte window without loading the whole file.
+ */
+function readByteRange(
+  resolved: string,
+  pathArg: string,
+  size: number,
+  offset: number,
+  limit: number | undefined
+): string {
+  if (offset > size) {
+    throw new Error(`offset ${offset} is past the end of ${pathArg} (${size} bytes).`)
+  }
+  const remaining = Math.max(0, size - offset)
+  const want = limit === undefined ? remaining : Math.min(Math.max(0, limit), remaining)
+  const buf = Buffer.alloc(want)
+  const fd = openSync(resolved, 'r')
+  let read: number
+  try {
+    read = want > 0 ? readSync(fd, buf, 0, want, offset) : 0
+  } finally {
+    closeSync(fd)
+  }
+  const slice = buf.subarray(0, read)
+  // A window starting mid-file has no BOM to inspect; only offset 0 can be UTF-16.
+  const utf16 = offset === 0 && isUtf16Bom(slice)
+  if (!utf16 && slice.includes(0)) {
+    throw new Error(`Binary file detected: ${pathArg}. Read is text-only.`)
+  }
+  const header = `--- offset ${offset}${limit !== undefined ? `, limit ${limit}` : ''} of ${size} bytes ---\n`
+  const body = utf16 ? decodeTextBuffer(slice, pathArg) : slice.toString('utf8')
+  return header + body
+}
+
+type LineEncoding = 'utf8' | 'utf16le' | 'utf16be'
+
+function detectLineEncoding(head: Buffer): { encoding: LineEncoding; skip: number } {
+  if (head.length >= 2 && head[0] === 0xff && head[1] === 0xfe) {
+    return { encoding: 'utf16le', skip: 2 }
+  }
+  if (head.length >= 2 && head[0] === 0xfe && head[1] === 0xff) {
+    return { encoding: 'utf16be', skip: 2 }
+  }
+  return { encoding: 'utf8', skip: 0 }
+}
+
+function decodeLineBytes(buf: Buffer, encoding: LineEncoding): string {
+  if (encoding === 'utf8') return buf.toString('utf8')
+  if (encoding === 'utf16le') return buf.toString('utf16le')
+  const le = Buffer.allocUnsafe(buf.length)
+  for (let i = 0; i + 1 < buf.length; i += 2) {
+    le[i] = buf[i + 1]!
+    le[i + 1] = buf[i]!
+  }
+  return le.toString('utf16le')
+}
+
+function splitCompleteLines(
+  text: string
+): { lines: string[]; leftover: string } {
+  const parts = text.split('\n')
+  const leftover = parts.pop() ?? ''
+  return { lines: parts, leftover }
+}
+
+/**
+ * Stream an inclusive, 1-based line range without loading the whole file into a string.
+ * The header names the range actually returned.
  */
 function readLineRange(
   resolved: string,
@@ -188,28 +221,85 @@ function readLineRange(
   size: number,
   options: ReadOptions
 ): string {
-  if (size > LINE_RANGE_MAX_BYTES) {
-    throw new Error(
-      `File too large to slice by line (${size} bytes, cap ${LINE_RANGE_MAX_BYTES}). Use offset/limit instead.`
-    )
+  const startRaw = Math.max(1, Math.trunc(options.startLine ?? 1))
+  const endRaw =
+    options.endLine == null ? Number.POSITIVE_INFINITY : Math.trunc(options.endLine)
+  const start = Number.isFinite(endRaw) && endRaw < startRaw ? Math.max(1, endRaw) : startRaw
+  const endLimit = Number.isFinite(endRaw) && endRaw < startRaw ? startRaw : endRaw
+
+  const fd = openSync(resolved, 'r')
+  try {
+    const peek = Buffer.alloc(Math.min(4, size))
+    const peeked = size > 0 ? readSync(fd, peek, 0, peek.length, 0) : 0
+    const { encoding, skip } = detectLineEncoding(peek.subarray(0, peeked))
+    const unit = encoding === 'utf8' ? 1 : 2
+
+    let leftoverBytes = Buffer.alloc(0)
+    let leftoverText = ''
+    let offset = skip
+    let lineNo = 0
+    const collected: string[] = []
+    let total = 0
+    let sawNul = false
+
+    while (offset < size) {
+      const want = Math.min(LINE_STREAM_CHUNK, size - offset)
+      const aligned = unit === 1 ? want : want - (want % 2)
+      if (aligned <= 0) break
+      const buf = Buffer.alloc(aligned)
+      const n = readSync(fd, buf, 0, aligned, offset)
+      if (n <= 0) break
+      offset += n
+      let chunk = Buffer.concat([leftoverBytes, buf.subarray(0, n)])
+      const take = chunk.length - (chunk.length % unit)
+      leftoverBytes = chunk.subarray(take)
+      chunk = chunk.subarray(0, take)
+      if (encoding === 'utf8' && chunk.includes(0)) {
+        sawNul = true
+        break
+      }
+      const decoded = leftoverText + decodeLineBytes(chunk, encoding)
+      const split = splitCompleteLines(decoded)
+      leftoverText = split.leftover
+      for (const line of split.lines) {
+        lineNo += 1
+        total = lineNo
+        if (lineNo >= start && lineNo <= endLimit) collected.push(line)
+      }
+    }
+
+    if (sawNul) {
+      throw new Error(`Binary file detected: ${pathArg}. Read is text-only.`)
+    }
+
+    if (leftoverBytes.length > 0 && encoding === 'utf8' && leftoverBytes.includes(0)) {
+      throw new Error(`Binary file detected: ${pathArg}. Read is text-only.`)
+    }
+
+    if (leftoverText.length > 0 || leftoverBytes.length > 0) {
+      const tail =
+        leftoverText +
+        (leftoverBytes.length > 0 ? decodeLineBytes(leftoverBytes, encoding) : '')
+      lineNo += 1
+      total = lineNo
+      if (lineNo >= start && lineNo <= endLimit) collected.push(tail)
+    } else if (total === 0) {
+      // Empty file (or BOM-only): one empty line, matching split('\n') on ''.
+      total = 1
+      if (start === 1 && endLimit >= 1) collected.push('')
+    }
+
+    // A trailing newline terminates the last line rather than starting a new one.
+    // Streaming already popped the final empty split piece into leftoverText, which
+    // we only counted when leftoverText was non-empty — matching split('\n')+pop.
+
+    if (start > total) {
+      throw new Error(`startLine ${start} is past the end of ${pathArg} (${total} lines).`)
+    }
+
+    const actualEnd = Math.min(endLimit, total)
+    return `--- lines ${start}-${actualEnd} of ${total} ---\n` + collected.join('\n')
+  } finally {
+    closeSync(fd)
   }
-
-  const buf = readFileSync(resolved)
-  const lines = decodeTextBuffer(buf, pathArg).split('\n')
-  // A trailing newline terminates the last line rather than starting a new one.
-  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
-
-  const total = lines.length
-  const start = Math.max(1, Math.trunc(options.startLine ?? 1))
-  const end = Math.min(total, Math.trunc(options.endLine ?? total))
-
-  if (start > total) {
-    throw new Error(`startLine ${start} is past the end of ${pathArg} (${total} lines).`)
-  }
-  if (end < start) {
-    throw new Error(`endLine ${end} is before startLine ${start}.`)
-  }
-
-  const header = `--- lines ${start}-${end} of ${total} ---\n`
-  return header + lines.slice(start - 1, end).join('\n')
 }

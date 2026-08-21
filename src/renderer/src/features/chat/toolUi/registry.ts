@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react'
 import type { UiToolRow } from '@shared/transcript'
-import { isUnresolvedToolName, summarizeToolArgs } from '@shared/toolSummary'
+import { isUnresolvedToolName, summarizeToolArgs, TOOL_LABELS } from '@shared/toolSummary'
 import { formatPathLabel } from '@shared/utils/displayPath'
 import { basename } from '@shared/utils/path'
 import {
@@ -21,13 +21,14 @@ import { McpPinBody } from './bodies/McpPinBody'
 import { MemoryListBody, MemoryReadBody, MemoryWriteBody } from './bodies/MemoryBodies'
 import { ReadBody } from './bodies/ReadBody'
 import { SearchBody } from './bodies/SearchBody'
+import { CodebaseSearchBody } from './bodies/CodebaseSearchBody'
 import { SkillBody } from './bodies/SkillBody'
 import { StatusMessageBody } from './bodies/StatusMessageBody'
 import { TerminalBody } from './bodies/TerminalBody'
 import { TodoBody } from './bodies/TodoBody'
+import { SpawnAgentInstanceBody, AwaitAgentInstanceBody } from './bodies/AgentInstanceBody'
 import { WebFetchBody } from './bodies/WebFetchBody'
 import { WebSearchBody } from './bodies/WebSearchBody'
-import { GenerateImageBody } from './bodies/GenerateImageBody'
 import { isInterruptedToolContent, isMcpTool, toolIconName, toolLabel } from './meta'
 import {
   parseBrowserActionData,
@@ -44,21 +45,49 @@ import { parseReadData } from './parsers/read'
 import { parseStatusMessageData } from './parsers/status'
 import { parseTodoData } from './parsers/todo'
 import { formatTerminalHeaderTarget, parseTerminalCardData } from './parsers/terminal'
-import { parseGenerateImageData } from './parsers/generateImage'
 import type { ToolBodyProps, ToolHeaderMeta } from './types'
 
 type ToolBodyCtx = {
   toolProgress?: ToolBodyProps['toolProgress']
 }
 
+/** Result-only tools must not expose an empty output panel from args alone. */
+const RESULT_ONLY_TOOLS = new Set([
+  'search',
+  'glob',
+  'grep',
+  'codebase_search',
+  'list_dir',
+  'web_fetch',
+  'web_search',
+  'git_status',
+  'git_diff',
+  'memory_list',
+  'Skill',
+  'diagnostics',
+  'mcp_list_tools',
+  'mcp_list_resources',
+  'mcp_read_resource',
+  'mcp_list_prompts',
+  'mcp_get_prompt',
+  'request_mcp_tools',
+  'release_mcp_tools'
+])
+
 export type ToolRegistryEntry = {
   Body: ComponentType<ToolBodyProps>
   hasBody: (tool: UiToolRow, ctx?: ToolBodyCtx) => boolean
   headerMeta?: (tool: UiToolRow, ctx?: ToolBodyCtx) => ToolHeaderMeta
+  /** Status-line only — never expand, including while running. */
+  headerOnly?: boolean
 }
 
 function editHasBody(tool: UiToolRow): boolean {
-  return parseDiffPreview(tool).length > 0 || Boolean((tool.content ?? '').trim())
+  // Chrome-only empty args (DeepSeek name-then-dump) must not mount an empty
+  // peek. Open when a real line exists, or when a finished receipt has text.
+  if (parseDiffPreview(tool, { maxLines: 1 }).length > 0) return true
+  if ((tool.content ?? '').trim()) return true
+  return false
 }
 
 function terminalHasBody(tool: UiToolRow): boolean {
@@ -77,8 +106,7 @@ function gitStatusHasBody(tool: UiToolRow): boolean {
 }
 
 function gitDiffHasBody(tool: UiToolRow): boolean {
-  const data = parseGitDiffData(tool)
-  return data.lines.length > 0 || Boolean(data.message || tool.content)
+  return resultHasBody(tool)
 }
 
 function gitCommitHasBody(tool: UiToolRow): boolean {
@@ -88,11 +116,18 @@ function gitCommitHasBody(tool: UiToolRow): boolean {
 
 function deleteHasBody(tool: UiToolRow): boolean {
   const data = parseDeleteData(tool)
-  return Boolean(data.message || data.path)
+  // The compact row already communicates the normal success receipt. Keep an
+  // expand affordance only when the body contains additional information.
+  const defaultMessage = `Deleted ${data.path}`
+  return data.recursive || data.message !== defaultMessage
 }
 
 function contentHasBody(tool: UiToolRow): boolean {
   return Boolean((tool.content ?? '').trim())
+}
+
+function resultHasBody(tool: UiToolRow): boolean {
+  return Boolean((tool.content ?? '').trim() || tool.contentTruncated)
 }
 
 function defaultHasBody(tool: UiToolRow): boolean {
@@ -111,32 +146,26 @@ function browserTabsHasBody(tool: UiToolRow): boolean {
 
 function browserActionHasBody(tool: UiToolRow): boolean {
   const data = parseBrowserActionData(tool)
-  return Boolean(data.message || data.target)
+  return Boolean(data.message || (tool.status === 'running' && data.target) || tool.contentTruncated)
 }
 
 function diagnosticsHasBody(tool: UiToolRow): boolean {
-  const data = parseDiagnosticsData(tool)
-  return Boolean(
-    data.issues.length > 0 || data.rawLines.length > 0 || data.message || data.command || tool.content
-  )
+  return resultHasBody(tool)
 }
 
 function mcpIntrospectHasBody(tool: UiToolRow): boolean {
   const data = parseMcpIntrospectData(tool)
-  return Boolean(
+  if (
     data.tools.length > 0 ||
-      data.entries.length > 0 ||
-      data.blocks.length > 0 ||
-      data.text ||
-      data.message ||
-      tool.content
-  )
-}
-
-function generateImageHasBody(tool: UiToolRow, ctx?: ToolBodyCtx): boolean {
-  return (
-    Boolean((tool.content ?? '').trim() || tool.summary) || (ctx?.toolProgress?.length ?? 0) > 0
-  )
+    data.entries.length > 0 ||
+    data.blocks.length > 0 ||
+    Boolean(data.text)
+  ) {
+    return true
+  }
+  // Empty catalog notices belong in the header, not a second collapsed paragraph.
+  if (data.message && /^No MCP /i.test(data.message)) return false
+  return resultHasBody(tool)
 }
 
 function statusMessageHasBody(tool: UiToolRow): boolean {
@@ -145,10 +174,7 @@ function statusMessageHasBody(tool: UiToolRow): boolean {
 }
 
 function mcpPinHasBody(tool: UiToolRow): boolean {
-  const data = parseMcpPinData(tool)
-  return Boolean(
-    data.sections.length > 0 || data.noneMessage || data.note || data.message || tool.content
-  )
+  return resultHasBody(tool)
 }
 
 const browserActionEntry: ToolRegistryEntry = {
@@ -164,27 +190,19 @@ const browserActionEntry: ToolRegistryEntry = {
   }
 }
 
-const generateImageEntry: ToolRegistryEntry = {
-  Body: GenerateImageBody,
-  hasBody: generateImageHasBody,
-  headerMeta: (tool) => {
-    const data = parseGenerateImageData(tool)
-    return {
-      verb: toolLabel(tool.name, tool.status),
-      target: data.path || tool.summary,
-      icon: 'sparkles'
-    }
-  }
-}
-
 const mcpIntrospectEntry: ToolRegistryEntry = {
   Body: McpIntrospectBody,
   hasBody: mcpIntrospectHasBody,
   headerMeta: (tool) => {
     const data = parseMcpIntrospectData(tool)
+    const emptyCatalog = Boolean(data.message && /^No MCP /i.test(data.message))
+    const toolCount =
+      data.kind === 'tools' && data.tools.length > 0
+        ? `${data.tools.length} ${data.tools.length === 1 ? 'tool' : 'tools'}`
+        : ''
     return {
       verb: toolLabel(tool.name, tool.status),
-      target: data.filter || tool.summary,
+      target: data.filter || toolCount || (emptyCatalog ? 'none' : '') || tool.summary,
       icon: 'plug'
     }
   }
@@ -206,7 +224,7 @@ const mcpPinEntry: ToolRegistryEntry = {
 const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
   read: {
     Body: ReadBody,
-    hasBody: defaultHasBody,
+    hasBody: resultHasBody,
     headerMeta: (tool) => {
       const data = parseReadData(tool)
       const name = basename(data.path) || data.path
@@ -224,11 +242,13 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
     headerMeta: (tool) => {
       const edit = parseEditCardData(tool)
       return {
-        verb: toolLabel(tool.name, tool.status),
-        target: basename(edit.path),
+        verb: toolLabel(tool.name, tool.status, tool.content),
+        target: basename(edit.path) || edit.path,
         added: edit.added,
         removed: edit.removed,
-        filePath: edit.path
+        ...(edit.iconPath
+          ? { filePath: edit.iconPath }
+          : { icon: toolIconName(tool.name) })
       }
     }
   },
@@ -238,11 +258,18 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
     headerMeta: (tool) => {
       const edit = parseEditCardData(tool)
       return {
-        verb: toolLabel(tool.name, tool.status),
-        target: edit.path,
+        verb: toolLabel(tool.name, tool.status, tool.content),
+        target:
+          edit.fileCount > 1
+            ? `${edit.fileCount} files`
+            : edit.fileCount === 1
+              ? basename(edit.path) || edit.path
+              : 'multi-edit',
         added: edit.added,
         removed: edit.removed,
-        filePath: edit.path
+        ...(edit.fileCount === 1 && edit.iconPath
+          ? { filePath: edit.iconPath }
+          : { icon: toolIconName(tool.name) })
       }
     }
   },
@@ -252,17 +279,19 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
     headerMeta: (tool) => {
       const edit = parseEditCardData(tool)
       return {
-        verb: toolLabel(tool.name, tool.status),
-        target: basename(edit.path),
+        verb: toolLabel(tool.name, tool.status, tool.content),
+        target: basename(edit.path) || edit.path,
         added: edit.added,
         removed: edit.removed,
-        filePath: edit.path
+        ...(edit.iconPath
+          ? { filePath: edit.iconPath }
+          : { icon: toolIconName(tool.name) })
       }
     }
   },
   search: {
     Body: SearchBody,
-    hasBody: defaultHasBody,
+    hasBody: resultHasBody,
     headerMeta: (tool) => ({
       verb: toolLabel(tool.name, tool.status),
       target: tool.summary,
@@ -271,7 +300,7 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
   },
   glob: {
     Body: GlobBody,
-    hasBody: defaultHasBody,
+    hasBody: resultHasBody,
     headerMeta: (tool) => ({
       verb: toolLabel(tool.name, tool.status),
       target: tool.summary,
@@ -280,7 +309,16 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
   },
   grep: {
     Body: GrepBody,
-    hasBody: defaultHasBody,
+    hasBody: resultHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'scanSearch'
+    })
+  },
+  codebase_search: {
+    Body: CodebaseSearchBody,
+    hasBody: resultHasBody,
     headerMeta: (tool) => ({
       verb: toolLabel(tool.name, tool.status),
       target: tool.summary,
@@ -289,7 +327,7 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
   },
   list_dir: {
     Body: ListDirBody,
-    hasBody: defaultHasBody,
+    hasBody: resultHasBody,
     headerMeta: (tool) => ({
       verb: toolLabel(tool.name, tool.status),
       target: tool.summary,
@@ -304,7 +342,7 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
       return {
         verb: toolLabel(tool.name, tool.status),
         target: basename(data.path),
-        icon: 'trash'
+        ...(data.path ? { filePath: data.path } : { icon: 'trash' })
       }
     }
   },
@@ -322,7 +360,7 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
   },
   web_fetch: {
     Body: WebFetchBody,
-    hasBody: defaultHasBody,
+    hasBody: resultHasBody,
     headerMeta: (tool) => ({
       verb: toolLabel(tool.name, tool.status),
       target: tool.summary,
@@ -331,7 +369,7 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
   },
   web_search: {
     Body: WebSearchBody,
-    hasBody: defaultHasBody,
+    hasBody: resultHasBody,
     headerMeta: (tool) => ({
       verb: toolLabel(tool.name, tool.status),
       target: tool.summary,
@@ -357,11 +395,10 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
       const data = parseGitDiffData(tool)
       return {
         verb: toolLabel(tool.name, tool.status),
-        target: data.path || tool.summary,
+        target: data.path ? basename(data.path) || data.path : tool.summary,
         added: data.added,
         removed: data.removed,
-        icon: 'branch',
-        ...(data.path ? { filePath: data.path } : {})
+        ...(data.path ? { filePath: data.path } : { icon: 'branch' })
       }
     }
   },
@@ -392,7 +429,7 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
   },
   memory_list: {
     Body: MemoryListBody,
-    hasBody: defaultHasBody,
+    hasBody: resultHasBody,
     headerMeta: (tool) => ({
       verb: toolLabel(tool.name, tool.status),
       target: tool.summary,
@@ -401,7 +438,7 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
   },
   memory_read: {
     Body: MemoryReadBody,
-    hasBody: defaultHasBody,
+    hasBody: resultHasBody,
     headerMeta: (tool) => ({
       verb: toolLabel(tool.name, tool.status),
       target: tool.summary,
@@ -418,7 +455,19 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
     })
   },
   browser_navigate: browserActionEntry,
-  browser_search: browserActionEntry,
+  browser_search: {
+    Body: BrowserSnapshotBody,
+    hasBody: browserSnapshotHasBody,
+    headerMeta: (tool) => {
+      const data = parseBrowserSnapshotData(tool)
+      const action = parseBrowserActionData(tool)
+      return {
+        verb: toolLabel(tool.name, tool.status),
+        target: action.target || data.title || data.url || tool.summary,
+        icon: 'globe'
+      }
+    }
+  },
   browser_click: browserActionEntry,
   browser_type: browserActionEntry,
   browser_scroll: browserActionEntry,
@@ -427,6 +476,9 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
   browser_forward: browserActionEntry,
   browser_wait_for_selector: browserActionEntry,
   browser_wait_for_url: browserActionEntry,
+  browser_wait_for_text: browserActionEntry,
+  browser_hover: browserActionEntry,
+  browser_handle_dialog: browserActionEntry,
   browser_press_key: browserActionEntry,
   browser_select_option: browserActionEntry,
   browser_snapshot: {
@@ -465,11 +517,45 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
       }
     }
   },
-  generate_image: generateImageEntry,
-  edit_image: generateImageEntry,
+  spawn_agent_instance: {
+    Body: SpawnAgentInstanceBody,
+    hasBody: (tool) => tool.status === 'running' || Boolean(tool.content?.trim()),
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'bot'
+    })
+  },
+  await_agent_instance: {
+    Body: AwaitAgentInstanceBody,
+    hasBody: (tool) => tool.status === 'running' || Boolean(tool.content?.trim()),
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'cpu'
+    })
+  },
+  pull_agent_instance: {
+    Body: AwaitAgentInstanceBody,
+    hasBody: (tool) => Boolean(tool.content?.trim()),
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'cpu'
+    })
+  },
+  merge_agent_instance: {
+    Body: AwaitAgentInstanceBody,
+    hasBody: (tool) => Boolean(tool.content?.trim()),
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'branch'
+    })
+  },
   Skill: {
     Body: SkillBody,
-    hasBody: defaultHasBody,
+    hasBody: contentHasBody,
     headerMeta: (tool) => ({
       verb: toolLabel(tool.name, tool.status),
       target: tool.summary,
@@ -486,14 +572,12 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
   ask_question: {
     Body: StatusMessageBody,
     hasBody: statusMessageHasBody,
-    headerMeta: (tool) => {
-      const data = parseStatusMessageData(tool)
-      return {
-        verb: toolLabel(tool.name, tool.status),
-        target: data.chip || tool.summary,
-        icon: 'sparkles'
-      }
-    }
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status, tool.content),
+      // Never use status chip ("Question" / "Failed") as the header target.
+      target: tool.summary || summarizeToolArgs(tool.name, tool.argsPreview),
+      icon: 'sparkles'
+    })
   },
   switch_mode: {
     Body: StatusMessageBody,
@@ -502,7 +586,7 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
       const data = parseStatusMessageData(tool)
       return {
         verb: toolLabel(tool.name, tool.status),
-        target: data.chip || tool.summary,
+        target: tool.summary || data.chip,
         icon: 'bot'
       }
     }
@@ -521,12 +605,29 @@ const MCP_ENTRY: ToolRegistryEntry = {
 
 const FALLBACK_ENTRY: ToolRegistryEntry = {
   Body: FallbackBody,
-  hasBody: contentHasBody
+  hasBody: contentHasBody,
+  headerMeta: (tool) => {
+    const unknown = /^Unknown tool[:\s"]/i.test((tool.content ?? '').trim())
+    return {
+      verb: toolLabel(tool.name, tool.status, tool.content),
+      // Fail unknown tools: do not show args.path (e.g. "placeholder") as target.
+      target: unknown ? '' : tool.summary || summarizeToolArgs(tool.name, tool.argsPreview),
+      icon: toolIconName(tool.name)
+    }
+  }
 }
 
 export function getToolEntry(name: string): ToolRegistryEntry {
   if (isMcpTool(name)) return MCP_ENTRY
+  // Own-property only: a tool named "constructor" would otherwise resolve to an
+  // inherited Object member and then be dereferenced as a registry entry.
+  if (!Object.prototype.hasOwnProperty.call(BUILTIN_REGISTRY, name)) return FALLBACK_ENTRY
   return BUILTIN_REGISTRY[name] ?? FALLBACK_ENTRY
+}
+
+/** Names with a dedicated UI registry entry (includes replay-only legacy tools). */
+export function registeredBuiltinToolUiNames(): string[] {
+  return Object.keys(BUILTIN_REGISTRY)
 }
 
 export function getToolBody(name: string): ComponentType<ToolBodyProps> {
@@ -536,13 +637,46 @@ export function getToolBody(name: string): ComponentType<ToolBodyProps> {
 export function toolHasBody(tool: UiToolRow, ctx?: ToolBodyCtx): boolean {
   // Nameless streaming deltas must not expand FallbackBody with raw args JSON.
   if (isUnresolvedToolName(tool.name)) return false
+  const entry = getToolEntry(tool.name)
+  if (entry.headerOnly) return false
   if (tool.status === 'running') {
     // Prefer per-tool body logic when ctx carries progress state; fall
     // back to args/summary/content for generic running tools.
-    if (getToolEntry(tool.name).hasBody(tool, ctx)) return true
+    if (entry.hasBody(tool, ctx)) return true
+    if (RESULT_ONLY_TOOLS.has(tool.name)) return false
+    // DeleteBody's default receipt is derived from the path, so the generic
+    // running fallback would show a misleading "Deleted …" before completion.
+    if (tool.name === 'delete') return false
+    // Read bodies cannot render args alone; avoid an expandable blank row until
+    // the first content delta arrives. The completed/partial body paths above
+    // still expose previews as soon as content is available.
+    if (tool.name === 'read' || tool.name === 'memory_read') return false
+    // Edit peek is DiffPreview. Raw args JSON (`{`, `"path"`) is not a body.
+    if (tool.name === 'edit' || tool.name === 'multi_edit' || tool.name === 'str_replace') {
+      return false
+    }
     return Boolean(tool.argsPreview?.trim() || tool.summary?.trim() || tool.content?.trim())
   }
-  return getToolEntry(tool.name).hasBody(tool, ctx)
+  return entry.hasBody(tool, ctx)
+}
+
+/** Drop targets that repeat the verb ("Going back back", "Editing edited"). */
+function scrubRedundantTarget(name: string, verb: string, target: string | undefined): string {
+  const t = target?.trim() ?? ''
+  if (!t) return ''
+  const tl = t.toLowerCase()
+  const vl = verb.trim().toLowerCase()
+  if (vl === tl || vl.endsWith(` ${tl}`)) return ''
+  const labels = Object.prototype.hasOwnProperty.call(TOOL_LABELS, name)
+    ? TOOL_LABELS[name]
+    : undefined
+  if (labels) {
+    const running = labels.running.toLowerCase()
+    const done = labels.done.toLowerCase()
+    if (running === tl || done === tl) return ''
+    if (running.endsWith(` ${tl}`) || done.endsWith(` ${tl}`)) return ''
+  }
+  return t
 }
 
 export function getToolHeaderMeta(tool: UiToolRow, ctx?: ToolBodyCtx): ToolHeaderMeta {
@@ -562,8 +696,13 @@ export function getToolHeaderMeta(tool: UiToolRow, ctx?: ToolBodyCtx): ToolHeade
         icon: toolIconName(tool.name)
       }
   // Registry headerMeta often keys only on status; align interrupted verbs.
-  if (isInterruptedToolContent(tool.content) && tool.status !== 'running') {
-    return { ...meta, verb: toolLabel(tool.name, 'running') }
+  const verb =
+    isInterruptedToolContent(tool.content) && tool.status !== 'running'
+      ? toolLabel(tool.name, 'running')
+      : meta.verb
+  return {
+    ...meta,
+    verb,
+    target: scrubRedundantTarget(tool.name, verb, meta.target)
   }
-  return meta
 }

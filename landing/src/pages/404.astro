@@ -1,0 +1,37 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro'
+import LandingIcon from '../components/LandingIcon.astro'
+import SiteFooter from '../components/SiteFooter.astro'
+import SiteHeader from '../components/SiteHeader.astro'
+import { SITE_PRODUCT } from '../lib/site'
+---
+
+<BaseLayout title={`Page not found — ${SITE_PRODUCT}`} description="That URL is not a page on this site.">
+  <SiteHeader />
+  <main id="main-content" class="wrap flex items-center py-16 md:py-24" tabindex="-1">
+    <div class="max-w-2xl">
+      <p class="font-headline text-xs uppercase tracking-[0.16em] text-muted">404</p>
+      <h1 class="mt-4 font-headline text-3xl leading-tight tracking-tight text-fg md:text-4xl">
+        Page not found
+      </h1>
+      <p class="mt-4 max-w-xl text-pretty text-base leading-relaxed text-muted">
+        That URL does not match a page on this site. Return home or browse the documentation to
+        find what you need.
+      </p>
+      <p class="mt-8 flex flex-wrap items-center gap-4">
+        <a class="btn btn-primary gap-2" href="/">
+          <LandingIcon name="house" />
+          Home
+        </a>
+        <a
+          class="inline-flex min-h-11 items-center text-sm font-medium text-fg underline decoration-border underline-offset-4 hover:decoration-fg"
+          href="/docs"
+        >
+          Browse docs
+          <LandingIcon name="arrow-up-right" class="ml-2" />
+        </a>
+      </p>
+    </div>
+  </main>
+  <SiteFooter />
+</BaseLayout>

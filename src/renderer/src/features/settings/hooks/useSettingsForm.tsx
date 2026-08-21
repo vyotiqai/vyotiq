@@ -29,8 +29,8 @@ import { defaultKeyProvider, isValidHttpUrl } from '../utils/settingsHelpers'
 export type AgentSettingsPatch = Partial<
   Pick<
     WorkspaceSettingsOverride,
-    | 'compactionTriggerRatio'
     | 'keepRecentTurns'
+    | 'autoCompactThresholdRatio'
     | 'toolApproval'
     | 'showThinking'
     | 'thinkingEnabled'
@@ -102,8 +102,8 @@ export function useSettingsForm({
       ollama: 'ollama-error',
       customUrl: 'custom-url-error',
       apikey: 'apikey-error',
-      compaction: 'compaction-error',
-      keepTurns: 'keep-turns-error'
+      keepTurns: 'keep-turns-error',
+      autoCompactThreshold: 'auto-compact-threshold-error'
     }
     const id = idByField[errorField]
     if (!id) return {}
@@ -133,8 +133,8 @@ export function useSettingsForm({
   }
 
   /**
-   * Agent-section fields write to the active workspace override when override is on;
-   * otherwise they update global settings.
+   * Workspace-overridable fields write to the active workspace override when
+   * override is on; otherwise they update global settings.
    */
   const runAgentUpdate = async (patch: AgentSettingsPatch): Promise<boolean> => {
     if (workspaceOverrideActive && activeWorkspacePath && onSetSettingsOverride) {
@@ -292,12 +292,21 @@ export function useSettingsForm({
     settings.toolApproval ??
     DEFAULT_TOOL_APPROVAL
 
-  const agentCompactionTriggerRatio =
-    (workspaceOverrideActive ? effectiveChatSettings?.compactionTriggerRatio : undefined) ??
-    settings.compactionTriggerRatio
   const agentKeepRecentTurns =
     (workspaceOverrideActive ? effectiveChatSettings?.keepRecentTurns : undefined) ??
     settings.keepRecentTurns
+
+  const agentAutoCompactThresholdPct = Math.round(
+    ((workspaceOverrideActive
+      ? effectiveChatSettings?.autoCompactThresholdRatio
+      : undefined) ??
+      settings.autoCompactThresholdRatio) * 100
+  )
+
+  const selectKeyProvider = (provider: SecretProvider): void => {
+    setKeyProvider(provider)
+    setKeyDraft('')
+  }
 
   const setActiveProvider = async (provider: ProviderId): Promise<boolean> => {
     setKeyProvider(provider)
@@ -463,9 +472,7 @@ export function useSettingsForm({
         const ok = await runUpdate({ ollamaBaseUrl: OLLAMA_CLOUD_BASE_URL })
         if (ok) setOllamaUrl(OLLAMA_CLOUD_BASE_URL)
       }
-      const activated =
-        keyProvider === settings.provider || (await setActiveProvider(keyProvider))
-      if (!activated) return
+      setModelsInfo(`Saved ${keyProviderLabel} key.`)
       await refreshModels(keyProvider, { skipKeyCheck: true })
     } finally {
       setSavingKey(false)
@@ -569,11 +576,12 @@ export function useSettingsForm({
     savedKeyProviders,
     savedKeyCount,
     toolApproval,
-    agentCompactionTriggerRatio,
     agentKeepRecentTurns,
+    agentAutoCompactThresholdPct,
     encryptionAvailable,
     runUpdate,
     runAgentUpdate,
+    selectKeyProvider,
     setActiveProvider,
     commitOllamaUrl,
     commitCustomUrl,

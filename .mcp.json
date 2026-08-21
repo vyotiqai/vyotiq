@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "context-engine": {
+      "command": "C:\\Users\\admin\\.local\\bin\\cce.exe",
+      "args": [
+        "serve",
+        "--project-dir",
+        "C:\\Users\\admin\\Documents\\VYOTIQ - AGENT V"
+      ]
+    }
+  }
+}

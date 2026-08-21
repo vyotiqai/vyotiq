@@ -57,7 +57,6 @@ vi.mock('@main/agent/context', async (importOriginal) => {
       system: 'system',
       estimatedTokens: 100,
       layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-      contextShrunk: false,
       anthropicNative: undefined,
       compaction: null
     }),
@@ -169,6 +168,7 @@ describe('runAgent steps', () => {
 
     const usage = events.find((e) => e.type === 'step_usage')
     expect(usage?.cachedInputTokens).toBe(900)
+    expect(typeof (usage as { generationMs?: number } | undefined)?.generationMs).toBe('number')
 
     const eventsPath = join(resolveRunDir(workspace, runId), 'events.jsonl')
     expect(readFileSync(eventsPath, 'utf8')).toContain('"type":"step_usage"')

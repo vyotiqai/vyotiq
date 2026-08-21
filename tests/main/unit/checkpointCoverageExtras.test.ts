@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest'
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
@@ -9,7 +9,7 @@ import {
   undoWrites
 } from '@main/agent/checkpoints'
 import { extractTerminalWritePaths, needsOpaqueWatch, recordTerminalCommandPriors } from '@main/agent/tools/terminalCheckpoint'
-import { recordMcpFilesystemPriors, mcpFilesystemWriteToolsForTests } from '@main/agent/tools/mcpCheckpoint'
+import { recordMcpFilesystemPriors, applyMcpFilesystemMutations, mcpFilesystemWriteToolsForTests } from '@main/agent/tools/mcpCheckpoint'
 import {
   applyWatchDiffToCheckpoint,
   diffSince,
@@ -26,10 +26,22 @@ describe('terminalCheckpoint path parser', () => {
     )
     expect(extractTerminalWritePaths('rm -rf build/tmp')).toContain('build/tmp')
     expect(extractTerminalWritePaths('git restore -- src/x.ts')).toContain('src/x.ts')
+    expect(extractTerminalWritePaths('git restore src/x.ts')).toContain('src/x.ts')
+    expect(extractTerminalWritePaths('git checkout src/x.ts src/y.ts')).toEqual(
+      expect.arrayContaining(['src/x.ts', 'src/y.ts'])
+    )
     expect(extractTerminalWritePaths('echo hi > /dev/null')).not.toContain('/dev/null')
     expect(extractTerminalWritePaths('rm -rf dist/*')).toEqual([])
     expect(extractTerminalWritePaths(`Set-Content -Path 'out.ps1' -Value 'x'`)).toContain('out.ps1')
     expect(extractTerminalWritePaths('echo hi | tee log.txt')).toContain('log.txt')
+  })
+
+  it('filters non-file tokens from mutator parsing', () => {
+    expect(extractTerminalWritePaths('mkdir src/config,src/llm,test')).toEqual([])
+    expect(extractTerminalWritePaths('dir')).toEqual([])
+    expect(extractTerminalWritePaths('echo hello > Directory')).toEqual([])
+    expect(extractTerminalWritePaths('mkdir src/stores;')).toEqual(['src/stores'])
+    expect(extractTerminalWritePaths('mkdir src/stores;')).not.toContain('src/stores;')
   })
 
   it('needs opaque watch only for package managers and build runners', () => {
@@ -144,6 +156,20 @@ describe('mcpCheckpoint known paths', () => {
       rmSync(runDir, { recursive: true, force: true })
     }
   })
+
+  it('records MCP filesystem write paths for scoped git_commit', () => {
+    const mutations = new Set<string>()
+    applyMcpFilesystemMutations(mutations, 'filesystem', 'write_file', { path: 'src/a.ts' })
+    applyMcpFilesystemMutations(mutations, 'fs', 'move_file', {
+      source: 'old.ts',
+      destination: 'new.ts'
+    })
+    applyMcpFilesystemMutations(mutations, 'filesystem', 'edit_file', {
+      path: 'dry.ts',
+      dryRun: true
+    })
+    expect([...mutations]).toEqual(['src/a.ts', 'old.ts', 'new.ts'])
+  })
 })
 
 describe('workspaceMutationWatch', () => {
@@ -163,11 +189,11 @@ describe('workspaceMutationWatch', () => {
     rmSync(runDir, { recursive: true, force: true })
   })
 
-  it('catches opaque creates and restores via discard', () => {
+  it('catches opaque creates and restores via discard', async () => {
     beginWriteCheckpoint(runDir, workspace)
-    const snap = startWatch(workspace)
+    const snap = await startWatch(workspace)
     writeFileSync(join(workspace, 'opaque.txt'), 'secret\n', 'utf8')
-    const diff = diffSince(snap)
+    const diff = await diffSince(snap)
     expect(diff.created).toContain('opaque.txt')
     applyWatchDiffToCheckpoint(snap, diff, { runDir })
     disposeWatch(snap)
@@ -179,12 +205,12 @@ describe('workspaceMutationWatch', () => {
     expect(existsSync(join(workspace, 'opaque.txt'))).toBe(false)
   })
 
-  it('restores modified files from snapshot blobs', () => {
+  it('restores modified files from snapshot blobs', async () => {
     writeFileSync(join(workspace, 'm.txt'), 'before\n', 'utf8')
     beginWriteCheckpoint(runDir, workspace)
-    const snap = startWatch(workspace)
+    const snap = await startWatch(workspace)
     writeFileSync(join(workspace, 'm.txt'), 'after\n', 'utf8')
-    const diff = diffSince(snap)
+    const diff = await diffSince(snap)
     expect(diff.modified).toContain('m.txt')
     applyWatchDiffToCheckpoint(snap, diff, { runDir })
     disposeWatch(snap)
@@ -193,13 +219,13 @@ describe('workspaceMutationWatch', () => {
     expect(readFileSync(join(workspace, 'm.txt'), 'utf8')).toBe('before\n')
   })
 
-  it('records large modified files as non-undoable when no snapshot blob exists', () => {
+  it('records large modified files as non-undoable when no snapshot blob exists', async () => {
     const largePath = join(workspace, 'big.bin')
     writeFileSync(largePath, Buffer.alloc(1_100_000, 1))
     beginWriteCheckpoint(runDir, workspace)
-    const snap = startWatch(workspace)
+    const snap = await startWatch(workspace)
     writeFileSync(largePath, Buffer.alloc(1_100_000, 2))
-    const diff = diffSince(snap)
+    const diff = await diffSince(snap)
     expect(diff.modified).toContain('big.bin')
     applyWatchDiffToCheckpoint(snap, diff, { runDir })
     disposeWatch(snap)
@@ -207,5 +233,19 @@ describe('workspaceMutationWatch', () => {
     expect(meta!.files).toEqual([
       expect.objectContaining({ path: 'big.bin', action: 'modified', undoable: false })
     ])
+  })
+
+  it('yields to the event loop while walking many directories', async () => {
+    const walk = await import('@main/agent/tools/walk')
+    const spy = vi.spyOn(walk, 'yieldToEventLoop')
+    for (let i = 0; i < 70; i++) {
+      mkdirSync(join(workspace, `dir-${i}`), { recursive: true })
+      writeFileSync(join(workspace, `dir-${i}`, 'f.txt'), 'x\n', 'utf8')
+    }
+    const snap = await startWatch(workspace)
+    expect(snap.files.size).toBeGreaterThan(60)
+    expect(spy).toHaveBeenCalled()
+    disposeWatch(snap)
+    spy.mockRestore()
   })
 })

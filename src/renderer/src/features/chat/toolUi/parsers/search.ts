@@ -30,7 +30,7 @@ export function parseSearchData(tool: UiToolRow): SearchParsed {
   const hits: SearchHit[] = []
   for (const line of content.split('\n')) {
     const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('…')) continue
+    if (!trimmed || trimmed.startsWith('…') || trimmed.startsWith('index=')) continue
 
     const fileHit = trimmed.match(/^file:\s*(.+)$/)
     if (fileHit) {

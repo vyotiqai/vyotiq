@@ -52,25 +52,65 @@ describe('catalog thinking fields', () => {
     expect(m.supportedThinkingEfforts).toContain('high')
   })
 
-  it('marks ollama think models when providerId is passed', () => {
+  it('leaves Ollama thinking unset when capabilities are omitted', () => {
     const m = baseModelInfo('deepseek-r1:latest', { supportsTools: true }, 'ollama')
-    expect(m.supportsThinking).toBe(true)
-    expect(m.thinkingMode).toBe('boolean')
+    expect(m.supportsThinking).toBeUndefined()
+    expect(m.thinkingMode).toBeUndefined()
   })
 
-  it('marks Ollama cloud gpt-oss with effort ladder and no Off', () => {
-    const m = baseModelInfo('gpt-oss:120b-cloud', { supportsTools: true }, 'ollama')
+  it('maps live Ollama capabilities thinking to protocol effort ladder', () => {
+    const partial = thinkingPartialFromCatalogRow(
+      { id: 'gpt-oss:120b-cloud', capabilities: ['completion', 'tools', 'thinking'] },
+      'ollama'
+    )
+    expect(partial.supportsThinking).toBe(true)
+    expect(partial.thinkingMode).toBe('effort')
+    expect(partial.thinkingCanDisable).toBe(false)
+    expect(partial.supportedThinkingEfforts).toEqual(['low', 'medium', 'high'])
+
+    const m = baseModelInfo('gpt-oss:120b-cloud', { supportsTools: true, ...partial }, 'ollama')
     expect(m.supportsThinking).toBe(true)
     expect(m.thinkingMode).toBe('effort')
     expect(m.thinkingCanDisable).toBe(false)
     expect(m.supportedThinkingEfforts).toEqual(['low', 'medium', 'high'])
   })
 
-  it('marks Ollama cloud deepseek-v3.1 as boolean think', () => {
-    const m = baseModelInfo('deepseek-v3.1:671b-cloud', { supportsTools: true }, 'ollama')
-    expect(m.supportsThinking).toBe(true)
-    expect(m.thinkingMode).toBe('boolean')
-    expect(m.thinkingCanDisable).toBe(true)
+  it('does not invent thinking for Ollama cloud ids without capabilities', () => {
+    expect(
+      baseModelInfo('deepseek-v3.1:671b-cloud', { supportsTools: true }, 'ollama').supportsThinking
+    ).toBeUndefined()
+    expect(baseModelInfo('glm-5.2', { supportsTools: true }, 'ollama').supportsThinking).toBeUndefined()
+    expect(
+      baseModelInfo('gemma4:31b-cloud', { supportsTools: true }, 'ollama').supportsThinking
+    ).toBeUndefined()
+  })
+
+  it('maps Ollama capabilities string array to supportsThinking and effort ladder', () => {
+    const partial = thinkingPartialFromCatalogRow(
+      { id: 'plain-cloud-thinker', capabilities: ['completion', 'tools', 'thinking'] },
+      'ollama'
+    )
+    expect(partial.supportsThinking).toBe(true)
+    expect(partial.thinkingMode).toBe('effort')
+    expect(partial.supportedThinkingEfforts).toEqual(['low', 'medium', 'high', 'max'])
+
+    const noThink = thinkingPartialFromCatalogRow(
+      { id: 'llama3.2', capabilities: ['completion', 'tools'] },
+      'ollama'
+    )
+    expect(noThink.supportsThinking).toBe(false)
+    expect(noThink.thinkingMode).toBeUndefined()
+  })
+
+  it('does not treat object-style capabilities as an Ollama array', () => {
+    const partial = thinkingPartialFromCatalogRow(
+      {
+        id: 'claude-sonnet-4-6',
+        capabilities: { thinking: true, extended_thinking: false }
+      },
+      'anthropic'
+    )
+    expect(partial.supportsThinking).toBe(true)
   })
 
   it('sets adaptive mode for Anthropic 4.6 via provider defaults', () => {

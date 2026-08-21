@@ -1,5 +1,7 @@
 /** Typed ask_question form items and legacy → canonical normalization. */
 
+import { parseJsonish } from './jsonish'
+
 export const AGENT_QUESTION_TYPES = ['single', 'multi', 'boolean', 'text'] as const
 export type AgentQuestionType = (typeof AGENT_QUESTION_TYPES)[number]
 
@@ -10,6 +12,18 @@ export const AGENT_QUESTION_MAX_OPTION_CHARS = 300
 export const AGENT_QUESTION_MAX_TITLE_CHARS = 200
 export const AGENT_QUESTION_MAX_ANSWER_CHARS = 2000
 export const AGENT_QUESTION_MAX_ANSWER_VALUES = 16
+
+/** Model-facing example embedded in validation errors. */
+export const ASK_QUESTION_ARGS_HINT =
+  'Pass questions: [{ id, prompt, type: "boolean"|"text"|"single"|"multi", options? }] or legacy { question: "…" } (top-level prompt is an alias for question).'
+
+/** Tool result when the user skips, dismisses, or the wait times out. */
+export const ASK_QUESTION_NO_ANSWER_GUIDANCE =
+  'Question timed out or was dismissed without answers. Continue with a reasonable default.'
+
+/** Tool result when autonomous mode skips the form. */
+export const ASK_QUESTION_AUTONOMOUS_SKIP_GUIDANCE =
+  'Question skipped (autonomous mode). Continue with a reasonable default.'
 
 export type AgentQuestionItem = {
   id: string
@@ -30,10 +44,15 @@ export type NormalizedAskQuestionForm = {
 }
 
 function uniqueTrimmedStrings(values: unknown): string[] {
-  if (!Array.isArray(values)) return []
+  let list: unknown = values
+  if (typeof list === 'string') {
+    const parsed = parseJsonish(list)
+    if (Array.isArray(parsed)) list = parsed
+  }
+  if (!Array.isArray(list)) return []
   const out: string[] = []
   const seen = new Set<string>()
-  for (const value of values) {
+  for (const value of list) {
     if (typeof value !== 'string') continue
     const trimmed = value.trim()
     if (!trimmed || seen.has(trimmed)) continue
@@ -49,18 +68,15 @@ function isQuestionType(value: unknown): value is AgentQuestionType {
   )
 }
 
+function questionPromptFromRecord(rec: Record<string, unknown>): string {
+  if (typeof rec.prompt === 'string' && rec.prompt.trim()) return rec.prompt.trim()
+  if (typeof rec.question === 'string' && rec.question.trim()) return rec.question.trim()
+  return ''
+}
+
 function validateItem(item: AgentQuestionItem, index: number): string | null {
   if (!item.id.trim()) return `questions[${index}].id is required`
   if (!item.prompt.trim()) return `questions[${index}].prompt is required`
-  if (item.prompt.length > AGENT_QUESTION_MAX_PROMPT_CHARS) {
-    return `questions[${index}].prompt exceeds ${AGENT_QUESTION_MAX_PROMPT_CHARS} characters`
-  }
-  if (item.options && item.options.length > AGENT_QUESTION_MAX_OPTIONS) {
-    return `questions[${index}] supports at most ${AGENT_QUESTION_MAX_OPTIONS} options`
-  }
-  if (item.options?.some((option) => option.length > AGENT_QUESTION_MAX_OPTION_CHARS)) {
-    return `questions[${index}] has an option exceeding ${AGENT_QUESTION_MAX_OPTION_CHARS} characters`
-  }
   if (item.type === 'single' || item.type === 'multi') {
     if (!item.options || item.options.length < 2) {
       return `questions[${index}] (${item.type}) requires at least 2 options (duplicate or blank options are removed first)`
@@ -69,14 +85,23 @@ function validateItem(item: AgentQuestionItem, index: number): string | null {
   return null
 }
 
+function coerceQuestionRecord(raw: unknown): Record<string, unknown> | null {
+  let value: unknown = raw
+  if (typeof value === 'string') {
+    value = parseJsonish(value)
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
 /** Normalize one raw question object from tool args. */
 function parseTypedItem(raw: unknown, index: number): AgentQuestionItem | { error: string } {
-  if (!raw || typeof raw !== 'object') {
+  const rec = coerceQuestionRecord(raw)
+  if (!rec) {
     return { error: `questions[${index}] must be an object` }
   }
-  const rec = raw as Record<string, unknown>
   const id = typeof rec.id === 'string' ? rec.id.trim() : ''
-  const prompt = typeof rec.prompt === 'string' ? rec.prompt.trim() : ''
+  const prompt = questionPromptFromRecord(rec)
   if (!isQuestionType(rec.type)) {
     return { error: `questions[${index}].type must be single, multi, boolean, or text` }
   }
@@ -110,21 +135,26 @@ export function normalizeAskQuestionArgs(
 ): { ok: true; form: NormalizedAskQuestionForm } | { ok: false; error: string } {
   const title =
     typeof args.title === 'string' && args.title.trim() ? args.title.trim() : undefined
-  if (title && title.length > AGENT_QUESTION_MAX_TITLE_CHARS) {
-    return { ok: false, error: `title exceeds ${AGENT_QUESTION_MAX_TITLE_CHARS} characters` }
+  let questionsInput = args.questions
+  if (typeof questionsInput === 'string') {
+    const parsed = parseJsonish(questionsInput)
+    if (parsed !== undefined) questionsInput = parsed
+  }
+  if (questionsInput !== null && typeof questionsInput === 'object' && !Array.isArray(questionsInput)) {
+    questionsInput = [questionsInput]
   }
 
-  if (Array.isArray(args.questions) && args.questions.length > 0) {
-    if (args.questions.length > AGENT_QUESTION_MAX_ITEMS) {
+  if (Array.isArray(questionsInput)) {
+    if (questionsInput.length === 0) {
       return {
         ok: false,
-        error: `questions supports at most ${AGENT_QUESTION_MAX_ITEMS} items`
+        error: `questions must contain at least 1 item. ${ASK_QUESTION_ARGS_HINT}`
       }
     }
     const questions: AgentQuestionItem[] = []
     const ids = new Set<string>()
-    for (let i = 0; i < args.questions.length; i++) {
-      const parsed = parseTypedItem(args.questions[i], i)
+    for (let i = 0; i < questionsInput.length; i++) {
+      const parsed = parseTypedItem(questionsInput[i], i)
       if ('error' in parsed) return { ok: false, error: parsed.error }
       if (ids.has(parsed.id)) {
         return { ok: false, error: `duplicate question id: ${parsed.id}` }
@@ -135,9 +165,21 @@ export function normalizeAskQuestionArgs(
     return { ok: true, form: { ...(title ? { title } : {}), questions } }
   }
 
-  const prompt = typeof args.question === 'string' ? args.question.trim() : ''
+  if (questionsInput != null) {
+    return {
+      ok: false,
+      error: `ask_question.questions must be a JSON array of question objects. ${ASK_QUESTION_ARGS_HINT}`
+    }
+  }
+
+  const prompt =
+    typeof args.question === 'string' && args.question.trim()
+      ? args.question.trim()
+      : typeof args.prompt === 'string' && args.prompt.trim()
+        ? args.prompt.trim()
+        : ''
   if (!prompt) {
-    return { ok: false, error: 'question or questions is required' }
+    return { ok: false, error: `question or questions is required. ${ASK_QUESTION_ARGS_HINT}` }
   }
 
   const options = uniqueTrimmedStrings(args.options)
@@ -193,9 +235,8 @@ export function sanitizeQuestionAnswers(
     if (!question) continue
     const rawValues = Array.isArray(answer.values) ? answer.values : []
     const values = rawValues
-      .map((value) => String(value).trim().slice(0, AGENT_QUESTION_MAX_ANSWER_CHARS))
+      .map((value) => String(value).trim())
       .filter(Boolean)
-      .slice(0, AGENT_QUESTION_MAX_ANSWER_VALUES)
     if (question.type === 'single' || question.type === 'boolean') {
       values.length = Math.min(values.length, 1)
     }

@@ -13,7 +13,6 @@ afterEach(() => {
 const chatSettings: EffectiveChatSettings = {
   provider: 'openai',
   model: 'gpt-5.6',
-  compactionTriggerRatio: 0.7,
   keepRecentTurns: 12,
   thinkingEnabled: true,
   thinkingEffort: 'medium',
@@ -207,7 +206,7 @@ describe('ThinkingControls', () => {
       />
     )
     expect(container.firstChild).not.toBeNull()
-    expect(thinkingButton().textContent).toMatch(/Think/)
+    expect(thinkingButton().textContent).toMatch(/Med/)
   })
 
   it('hides Think when catalog supportsThinking is false for unknown model ids', () => {
@@ -269,7 +268,7 @@ describe('ThinkingControls', () => {
       />
     )
     expect(container.firstChild).not.toBeNull()
-    expect(thinkingButton().textContent).toMatch(/Think/)
+    expect(thinkingButton().textContent).toMatch(/Med/)
   })
 
   it('hides Off when thinkingCanDisable is false', () => {
@@ -327,12 +326,54 @@ describe('ThinkingControls', () => {
     })
   })
 
-  it('shows Off/On for Ollama boolean think models including cloud IDs', () => {
+  it('hides Ollama Think only when catalog confirms supportsThinking false', () => {
+    for (const model of ['glm-5.2', 'gemma4:31b-cloud', 'minimax-m2.5:cloud'] as const) {
+      expect(
+        modelShowsThinkingControls('ollama', model, {
+          id: model,
+          inputModalities: ['text'],
+          outputModalities: ['text'],
+          supportsTools: true,
+          supportsVision: false,
+          supportsThinking: false
+        })
+      ).toBe(false)
+    }
+  })
+
+  it('shows Ollama Think when catalog thinking is unset or meta is missing', () => {
+    for (const model of ['glm-5.2', 'gemma4:31b-cloud', 'minimax-m2.5:cloud'] as const) {
+      expect(modelShowsThinkingControls('ollama', model)).toBe(true)
+      expect(
+        modelShowsThinkingControls('ollama', model, {
+          id: model,
+          inputModalities: ['text'],
+          outputModalities: ['text'],
+          supportsTools: true,
+          supportsVision: false
+        })
+      ).toBe(true)
+    }
+  })
+
+  it('shows Off/Low/Med/High/Max for Ollama when catalog returns thinking capabilities', () => {
     const onChatSettingsChange = vi.fn()
     render(
       <ThinkingControls
         provider="ollama"
         model="deepseek-v3.1:671b-cloud"
+        modelMeta={{
+          id: 'deepseek-v3.1:671b-cloud',
+          inputModalities: ['text'],
+          outputModalities: ['text'],
+          supportsTools: true,
+          supportsVision: false,
+          supportsThinking: true,
+          thinkingMode: 'effort',
+          thinkingCanDisable: true,
+          supportedThinkingEfforts: ['low', 'medium', 'high', 'max'],
+          thinkingDefaultEffort: 'medium'
+        }}
         chatSettings={{
           ...chatSettings,
           provider: 'ollama',
@@ -346,11 +387,11 @@ describe('ThinkingControls', () => {
     fireEvent.click(thinkingButton())
     expect(onChatSettingsChange).toHaveBeenCalledWith({
       thinkingEnabled: true,
-      thinkingEffort: 'medium'
+      thinkingEffort: 'low'
     })
   })
 
-  it('shows low/medium/high without Off for Ollama gpt-oss cloud', () => {
+  it('cycles Ollama GPT-OSS low/medium/high without Off or max', () => {
     const onChatSettingsChange = vi.fn()
     render(
       <ThinkingControls
@@ -372,16 +413,38 @@ describe('ThinkingControls', () => {
           ...chatSettings,
           provider: 'ollama',
           model: 'gpt-oss:120b-cloud',
-          thinkingEffort: 'medium'
+          thinkingEffort: 'high'
         }}
         onChatSettingsChange={onChatSettingsChange}
       />
     )
-    expect(thinkingButton().textContent).toMatch(/Med/)
+    expect(thinkingButton().textContent).toMatch(/High/)
     fireEvent.click(thinkingButton())
     expect(onChatSettingsChange).toHaveBeenCalledWith({
       thinkingEnabled: true,
-      thinkingEffort: 'high'
+      thinkingEffort: 'low'
+    })
+  })
+
+  it('uses GPT-OSS cannot-disable heuristic before catalog arrives', () => {
+    const onChatSettingsChange = vi.fn()
+    render(
+      <ThinkingControls
+        provider="ollama"
+        model="gpt-oss:120b-cloud"
+        chatSettings={{
+          ...chatSettings,
+          provider: 'ollama',
+          model: 'gpt-oss:120b-cloud',
+          thinkingEffort: 'high'
+        }}
+        onChatSettingsChange={onChatSettingsChange}
+      />
+    )
+    fireEvent.click(thinkingButton())
+    expect(onChatSettingsChange).toHaveBeenCalledWith({
+      thinkingEnabled: true,
+      thinkingEffort: 'low'
     })
   })
 
@@ -400,7 +463,7 @@ describe('ThinkingControls', () => {
     expect(label).toBeTruthy()
     expect(label!.className).not.toMatch(/\btruncate\b/)
     expect(label!.className).toMatch(/leading-tight/)
-    expect(button.textContent).toMatch(/Think/)
+    expect(button.textContent).toMatch(/Med/)
   })
 
   it('shows Lower chip on high effort after long-run step threshold', () => {

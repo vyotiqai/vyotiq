@@ -38,6 +38,18 @@ export function workspaceSessionsRoot(workspacePath: string): string {
   return join(workspaceMetaDir(workspaceId(canonical)), 'sessions')
 }
 
+/** Hybrid semantic index (derived cache — not in the project tree). */
+export function workspaceCodeIndexRoot(workspacePath: string): string {
+  const canonical = canonicalizeWorkspacePath(workspacePath)
+  return join(workspaceMetaDir(workspaceId(canonical)), 'codeindex')
+}
+
+/** Trigram Instant Grep index (derived cache — not in the project tree). */
+export function workspaceSparseGrepRoot(workspacePath: string): string {
+  const canonical = canonicalizeWorkspacePath(workspacePath)
+  return join(workspaceMetaDir(workspaceId(canonical)), 'sparsegrep')
+}
+
 /**
  * A run id is attacker-controllable over IPC and ends up in `rmSync`/`writeFileSync`,
  * so the resolved directory must stay a direct child of the sessions root.

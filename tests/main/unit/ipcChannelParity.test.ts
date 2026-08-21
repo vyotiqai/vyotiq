@@ -17,7 +17,15 @@ const PUSH_ONLY = new Set<keyof typeof IPC>([
   'windowMaximizedChanged',
   'ptyData',
   'ptyExit',
-  'themeChanged'
+  'themeChanged',
+  'githubAuthStatusEvent',
+  'codeIndexStatusEvent',
+  'dictationStatusEvent',
+  'skillsChanged',
+  'workspaceEditorFlushRequest',
+  'workspaceEditorFlushResponse',
+  'notificationsChanged',
+  'notificationsActivate'
 ])
 
 function registeredChannels(): Set<string> {

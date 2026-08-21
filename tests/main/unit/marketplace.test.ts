@@ -15,7 +15,7 @@ import { McpServerSchema, VyotiqMcpManifestSchema } from '@shared/ipc'
 import { effectiveMarketplaceEnabled } from '@shared/domain/marketplaceEnablement'
 import { mcpServerConfigKey } from '@main/agent/mcp'
 import { parseSkillFrontmatter } from '@main/agent/skills/parse'
-import { detectPackageAt } from '@main/marketplace/install'
+import { detectPackageAt, copyPackageIntoStore } from '@main/marketplace/install'
 import { buildSkillsSection, type LoadedSkill } from '@main/agent/skills'
 
 describe('McpServerSchema transport migration', () => {
@@ -118,6 +118,24 @@ Do a thorough review.
     expect(parsed.description).toBe('Review code carefully when asked for a structured review.')
     expect(parsed.metadata?.version).toBe('1.0.0')
     expect(parsed.body).toContain('thorough review')
+  })
+
+  it('folds multiline description block scalars', () => {
+    const parsed = parseSkillFrontmatter(`---
+name: create-skill
+description: >-
+  Create reusable skills.
+  Use when authoring a new workflow.
+metadata:
+  version: "1.0.0"
+---
+
+Instructions.
+`)
+    expect(parsed.description).toBe(
+      'Create reusable skills. Use when authoring a new workflow.'
+    )
+    expect(parsed.metadata?.version).toBe('1.0.0')
   })
 
   it('parses metadata.version and rejects invalid names', () => {
@@ -256,14 +274,14 @@ describe('buildSkillsSection', () => {
       }
     ]
     const section = buildSkillsSection(skills)
-    expect(section).toContain('## Available skills')
+    expect(section).toContain('<available_skills>')
     expect(section).toContain('Skill')
     expect(section).toContain('alpha')
     expect(section).toContain('beta')
     expect(section).not.toContain('Do alpha things.')
 
     const tight = buildSkillsSection(skills, 80)
-    expect(tight).toContain('## Available skills')
+    expect(tight).toContain('<available_skills>')
     expect(tight).toMatch(/omitted/)
     expect(tight).not.toContain('Do alpha things.')
   })
@@ -392,7 +410,7 @@ describe('remote MCP install request', () => {
 })
 
 describe('bundled marketplace catalog', () => {
-  it('has installable packages with on-disk manifests and icons', async () => {
+  it('has the five workflow skills plus create-skill and on-disk manifests', async () => {
     const { MarketplaceCatalogSchema } = await import('@shared/ipc')
     const root = join(process.cwd(), 'resources', 'marketplace')
     const catalog = MarketplaceCatalogSchema.parse(
@@ -401,8 +419,15 @@ describe('bundled marketplace catalog', () => {
 
     const skills = catalog.packages.filter((p) => p.kind === 'skill')
     const plugins = catalog.packages.filter((p) => p.kind === 'plugin')
-    expect(skills.length).toBeGreaterThanOrEqual(11)
-    expect(plugins.length).toBeGreaterThanOrEqual(4)
+    expect(skills.map((p) => p.id).sort()).toEqual([
+      'create-skill',
+      'explain-code',
+      'fix-bug',
+      'implement-feature',
+      'review-code',
+      'write-tests'
+    ])
+    expect(plugins).toHaveLength(0)
 
     for (const entry of catalog.packages) {
       expect(entry.installable).not.toBe(false)
@@ -423,6 +448,27 @@ describe('bundled marketplace catalog', () => {
       if (entry.iconPath) {
         expect(existsSync(join(root, entry.iconPath))).toBe(true)
       }
+    }
+  })
+})
+
+describe('copyPackageIntoStore', () => {
+  it('stages a replacement instead of deleting the destination first', () => {
+    const src1 = mkdtempSync(join(tmpdir(), 'vyotiq-mkt-src1-'))
+    const src2 = mkdtempSync(join(tmpdir(), 'vyotiq-mkt-src2-'))
+    writeFileSync(join(src1, 'one.txt'), 'first', 'utf8')
+    writeFileSync(join(src2, 'two.txt'), 'second', 'utf8')
+    const id = `copy-pkg-${process.pid}`
+    try {
+      const dest = copyPackageIntoStore(src1, id, '1.0.0')
+      expect(readFileSync(join(dest, 'one.txt'), 'utf8')).toBe('first')
+      copyPackageIntoStore(src2, id, '1.0.0')
+      expect(readFileSync(join(dest, 'two.txt'), 'utf8')).toBe('second')
+      expect(existsSync(join(dest, 'one.txt'))).toBe(false)
+    } finally {
+      rmSync(src1, { recursive: true, force: true })
+      rmSync(src2, { recursive: true, force: true })
+      rmSync(join(tmpdir(), 'marketplace', 'packages', id), { recursive: true, force: true })
     }
   })
 })

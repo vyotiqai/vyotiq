@@ -113,13 +113,19 @@ function ModelRow({
       )}
       onClick={onSelect}
       onMouseEnter={onHover}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSelect()
+        }
+      }}
     >
       {parsed ? (
         <ProviderLogo
           id={parsed.provider}
           subProvider={opt.subProvider}
           size="sm"
-          className="shrink-0 text-muted"
+          className="shrink-0"
         />
       ) : null}
       <span className="min-w-0 flex-1 truncate leading-tight" title={opt.label}>
@@ -168,7 +174,7 @@ export function ModelPicker({
   model,
   favoriteModels = [],
   recentModels = [],
-  modelsWarning,
+  warningsByProvider,
   serviceTier,
   onModelChange,
   onToggleFavorite,
@@ -179,7 +185,8 @@ export function ModelPicker({
   disabled,
   className,
   triggerClassName,
-  focusInput
+  focusInput,
+  onOpenChange
 }: {
   providers: ProviderId[]
   optionsByProvider: Record<ProviderId, ModelPickerOption[]>
@@ -189,7 +196,7 @@ export function ModelPicker({
   model: string
   favoriteModels: string[]
   recentModels: string[]
-  modelsWarning: string | null
+  warningsByProvider: Partial<Record<ProviderId, string | null>>
   serviceTier: ServiceTier
   onModelChange: (provider: ProviderId, model: string) => void
   onToggleFavorite: (provider: ProviderId, model: string) => void
@@ -201,6 +208,7 @@ export function ModelPicker({
   className?: string
   triggerClassName?: string
   focusInput?: () => void
+  onOpenChange?: (open: boolean) => void
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -215,6 +223,7 @@ export function ModelPicker({
 
   const modelValue = modelSelectionKey(provider, model)
   const providerMeta = PROVIDER_DEFAULTS.find((p) => p.id === provider)
+  const browsedWarning = warningsByProvider[browsedProvider] ?? null
   const displayName =
     optionsByProvider[provider]?.find((o) => o.value === modelValue)?.label ??
     formatModelDisplayName(model)
@@ -228,12 +237,13 @@ export function ModelPicker({
   const handleOpenChange = useCallback(
     (next: boolean) => {
       setOpen(next)
+      onOpenChange?.(next)
       if (!next) {
         setQuery('')
         setActiveIndex(-1)
       }
     },
-    [setOpen]
+    [onOpenChange]
   )
 
   const { position, close } = useDropdownMenu({
@@ -243,7 +253,8 @@ export function ModelPicker({
     panelRef,
     placement: 'up',
     align: 'start',
-    disabled
+    disabled,
+    trapFocus: true
   })
 
   useEffect(() => {
@@ -254,6 +265,12 @@ export function ModelPicker({
     const t = window.setTimeout(() => searchRef.current?.focus(), 0)
     return () => window.clearTimeout(t)
   }, [open, provider, providers, onBrowseProvider])
+
+  useEffect(() => {
+    if (providers.includes(browsedProvider)) return
+    const fallback = providers.includes(provider) ? provider : providers[0]
+    if (fallback) setBrowsedProvider(fallback)
+  }, [providers, browsedProvider, provider])
 
   const selectBrowsedProvider = useCallback(
     (next: ProviderId) => {
@@ -331,6 +348,12 @@ export function ModelPicker({
     return visibleOptions.sections.flatMap((s) => s.items)
   }, [visibleOptions])
 
+  // Keep the keyboard-active row visible in long catalogs (same as slash/mention menus).
+  useEffect(() => {
+    if (!open || activeIndex < 0) return
+    optionRefs.current[activeIndex]?.scrollIntoView({ block: 'nearest' })
+  }, [activeIndex, open])
+
   const pickModel = useCallback(
     (value: string) => {
       const parsed = parseModelSelectionKey(value)
@@ -375,6 +398,7 @@ export function ModelPicker({
             id={panelId}
             role="listbox"
             aria-label="Select model"
+            tabIndex={0}
             className="fixed z-dropdown flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-fade-in"
             style={{
               top: pos.placement === 'up' ? undefined : pos.top,
@@ -392,7 +416,7 @@ export function ModelPicker({
                 <SearchInput
                   ref={searchRef}
                   inputClassName="min-h-7 text-xs"
-                  placeholder="Search all models"
+                  placeholder="Search models"
                   value={query}
                   onChange={(e) => {
                     setQuery(e.target.value)
@@ -413,35 +437,41 @@ export function ModelPicker({
               </button>
             </div>
 
-            {modelsWarning ? (
+            {browsedWarning ? (
               <p className="m-0 shrink-0 border-b border-border bg-surface px-3 py-1.5 text-2xs leading-snug text-muted">
-                {modelsWarning}
+                {browsedWarning}
               </p>
             ) : null}
 
             <div className="sidebar-scroll-x flex shrink-0 gap-1 border-b border-border px-2 py-1.5">
-              {providers.map((p) => {
-                const meta = PROVIDER_DEFAULTS.find((d) => d.id === p)
-                const active = browsedProvider === p
-                return (
-                  <button
-                    key={p}
-                    type="button"
-                    className={cn(
-                      'inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-caption leading-tight vy-transition',
-                      active
-                        ? 'bg-surface-2 text-fg-strong'
-                        : 'text-secondary hover:bg-surface hover:text-fg'
-                    )}
-                    aria-pressed={active}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => selectBrowsedProvider(p)}
-                  >
-                    <ProviderLogo id={p} size="sm" />
-                    <span>{meta?.label ?? p}</span>
-                  </button>
-                )
-              })}
+              {providers.length === 0 ? (
+                <p className="m-0 px-1 py-1 text-xs text-muted">
+                  No providers configured — open Settings → Providers
+                </p>
+              ) : (
+                providers.map((p) => {
+                  const meta = PROVIDER_DEFAULTS.find((d) => d.id === p)
+                  const active = browsedProvider === p
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      className={cn(
+                        'inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1 text-caption leading-tight vy-transition',
+                        active
+                          ? 'bg-surface-2 text-fg-strong'
+                          : 'text-secondary hover:bg-surface hover:text-fg'
+                      )}
+                      aria-pressed={active}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => selectBrowsedProvider(p)}
+                    >
+                      <ProviderLogo id={p} size="md" />
+                      <span>{meta?.label ?? p}</span>
+                    </button>
+                  )
+                })
+              )}
             </div>
 
             <ul
@@ -450,7 +480,15 @@ export function ModelPicker({
               role="presentation"
             >
               {flatOptions.length === 0 ? (
-                <li className="px-2.5 py-2 text-xs text-muted">No matches</li>
+                <li className="px-2.5 py-3 text-xs leading-snug text-muted" role="status">
+                  {catalogLoading
+                    ? 'Loading models…'
+                    : query.trim()
+                      ? 'No matches'
+                      : browsedWarning
+                        ? 'No live models available. Fix the issue above or refresh.'
+                        : 'No models available for this provider.'}
+                </li>
               ) : visibleOptions.mode === 'flat' ? (
                 flatOptions.map((opt, index) => (
                   <ModelRow
@@ -515,22 +553,23 @@ export function ModelPicker({
                 </p>
                 <div className="flex flex-wrap gap-1">
                   {supportedTiers.map((tier) => (
-                    <button
-                      key={tier}
-                      type="button"
-                      className={cn(
-                        'rounded-lg px-2 py-1 text-xs vy-transition',
-                        serviceTier === tier
-                          ? 'bg-surface-2 text-fg-strong'
-                          : 'text-muted hover:bg-surface hover:text-fg'
-                      )}
-                      title={SERVICE_TIER_DESCRIPTIONS[tier]}
-                      aria-pressed={serviceTier === tier}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => onServiceTierChange(tier)}
-                    >
-                      {SERVICE_TIER_LABELS[tier]}
-                    </button>
+                    <Tooltip key={tier} content={SERVICE_TIER_DESCRIPTIONS[tier]} delayMs={250}>
+                      <button
+                        type="button"
+                        className={cn(
+                          'rounded-lg px-2 py-1 text-xs vy-transition',
+                          serviceTier === tier
+                            ? 'bg-surface-2 text-fg-strong'
+                            : 'text-muted hover:bg-surface hover:text-fg'
+                        )}
+                        aria-label={`${SERVICE_TIER_LABELS[tier]}: ${SERVICE_TIER_DESCRIPTIONS[tier]}`}
+                        aria-pressed={serviceTier === tier}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => onServiceTierChange(tier)}
+                      >
+                        {SERVICE_TIER_LABELS[tier]}
+                      </button>
+                    </Tooltip>
                   ))}
                 </div>
               </div>
@@ -556,11 +595,11 @@ export function ModelPicker({
         onMouseDown={(e) => e.preventDefault()}
         onClick={() => setOpen((v) => !v)}
       >
-        <ProviderLogo id={provider} size="sm" className="shrink-0 text-muted" />
+        <ProviderLogo id={provider} size="sm" className="shrink-0" />
         <span className="min-w-0 flex-1 truncate leading-tight text-fg">{displayName}</span>
         <Icon
           name="chevron"
-          size={12}
+          size={14}
           className={cn('shrink-0 text-muted vy-transition', open && 'rotate-180')}
         />
       </button>

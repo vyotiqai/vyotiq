@@ -1,7 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+
+import {
+  enqueueEventAppend,
+  EVENTS_FILE_KEEP_BYTES,
+  EVENTS_FILE_MAX_BYTES,
+  flushEventAppends,
+  resetEventAppendQueueForTests,
+  takeEventAppendFailureNotice
+} from '@main/agent/eventAppendQueue'
 
 const { appendFileMock } = vi.hoisted(() => ({
   appendFileMock: vi.fn<typeof import('fs/promises').appendFile>()
@@ -15,13 +24,6 @@ vi.mock('fs/promises', async (importOriginal) => {
     appendFile: appendFileMock
   }
 })
-
-import {
-  enqueueEventAppend,
-  flushEventAppends,
-  resetEventAppendQueueForTests,
-  takeEventAppendFailureNotice
-} from '@main/agent/eventAppendQueue'
 
 describe('eventAppendQueue', () => {
   let dir: string
@@ -94,5 +96,68 @@ describe('eventAppendQueue', () => {
     const lines = readFileSync(path, 'utf8').trim().split('\n')
     expect(lines).toHaveLength(1)
     expect(JSON.parse(lines[0]!).event).toMatchObject({ type: 'status', status: 'running' })
+  })
+
+  it('archives discarded head on rotation and keeps the active tail', async () => {
+    const path = join(dir, 'events.jsonl')
+    const headLine = `${JSON.stringify({ at: 'old', event: { type: 'status', status: 'head-marker' } })}\n`
+    const tailLine = `${JSON.stringify({ at: 'new', event: { type: 'status', status: 'tail-marker' } })}\n`
+    const middlePad = `${'x\n'.repeat(EVENTS_FILE_MAX_BYTES / 2)}`
+    writeFileSync(path, headLine + middlePad + tailLine, 'utf8')
+
+    enqueueEventAppend(dir, { type: 'status', status: 'rotated' })
+    await flushEventAppends(dir)
+
+    const archives = readdirSync(dir).filter((name) => name.startsWith('events.archive.'))
+    expect(archives).toHaveLength(1)
+    const archived = readFileSync(join(dir, archives[0]!), 'utf8')
+    expect(archived).toContain('head-marker')
+
+    const active = readFileSync(path, 'utf8')
+    expect(active).toContain('tail-marker')
+    expect(active).toContain('rotated')
+    expect(active).not.toContain('head-marker')
+  })
+
+  it('caps archives at five files and deletes the oldest when creating a sixth', async () => {
+    const path = join(dir, 'events.jsonl')
+    for (let i = 0; i < 5; i++) {
+      writeFileSync(join(dir, `events.archive.2026-01-0${i + 1}T00-00-00-000Z.jsonl`), `archive-${i}\n`, 'utf8')
+    }
+    const line = `${'y'.repeat(80)}\n`
+    writeFileSync(
+      path,
+      line.repeat(Math.ceil((EVENTS_FILE_MAX_BYTES + 64) / line.length)),
+      'utf8'
+    )
+
+    enqueueEventAppend(dir, { type: 'status', status: 'cap-test' })
+    await flushEventAppends(dir)
+
+    const archives = readdirSync(dir)
+      .filter((name) => name.startsWith('events.archive.'))
+      .sort()
+    expect(archives).toHaveLength(5)
+    expect(archives.some((name) => name.includes('2026-01-01'))).toBe(false)
+    const newestArchive = readFileSync(join(dir, archives[archives.length - 1]!), 'utf8')
+    expect(newestArchive).toContain('y'.repeat(64))
+  })
+
+  it('keeps the JSONL record that crosses the rotation byte boundary', async () => {
+    const path = join(dir, 'events.jsonl')
+    const marker = `${JSON.stringify({ at: 'boundary', event: { id: 'MUST_KEEP' } })}\n`
+    const prefix = 'C'.repeat(EVENTS_FILE_MAX_BYTES - EVENTS_FILE_KEEP_BYTES + 50)
+    const suffix = 'D'.repeat(EVENTS_FILE_KEEP_BYTES - 10)
+    writeFileSync(path, prefix + marker + suffix, 'utf8')
+    expect(readFileSync(path, 'utf8').length).toBeGreaterThan(EVENTS_FILE_MAX_BYTES)
+
+    enqueueEventAppend(dir, { type: 'status', status: 'after-rotate' })
+    await flushEventAppends(dir)
+
+    const archives = readdirSync(dir).filter((name) => name.startsWith('events.archive.'))
+    const archived = archives.map((name) => readFileSync(join(dir, name), 'utf8')).join('')
+    const active = readFileSync(path, 'utf8')
+    expect(archived + active).toContain('MUST_KEEP')
+    expect(active).toContain('after-rotate')
   })
 })

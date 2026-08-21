@@ -585,13 +585,31 @@ export function removeWorkspace(path: string): WorkspacesState {
 }
 
 export function setActiveWorkspace(path: string): WorkspacesState {
-  const state = readWorkspacesState()
-  const open = findOpenPath(state, path)
+  let state = readWorkspacesState()
+  let open = findOpenPath(state, path)
   if (!open) {
-    throw new Error('Workspace is not open')
+    // Activating a workspace that exists on disk but is not yet tracked
+    // (e.g. a renderer-side path desync after a concurrent close). Open it
+    // rather than hard-failing the switch.
+    if (!existsSync(path) || !statSync(path).isDirectory()) {
+      throw new Error('Workspace is not open')
+    }
+    state = registerWorkspaceId(state, path)
+    if (!findOpenPath(state, path)) {
+      state = {
+        ...touchRecent(state, path),
+        openPaths: [...state.openPaths, path],
+        activePath: path
+      }
+    } else {
+      state = { ...touchRecent(state, path), activePath: path }
+    }
+    state = ensureUiState(state, path)
+    open = path
+  } else {
+    state = ensureUiState(touchRecent(state, open), open)
   }
-  const next = ensureUiState(touchRecent(state, open), open)
-  return saveWorkspacesState({ ...next, activePath: open })
+  return saveWorkspacesState({ ...state, activePath: open })
 }
 
 export function updateWorkspaceUiState(path: string, ui: WorkspaceUiState): true {

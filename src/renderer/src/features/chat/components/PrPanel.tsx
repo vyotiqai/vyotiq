@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Button, cn, Switch, Tooltip } from '@renderer/lib/ui'
-import { matchShortcut, shortcutLabel } from '@renderer/lib/shortcuts'
+import { isEditableShortcutTarget, matchShortcut, shortcutLabel } from '@renderer/lib/shortcuts'
 import { Icon, type IconName } from '@renderer/lib/icons'
-import { MarkdownContent } from '@renderer/lib/ui/MarkdownContent'
+import { copyText } from '@renderer/lib/markdown/copyText'
+import { MarkdownContent } from '@renderer/lib/ui'
 import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
 import type { GithubAuthStatus, PrFile, PrMergeMethod, PrReview, PrView } from '@shared/ipc'
 import { DOCK_TOOLBAR_ICON_BTN, DockSplitButton, EmptyPanel } from './PanelChrome'
+import { GithubAuthPanel } from './GithubAuthPanel'
 import { type DiffLayout } from './DiffPreview'
 import {
   ChangedFilesBrowser,
   type BrowserFileEntry
 } from './ChangedFilesBrowser'
+import type { WorkspaceFileOpenOptions } from './FilesPanel'
 
 type PrTab = 'changes' | 'description' | 'commits' | 'checks' | 'reviews'
 
@@ -26,9 +29,30 @@ function prEmptyTitle(error: string | null): string {
     return 'GitHub CLI not found'
   }
   if (/not a git repository/i.test(error)) return 'Not a git repository'
+  if (/no git remote|no remotes|no default remote|unable to determine base repository|could not determine base repository/i.test(error)) {
+    return 'GitHub repository not configured'
+  }
+  if (/no initial commit/i.test(error)) return 'No commits yet'
   if (/auth|login|HTTP 401|HTTP 403/i.test(error)) return 'GitHub authentication required'
   if (/no pull request|no open pull request/i.test(error)) return 'No pull request'
   return 'Pull request unavailable'
+}
+
+function prEmptyBody(error: string | null): string {
+  if (!error) return 'Create a draft pull request from the current topic branch.'
+  if (/not a git repository/i.test(error)) {
+    return 'Open a workspace that contains a Git repository to use pull requests.'
+  }
+  if (/no git remote|no remotes|no default remote|unable to determine base repository|could not determine base repository/i.test(error)) {
+    return 'Agent V will connect the matching GitHub repository or create a private one when you create a pull request.'
+  }
+  if (/no initial commit/i.test(error)) {
+    return 'Commit changes first, then create a pull request. An empty git history cannot be published.'
+  }
+  if (/auth|login|HTTP 401|HTTP 403/i.test(error)) {
+    return 'Connect GitHub, then refresh the pull request panel.'
+  }
+  return error
 }
 
 function viewedStorageKey(workspacePath: string, prNumber: number): string {
@@ -113,8 +137,40 @@ function toPrBrowserEntry(file: PrFile): BrowserFileEntry {
 }
 
 function needsGithubConnect(error: string | null, auth: GithubAuthStatus | null): boolean {
+  if (auth?.ghAuthenticated && !auth.pending) return false
   if (auth?.pending) return true
-  if (error && /auth|login|HTTP 401|HTTP 403/i.test(error)) return true
+  if (auth?.error) return true
+  if (auth?.ghAvailable && !auth.ghAuthenticated) return true
+  if (
+    error &&
+    /auth|login|HTTP 401|HTTP 403|to get started|not logged into any github/i.test(error)
+  ) {
+    return true
+  }
+  return false
+}
+
+/** Ignore stale status snapshots that would drop an in-flight Connect GitHub flow. */
+function mergeAuthStatus(
+  prev: GithubAuthStatus | null,
+  incoming: GithubAuthStatus
+): GithubAuthStatus {
+  if (
+    prev?.pending &&
+    !incoming.pending &&
+    !incoming.ghAuthenticated &&
+    !incoming.error
+  ) {
+    return prev
+  }
+  return incoming
+}
+
+function needsGhInstall(error: string | null, auth: GithubAuthStatus | null): boolean {
+  if (auth && !auth.ghAvailable) return true
+  if (error && /GitHub CLI \(gh\) is not installed|gh is not installed|not on PATH/i.test(error)) {
+    return true
+  }
   return false
 }
 
@@ -125,11 +181,32 @@ function checksLabel(pr: PrView): string {
   return `Checks ${passed}/${total}`
 }
 
-function checksPassedCount(pr: PrView): number {
+/** Count checks that actually passed — not bare COMPLETED without a success conclusion. */
+export function checksPassedCount(pr: PrView): number {
   return pr.checks.filter((c) => {
-    const conclusion = (c.conclusion ?? c.state).toUpperCase()
-    return conclusion === 'SUCCESS' || conclusion === 'PASSED' || conclusion === 'COMPLETED'
+    const conclusion = (c.conclusion ?? '').toUpperCase()
+    if (conclusion === 'SUCCESS' || conclusion === 'PASSED') return true
+    if (c.conclusion == null || c.conclusion === '') {
+      const state = c.state.toUpperCase()
+      return state === 'SUCCESS' || state === 'PASSED'
+    }
+    return false
   }).length
+}
+
+function prStateTone(state: string): string {
+  const s = state.trim().toUpperCase()
+  if (s === 'MERGED') return 'bg-accent/20 text-accent'
+  if (s === 'CLOSED') return 'bg-danger/15 text-danger'
+  if (s === 'DRAFT') return 'bg-surface-2 text-muted'
+  if (s === 'OPEN') return 'bg-success/20 text-success'
+  return 'bg-surface-2 text-muted'
+}
+
+function prMergeAllowed(pr: PrView): boolean {
+  if (pr.isDraft) return false
+  const s = pr.state.trim().toUpperCase()
+  return s !== 'CLOSED' && s !== 'MERGED'
 }
 
 function mergeMethodIcon(method: PrMergeMethod): IconName {
@@ -186,7 +263,8 @@ export function PrPanel({
   onPrMeta,
   onUnlink,
   active = true,
-  gitRevision = 0
+  gitRevision = 0,
+  onOpenFile
 }: {
   workspacePath?: string | null
   className?: string
@@ -196,6 +274,7 @@ export function PrPanel({
   active?: boolean
   /** Same clock as Changes — reloads PR metadata after git-mutating activity. */
   gitRevision?: number
+  onOpenFile?: (path: string, options?: WorkspaceFileOpenOptions) => void
 }) {
   const [pr, setPr] = useState<PrView | null>(null)
   const [loading, setLoading] = useState(false)
@@ -221,9 +300,12 @@ export function PrPanel({
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [auth, setAuth] = useState<GithubAuthStatus | null>(null)
   const [authBusy, setAuthBusy] = useState(false)
+  const [ghInstallBusy, setGhInstallBusy] = useState(false)
+  const [createBusy, setCreateBusy] = useState(false)
   const headerMenusRef = useRef<HTMLDivElement>(null)
   const findInputRef = useRef<HTMLInputElement>(null)
   const titleInputRef = useRef<HTMLInputElement>(null)
+  const prevGitRevisionRef = useRef(gitRevision)
   /** Keep latest callback without putting it in `load` deps (avoids prView spam). */
   const onPrMetaRef = useRef(onPrMeta)
   onPrMetaRef.current = onPrMeta
@@ -245,7 +327,7 @@ export function PrPanel({
     return () => document.removeEventListener('pointerdown', onPointerDown)
   }, [menuOpen, mergeOpen, layoutOpen, closeMenus])
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts?: { quiet?: boolean }) => {
     const seq = ++loadSeqRef.current
     if (!workspacePath || !window.vyotiq?.prView) {
       if (seq !== loadSeqRef.current) return
@@ -256,18 +338,39 @@ export function PrPanel({
           ? 'PR IPC unavailable'
           : 'Open a workspace to view a pull request.'
       )
+      setLoading(false)
       return
     }
-    setLoading(true)
-    setError(null)
+    if (!opts?.quiet) {
+      setLoading(true)
+      setError(null)
+    }
     try {
+      let authData: GithubAuthStatus | null = null
       if (window.vyotiq.githubAuthStatus) {
         const authRes = await window.vyotiq.githubAuthStatus()
-        if (seq === loadSeqRef.current && authRes.ok) setAuth(authRes.data)
+        if (seq === loadSeqRef.current && authRes.ok) {
+          authData = authRes.data
+          setAuth((prev) => mergeAuthStatus(prev, authRes.data))
+        }
+      }
+      if (
+        authData?.ghAvailable &&
+        !authData.ghAuthenticated &&
+        !authData.pending
+      ) {
+        if (seq !== loadSeqRef.current) return
+        if (!opts?.quiet) {
+          setPr(null)
+          onPrMetaRef.current?.(null)
+          setError('Connect GitHub to view pull requests for this branch.')
+        }
+        return
       }
       const res = await window.vyotiq.prView(workspacePath)
       if (seq !== loadSeqRef.current) return
       if (!res.ok) {
+        if (opts?.quiet) return
         setPr(null)
         onPrMetaRef.current?.(null)
         setError(res.error)
@@ -280,52 +383,176 @@ export function PrPanel({
       if (res.data) {
         setViewed(loadViewed(workspacePath, res.data.number))
         setTitleDraft(res.data.title)
-      } else {
+        if (opts?.quiet) setError(null)
+      } else if (!opts?.quiet) {
         setError('No pull request for this branch.')
       }
+    } catch (err) {
+      if (seq !== loadSeqRef.current) return
+      if (opts?.quiet) return
+      setPr(null)
+      onPrMetaRef.current?.(null)
+      setError(err instanceof Error ? err.message : String(err))
     } finally {
       if (seq === loadSeqRef.current) setLoading(false)
     }
   }, [workspacePath])
 
+  const hadGhAuthRef = useRef(false)
+
+  const applyAuthStatus = useCallback(
+    (data: GithubAuthStatus) => {
+      setAuth((prev) => mergeAuthStatus(prev, data))
+      if (data.ghAuthenticated && !hadGhAuthRef.current) {
+        hadGhAuthRef.current = true
+        setError(null)
+        void load()
+      }
+      hadGhAuthRef.current = data.ghAuthenticated
+    },
+    [load]
+  )
+
   const refreshAuth = useCallback(async () => {
     if (!window.vyotiq?.githubAuthStatus) return
     const res = await window.vyotiq.githubAuthStatus()
-    if (res.ok) setAuth(res.data)
-  }, [])
+    if (!res.ok) return
+    applyAuthStatus(res.data)
+  }, [applyAuthStatus])
+
+  useEffect(() => {
+    const unsubscribe = window.vyotiq?.onGithubAuthStatus?.(applyAuthStatus)
+    return () => {
+      unsubscribe?.()
+    }
+  }, [applyAuthStatus])
 
   useEffect(() => {
     if (!auth?.pending) return undefined
     const id = window.setInterval(() => {
-      void refreshAuth().then(() => {
-        void load()
-      })
+      void refreshAuth()
     }, 2000)
     return () => window.clearInterval(id)
-  }, [auth?.pending, refreshAuth, load])
+  }, [auth?.pending, refreshAuth])
 
   const connectGithub = useCallback(async () => {
-    if (!window.vyotiq?.githubAuthStart) return
+    if (!window.vyotiq?.githubAuthStart) {
+      setAuth((prev) => ({
+        ghAvailable: prev?.ghAvailable ?? true,
+        ghAuthenticated: false,
+        clientIdConfigured: prev?.clientIdConfigured ?? false,
+        hasAppToken: false,
+        pending: false,
+        userCode: null,
+        verificationUri: null,
+        error: 'GitHub connect is unavailable in this build. Restart Agent V and try again.'
+      }))
+      return
+    }
     setAuthBusy(true)
-    setNotice(null)
+    setAuth((prev) => ({
+      ghAvailable: prev?.ghAvailable ?? true,
+      ghAuthenticated: false,
+      clientIdConfigured: prev?.clientIdConfigured ?? false,
+      hasAppToken: false,
+      pending: true,
+      userCode: prev?.userCode ?? null,
+      verificationUri: prev?.verificationUri ?? 'https://github.com/login/device',
+      error: null
+    }))
     try {
       const res = await window.vyotiq.githubAuthStart()
       if (res.ok) {
-        setAuth(res.data)
-        setNotice(
-          res.data.userCode
-            ? `Enter code ${res.data.userCode} in the browser to finish connecting.`
-            : 'Complete authorization in your browser.'
+        applyAuthStatus(res.data)
+      } else {
+        setAuth((prev) =>
+          prev
+            ? { ...prev, error: res.error, pending: false }
+            : {
+                ghAvailable: true,
+                ghAuthenticated: false,
+                clientIdConfigured: false,
+                hasAppToken: false,
+                pending: false,
+                userCode: null,
+                verificationUri: null,
+                error: res.error
+              }
         )
+      }
+    } catch (err) {
+      setAuth((prev) => ({
+        ghAvailable: prev?.ghAvailable ?? true,
+        ghAuthenticated: false,
+        clientIdConfigured: prev?.clientIdConfigured ?? false,
+        hasAppToken: false,
+        pending: false,
+        userCode: null,
+        verificationUri: null,
+        error: err instanceof Error ? err.message : String(err)
+      }))
+    } finally {
+      setAuthBusy(false)
+    }
+  }, [applyAuthStatus])
+
+  const cancelGithub = useCallback(() => {
+    void window.vyotiq.githubAuthCancel?.().then((res) => {
+      if (res.ok) applyAuthStatus(res.data)
+    })
+  }, [applyAuthStatus])
+
+  const installGhCli = useCallback(async () => {
+    if (!window.vyotiq?.githubCliInstall) return
+    setGhInstallBusy(true)
+    setNotice(null)
+    setNoticeFailed(false)
+    setError(null)
+    try {
+      const res = await window.vyotiq.githubCliInstall()
+      if (res.ok && res.data.ghAvailable) {
+        setAuth((prev) => (prev ? { ...prev, ghAvailable: true } : prev))
+        setNotice(res.data.detail || 'GitHub CLI is ready.')
         setNoticeFailed(false)
+        await refreshAuth()
+        void load()
+        return
+      }
+      await refreshAuth()
+      const authRes = await window.vyotiq.githubAuthStatus?.()
+      if (authRes?.ok && authRes.data.ghAvailable) {
+        setAuth(authRes.data)
+        setNotice('GitHub CLI is ready.')
+        setNoticeFailed(false)
+        void load()
+      } else {
+        setNotice(res.ok ? 'GitHub CLI install finished but is not ready yet.' : res.error)
+        setNoticeFailed(true)
+      }
+    } finally {
+      setGhInstallBusy(false)
+    }
+  }, [load, refreshAuth])
+
+  const createPr = useCallback(async () => {
+    if (!workspacePath || !window.vyotiq?.prCreate || createBusy) return
+    setCreateBusy(true)
+    setNotice(null)
+    setNoticeFailed(false)
+    try {
+      const res = await window.vyotiq.prCreate(workspacePath, { draft: true })
+      if (res.ok) {
+        setNotice(`${res.data.detail}: ${res.data.url}`)
+        setNoticeFailed(false)
+        await load()
       } else {
         setNotice(res.error)
         setNoticeFailed(true)
       }
     } finally {
-      setAuthBusy(false)
+      setCreateBusy(false)
     }
-  }, [])
+  }, [workspacePath, createBusy, load])
 
   const openExternal = useCallback(async (url: string) => {
     if (!window.vyotiq?.shellOpenExternal) return
@@ -337,8 +564,11 @@ export function PrPanel({
   }, [])
 
   useEffect(() => {
-    void load()
-  }, [load, gitRevision])
+    if (!active) return
+    const quiet = prevGitRevisionRef.current !== gitRevision
+    prevGitRevisionRef.current = gitRevision
+    void load(quiet ? { quiet: true } : undefined)
+  }, [load, gitRevision, active])
 
   useEffect(() => {
     setExpanded(new Set())
@@ -371,7 +601,7 @@ export function PrPanel({
       setNoticeFailed(false)
       closeMenus()
       try {
-        const res = await window.vyotiq.prMerge(workspacePath, method)
+        const res = await window.vyotiq.prMerge(workspacePath, method, pr.number)
         if (res.ok) {
           setNotice(res.data.detail)
           setNoticeFailed(false)
@@ -424,16 +654,17 @@ export function PrPanel({
 
   const fetchPrDiff = useCallback(
     async (path: string) => {
-      if (!workspacePath) return { error: 'No workspace' }
+      if (!workspacePath || !pr) return { error: 'No workspace' }
       const res = await window.vyotiq.prDiff({
         workspacePath,
         path,
-        ignoreWhitespace
+        ignoreWhitespace,
+        number: pr.number
       })
       if (!res.ok) return { error: res.error }
       return { content: res.data.content }
     },
-    [workspacePath, ignoreWhitespace]
+    [workspacePath, ignoreWhitespace, pr]
   )
 
   const browserFiles = useMemo(
@@ -448,64 +679,33 @@ export function PrPanel({
   }, [browserFiles, findQuery])
 
   const showConnect = needsGithubConnect(error, auth)
+  const showGhInstall = needsGhInstall(error, auth)
+  const canCreatePr = Boolean(
+    auth?.ghAvailable &&
+      auth.ghAuthenticated &&
+      !auth.pending &&
+      !/not a git repository/i.test(error ?? '')
+  )
 
-  const connectActions = (
-    <>
-      {auth && !auth.clientIdConfigured ? (
-        <p className="m-0 w-full text-caption text-muted">
-          Set a GitHub client ID in Settings → Agent (or VYOTIQ_GITHUB_CLIENT_ID) before connecting.
-        </p>
-      ) : null}
-      <Button
-        variant="subtle"
-        className="h-7 px-2.5 text-caption"
-        disabled={
-          authBusy ||
-          Boolean(auth?.pending) ||
-          Boolean(auth && !auth.clientIdConfigured)
-        }
-        onClick={() => void connectGithub()}
-      >
-        {auth?.pending ? 'Waiting…' : 'Connect GitHub'}
-      </Button>
-      {auth?.pending && auth.verificationUri ? (
-        <Button
-          variant="subtle"
-          className="h-7 px-2.5 text-caption"
-          onClick={() => void openExternal(auth.verificationUri!)}
-        >
-          Open verification
-        </Button>
-      ) : null}
-      {auth?.pending ? (
-        <Button
-          variant="subtle"
-          className="h-7 px-2.5 text-caption"
-          disabled={authBusy}
-          onClick={() => {
-            void window.vyotiq.githubAuthCancel?.().then((res) => {
-              if (res.ok) setAuth(res.data)
-            })
-          }}
-        >
-          Cancel
-        </Button>
-      ) : null}
-      {auth?.hasAppToken ? (
-        <Button
-          variant="subtle"
-          className="h-7 px-2.5 text-caption"
-          onClick={() => {
-            void window.vyotiq.githubAuthLogout?.().then((res) => {
-              if (res.ok) setAuth(res.data)
-              void load()
-            })
-          }}
-        >
-          Disconnect
-        </Button>
-      ) : null}
-    </>
+  const ghInstallActions = (
+    <Button
+      variant="subtle"
+      className="h-7 px-2.5 text-caption"
+      disabled={ghInstallBusy}
+      onClick={() => void installGhCli()}
+    >
+      {ghInstallBusy ? 'Installing…' : 'Install GitHub CLI'}
+    </Button>
+  )
+
+  const githubAuthPanel = (
+    <GithubAuthPanel
+      auth={auth}
+      authBusy={authBusy}
+      onConnect={() => void connectGithub()}
+      onCancel={cancelGithub}
+      onOpenGithub={(url) => void openExternal(url)}
+    />
   )
 
   const closePr = useCallback(async () => {
@@ -517,7 +717,7 @@ export function PrPanel({
     closeMenus()
     setNotice(null)
     setNoticeFailed(false)
-    const res = await window.vyotiq.prClose(workspacePath)
+    const res = await window.vyotiq.prClose(workspacePath, pr.number)
     if (res.ok) {
       setNotice(res.data.detail)
       setNoticeFailed(false)
@@ -536,7 +736,7 @@ export function PrPanel({
       setTitleDraft(pr.title)
       return
     }
-    const res = await window.vyotiq.prEditTitle(workspacePath, next)
+    const res = await window.vyotiq.prEditTitle(workspacePath, next, pr.number)
     if (res.ok) {
       setPr((curr) => (curr ? { ...curr, title: res.data.title } : curr))
       onPrMeta?.({ number: pr.number, title: res.data.title })
@@ -560,11 +760,13 @@ export function PrPanel({
     if (!pr || !active) return undefined
     const onKey = (e: KeyboardEvent): void => {
       if (matchShortcut(e, 'refresh')) {
+        if (isEditableShortcutTarget(e.target)) return
         e.preventDefault()
         void load()
         return
       }
       if (matchShortcut(e, 'find') && tab === 'changes') {
+        if (isEditableShortcutTarget(e.target)) return
         e.preventDefault()
         setFindOpen(true)
         return
@@ -603,7 +805,7 @@ export function PrPanel({
       {pr ? (
         <div className="flex shrink-0 flex-col gap-1 border-b border-border/40 px-2.5 py-2">
           <div className="flex h-7 min-w-0 items-center gap-2">
-            <span className="shrink-0 rounded bg-success/20 px-1.5 py-0.5 text-2xs font-medium leading-none text-success">
+            <span className={cn('shrink-0 rounded px-1.5 py-0.5 text-2xs font-medium leading-none', prStateTone(pr.state))}>
               {formatPrState(pr.state)}
             </span>
             <span className="min-w-0 flex-1 truncate text-caption leading-none text-muted" title={`${pr.headRefName} → ${pr.baseRefName}`}>
@@ -705,7 +907,7 @@ export function PrPanel({
                         setTab('changes')
                       }}
                     >
-                      <span>Find in Diff</span>
+                      <span>Filter files</span>
                       <span className="text-muted">{shortcutLabel('find')}</span>
                     </button>
                     <button
@@ -734,7 +936,7 @@ export function PrPanel({
                       className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                       onClick={() => {
                         closeMenus()
-                        void navigator.clipboard.writeText(pr.url)
+                        void copyText(pr.url)
                       }}
                     >
                       Copy URL
@@ -748,6 +950,21 @@ export function PrPanel({
                       <span className="text-muted">Shift+Alt+T</span>
                     </button>
                     <div className="my-1 border-t border-border/50" />
+                    {auth?.hasAppToken ? (
+                      <button
+                        type="button"
+                        className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
+                        onClick={() => {
+                          closeMenus()
+                          void window.vyotiq.githubAuthLogout?.().then((res) => {
+                            if (res.ok) applyAuthStatus(res.data)
+                            void load()
+                          })
+                        }}
+                      >
+                        Disconnect
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className="flex w-full px-2.5 py-1.5 text-left text-caption text-danger hover:bg-surface"
@@ -764,11 +981,12 @@ export function PrPanel({
                         onUnlink?.()
                       }}
                     >
-                      Unlink PR
+                      Hide panel
                     </button>
                   </div>
                 ) : null}
               </div>
+              {prMergeAllowed(pr) ? (
               <DockSplitButton
                 primaryClassName="text-success"
                 primaryLabel={mergeLabel}
@@ -815,6 +1033,7 @@ export function PrPanel({
                   ) : null
                 }
               />
+              ) : null}
             </div>
           </div>
           {editingTitle ? (
@@ -830,6 +1049,7 @@ export function PrPanel({
                 type="text"
                 className="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-xs text-fg"
                 value={titleDraft}
+                maxLength={256}
                 aria-label="PR title"
                 onChange={(e) => setTitleDraft(e.target.value)}
                 onKeyDown={(e) => {
@@ -915,8 +1135,8 @@ export function PrPanel({
             type="search"
             className="min-w-0 flex-1 rounded border border-border bg-bg px-2 py-1 text-caption text-fg"
             value={findQuery}
-            placeholder="Find in diff…"
-            aria-label="Find in diff"
+            placeholder="Filter files…"
+            aria-label="Filter files"
             onChange={(e) => setFindQuery(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Escape') {
@@ -945,18 +1165,34 @@ export function PrPanel({
         {loading ? (
           <p className="m-0 text-xs text-muted">Loading…</p>
         ) : !pr ? (
-          <EmptyPanel
-            icon="pullRequest"
-            title={prEmptyTitle(error)}
-            body={
-              showConnect
-                ? auth?.userCode
-                  ? `Enter ${auth.userCode} at GitHub to authorize VYOTIQ.`
-                  : 'Connect GitHub to view pull requests for this branch.'
-                : (error ?? 'Connect GitHub to view PRs for this branch.')
-            }
-            actions={showConnect || auth?.pending ? connectActions : undefined}
-          />
+          showGhInstall ? (
+            <EmptyPanel
+              icon="pullRequest"
+              title={prEmptyTitle(error)}
+              body="Install GitHub CLI to view pull requests for this branch. Agent V uses winget or Homebrew when available, otherwise downloads gh into app data."
+              actions={ghInstallActions}
+            />
+          ) : showConnect || auth?.pending ? (
+            githubAuthPanel
+          ) : (
+            <EmptyPanel
+              icon="pullRequest"
+              title={prEmptyTitle(error)}
+              body={prEmptyBody(error)}
+              actions={
+                canCreatePr ? (
+                  <Button
+                    variant="subtle"
+                    className="h-7 px-2.5 text-caption"
+                    disabled={createBusy}
+                    onClick={() => void createPr()}
+                  >
+                    {createBusy ? 'Creating…' : 'Create draft PR'}
+                  </Button>
+                ) : undefined
+              }
+            />
+          )
         ) : tab === 'description' ? (
           <div className="min-h-0 flex-1 overflow-auto">
             <MarkdownContent content={pr.body || '_No description_'} className="text-sm" />
@@ -964,12 +1200,7 @@ export function PrPanel({
         ) : tab === 'commits' ? (
           <div className="min-h-0 flex-1 overflow-auto">
           {showConnect && pr.commits.length === 0 ? (
-            <EmptyPanel
-              icon="pullRequest"
-              title="GitHub authentication required"
-              body="Connect GitHub to load commits for this pull request."
-              actions={connectActions}
-            />
+            githubAuthPanel
           ) : pr.commits.length === 0 ? (
             <p className="m-0 text-caption text-muted">No commits reported for this pull request.</p>
           ) : (
@@ -1010,23 +1241,7 @@ export function PrPanel({
           <div className="min-h-0 flex-1 space-y-3 overflow-auto">
             {showConnect &&
             (pr.latestReviews.length ? pr.latestReviews : pr.reviews).length === 0 ? (
-              <EmptyPanel
-                icon="pullRequest"
-                title="GitHub authentication required"
-                body="Connect GitHub to load reviews for this pull request."
-                actions={
-                  <>
-                    {connectActions}
-                    <Button
-                      variant="subtle"
-                      className="h-7 px-2.5 text-caption"
-                      onClick={() => void openExternal(pr.url)}
-                    >
-                      View on Web
-                    </Button>
-                  </>
-                }
-              />
+              githubAuthPanel
             ) : (
               <>
                 {pr.reviewDecision ? (
@@ -1071,6 +1286,8 @@ export function PrPanel({
                 findQuery={findQuery}
                 viewedPaths={viewed}
                 onToggleViewed={toggleViewed}
+                workspacePath={workspacePath}
+                onOpenFile={onOpenFile}
               />
             )}
           </>

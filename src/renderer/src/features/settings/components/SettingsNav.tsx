@@ -1,56 +1,77 @@
 import type { Ref } from 'react'
-import { Icon } from '@renderer/lib/icons'
-import { NavItem } from '@renderer/lib/ui'
+import { Icon, type IconName } from '@renderer/lib/icons'
+import { NavItem, cn } from '@renderer/lib/ui'
+import { SETTINGS_NAV_WIDTH } from '@renderer/lib/utils/layout'
+import { SECTION_LABELS } from '../constants'
 import type { SettingsSection } from '../types'
 
-const SECTIONS: {
-  id: SettingsSection
-  label: string
-  icon: 'home' | 'cpu' | 'bot' | 'marketplace'
-}[] = [
-  { id: 'general', label: 'General', icon: 'home' },
-  { id: 'providers', label: 'Providers', icon: 'cpu' },
-  { id: 'agent', label: 'Agent', icon: 'bot' },
-  { id: 'marketplace', label: 'Marketplace', icon: 'marketplace' }
-]
+const SECTION_ICONS = {
+  general: 'gear',
+  appearance: 'sliders',
+  providers: 'cpu',
+  agent: 'bot',
+  indexing: 'fileSearch',
+  voice: 'mic',
+  tools: 'plug',
+  integrations: 'globe',
+  shortcuts: 'keyboard',
+  about: 'info'
+} as const satisfies Record<SettingsSection, IconName>
 
-export function SettingsNav({
+const SECTIONS: { id: SettingsSection; label: string; icon: IconName }[] = (
+  Object.keys(SECTION_LABELS) as SettingsSection[]
+).map((id) => ({
+  id,
+  label: SECTION_LABELS[id].title,
+  icon: SECTION_ICONS[id]
+}))
+
+export function SettingsBackButton({
   backRef,
-  section,
-  onClose,
-  onSectionChange
+  onClose
 }: {
   backRef?: Ref<HTMLButtonElement>
-  section: SettingsSection
   onClose: () => void
+}) {
+  return (
+    <button
+      ref={backRef}
+      type="button"
+      className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-sm text-muted vy-transition hover:bg-surface/50 hover:text-fg"
+      onClick={onClose}
+    >
+      <Icon name="chevron" size={14} className="rotate-90" />
+      Back
+    </button>
+  )
+}
+
+export function SettingsNav({
+  section,
+  onSectionChange
+}: {
+  section: SettingsSection
   onSectionChange: (section: SettingsSection) => void
 }) {
   return (
     <nav
-      className="flex shrink-0 flex-row items-center gap-1 overflow-x-auto bg-bg px-2 py-2 sm:w-[168px] sm:flex-col sm:items-stretch sm:gap-1 sm:overflow-visible sm:py-2.5"
+      className={cn(
+        'flex shrink-0 flex-row items-center gap-0.5 overflow-x-auto px-2 pb-2',
+        'sm:flex-col sm:items-stretch sm:overflow-visible sm:px-3 sm:pb-3 sm:pt-0',
+        SETTINGS_NAV_WIDTH
+      )}
       aria-label="Settings sections"
     >
-      <button
-        ref={backRef}
-        type="button"
-        className="mr-1 inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-2 text-sm text-muted vy-transition hover:bg-surface/50 hover:text-fg sm:mb-1 sm:mr-0 sm:w-full"
-        onClick={onClose}
-      >
-        <Icon name="chevron" size={14} className="rotate-90" />
-        Back
-      </button>
-      <div className="flex min-w-0 flex-1 gap-1 sm:flex-col sm:gap-1">
-        {SECTIONS.map(({ id, label, icon }) => (
-          <NavItem
-            key={id}
-            variant="settings"
-            label={label}
-            icon={icon}
-            active={section === id}
-            onClick={() => onSectionChange(id)}
-          />
-        ))}
-      </div>
+      {SECTIONS.map(({ id, label, icon }) => (
+        <NavItem
+          key={id}
+          variant="settings"
+          label={label}
+          icon={icon}
+          active={section === id}
+          onClick={() => onSectionChange(id)}
+        />
+      ))}
     </nav>
   )
 }

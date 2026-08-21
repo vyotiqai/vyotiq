@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
+import { VyotiqMark } from '@renderer/lib/brand'
 import { IconButton, cn } from '@renderer/lib/ui'
 import { TITLE_BAR_HEIGHT, showsWindowControls } from '@renderer/lib/utils/layout'
 import { useIsDesktop } from '@renderer/lib/context/BreakpointProvider'
@@ -45,12 +46,14 @@ export function TitleBar({
   return (
     <header
       className={cn(
-        'app-region-drag z-sticky flex shrink-0 items-stretch border-b border-border/30 bg-bg',
+        'app-region-drag z-sticky flex shrink-0 items-stretch bg-bg',
+        occupied ? 'border-b-0' : 'border-b border-border/30',
         TITLE_BAR_HEIGHT,
         showControls ? 'pr-0' : 'pr-2'
       )}
       style={!isDesktop && isDarwin ? { paddingLeft: MACOS_TITLEBAR_INSET_PX } : undefined}
       data-titlebar
+      aria-label="Window title bar"
     >
       {/* Mobile only: open navigation when the drawer is closed.
           Desktop toggle lives inside the sidebar header. */}
@@ -76,11 +79,18 @@ export function TitleBar({
           occupied && 'flex items-stretch'
         )}
         data-titlebar-accessory
+        role={occupied ? undefined : 'presentation'}
         aria-hidden={occupied ? undefined : true}
         onDoubleClick={() => {
           if (!occupied && showControls) void window.vyotiq?.windowMaximize()
         }}
-      />
+      >
+        {!isDesktop && !drawerOpen && !occupied ? (
+          <div className="pointer-events-none flex h-full items-center justify-center" aria-hidden>
+            <VyotiqMark size={17} className="text-fg/70" decorative />
+          </div>
+        ) : null}
+      </div>
 
       {showControls ? (
         <div className="app-region-no-drag flex shrink-0 items-stretch" data-titlebar-controls>

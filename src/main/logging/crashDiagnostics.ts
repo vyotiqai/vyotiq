@@ -1,6 +1,8 @@
 import { existsSync, readFileSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { atomicWriteJson } from '../storage/atomicWrite'
+import { CRASH_DEDUPE_KEY } from '../../shared/ipc'
+import { publishLifecycleNotification } from '../notifications/bus'
 
 /** Decode Windows exit codes as unsigned NTSTATUS hex for crash logs. */
 export function formatWindowsExitCode(exitCode: number): string | undefined {
@@ -17,6 +19,28 @@ export function shouldReloadRendererAfterCrash(reason: string): boolean {
     reason === 'memory-eviction' ||
     reason === 'launch-failed'
   )
+}
+
+export const RENDERER_RELOAD_COOLDOWN_MS = 10_000
+export const MAX_RENDERER_RELOADS = 3
+export const RENDERER_HEALTHY_RESET_MS = 60_000
+
+export type RendererReloadPlan =
+  | { action: 'give-up' }
+  | { action: 'skip-pending' }
+  | { action: 'reload'; waitMs: number }
+
+export function planRendererReload(input: {
+  now: number
+  lastReloadAt: number
+  reloadCount: number
+  pending: boolean
+}): RendererReloadPlan {
+  if (input.reloadCount >= MAX_RENDERER_RELOADS) return { action: 'give-up' }
+  if (input.pending) return { action: 'skip-pending' }
+  const elapsed = input.lastReloadAt === 0 ? RENDERER_RELOAD_COOLDOWN_MS : input.now - input.lastReloadAt
+  const waitMs = Math.max(0, RENDERER_RELOAD_COOLDOWN_MS - elapsed)
+  return { action: 'reload', waitMs }
 }
 
 /** Count Crashpad minidump files currently on disk (best-effort). */
@@ -156,6 +180,15 @@ export function markRendererRecoveryPending(pending: CrashRecoveryPending): void
   const history = readHistory()
   history.pendingRecovery = pending
   writeHistory(history)
+  const code = pending.exitCodeHex ?? (pending.exitCode != null ? String(pending.exitCode) : '')
+  publishLifecycleNotification({
+    source: 'system',
+    kind: 'crash',
+    title: 'UI recovered after a crash',
+    body: code ? `${pending.reason} · ${code}` : pending.reason,
+    dedupeKey: CRASH_DEDUPE_KEY,
+    action: { type: 'open_settings', section: 'general' }
+  })
 }
 
 /** Read-and-clear the post-reload recovery banner payload. */
@@ -168,7 +201,7 @@ export function consumeRendererRecoveryPending(): CrashRecoveryPending | null {
   return pending
 }
 
-/** Recent crash snippets for Settings → Diagnostics (does not clear). */
+/** Recent crash snippets for Settings → General (does not clear). */
 export function listCrashSnippets(): CrashSnippet[] {
   return readHistory().snippets
 }

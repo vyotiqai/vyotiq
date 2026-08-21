@@ -12,11 +12,14 @@ import {
   recordCrashSnippet,
   sanitizeCrashUrl,
   shouldReloadRendererAfterCrash,
+  planRendererReload,
+  RENDERER_HEALTHY_RESET_MS,
   backfillCrashSnippetsFromLog
 } from './crashDiagnostics'
-import { isIgnorablePipeError } from './pipeErrors'
+import { isAbortError } from '../../shared/errors'
+import { isIgnorablePipeError, isIgnorableUncaught } from './pipeErrors'
 
-export { isIgnorablePipeError } from './pipeErrors'
+export { isIgnorablePipeError, isIgnorableUncaught } from './pipeErrors'
 
 export function logsDirectory(): string {
   return join(app.getPath('userData'), 'logs')
@@ -137,7 +140,12 @@ function installProcessHandlers(): void {
 
   process.on('uncaughtException', (err) => {
     // Logging an EPIPE via console transport re-triggers write → infinite storm.
-    if (isIgnorablePipeError(err)) return
+    if (isIgnorableUncaught(err)) {
+      if (isAbortError(err)) {
+        logger.warn('Ignored abort-shaped uncaught exception', { scope: 'main', err })
+      }
+      return
+    }
     logger.fatal('Uncaught exception', {
       scope: 'main',
       code: 'UNCAUGHT',
@@ -147,7 +155,12 @@ function installProcessHandlers(): void {
   })
 
   process.on('unhandledRejection', (reason) => {
-    if (isIgnorablePipeError(reason)) return
+    if (isIgnorableUncaught(reason)) {
+      if (isAbortError(reason)) {
+        logger.warn('Ignored abort-shaped unhandled rejection', { scope: 'main', err: reason })
+      }
+      return
+    }
     logger.fatal('Unhandled rejection', {
       scope: 'main',
       code: 'UNCAUGHT',
@@ -161,10 +174,10 @@ export function logWithFields(level: LogLevel, message: string, fields?: LogFiel
   logger[level](message, fields)
 }
 
-const RENDERER_RELOAD_COOLDOWN_MS = 10_000
-const MAX_RENDERER_RELOADS = 3
 let rendererReloadCount = 0
 let lastRendererReloadAt = 0
+let rendererReloadTimer: ReturnType<typeof setTimeout> | null = null
+let rendererHealthyTimer: ReturnType<typeof setTimeout> | null = null
 
 function resolveCrashDumpsPath(): string | undefined {
   return crashDumpsDirectory() ?? (() => {
@@ -215,26 +228,33 @@ function maybeReloadRendererAfterCrash(
   details: Electron.RenderProcessGoneDetails
 ): void {
   if (!shouldReloadRendererAfterCrash(details.reason)) return
-  if (rendererReloadCount >= MAX_RENDERER_RELOADS) {
+  const plan = planRendererReload({
+    now: Date.now(),
+    lastReloadAt: lastRendererReloadAt,
+    reloadCount: rendererReloadCount,
+    pending: rendererReloadTimer != null
+  })
+  if (plan.action === 'give-up') {
     logger.warn('Renderer reload limit reached after repeated crashes', {
       scope: 'main',
       reloadCount: rendererReloadCount
     })
     return
   }
-  const now = Date.now()
-  if (now - lastRendererReloadAt < RENDERER_RELOAD_COOLDOWN_MS) return
-  lastRendererReloadAt = now
-  rendererReloadCount += 1
-  const exitCodeHex = formatWindowsExitCode(details.exitCode)
-  markRendererRecoveryPending({
-    at: new Date().toISOString(),
-    reason: details.reason,
-    exitCode: details.exitCode,
-    ...(exitCodeHex ? { exitCodeHex } : {})
-  })
-  setTimeout(() => {
+  if (plan.action === 'skip-pending') return
+
+  const fire = (): void => {
+    rendererReloadTimer = null
     if (webContents.isDestroyed()) return
+    lastRendererReloadAt = Date.now()
+    rendererReloadCount += 1
+    const exitCodeHex = formatWindowsExitCode(details.exitCode)
+    markRendererRecoveryPending({
+      at: new Date().toISOString(),
+      reason: details.reason,
+      exitCode: details.exitCode,
+      ...(exitCodeHex ? { exitCodeHex } : {})
+    })
     try {
       webContents.reload()
       logger.info('Reloading renderer after crash', {
@@ -245,7 +265,19 @@ function maybeReloadRendererAfterCrash(
     } catch (err) {
       logger.warn('Failed to reload renderer after crash', { scope: 'main', err })
     }
-  }, 500)
+    if (rendererHealthyTimer) clearTimeout(rendererHealthyTimer)
+    rendererHealthyTimer = setTimeout(() => {
+      rendererReloadCount = 0
+      lastRendererReloadAt = 0
+      rendererHealthyTimer = null
+    }, RENDERER_HEALTHY_RESET_MS)
+  }
+
+  if (plan.waitMs <= 0) {
+    fire()
+    return
+  }
+  rendererReloadTimer = setTimeout(fire, plan.waitMs)
 }
 
 export function attachWebContentsCrashLogging(

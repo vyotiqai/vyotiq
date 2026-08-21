@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 import type { UiItem } from '@shared/transcript'
 import { buildTranscriptRows } from '@renderer/features/chat/utils/transcriptRows'
 import { collectTurnFileDiffs } from '@renderer/features/chat/utils/turnFileDiffs'
-import { isPlanDraftReady, PLAN_STUB, planHandoffPreview } from '@renderer/features/chat/components/composer/PlanHandoff'
+import {
+  isPlanDraftReady,
+  minimalReadyPlanMarkdown,
+  PLAN_STUB
+} from '@renderer/features/chat/utils/planDraft'
+import { DEFAULT_PLAN_STUB } from '@shared/planStub'
 
 function tool(
   id: string,
@@ -72,12 +77,50 @@ describe('collectLastTurnChangedFiles', () => {
     expect(last.some((f) => f.path === 'old.ts')).toBe(false)
     expect(last.some((f) => f.path === 'new.ts')).toBe(true)
   })
+
+  it('keeps created when a later edit modifies the same path', async () => {
+    const { mergeChangedFileAction } = await import(
+      '@renderer/features/chat/utils/turnFileDiffs'
+    )
+    expect(mergeChangedFileAction('created', 'modified')).toBe('created')
+    expect(mergeChangedFileAction('created', 'deleted')).toBe('deleted')
+  })
+
+  it('marks successful deletes as deleted', async () => {
+    const { collectSessionChangedFiles } = await import(
+      '@renderer/features/chat/utils/turnFileDiffs'
+    )
+    const files = collectSessionChangedFiles([
+      { kind: 'message', id: 'u1', role: 'user', content: 'remove', at: 1 },
+      tool('t1', 'delete', { path: 'src/gone.ts' })
+    ])
+    expect(files).toEqual([{ path: 'src/gone.ts', added: 0, removed: 1, action: 'deleted' }])
+  })
+})
+
+describe('mergeCheckpointChangedFiles', () => {
+  it('adds checkpoint-only paths to tool-arg changed files', async () => {
+    const { mergeCheckpointChangedFiles, checkpointOnlyChangedFiles } = await import(
+      '@renderer/features/chat/utils/turnFileDiffs'
+    )
+    const toolFiles = [{ path: 'src/a.ts', added: 2, removed: 1, action: 'modified' as const }]
+    const checkpoint = [
+      { path: 'src/a.ts', action: 'modified' as const },
+      { path: 'dist/out.js', action: 'created' as const }
+    ]
+    const merged = mergeCheckpointChangedFiles(toolFiles, checkpoint)
+    expect(merged.some((f) => f.path === 'dist/out.js')).toBe(true)
+    expect(checkpointOnlyChangedFiles(toolFiles, checkpoint).map((f) => f.path)).toEqual([
+      'dist/out.js'
+    ])
+  })
 })
 
 describe('isPlanDraftReady', () => {
   it('rejects empty and stub plan.md', () => {
     expect(isPlanDraftReady(null)).toBe(false)
     expect(isPlanDraftReady(PLAN_STUB)).toBe(false)
+    expect(isPlanDraftReady(DEFAULT_PLAN_STUB)).toBe(false)
   })
 
   it('rejects outline-only templates without body text', () => {
@@ -96,17 +139,38 @@ describe('isPlanDraftReady', () => {
     expect(isPlanDraftReady('# Plan\n\n- [ ] x\n')).toBe(false)
   })
 
-  it('accepts a drafted plan', () => {
-    expect(isPlanDraftReady('# Plan\n\n1. Do the thing\n')).toBe(true)
+  it('rejects a one-line body without the required sections', () => {
+    expect(isPlanDraftReady('# Plan\n\n1. Do the thing\n')).toBe(false)
   })
-})
 
-describe('planHandoffPreview', () => {
-  it('skips stub hints and bare headings', () => {
-    const preview = planHandoffPreview(
-      '# Plan\n\n_Draft the plan here. Update as you learn._\n\n## Goal\n\nShip the feature\n\n## Approach\n\nUse tests\n'
-    )
-    expect(preview).toBe('Ship the feature · Use tests')
-    expect(preview).not.toMatch(/Draft the plan|##/)
+  it('accepts Goal, Success criteria, Approach, and Ordered steps', () => {
+    expect(isPlanDraftReady(minimalReadyPlanMarkdown())).toBe(true)
+  })
+
+  it('accepts Done when in place of Success criteria', () => {
+    expect(
+      isPlanDraftReady(
+        [
+          '# Plan',
+          '',
+          '## Goal',
+          '',
+          'Ship the structured planner.',
+          '',
+          '## Done when',
+          '',
+          'Required sections are filled and Continue in Agent is enabled.',
+          '',
+          '## Approach',
+          '',
+          'Seed headings, prompt the model, and gate Continue on those sections.',
+          '',
+          '## Ordered steps',
+          '',
+          '1. Fill Goal, Success criteria, Approach, and Ordered steps.',
+          ''
+        ].join('\n')
+      )
+    ).toBe(true)
   })
 })

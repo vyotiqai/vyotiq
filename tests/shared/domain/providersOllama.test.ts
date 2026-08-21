@@ -8,7 +8,8 @@ import {
   resolveEffectiveOllamaHost,
   resolveOllamaListBaseUrl,
   resolveProviderChatBaseUrl,
-  resolveProviderListBaseUrl
+  resolveProviderListBaseUrl,
+  seedModelsFor
 } from '@shared/domain/providers'
 
 describe('ollama host helpers', () => {
@@ -49,6 +50,13 @@ describe('ollama host helpers', () => {
     expect(resolveEffectiveOllamaHost('http://192.168.1.10:11434', 'sk-test')).toBe(
       'http://192.168.1.10:11434'
     )
+  })
+
+  it('seeds GPT-OSS with a real window and cannot-disable thinking', () => {
+    const gptOss = seedModelsFor('ollama').find((m) => m.id === 'gpt-oss:120b')
+    expect(gptOss?.contextWindow).toBe(131_072)
+    expect(gptOss?.thinkingCanDisable).toBe(false)
+    expect(gptOss?.supportedThinkingEfforts).toEqual(['low', 'medium', 'high'])
   })
 })
 

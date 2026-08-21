@@ -5,7 +5,8 @@ import type {
   MarketplaceOverrides,
   SlashCommandDescriptor,
   SlashCommandResolveResult,
-  SlashCommandsCreateRuleResult
+  SlashCommandsCreateRuleResult,
+  SlashCommandsCreateSkillResult
 } from '../../../shared/ipc'
 import { normalizeTrigger, triggerKey } from '../../../shared/slashCommands'
 import {
@@ -18,12 +19,14 @@ import { listWorkspaceCommands, resolveWorkspaceCommand } from './workspaceComma
 import { listRuleCommands, resolveRuleCommand } from './ruleCommands'
 import { listMcpCommands, resolveMcpCommand } from './mcp'
 import { runHarnessReviewWithSettings } from '../harnessReviewRun'
+import { createLocalSkill } from '../skills/local'
+import { clearRulesCache } from '../context/rules'
+import { notifySkillsChanged } from '../skills/notify'
 import {
   LIST_TTL_MS,
   clearSlashListInflight,
   getSlashListCacheEntry,
   getSlashListInflight,
-  invalidateSlashCommandsCache,
   listCacheKey,
   setSlashListCacheEntry,
   setSlashListInflight
@@ -124,7 +127,7 @@ export async function listSlashCommands(
   const run = (async () => {
     const overrides = marketplaceOverridesFor(workspacePath)
     const [skills, workspace, rules] = await Promise.all([
-      listSkillCommands(overrides),
+      listSkillCommands(overrides, workspacePath ?? null),
       listWorkspaceCommands(workspacePath ?? null),
       listRuleCommands(workspacePath ?? null)
     ])
@@ -177,7 +180,7 @@ export async function resolveSlashCommand(
   }
 
   if (id.startsWith('skill:')) {
-    const result = resolveSkillCommand(id, trailingText, overrides)
+    const result = resolveSkillCommand(id, trailingText, overrides, workspacePath)
     if (result) return result
   }
 
@@ -232,7 +235,10 @@ export async function createWorkspaceRule(
 
   const displayTitle = (title ?? '').trim() || slug
   const body = [
-    `<!-- vyotiq-rule: ${displayTitle} -->`,
+    '---',
+    'alwaysApply: true',
+    `description: ${displayTitle}`,
+    '---',
     '',
     `# ${displayTitle}`,
     '',
@@ -240,17 +246,32 @@ export async function createWorkspaceRule(
     ''
   ].join('\n')
   writeFileSync(absolute, body, 'utf8')
-  invalidateSlashCommandsCache(workspacePath)
-
-  try {
-    await shell.openPath(absolute)
-  } catch {
-    // ignore open failures — file still created
-  }
+  clearRulesCache(workspacePath)
+  notifySkillsChanged(workspacePath)
 
   return {
     path: absolute,
     relativePath: `.vyotiq/rules/${fileName}`
+  }
+}
+
+export async function createWorkspaceSkill(
+  workspacePath: string | null | undefined,
+  title?: string,
+  scope?: 'project' | 'personal'
+): Promise<SlashCommandsCreateSkillResult> {
+  const created = createLocalSkill({
+    workspacePath: workspacePath ?? null,
+    title,
+    scope
+  })
+  notifySkillsChanged(workspacePath ?? null)
+
+  return {
+    path: created.path,
+    relativePath: created.relativePath,
+    name: created.name,
+    source: created.source
   }
 }
 

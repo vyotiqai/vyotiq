@@ -1,12 +1,9 @@
 import { useCallback, useMemo, useState } from 'react'
+import { Tooltip } from '@renderer/lib/ui/Tooltip'
 import { cn } from '@renderer/lib/ui/cn'
 import type { ModelInfo, ProviderId, ThinkingEffort, ThinkingMode } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
-import {
-  catalogThinkingAllowed,
-  modelSupportsThinking,
-  ollamaThinkingHeuristicFields
-} from '@shared/reasoning'
+import { catalogThinkingAllowed, modelSupportsThinking, ollamaThinkingHeuristicFields } from '@shared/reasoning'
 import {
   nextLowerThinkingEffort,
   shouldSuggestLowerThinkingEffort,
@@ -83,7 +80,7 @@ function nextMode(
   return modes[next]!
 }
 
-/** Resolve catalog fields with Ollama heuristic fallback when API omits thinking mode. */
+/** Catalog fields when present; Ollama GPT-OSS / seed heuristic when unset. */
 function resolveThinkingUiMeta(
   provider: ProviderId,
   model: string,
@@ -94,32 +91,23 @@ function resolveThinkingUiMeta(
   thinkingCanDisable: boolean
   thinkingDefaultEffort: ThinkingEffort
 } {
-  const ollamaFallback =
-    (provider === 'ollama' || provider === 'custom') &&
-    (modelMeta?.supportsThinking === true ||
-      (catalogThinkingAllowed(model, modelMeta?.supportsThinking) &&
-        modelSupportsThinking(model, provider)))
-      ? ollamaThinkingHeuristicFields(model)
-      : undefined
-
+  const ollamaHeuristic =
+    provider === 'ollama' ? ollamaThinkingHeuristicFields(model) : undefined
   return {
-    thinkingMode:
-      modelMeta?.thinkingMode ??
-      (provider === 'custom' && ollamaFallback?.thinkingMode === 'boolean'
-        ? 'effort'
-        : ollamaFallback?.thinkingMode),
+    thinkingMode: modelMeta?.thinkingMode ?? ollamaHeuristic?.thinkingMode,
     supportedThinkingEfforts:
-      modelMeta?.supportedThinkingEfforts ?? ollamaFallback?.supportedThinkingEfforts,
+      modelMeta?.supportedThinkingEfforts ?? ollamaHeuristic?.supportedThinkingEfforts,
     thinkingCanDisable:
-      modelMeta?.thinkingCanDisable ?? ollamaFallback?.thinkingCanDisable ?? true,
+      modelMeta?.thinkingCanDisable ?? ollamaHeuristic?.thinkingCanDisable ?? true,
     thinkingDefaultEffort:
-      modelMeta?.thinkingDefaultEffort ?? ollamaFallback?.thinkingDefaultEffort ?? 'medium'
+      modelMeta?.thinkingDefaultEffort ?? ollamaHeuristic?.thinkingDefaultEffort ?? 'medium'
   }
 }
 
 /**
- * Catalog true wins; catalog false only hides unknown ids (known reasoner families still show).
- * Missing meta/field falls back to ID heuristic.
+ * Catalog true wins. Ollama hides only on confirmed `supportsThinking === false`.
+ * Missing meta or unset flag falls back to the name heuristic (same families as the loop).
+ * Other providers: catalog false softens for known reasoners via catalogThinkingAllowed.
  */
 export function modelShowsThinkingControls(
   provider: ProviderId,
@@ -128,6 +116,7 @@ export function modelShowsThinkingControls(
 ): boolean {
   if (modelMeta?.supportsThinking === true) return true
   if (modelMeta?.supportsThinking === false) {
+    if (provider === 'ollama') return false
     return catalogThinkingAllowed(model, false)
   }
   return modelSupportsThinking(model, provider)
@@ -254,33 +243,33 @@ export function ThinkingControls({
     ? `Queue ${lowerLabel} for the next message — this run keeps its current effort (never auto-changed).`
     : `Lower thinking to ${lowerLabel}. Applies only when you click — never automatic.`
 
+  const tip = running
+    ? ariaLabel
+    : `${ariaLabel} Shift-click for previous.${costHint}`
+
   return (
     <div className={cn('relative flex h-7 shrink-0 items-center gap-0.5', className)}>
+      <Tooltip content={tip} delayMs={300}>
       <button
         type="button"
         disabled={locked}
         aria-label={ariaLabel}
-        title={
-          running
-            ? ariaLabel
-            : `${ariaLabel} Shift-click for previous.${costHint}`
-        }
         className={cn(chromePillButton, 'gap-0', on ? 'text-fg' : 'text-muted')}
+        onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => {
           e.preventDefault()
           if (locked) return
           advance(e.shiftKey)
         }}
       >
-        <span className="inline-flex min-w-0 items-center leading-tight">
-          Think
-          <span className={cn('text-tertiary', on && 'text-muted')}> · </span>
-          <span className={on ? 'text-fg' : 'text-tertiary'}>{current.short}</span>
+        <span className={cn('leading-tight', on ? 'text-fg' : 'text-tertiary')}>
+          {current.short}
         </span>
       </button>
+      </Tooltip>
       {showSuggestLower ? (
         <span
-          className="inline-flex h-7 max-w-[9rem] shrink-0 items-center gap-0.5 overflow-hidden rounded-md border border-warning/40 bg-warning/10 px-1 text-2xs leading-tight text-warning"
+          className="inline-flex h-7 max-w-[11rem] shrink-0 items-center gap-0.5 overflow-hidden rounded-md border border-warning/40 bg-warning/10 px-1 text-2xs leading-tight text-warning @max-[560px]:hidden"
           role="status"
         >
           <button
@@ -298,8 +287,7 @@ export function ThinkingControls({
               applyLower()
             }}
           >
-            <span className="@max-[560px]:hidden">Lower · </span>
-            {lowerLabel}
+            Lower · {lowerLabel}
           </button>
           <button
             type="button"

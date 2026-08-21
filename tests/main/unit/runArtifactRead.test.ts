@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { resolveRunDir } from '@main/storage/paths'
-import { RunArtifactNameSchema } from '@shared/ipc'
+import { RunArtifactFixedNameSchema, RunArtifactNameSchema } from '@shared/ipc'
 
 const userData = join(tmpdir(), `vyotiq-artifact-read-${process.pid}-${Date.now()}`)
 
@@ -38,6 +38,11 @@ describe('run artifact files', () => {
     writeFileSync(join(runDir, 'plan.md'), '# Plan\n', 'utf8')
     writeFileSync(join(runDir, 'contract.md'), '## Goal\n', 'utf8')
     writeFileSync(join(runDir, 'receipt.json'), '{"version":2}\n', 'utf8')
+    writeFileSync(
+      join(runDir, 'todos.json'),
+      '{"updatedAt":"t","todos":[{"id":"1","content":"Ship","status":"pending"}]}\n',
+      'utf8'
+    )
     writeFileSync(join(runDir, 'browser', 'snapshot.jpg'), Buffer.from([0xff, 0xd8, 0xff]))
     writeFileSync(join(runDir, 'trajectory.jsonl'), '{"step":0,"kind":"status"}\n', 'utf8')
     writeFileSync(
@@ -46,10 +51,18 @@ describe('run artifact files', () => {
       'utf8'
     )
 
-    for (const name of RunArtifactNameSchema.options) {
+    for (const name of [
+      ...RunArtifactFixedNameSchema.options,
+      'browser/snapshot.jpg'
+    ] as const) {
+      expect(RunArtifactNameSchema.safeParse(name).success).toBe(true)
       const filePath = join(runDir, name)
       expect(existsSync(filePath)).toBe(true)
       expect(readFileSync(filePath).byteLength).toBeGreaterThan(0)
     }
+    expect(RunArtifactNameSchema.safeParse('browser/snapshot-123-1.jpg').success).toBe(true)
+    expect(RunArtifactNameSchema.safeParse('browser/snapshot-1700000000000-42.jpg').success).toBe(
+      true
+    )
   })
 })

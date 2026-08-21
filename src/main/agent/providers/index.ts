@@ -16,8 +16,10 @@ import {
 } from './modelCache'
 import {
   assertValidProviderBaseUrl,
+  clearOllamaSelectedShowCache,
   customProvider,
   deepseekProvider,
+  enrichOllamaModelsWithSelectedShow,
   groqProvider,
   mistralProvider,
   ollamaProvider,
@@ -53,6 +55,10 @@ export function catalogWarningMessage(provider: ProviderId, err: unknown): strin
     return `${raw} Save a key in Providers settings, then refresh.`
   }
 
+  if (/Circuit open for /i.test(raw)) {
+    return `${label} is temporarily paused after repeated failures. Retry shortly.`
+  }
+
   if (/HTTP 401/i.test(raw)) {
     // DeepSeek (and some gateways) return this exact body when Authorization is missing/invalid.
     if (/Authentication Fails \(governor\)/i.test(raw)) {
@@ -76,24 +82,58 @@ function enrichCatalogModels(provider: ProviderId, models: ModelInfo[]): ModelIn
   return models.map((m) => withResolvedContextWindow(m, provider))
 }
 
-/** Combine a user abort signal with a timeout, even when AbortSignal.any is unavailable. */
-function combinedListSignal(userSignal: AbortSignal | undefined, timeout: AbortSignal): AbortSignal {
-  if (!userSignal) return timeout
-  if (typeof AbortSignal.any === 'function') return AbortSignal.any([userSignal, timeout])
-  if (userSignal.aborted || timeout.aborted) {
-    const done = new AbortController()
-    done.abort()
-    return done.signal
+async function applyOllamaSelectedShow(
+  input: {
+    provider: ProviderId
+    model?: string
+    baseUrl?: string
+    apiKey?: string | null
+    signal?: AbortSignal
+  },
+  models: ModelInfo[],
+  cacheKey?: string
+): Promise<ModelInfo[]> {
+  if (input.provider !== 'ollama' || !input.model?.trim()) return models
+  const next = await enrichOllamaModelsWithSelectedShow(models, {
+    model: input.model,
+    baseUrl: input.baseUrl,
+    apiKey: input.apiKey,
+    signal: input.signal
+  })
+  if (cacheKey && next !== models) setCachedModels(cacheKey, next)
+  return next
+}
+
+/** Race a shared catalog fetch against one caller’s abort without cancelling the fetch. */
+export async function awaitCatalogWithCallerSignal<T>(
+  run: Promise<T>,
+  signal?: AbortSignal
+): Promise<T> {
+  if (!signal) return run
+  if (signal.aborted) {
+    const err = new Error('Aborted')
+    err.name = 'AbortError'
+    throw err
   }
-  const combined = new AbortController()
-  const onAbort = (): void => {
-    userSignal.removeEventListener('abort', onAbort)
-    timeout.removeEventListener('abort', onAbort)
-    if (!combined.signal.aborted) combined.abort()
-  }
-  userSignal.addEventListener('abort', onAbort, { once: true })
-  timeout.addEventListener('abort', onAbort, { once: true })
-  return combined.signal
+  return new Promise((resolve, reject) => {
+    const onAbort = (): void => {
+      signal.removeEventListener('abort', onAbort)
+      const err = new Error('Aborted')
+      err.name = 'AbortError'
+      reject(err)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    run.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(value)
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(err)
+      }
+    )
+  })
 }
 
 export async function listProviderModels(input: {
@@ -102,23 +142,42 @@ export async function listProviderModels(input: {
   baseUrl?: string
   signal?: AbortSignal
   forceRefresh?: boolean
+  model?: string
 }): Promise<{ models: ModelInfo[]; warning?: string }> {
   const key = modelCacheKey(input.provider, input.baseUrl, input.apiKey)
   if (!input.forceRefresh) {
     const cached = getCachedModels(key)
-    if (cached) return { models: enrichCatalogModels(input.provider, cached) }
+    if (cached) {
+      const models = await applyOllamaSelectedShow(
+        input,
+        enrichCatalogModels(input.provider, cached),
+        key
+      )
+      return { models }
+    }
     const pending = getModelListInflight(key)
-    if (pending) return pending
+    if (pending) {
+      const result = await awaitCatalogWithCallerSignal(pending, input.signal)
+      return {
+        ...result,
+        models: await applyOllamaSelectedShow(input, result.models, key)
+      }
+    }
   } else {
     // Drop memory/inflight so Refresh cannot join a stale in-flight catalog fetch.
     clearModelCacheKey(key)
+    clearOllamaSelectedShowCache()
   }
 
   const generation = beginModelListFetch(key)
-  const run = listProviderModelsUncached(input, key, generation)
+  const run = listProviderModelsUncached(
+    { ...input, signal: undefined },
+    key,
+    generation
+  )
   setModelListInflight(key, run)
   try {
-    return await run
+    return await awaitCatalogWithCallerSignal(run, input.signal)
   } finally {
     clearModelListInflight(key, run)
   }
@@ -131,6 +190,7 @@ async function listProviderModelsUncached(
     baseUrl?: string
     signal?: AbortSignal
     forceRefresh?: boolean
+    model?: string
   },
   key: string,
   generation: number
@@ -138,7 +198,10 @@ async function listProviderModelsUncached(
   if (providerNeedsKey(input.provider, input.baseUrl) && !input.apiKey?.trim()) {
     const seeds = seedModelsFor(input.provider)
     return {
-      models: enrichCatalogModels(input.provider, seeds),
+      models: await applyOllamaSelectedShow(
+        input,
+        enrichCatalogModels(input.provider, seeds)
+      ),
       warning: catalogWarningMessage(
         input.provider,
         new Error(`${providerLabel(input.provider)} API key not set`)
@@ -148,11 +211,10 @@ async function listProviderModelsUncached(
 
   const provider = getProvider(input.provider)
   const timeout = AbortSignal.timeout(10_000)
-  const signal = combinedListSignal(input.signal, timeout)
   const req: ListModelsRequest = {
     apiKey: input.apiKey,
     baseUrl: input.baseUrl,
-    signal
+    signal: timeout
   }
 
   try {
@@ -164,11 +226,18 @@ async function listProviderModelsUncached(
       if (input.forceRefresh) clearModelCacheKey(key)
       const seeds = seedModelsFor(input.provider)
       return {
-        models: enrichCatalogModels(input.provider, seeds),
+        models: await applyOllamaSelectedShow(
+          { ...input, signal: timeout },
+          enrichCatalogModels(input.provider, seeds)
+        ),
         warning: `${providerLabel(input.provider)} live catalog was empty; showing seed defaults (not installed models).`
       }
     }
-    const enriched = enrichCatalogModels(input.provider, models)
+    const enriched = await applyOllamaSelectedShow(
+      { ...input, signal: timeout },
+      enrichCatalogModels(input.provider, models),
+      key
+    )
     setCachedModels(key, enriched, generation)
     return { models: enriched }
   } catch (err) {
@@ -192,7 +261,10 @@ async function listProviderModelsUncached(
       }
     }
     return {
-      models: enrichCatalogModels(input.provider, seeds),
+      models: await applyOllamaSelectedShow(
+        { ...input, signal: timeout },
+        enrichCatalogModels(input.provider, seeds)
+      ),
       warning: catalogWarningMessage(input.provider, err)
     }
   }

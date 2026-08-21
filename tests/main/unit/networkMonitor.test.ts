@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { iterateNetworkWait, probeNetworkOnline } from '@main/agent/networkMonitor'
+import {
+  iterateNetworkWait,
+  MAX_OFFLINE_WAIT_MS,
+  probeNetworkOnline,
+  resolveOfflineWaitMs
+} from '@main/agent/networkMonitor'
 
 describe('probeNetworkOnline', () => {
   const savedVitest = process.env.VITEST
@@ -52,5 +57,18 @@ describe('iterateNetworkWait', () => {
     await pending
 
     expect(intervals).toEqual([2000, 2000])
+  })
+})
+
+describe('resolveOfflineWaitMs', () => {
+  it('maps offline wait modes with autonomous gating for wait_forever', () => {
+    expect(resolveOfflineWaitMs({ offlineWaitMode: 'default' })).toBe(MAX_OFFLINE_WAIT_MS)
+    expect(resolveOfflineWaitMs({ offlineWaitMode: 'extended' })).toBe(900_000)
+    expect(resolveOfflineWaitMs({ offlineWaitMode: 'wait_forever', autonomousMode: false })).toBe(
+      900_000
+    )
+    expect(resolveOfflineWaitMs({ offlineWaitMode: 'wait_forever', autonomousMode: true })).toBe(
+      Number.POSITIVE_INFINITY
+    )
   })
 })

@@ -1,8 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { FileTypeIcon } from '@renderer/lib/fileIcons'
 import { Icon } from '@renderer/lib/icons'
+import { copyText } from '@renderer/lib/markdown/copyText'
 import { TOOL_BODY_INNER, TOOL_BODY_PAD } from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui'
+import { joinWorkspaceRel } from '@shared/utils/displayPath'
+import { useRunSession } from '../RunSessionContext'
 
 export function TruncatedBanner({
   loading = false,
@@ -56,6 +59,7 @@ export function CodeBlock({
 }
 
 export function PathList({ paths }: { paths: string[] }) {
+  const { onOpenWorkspaceFile } = useRunSession()
   if (!paths.length) {
     return <p className={cn(TOOL_BODY_PAD, 'm-0 text-caption text-tertiary')}>No matches</p>
   }
@@ -66,9 +70,20 @@ export function PathList({ paths }: { paths: string[] }) {
       {paths.map((path) => (
         <li key={path} className="group flex min-w-0 items-center gap-1.5 py-0.5">
           <FileTypeIcon path={path} size={14} />
-          <span className="min-w-0 flex-1 truncate font-mono text-caption text-fg/80" title={path}>
-            {path}
-          </span>
+          {onOpenWorkspaceFile ? (
+            <button
+              type="button"
+              className="min-w-0 flex-1 truncate text-left font-mono text-caption text-fg/80 underline-offset-2 hover:underline"
+              title={path}
+              onClick={() => onOpenWorkspaceFile(path)}
+            >
+              {path}
+            </button>
+          ) : (
+            <span className="min-w-0 flex-1 truncate font-mono text-caption text-fg/80" title={path}>
+              {path}
+            </span>
+          )}
           <CopyButton
             text={path}
             className="shrink-0 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
@@ -80,42 +95,62 @@ export function PathList({ paths }: { paths: string[] }) {
 }
 
 export function DirListing({
-  entries
+  entries,
+  basePath
 }: {
   entries: { kind: 'dir' | 'file'; name: string; size: string }[]
+  basePath?: string
 }) {
+  const { onOpenWorkspaceFile } = useRunSession()
   if (!entries.length) {
     return <p className={cn(TOOL_BODY_PAD, 'm-0 text-caption text-tertiary')}>Empty directory</p>
   }
+
+  const openFile = onOpenWorkspaceFile
+  const canOpen = openFile != null && basePath != null
 
   // Flow with parent scroll; pr-5 clears disclosure chevrons / side chrome so
   // size labels stay on the filename row instead of stacking in the gutter.
   return (
     <div className={cn(TOOL_BODY_INNER, 'overflow-visible pr-5')} data-dir-listing="">
-      {entries.map((entry) => (
-        <div
-          key={entry.name}
-          className="flex min-w-0 items-center gap-2 py-0.5 font-mono text-caption"
-        >
-          <FileTypeIcon
-            path={entry.name}
-            kind={entry.kind === 'dir' ? 'folder' : 'file'}
-            size={14}
-          />
-          <span className="min-w-0 flex-1 truncate text-fg/80" title={entry.name}>
-            {entry.name}
-            {entry.kind === 'dir' ? '/' : ''}
-          </span>
-          {entry.size ? (
-            <span
-              className="shrink-0 tabular-nums text-tertiary"
-              title={`Size ${entry.size}`}
-            >
-              {entry.size}
-            </span>
-          ) : null}
-        </div>
-      ))}
+      {entries.map((entry) => {
+        const rel = basePath != null ? joinWorkspaceRel(basePath, entry.name) : entry.name
+        const label = `${entry.name}${entry.kind === 'dir' ? '/' : ''}`
+        return (
+          <div
+            key={entry.name}
+            className="flex min-w-0 items-center gap-2 py-0.5 font-mono text-caption"
+          >
+            <FileTypeIcon
+              path={entry.name}
+              kind={entry.kind === 'dir' ? 'folder' : 'file'}
+              size={14}
+            />
+            {canOpen && openFile ? (
+              <button
+                type="button"
+                className="min-w-0 flex-1 truncate text-left text-fg/80 underline-offset-2 hover:underline"
+                title={rel}
+                onClick={() => openFile(rel)}
+              >
+                {label}
+              </button>
+            ) : (
+              <span className="min-w-0 flex-1 truncate text-fg/80" title={entry.name}>
+                {label}
+              </span>
+            )}
+            {entry.size ? (
+              <span
+                className="shrink-0 tabular-nums text-tertiary"
+                title={`Size ${entry.size}`}
+              >
+                {entry.size}
+              </span>
+            ) : null}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -125,6 +160,7 @@ export function MatchList({
 }: {
   groups: { file: string; matches: { line: number; text: string; isMatch: boolean }[] }[]
 }) {
+  const { onOpenWorkspaceFile } = useRunSession()
   if (!groups.length) {
     return <p className={cn(TOOL_BODY_PAD, 'm-0 text-caption text-tertiary')}>No matches</p>
   }
@@ -138,14 +174,34 @@ export function MatchList({
             title={group.file}
           >
             <FileTypeIcon path={group.file} size={12} />
-            <span className="min-w-0 truncate">{group.file}</span>
+            {onOpenWorkspaceFile ? (
+              <button
+                type="button"
+                className="min-w-0 truncate text-left underline-offset-2 hover:underline"
+                onClick={() => onOpenWorkspaceFile(group.file)}
+              >
+                {group.file}
+              </button>
+            ) : (
+              <span className="min-w-0 truncate">{group.file}</span>
+            )}
           </div>
           {group.matches.map((match) => (
             <div
               key={`${group.file}:${match.line}`}
               className="grid grid-cols-[auto_1fr] gap-x-2 py-px font-mono text-caption"
             >
-              <span className="tabular-nums text-tertiary">{match.line}</span>
+              {onOpenWorkspaceFile ? (
+                <button
+                  type="button"
+                  className="tabular-nums text-left text-tertiary underline-offset-2 hover:underline"
+                  onClick={() => onOpenWorkspaceFile(group.file, { line: match.line })}
+                >
+                  {match.line}
+                </button>
+              ) : (
+                <span className="tabular-nums text-tertiary">{match.line}</span>
+              )}
               <span
                 className={
                   match.isMatch
@@ -173,16 +229,28 @@ export function Chip({ children }: { children: React.ReactNode }) {
 
 export function CopyButton({ text, className }: { text: string; className?: string }) {
   const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState(false)
+  const timerRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current != null) window.clearTimeout(timerRef.current)
+    }
+  }, [])
 
   const copy = async (): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(text)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1500)
-    } catch {
-      // ignore
-    }
+    const ok = await copyText(text)
+    if (timerRef.current != null) window.clearTimeout(timerRef.current)
+    setCopied(ok)
+    setCopyError(!ok)
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = null
+      setCopied(false)
+      setCopyError(false)
+    }, 1500)
   }
+
+  const label = copied ? 'Copied' : copyError ? 'Copy failed' : 'Copy'
 
   return (
     <button
@@ -192,11 +260,11 @@ export function CopyButton({ text, className }: { text: string; className?: stri
         className
       )}
       onClick={() => void copy()}
-      aria-label={copied ? 'Copied' : 'Copy'}
-      title={copied ? 'Copied' : 'Copy'}
+      aria-label={label}
+      title={label}
     >
       <Icon name={copied ? 'check' : 'copy'} size={14} />
-      {copied ? 'Copied' : 'Copy'}
+      {label}
     </button>
   )
 }

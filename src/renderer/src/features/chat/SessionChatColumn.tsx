@@ -1,29 +1,34 @@
 import type { Ref } from 'react'
 import { memo, useCallback, useMemo } from 'react'
+import type { AgentInstanceUiState } from '@shared/utils/agentInstance'
+import { isRetryableTurnFailure } from '@shared/errors'
 import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
 import type {
   AgentInteractionMode,
   AttachedFile,
   ChatMessage,
   ProviderId,
+  SecretProvider,
   ToolApprovalDecision
 } from '@shared/ipc'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
+import type { ChatStreamController } from '@renderer/lib/hooks/createChatStreamController'
 import { Composer } from './components/composer'
-import { ChatGitLeading, useChatLiveItems, useHasChatItems } from './components/ChatStreamLeaves'
-import { useGitChrome } from './components/GitChrome'
-import { useGitRevision } from './components/ChatStreamLeaves'
+import { useChatLiveItems, useHasChatItems } from './components/ChatStreamLeaves'
 import { RunSessionProvider } from './RunSessionContext'
 import { MessageList } from './components/MessageList'
+import { AgentInstancePane } from './components/AgentInstancePane'
+import { ChatHeroStage } from './components/ChatHeroStage'
+import { ChatTranscriptStage } from './components/ChatTranscriptStage'
+import { useInlineInstanceUi } from './hooks/useInlineInstanceUi'
 import {
   buildComposerSendProps,
+  lastUserMessageIndex,
   useComposerEditState,
   useSuppressedChatError
 } from './hooks/composerShared'
-import { Alert } from '@renderer/lib/ui'
-import { CHAT_COLUMN, CHAT_GUTTER } from '@renderer/lib/utils/layout'
-import { cn } from '@renderer/lib/ui/cn'
 import type { ChatItemsStore, ChatMetaStore } from './chatStores'
+import type { WorkspaceFileOpenOptions } from './components/FilesPanel'
 
 const MemoComposer = memo(Composer)
 
@@ -37,10 +42,12 @@ export function SessionChatColumn({
   error,
   errorCode = null,
   networkWait = null,
-  runNotice,
+  compacting = false,
   incomplete,
+  turnStatus = null,
   onContinue,
   contextUsage,
+  turnUsage,
   onCompactContext,
   operationalError,
   hasWorkspace,
@@ -50,6 +57,7 @@ export function SessionChatColumn({
   ollamaBaseUrl,
   customOpenAiBaseUrl,
   modelsRefreshKey,
+  secrets,
   activeRunId,
   transcriptLoading,
   headingRef,
@@ -63,10 +71,7 @@ export function SessionChatColumn({
   onChatSettingsChange,
   agentMode = 'agent',
   onAgentModeChange = () => {},
-  onContinueInAgent,
   onSend,
-  offlineHint = null,
-  onClearOfflineQueue,
   onStop,
   onEditAndResend,
   onRevertToUserMessage,
@@ -94,13 +99,17 @@ export function SessionChatColumn({
   mcpServerNames,
   slashHandlers,
   sideRailPad = false,
-  imageReadyHint = null,
   showPageHeading = true,
   /** Multi-pane: keep empty sessions docked (no centered hero). */
   dockEmptyComposer = false,
   onActivate,
+  approvalAutoFocus = true,
   onOpenChanges,
-  onOpenUncommittedChanges
+  onOpenWorkspaceFile,
+  agentInstances,
+  openInstanceRunId: openInstanceRunIdProp = null,
+  onOpenInstanceRunIdChange,
+  getInstanceController
 }: {
   items: UiItem[]
   itemsStore?: ChatItemsStore
@@ -116,11 +125,15 @@ export function SessionChatColumn({
     retryInMs: number
     code?: string
   } | null
-  runNotice?: string | null
+  compacting?: boolean
   incomplete?: import('@renderer/lib/hooks/createChatStreamController').IncompleteTurnState | null
+  turnStatus?: import('@shared/transcript').TurnOutcome | null
   onContinue?: () => void
   contextUsage?: import('./components/composer/ContextMeter').ContextUsageState | null
-  onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
+  turnUsage?: readonly import('@shared/utils/runTelemetry').StepUsageTotals[]
+  onCompactContext?: (
+    focus?: string
+  ) => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   operationalError?: string | null
   hasWorkspace: boolean
   workspacePath: string | null
@@ -129,6 +142,7 @@ export function SessionChatColumn({
   ollamaBaseUrl?: string
   customOpenAiBaseUrl?: string
   modelsRefreshKey?: string | number
+  secrets: Record<SecretProvider, boolean>
   activeRunId: string | null
   transcriptLoading?: boolean
   headingRef?: Ref<HTMLHeadingElement>
@@ -142,16 +156,12 @@ export function SessionChatColumn({
   onChatSettingsChange: (patch: ChatSettingsPatch) => void
   agentMode?: AgentInteractionMode
   onAgentModeChange?: (mode: AgentInteractionMode) => void
-  onContinueInAgent?: () => void
   onSend: (
     text: string,
     images?: string[],
     files?: AttachedFile[],
     extras?: import('@shared/ipc').ComposerSendExtras
   ) => boolean | void | Promise<boolean | void>
-  /** Owned by App (single flush per workspace). */
-  offlineHint?: string | null
-  onClearOfflineQueue?: () => void
   onStop: () => void
   onEditAndResend?: (
     editMessageIndex: number,
@@ -185,33 +195,48 @@ export function SessionChatColumn({
   mcpServerNames?: ReadonlyMap<string, string>
   slashHandlers?: import('./components/composer/slashCommandExecute').SlashClientHandlers
   sideRailPad?: boolean
-  imageReadyHint?: string | null
   showPageHeading?: boolean
   dockEmptyComposer?: boolean
   onActivate?: () => void
+  approvalAutoFocus?: boolean
   onOpenChanges?: () => void
-  onOpenUncommittedChanges?: () => void
+  onOpenWorkspaceFile?: (path: string, options?: WorkspaceFileOpenOptions) => void
+  agentInstances?: Record<string, AgentInstanceUiState>
+  openInstanceRunId?: string | null
+  onOpenInstanceRunIdChange?: (runId: string | null) => void
+  getInstanceController?: (runId: string, workspacePath: string) => ChatStreamController | null
 }) {
+  const instanceOpenControlled =
+    onOpenInstanceRunIdChange != null
+      ? {
+          openInstanceRunId: openInstanceRunIdProp ?? null,
+          setOpenInstanceRunId: onOpenInstanceRunIdChange
+        }
+      : undefined
+  const {
+    openInstanceRunId,
+    openInstancePane,
+    closeInstancePane,
+    pendingGates
+  } = useInlineInstanceUi(agentInstances, activeRunId, instanceOpenControlled)
+
   const hasItems = useHasChatItems(itemsStore, items)
   const liveItems = useChatLiveItems(itemsStore, items)
   const chatBannerError = useSuppressedChatError(liveItems, error)
   const operationalBannerError = operationalError ?? null
-  const turnFailed =
-    incomplete?.reason === 'network_interrupted' ||
-    errorCode === 'PROVIDER_NETWORK' ||
-    errorCode === 'PROVIDER_STREAM'
+  const turnFailed = isRetryableTurnFailure({
+    errorCode,
+    incompleteReason: incomplete?.reason
+  })
   const turnFailureLabel =
-    incomplete?.message ?? (turnFailed ? (error ?? 'Connection lost') : null)
-  const showHero =
-    !dockEmptyComposer && !hasItems && !activeRunId && !transcriptLoading
+    turnFailed
+      ? incomplete?.message ?? (error ?? 'Connection lost')
+      : turnStatus === 'error'
+        ? 'Run failed'
+        : null
+  const showHero = !dockEmptyComposer && !hasItems && !transcriptLoading
   // Match ChatView: remount on workspace/epoch only — not draft→run (avoids composer wipe).
   const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
-  const [gitRevision, bumpGitRevision] = useGitRevision(workspacePath, running, liveItems)
-  const gitChrome = useGitChrome(workspacePath, gitRevision, Boolean(workspacePath))
-  const notifyGitMutated = useCallback(() => {
-    gitChrome.refresh()
-    bumpGitRevision()
-  }, [gitChrome, bumpGitRevision])
 
   const {
     editingUserMessageIndex,
@@ -229,9 +254,16 @@ export function SessionChatColumn({
     messages,
     onSend,
     onEditAndResend,
-    onRevertToUserMessage,
-    onAfterRevert: notifyGitMutated
+    onRevertToUserMessage
   })
+
+  const onEditLastUserMessage = useCallback((): boolean => {
+    if (!onEditAndResend) return false
+    const index = lastUserMessageIndex(messages)
+    if (index == null) return false
+    beginPromptEdit(index)
+    return true
+  }, [onEditAndResend, messages, beginPromptEdit])
 
   const editComposer =
     editing && onEditAndResend ? (
@@ -247,6 +279,7 @@ export function SessionChatColumn({
         ollamaBaseUrl={ollamaBaseUrl}
         customOpenAiBaseUrl={customOpenAiBaseUrl}
         modelsRefreshKey={modelsRefreshKey}
+        secrets={secrets}
         draft={editDraft}
         onDraftChange={setEditDraft}
         onProviderModel={onProviderModel}
@@ -271,8 +304,6 @@ export function SessionChatColumn({
         secondaryBannerError={operationalBannerError}
         errorCode={errorCode}
         onRetryNetwork={onContinue}
-        offlineHint={offlineHint}
-        onClearOfflineQueue={onClearOfflineQueue}
         onDismissError={onDismissError}
         className="w-full"
         seedImages={editSeeds.images}
@@ -294,6 +325,7 @@ export function SessionChatColumn({
     ollamaBaseUrl,
     customOpenAiBaseUrl,
     modelsRefreshKey,
+    secrets,
     draft: composerDraft,
     onDraftChange: onComposerDraftChange,
     onProviderModel,
@@ -312,16 +344,11 @@ export function SessionChatColumn({
     onRemoveFollowUp,
     onEditFollowUp,
     onSendFollowUpNow,
-    runNotice,
     incomplete,
     onContinue,
-    onContinueInAgent,
     errorCode,
     bannerError: chatBannerError,
     secondaryBannerError: operationalBannerError,
-    offlineHint,
-    onClearOfflineQueue,
-    networkWait,
     activeRunId,
     onDismissError,
     contextUsage,
@@ -329,101 +356,120 @@ export function SessionChatColumn({
     onCompactContext,
     slashHandlers,
     sideRailPad,
-    imageReadyHint,
-    onFocus: onActivate
+    onFocus: onActivate,
+    onEditLastUserMessage
   })
 
   const runSession = useMemo(
     () => ({
       workspacePath: workspacePath ?? null,
       runId: activeRunId ?? null,
-      agentMode
+      agentMode,
+      agentInstances,
+      onOpenAgentInstance:
+        workspacePath != null ? (instanceRunId: string) => openInstancePane(instanceRunId) : undefined,
+      onOpenWorkspaceFile
     }),
-    [workspacePath, activeRunId, agentMode]
+    [workspacePath, activeRunId, agentMode, agentInstances, openInstancePane, onOpenWorkspaceFile]
   )
 
   return (
     <>
       {showPageHeading ? (
         <h1 ref={headingRef} tabIndex={-1} className="sr-only">
-          Vyotiq chat
+          Agent V chat
         </h1>
       ) : null}
-      {showHero ? (
-        <div
-          className={cn('flex min-h-0 flex-1 flex-col items-center justify-center', CHAT_GUTTER)}
-          role="status"
-        >
-          {chatBannerError || operationalBannerError ? (
-            <div className={cn('mb-4 flex w-full flex-col gap-2', CHAT_COLUMN)}>
-              {operationalBannerError ? (
-                <Alert className="w-full">{operationalBannerError}</Alert>
-              ) : null}
-              {chatBannerError ? (
-                <Alert className="w-full" onDismiss={onDismissError}>
-                  {chatBannerError}
-                </Alert>
-              ) : null}
-            </div>
-          ) : null}
-          <div className={cn('w-full animate-fade-in', CHAT_COLUMN)} data-composer-hero>
-            <MemoComposer
-              key={`composer:${surfaceKey}`}
-              {...composerProps}
-              variant="hero"
-              className="w-full"
-            />
-          </div>
-        </div>
+      {openInstanceRunId && workspacePath ? (
+        <AgentInstancePane
+          workspacePath={workspacePath}
+          instanceRunId={openInstanceRunId}
+          instanceMeta={agentInstances?.[openInstanceRunId]}
+          getController={getInstanceController}
+          sideRailPad={sideRailPad}
+          pendingGates={pendingGates}
+          onOpenInstance={openInstancePane}
+          onClose={closeInstancePane}
+          showThinking={showThinking}
+          onOpenWorkspaceFile={onOpenWorkspaceFile}
+          approvalAutoFocus={approvalAutoFocus}
+        />
       ) : (
-        <div className="relative flex min-h-0 flex-1 flex-col" data-chat-stage>
-          <RunSessionProvider value={runSession}>
-            <MessageList
-              key={`transcript:${surfaceKey}`}
-              items={liveItems}
-              pendingRun={pendingRun}
-              running={running}
-              networkWait={networkWait}
-              turnFailed={turnFailed}
-              turnFailureLabel={turnFailureLabel}
-              transcriptLoading={transcriptLoading}
-              restoreScrollTop={restoreScrollTop}
-              scrollRestoreToken={scrollRestoreToken}
-              onScrollTopChange={onScrollTopChange}
-              onActivate={onActivate}
-              onLoadToolContent={onLoadToolContent}
-              onThinkingToggle={onThinkingToggle}
-              onToolToggle={onToolToggle}
-              onGroupToggle={onGroupToggle}
-              onTurnToggle={onTurnToggle}
-              onApprovalDecision={onApprovalDecision}
-              onQuestionSubmit={onQuestionSubmit}
-              collapsedTurns={collapsedTurns}
-              showThinking={showThinking}
-              mcpServerNames={mcpServerNames}
-              onOpenChanges={onOpenChanges}
-              sideRailPad={sideRailPad}
-              editingUserMessageIndex={editingUserMessageIndex}
-              editComposer={editComposer}
-              onBeginEditUserMessage={onEditAndResend ? beginPromptEdit : undefined}
-              onRevertUserMessage={onRevertToUserMessage ? beginPromptRevert : undefined}
-              messageCount={messages.length}
-            />
-          </RunSessionProvider>
-          {!editing ? (
-            <MemoComposer
-              key={`composer:${surfaceKey}`}
-              {...composerProps}
-              variant="dock"
+        <RunSessionProvider value={runSession}>
+          {showHero ? (
+            <ChatHeroStage
+              chatBannerError={chatBannerError}
+              operationalBannerError={operationalBannerError}
               onDismissError={onDismissError}
-              leading={
-                onOpenUncommittedChanges ? (
-                  <ChatGitLeading chrome={gitChrome} onOpenChanges={onOpenUncommittedChanges} />
-                ) : undefined
+              composer={
+                <MemoComposer
+                  key={`composer:${surfaceKey}`}
+                  {...composerProps}
+                  variant="hero"
+                  className="w-full"
+                />
               }
             />
-          ) : null}
-        </div>
+          ) : (
+            <ChatTranscriptStage
+              sideRailPad={sideRailPad}
+              pendingGates={pendingGates}
+              onOpenInstance={openInstancePane}
+              transcript={
+                <MessageList
+                  key={`transcript:${surfaceKey}`}
+                  items={liveItems}
+                  pendingRun={pendingRun}
+                  running={running}
+                  networkWait={networkWait}
+                  compacting={compacting}
+                  turnFailed={turnFailed}
+                  turnFailureLabel={turnFailureLabel}
+                  turnStatus={turnStatus}
+                  transcriptLoading={transcriptLoading}
+                  restoreScrollTop={restoreScrollTop}
+                  scrollRestoreToken={scrollRestoreToken}
+                  onScrollTopChange={onScrollTopChange}
+                  onActivate={onActivate}
+                  onLoadToolContent={onLoadToolContent}
+                  onThinkingToggle={onThinkingToggle}
+                  onToolToggle={onToolToggle}
+                  onGroupToggle={onGroupToggle}
+                  onTurnToggle={onTurnToggle}
+                  onApprovalDecision={onApprovalDecision}
+                  onQuestionSubmit={onQuestionSubmit}
+                  approvalAutoFocus={approvalAutoFocus}
+                  collapsedTurns={collapsedTurns}
+                  showThinking={showThinking}
+                  mcpServerNames={mcpServerNames}
+                  onOpenChanges={onOpenChanges}
+                  sideRailPad={sideRailPad}
+                  editingUserMessageIndex={editingUserMessageIndex}
+                  editComposer={editComposer}
+                  onBeginEditUserMessage={onEditAndResend ? beginPromptEdit : undefined}
+                  onRevertUserMessage={onRevertToUserMessage ? beginPromptRevert : undefined}
+                  messageCount={messages.length}
+                  turnUsage={turnUsage}
+                  metaStore={metaStore}
+                />
+              }
+              composer={
+                <div
+                  className={editing ? 'hidden' : undefined}
+                  inert={editing ? true : undefined}
+                  aria-hidden={editing || undefined}
+                >
+                  <MemoComposer
+                    key={`composer:${surfaceKey}`}
+                    {...composerProps}
+                    variant="dock"
+                    onDismissError={onDismissError}
+                  />
+                </div>
+              }
+            />
+          )}
+        </RunSessionProvider>
       )}
     </>
   )

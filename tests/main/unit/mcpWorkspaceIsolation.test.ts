@@ -94,6 +94,31 @@ describe('MCP workspace-scoped stdio sessions', () => {
     }
   })
 
+  it('does not borrow a parent stdio session for an explicit other cwd', async () => {
+    const wsA = mkdtempSync(join(tmpdir(), 'vyotiq-mcp-parent-'))
+    const wsB = mkdtempSync(join(tmpdir(), 'vyotiq-mcp-worktree-'))
+    try {
+      setMcpStdioWorkspace(wsA)
+      await connectMcpServer(echoServer, wsA)
+      const borrowed = await invokeMcpTool(
+        'echo',
+        'echo',
+        { message: 'should-not-run' },
+        new AbortController().signal,
+        undefined,
+        undefined,
+        wsB
+      )
+      expect(borrowed.ok).toBe(false)
+      expect(borrowed.content).toMatch(/not connected/i)
+    } finally {
+      await shutdownMcpServers()
+      resetMcpSessionsForTests()
+      rmSync(wsA, { recursive: true, force: true })
+      rmSync(wsB, { recursive: true, force: true })
+    }
+  })
+
   it('does not disconnect other workspace stdio sessions when setMcpStdioWorkspace changes', async () => {
     const wsA = mkdtempSync(join(tmpdir(), 'vyotiq-mcp-swap-a-'))
     const wsB = mkdtempSync(join(tmpdir(), 'vyotiq-mcp-swap-b-'))

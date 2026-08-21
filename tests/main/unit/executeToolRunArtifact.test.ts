@@ -1,8 +1,14 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { executeTool } from '@main/agent/tools'
+
+vi.mock('@main/app/window', () => ({
+  getMainWindow: () => null
+}))
+
+import { executeTool, usesSessionWorkspaceIndex } from '@main/agent/tools'
+import { toolTodoWrite } from '@main/agent/tools/todo'
 
 describe('executeTool run-artifact remap', () => {
   let workspace: string
@@ -23,6 +29,7 @@ describe('executeTool run-artifact remap', () => {
       '## Goal\n\noriginal\n\n## Done when\n\n- done\n',
       'utf8'
     )
+    toolTodoWrite(runDir, [{ id: '1', content: 'Update run artifacts', status: 'in_progress' }])
   }
 
   it('Agent mode edit remaps contract.md into the run directory', async () => {
@@ -94,6 +101,80 @@ describe('executeTool run-artifact remap', () => {
     expect(readFileSync(join(runDir, 'contract.md'), 'utf8')).toContain('multi')
   })
 
+  it('rejects multi_edit that mixes run artifacts with workspace files', async () => {
+    setup()
+    writeFileSync(join(workspace, 'src.ts'), 'export {}\n', 'utf8')
+    const signal = new AbortController().signal
+    const result = await executeTool(
+      'multi_edit',
+      JSON.stringify({
+        edits: [
+          { path: 'contract.md', contents: '## Goal\n\nmixed\n\n## Done when\n\n- x\n' },
+          { path: 'src.ts', contents: 'export const x = 1\n' }
+        ]
+      }),
+      workspace,
+      signal,
+      { runDir, agentMode: 'agent' }
+    )
+    expect(result.ok).toBe(false)
+    expect(result.content).toMatch(/cannot mix run artifacts/i)
+    expect(readFileSync(join(workspace, 'src.ts'), 'utf8')).toBe('export {}\n')
+  })
+
+  it('Agent mode delete remaps contract.md into the run directory', async () => {
+    setup()
+    writeFileSync(join(workspace, 'contract.md'), 'workspace contract\n', 'utf8')
+    const signal = new AbortController().signal
+    const result = await executeTool(
+      'delete',
+      JSON.stringify({ path: 'contract.md' }),
+      workspace,
+      signal,
+      { runDir, agentMode: 'agent' }
+    )
+    expect(result.ok).toBe(true)
+    expect(existsSync(join(runDir, 'contract.md'))).toBe(false)
+    expect(readFileSync(join(workspace, 'contract.md'), 'utf8')).toBe('workspace contract\n')
+  })
+
+  it('Agent mode does not remap nested src/contract.md into the run directory', async () => {
+    setup()
+    mkdirSync(join(workspace, 'src'))
+    writeFileSync(join(workspace, 'src', 'contract.md'), 'product contract\n', 'utf8')
+    const signal = new AbortController().signal
+    const result = await executeTool(
+      'edit',
+      JSON.stringify({ path: 'src/contract.md', contents: 'updated product contract\n' }),
+      workspace,
+      signal,
+      { runDir, agentMode: 'agent' }
+    )
+    expect(result.ok).toBe(true)
+    expect(readFileSync(join(workspace, 'src', 'contract.md'), 'utf8')).toBe(
+      'updated product contract\n'
+    )
+    expect(readFileSync(join(runDir, 'contract.md'), 'utf8')).toContain('original')
+  })
+
+  it('Agent mode does not remap nested docs/plan.md when a run plan exists', async () => {
+    setup()
+    writeFileSync(join(runDir, 'plan.md'), '# Existing plan\n', 'utf8')
+    mkdirSync(join(workspace, 'docs'))
+    writeFileSync(join(workspace, 'docs', 'plan.md'), '# Docs plan\n', 'utf8')
+    const signal = new AbortController().signal
+    const result = await executeTool(
+      'edit',
+      JSON.stringify({ path: 'docs/plan.md', contents: '# Updated docs plan\n' }),
+      workspace,
+      signal,
+      { runDir, agentMode: 'agent' }
+    )
+    expect(result.ok).toBe(true)
+    expect(readFileSync(join(workspace, 'docs', 'plan.md'), 'utf8')).toBe('# Updated docs plan\n')
+    expect(readFileSync(join(runDir, 'plan.md'), 'utf8')).toBe('# Existing plan\n')
+  })
+
   it('Plan mode still remaps plan.md and contract.md', async () => {
     setup()
     const signal = new AbortController().signal
@@ -120,5 +201,18 @@ describe('executeTool run-artifact remap', () => {
     )
     expect(contract.ok).toBe(true)
     expect(readFileSync(join(runDir, 'contract.md'), 'utf8')).toContain('plan mode update')
+  })
+})
+
+describe('worktree vs session index split', () => {
+  it('binds memory to the session workspace; codebase_search follows the worktree', () => {
+    expect(usesSessionWorkspaceIndex('codebase_search')).toBe(false)
+    expect(usesSessionWorkspaceIndex('memory_read')).toBe(true)
+    expect(usesSessionWorkspaceIndex('memory_write')).toBe(true)
+    expect(usesSessionWorkspaceIndex('memory_list')).toBe(true)
+    expect(usesSessionWorkspaceIndex('search')).toBe(false)
+    expect(usesSessionWorkspaceIndex('grep')).toBe(false)
+    expect(usesSessionWorkspaceIndex('glob')).toBe(false)
+    expect(usesSessionWorkspaceIndex('read')).toBe(false)
   })
 })

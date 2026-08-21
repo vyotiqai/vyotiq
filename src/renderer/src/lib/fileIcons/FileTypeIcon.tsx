@@ -1,6 +1,6 @@
-import { memo } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { cn } from '@renderer/lib/ui'
-import { fileIconUrl, folderIconUrl } from './urls'
+import { fileIconUrl, folderIconUrl, iconUrlForId } from './urls'
 
 export type FileTypeIconProps = {
   path: string
@@ -18,7 +18,15 @@ export const FileTypeIcon = memo(function FileTypeIcon({
   size = 14,
   className
 }: FileTypeIconProps) {
-  const src = kind === 'folder' ? folderIconUrl(path, open) : fileIconUrl(path)
+  const primary = kind === 'folder' ? folderIconUrl(path, open) : fileIconUrl(path)
+  const fallback = iconUrlForId('file')
+  const [useFallback, setUseFallback] = useState(false)
+
+  useEffect(() => {
+    setUseFallback(false)
+  }, [path, kind, open])
+
+  const src = useFallback ? fallback : primary || fallback
   if (!src) return null
 
   return (
@@ -31,6 +39,9 @@ export const FileTypeIcon = memo(function FileTypeIcon({
       className={cn('shrink-0 object-contain', className)}
       style={{ width: size, height: size }}
       draggable={false}
+      onError={() => {
+        if (!useFallback && fallback && fallback !== primary) setUseFallback(true)
+      }}
     />
   )
 })

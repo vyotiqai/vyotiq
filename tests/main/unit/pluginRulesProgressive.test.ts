@@ -67,7 +67,7 @@ describe('loadPluginRules progressive disclosure', () => {
   it('emits metadata only and loads full body via Skill', async () => {
     const skills = await import('@main/agent/skills')
     const section = skills.loadPluginRules()
-    expect(section).toContain('## Plugin rules')
+    expect(section).toContain('<plugin_rules>')
     expect(section).toContain('plugin-rule:quality/rules/quality.md')
     expect(section).toContain('Quality conventions')
     expect(section).not.toContain('Lead with highest-severity')

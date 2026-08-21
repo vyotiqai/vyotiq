@@ -6,8 +6,10 @@ import type { ToolBodyProps } from '../types'
 import { parseGitCommitData, parseGitDiffData, parseGitStatusData } from '../parsers/git'
 import { Chip, TruncatedBanner } from '../primitives'
 import { basename } from '../pathUtils'
+import { useRunSession } from '../../RunSessionContext'
 
 export function GitStatusBody({ tool, loading, loadFailed }: ToolBodyProps) {
+  const { onOpenWorkspaceFile } = useRunSession()
   const data = useMemo(() => parseGitStatusData(tool), [tool])
 
   return (
@@ -36,9 +38,20 @@ export function GitStatusBody({ tool, loading, loadFailed }: ToolBodyProps) {
             >
               <span className="w-8 shrink-0 text-tertiary">{file.status}</span>
               <FileTypeIcon path={file.path} size={14} />
-              <span className="min-w-0 flex-1 truncate" title={file.path}>
-                {basename(file.path) || file.path}
-              </span>
+              {onOpenWorkspaceFile ? (
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 truncate text-left underline-offset-2 hover:underline"
+                  title={file.path}
+                  onClick={() => onOpenWorkspaceFile(file.path)}
+                >
+                  {basename(file.path) || file.path}
+                </button>
+              ) : (
+                <span className="min-w-0 flex-1 truncate" title={file.path}>
+                  {basename(file.path) || file.path}
+                </span>
+              )}
               <span className="ml-auto flex shrink-0 gap-2 tabular-nums">
                 {file.added > 0 ? <span className="text-success">+{file.added}</span> : null}
                 {file.removed > 0 ? <span className="text-danger">-{file.removed}</span> : null}
@@ -52,8 +65,9 @@ export function GitStatusBody({ tool, loading, loadFailed }: ToolBodyProps) {
 }
 
 export function GitDiffBody({ tool, expanded, loading, loadFailed, inGroup }: ToolBodyProps) {
+  const { onOpenWorkspaceFile } = useRunSession()
   const data = useMemo(() => parseGitDiffData(tool), [tool])
-  const showMeta = !inGroup || data.added > 0 || data.removed > 0
+  const showMeta = !inGroup || data.added > 0 || data.removed > 0 || Boolean(data.path)
 
   return (
     <div aria-busy={loading || undefined}>
@@ -61,7 +75,29 @@ export function GitDiffBody({ tool, expanded, loading, loadFailed, inGroup }: To
         <div
           className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 border-b border-border pb-2`}
         >
-          {!inGroup ? <Chip>{data.summary}</Chip> : null}
+          {data.path ? (
+            <span className="inline-flex min-w-0 items-center gap-1.5">
+              <FileTypeIcon path={data.path} size={14} />
+              {onOpenWorkspaceFile ? (
+                <button
+                  type="button"
+                  className="min-w-0 truncate text-left font-mono text-caption text-fg/85 underline-offset-2 hover:underline"
+                  title={data.path}
+                  onClick={() => {
+                    if (data.path) onOpenWorkspaceFile(data.path)
+                  }}
+                >
+                  {basename(data.path) || data.path}
+                </button>
+              ) : (
+                <span className="min-w-0 truncate font-mono text-caption text-fg/85" title={data.path}>
+                  {basename(data.path) || data.path}
+                </span>
+              )}
+            </span>
+          ) : !inGroup ? (
+            <Chip>{data.summary}</Chip>
+          ) : null}
           {data.added > 0 ? (
             <span className="text-2xs tabular-nums text-success">+{data.added}</span>
           ) : null}

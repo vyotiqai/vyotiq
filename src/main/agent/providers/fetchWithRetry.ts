@@ -1,3 +1,12 @@
+import {
+  assertCircuitClosed,
+  circuitKeyHttp,
+  isCircuitOpenError,
+  recordCircuitFailure,
+  recordCircuitSuccess,
+  releaseCircuitProbe
+} from '../circuitBreaker'
+
 export class RetriableStreamError extends Error {
   constructor(message: string, cause?: unknown) {
     super(message)
@@ -13,6 +22,7 @@ export function isRetriableProviderMessage(message: string): boolean {
 }
 
 export function isRetriableNetworkError(err: unknown): boolean {
+  if (isCircuitOpenError(err)) return false
   if (err instanceof DOMException && err.name === 'AbortError') return false
   if (err instanceof Error && err.name === 'AbortError') return false
 
@@ -35,7 +45,11 @@ export function isRetriableNetworkError(err: unknown): boolean {
   return false
 }
 
-function delay(ms: number, signal?: AbortSignal): Promise<void> {
+/** Chat/stream POSTs share this budget so Responses / Interactions match SSE paths. */
+export const CHAT_FETCH_MAX_ATTEMPTS = 5
+
+/** Abort-aware sleep used by fetch retries and tool-level backoff. */
+export function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve()
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
@@ -50,8 +64,9 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
   })
 }
 
-const BASE_BACKOFF_MS = 250
+export const HTTP_RETRY_BASE_MS = 250
 const MAX_RETRY_AFTER_MS = 30_000
+const DEFAULT_FETCH_MAX_ATTEMPTS = 3
 
 /** `Retry-After` is either delta-seconds or an HTTP date. Ignore anything else. */
 export function retryAfterMs(header: string | null, now = Date.now()): number | undefined {
@@ -67,10 +82,56 @@ export function retryAfterMs(header: string | null, now = Date.now()): number | 
   return Math.min(Math.max(0, at - now), MAX_RETRY_AFTER_MS)
 }
 
-/** Full jitter over the linear backoff so concurrent runs stop retrying in lockstep. */
-function backoffMs(attempt: number): number {
-  const ceiling = attempt * BASE_BACKOFF_MS
+/** Full jitter over linear backoff so concurrent runs stop retrying in lockstep. */
+export function httpRetryBackoffMs(attempt: number): number {
+  const ceiling = Math.max(1, attempt) * HTTP_RETRY_BASE_MS
   return Math.round(ceiling / 2 + Math.random() * (ceiling / 2))
+}
+
+/**
+ * Retry a function on transient network errors (and optional extra predicates).
+ * Abort during backoff throws AbortError. Used by web_fetch, catalog, and installs.
+ */
+export async function runWithNetworkRetry<T>(
+  fn: () => Promise<T>,
+  opts?: {
+    signal?: AbortSignal
+    maxAttempts?: number
+    isRetriable?: (err: unknown) => boolean
+    circuitKey?: string
+  }
+): Promise<T> {
+  const maxAttempts = opts?.maxAttempts ?? DEFAULT_FETCH_MAX_ATTEMPTS
+  const isRetriable = opts?.isRetriable ?? isRetriableNetworkError
+  const circuitKey = opts?.circuitKey
+  if (circuitKey) assertCircuitClosed(circuitKey)
+  let lastError: unknown
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const result = await fn()
+      if (circuitKey) recordCircuitSuccess(circuitKey)
+      return result
+    } catch (err) {
+      lastError = err
+      if (opts?.signal?.aborted) {
+        if (circuitKey) releaseCircuitProbe(circuitKey)
+        throw err
+      }
+      if (isCircuitOpenError(err)) throw err
+      if (!isRetriable(err) || attempt >= maxAttempts) {
+        if (circuitKey && isRetriable(err)) recordCircuitFailure(circuitKey)
+        throw err
+      }
+      await sleepAbortable(httpRetryBackoffMs(attempt), opts?.signal)
+      if (opts?.signal?.aborted) {
+        if (circuitKey) releaseCircuitProbe(circuitKey)
+        throw new DOMException('Aborted', 'AbortError')
+      }
+    }
+  }
+
+  throw lastError ?? new Error('retry failed')
 }
 
 /**
@@ -86,31 +147,54 @@ async function discardBody(response: Response): Promise<void> {
   }
 }
 
+function isRetriableHttpStatus(status: number): boolean {
+  return status >= 500 || status === 429
+}
+
 export async function fetchWithRetry(
   url: string,
   init: RequestInit & { signal?: AbortSignal },
-  opts?: { maxAttempts?: number }
+  opts?: { maxAttempts?: number; circuitKey?: string | false }
 ): Promise<Response> {
-  const maxAttempts = opts?.maxAttempts ?? 3
+  const maxAttempts = opts?.maxAttempts ?? DEFAULT_FETCH_MAX_ATTEMPTS
+  const circuitKey = opts?.circuitKey === false ? undefined : (opts?.circuitKey ?? circuitKeyHttp(url))
+  if (circuitKey) assertCircuitClosed(circuitKey)
   let lastError: unknown
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const response = await fetch(url, init)
-      if ((response.status >= 500 || response.status === 429) && attempt < maxAttempts) {
+      if (isRetriableHttpStatus(response.status) && attempt < maxAttempts) {
         const retryAfter = retryAfterMs(response.headers?.get('retry-after') ?? null)
         await discardBody(response)
-        await delay(retryAfter ?? backoffMs(attempt), init.signal)
-        if (init.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+        await sleepAbortable(retryAfter ?? httpRetryBackoffMs(attempt), init.signal)
+        if (init.signal?.aborted) {
+          if (circuitKey) releaseCircuitProbe(circuitKey)
+          throw new DOMException('Aborted', 'AbortError')
+        }
         continue
+      }
+      if (circuitKey) {
+        if (isRetriableHttpStatus(response.status)) recordCircuitFailure(circuitKey)
+        else recordCircuitSuccess(circuitKey)
       }
       return response
     } catch (err) {
       lastError = err
-      if (init.signal?.aborted) throw err
-      if (!isRetriableNetworkError(err) || attempt >= maxAttempts) throw err
-      await delay(backoffMs(attempt), init.signal)
-      if (init.signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      if (init.signal?.aborted) {
+        if (circuitKey) releaseCircuitProbe(circuitKey)
+        throw err
+      }
+      if (isCircuitOpenError(err)) throw err
+      if (!isRetriableNetworkError(err) || attempt >= maxAttempts) {
+        if (circuitKey && isRetriableNetworkError(err)) recordCircuitFailure(circuitKey)
+        throw err
+      }
+      await sleepAbortable(httpRetryBackoffMs(attempt), init.signal)
+      if (init.signal?.aborted) {
+        if (circuitKey) releaseCircuitProbe(circuitKey)
+        throw new DOMException('Aborted', 'AbortError')
+      }
     }
   }
 

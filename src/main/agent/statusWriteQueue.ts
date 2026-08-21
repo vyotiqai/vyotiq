@@ -43,19 +43,22 @@ type Pending = {
   invalidateList: boolean
   timer: ReturnType<typeof setTimeout> | null
   chain: Promise<void>
+  flushFailures: number
 }
 
 const pendingByDir = new Map<string, Pending>()
 
 const TERMINAL_STATUSES = new Set(['done', 'error', 'cancelled'])
+const MAX_STATUS_FLUSH_RETRIES = 5
+const STATUS_FLUSH_RETRY_MAX_MS = 4_000
 
 function isTerminalPatch(patch: Partial<RunStatus>): boolean {
   return Boolean(patch.status && TERMINAL_STATUSES.has(patch.status))
 }
 
-/** Step ticks are forensic checkpoints — do not debounce behind events.jsonl. */
+/** Step ticks / mode switches are forensic checkpoints — do not debounce behind events.jsonl. */
 function shouldFlushImmediately(patch: Partial<RunStatus>): boolean {
-  return isTerminalPatch(patch) || patch.step !== undefined
+  return isTerminalPatch(patch) || patch.step !== undefined || patch.mode !== undefined
 }
 
 /** Meaningful enough to refresh the run list (not every step tick). */
@@ -115,6 +118,7 @@ async function flushDir(dir: string): Promise<void> {
       }
       await atomicWriteJsonAsync(path, next)
       statusStats.flushed += 1
+      entry.flushFailures = 0
       if (invalidateList) {
         const workspacePath = next.workspacePath ?? current.workspacePath
         if (workspacePath) invalidateListRunsCache(workspacePath)
@@ -122,6 +126,7 @@ async function flushDir(dir: string): Promise<void> {
     } catch (err) {
       // Re-merge so a later flush can retry after disk/permission failures.
       mergePendingPatch(dir, patch, invalidateList)
+      scheduleStatusRetry(dir)
       throw err
     }
   })
@@ -142,10 +147,34 @@ async function flushDir(dir: string): Promise<void> {
   }
 }
 
+function scheduleStatusRetry(dir: string): void {
+  const entry = pendingByDir.get(dir)
+  if (!entry || entry.timer) return
+  if (Object.keys(entry.patch).length === 0) return
+  entry.flushFailures += 1
+  if (entry.flushFailures > MAX_STATUS_FLUSH_RETRIES) return
+  const delay = Math.min(
+    STATUS_FLUSH_RETRY_MAX_MS,
+    STATUS_FLUSH_MS * 2 ** (entry.flushFailures - 1)
+  )
+  entry.timer = setTimeout(() => {
+    entry.timer = null
+    void flushDir(dir).catch(() => {
+      // flushDir logs and re-merges pending patches
+    })
+  }, delay)
+}
+
 function ensurePending(dir: string): Pending {
   let entry = pendingByDir.get(dir)
   if (!entry) {
-    entry = { patch: {}, invalidateList: false, timer: null, chain: Promise.resolve() }
+    entry = {
+      patch: {},
+      invalidateList: false,
+      timer: null,
+      chain: Promise.resolve(),
+      flushFailures: 0
+    }
     pendingByDir.set(dir, entry)
   }
   return entry
@@ -225,6 +254,7 @@ export async function writeStatusImmediate(
       updatedAt: new Date().toISOString()
     }
     writeSync(path, next)
+    entry.flushFailures = 0
     if (invalidateList) {
       const workspacePath = next.workspacePath ?? current.workspacePath
       if (workspacePath) invalidateListRunsCache(workspacePath)
@@ -233,6 +263,7 @@ export async function writeStatusImmediate(
 
   entry.chain = writeOp.catch((err) => {
     mergePendingPatch(dir, mergedPatch, invalidateList)
+    scheduleStatusRetry(dir)
     logger.warn('Failed immediate status write', {
       scope: 'state',
       correlationId: basename(dir),

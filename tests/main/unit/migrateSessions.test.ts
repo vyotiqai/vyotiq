@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -213,5 +213,27 @@ describe('migrateLegacySessions', () => {
     expect(result).toEqual({ migrated: 0, needsWorkspaceForMigration: true, pendingMigrationCount: 3 })
     expect(existsSync(join(userData, 'sessions', 'run-a'))).toBe(true)
     expect(existsSync(join(workspaceSessionsRoot(ws), 'run-a'))).toBe(false)
+  })
+
+  it('skips symlinked legacy session directories', () => {
+    const ws = makeWorkspace()
+    seedWorkspacesJson({
+      openPaths: [ws],
+      activePath: ws,
+      recentPaths: [ws]
+    })
+    const real = mkdtempSync(join(tmpdir(), 'vyotiq-sess-real-'))
+    workspaces.push(real)
+    writeFileSync(join(real, 'status.json'), JSON.stringify(VALID_STATUS), 'utf8')
+    mkdirSync(join(userData, 'sessions'), { recursive: true })
+    symlinkSync(
+      real,
+      join(userData, 'sessions', 'run-link'),
+      process.platform === 'win32' ? 'junction' : 'dir'
+    )
+
+    const result = migrateLegacySessions()
+    expect(result.migrated).toBe(0)
+    expect(existsSync(join(workspaceSessionsRoot(ws), 'run-link'))).toBe(false)
   })
 })

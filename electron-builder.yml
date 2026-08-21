@@ -1,35 +1,69 @@
 appId: com.vyotiq.agent
 productName: Vyotiq
+icon: resources/icon.png
 directories:
   buildResources: build
+  output: dist-package
+asar: true
+compression: maximum
 files:
   - '!**/.vscode/*'
   - '!src/*'
+  - '!tests/**'
+  - '!docs/**'
+  - '!landing/**'
+  - '!dist-package*/**'
+  - '!resources/harness/proposals/**'
+  - '!resources/branding/**'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md}'
   - '!{.env,.env.*,.npmrc,pnpm-lock.yaml}'
   - '!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}'
+  - '!**/*.{md,map}'
+  # Win x64 only — drop other onnxruntime natives (~150 MB).
+  - '!**/onnxruntime-node/bin/napi-v6/darwin/**'
+  - '!**/onnxruntime-node/bin/napi-v6/linux/**'
+  - '!**/onnxruntime-node/bin/napi-v6/win32/arm64/**'
+  # Grammars ship via extraResources/codeindex/wasm; skip full package (~49 MB).
+  - '!**/tree-sitter-wasms/**'
 extraResources:
   - from: resources/harness
     to: harness
+    filter:
+      - '**/*'
+      - '!proposals/**'
   - from: resources/marketplace
     to: marketplace
+  - from: resources/codeindex/wasm
+    to: codeindex/wasm
 asarUnpack:
   - resources/**
+  # pnpm isolated linker nests packages under .pnpm; unpack both top-level and nested.
+  - '**/node_modules/onnxruntime-node/**'
+  - '**/node_modules/@huggingface/transformers/**'
 win:
+  icon: resources/icon.ico
   target:
     - nsis
   executableName: Vyotiq
 nsis:
   artifactName: ${productName}-${version}-setup.${ext}
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
   shortcutName: ${productName}
   uninstallDisplayName: ${productName}
-  createDesktopShortcut: always
+  deleteAppDataOnUninstall: false
+  runAfterFinish: true
 mac:
   target:
     - dmg
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
+  extendInfo:
+    NSMicrophoneUsageDescription: Vyotiq uses the microphone for voice dictation.
   notarize: false
 dmg:
   artifactName: ${productName}-${version}.${ext}
@@ -41,3 +75,5 @@ linux:
 appImage:
   artifactName: ${productName}-${version}.${ext}
 npmRebuild: false
+
+publish: null

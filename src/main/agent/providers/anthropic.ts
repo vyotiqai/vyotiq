@@ -12,13 +12,15 @@ import type {
   ToolCall,
   TokenUsage
 } from './types'
+import { billedCostFromUsage } from './usageFields'
 import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
-import { logProviderFailure } from './log'
-import { fetchWithRetry } from './fetchWithRetry'
+import { logProviderFailure, providerFetchFailureChunk } from './log'
+import { CHAT_FETCH_MAX_ATTEMPTS, fetchWithRetry } from './fetchWithRetry'
 import { formatProviderHttpError, scrubProviderErrorText } from './httpErrors'
 import { anthropicThinkingBlocksFromMessage, anthropicThinkingFields } from './thinkingPolicy'
 import { volatileSessionMessage } from './systemZones'
+import { wireToolCallArguments } from '../toolArgWire'
 
 function asContentBlocks(content: unknown): Array<Record<string, unknown>> {
   if (Array.isArray(content)) return content as Array<Record<string, unknown>>
@@ -115,9 +117,9 @@ function toAnthropicMessages(messages: ChatMessage[]): {
       for (const t of m.toolCalls) {
         let input: unknown = {}
         try {
-          input = JSON.parse(t.arguments || '{}')
+          input = JSON.parse(wireToolCallArguments(t.name, t.arguments))
         } catch {
-          input = { raw: t.arguments }
+          input = {}
         }
         content.push({ type: 'tool_use', id: t.id, name: t.name, input })
       }
@@ -158,6 +160,21 @@ function toAnthropicMessages(messages: ChatMessage[]): {
   }
 
   return { system: systemText, messages: merged }
+}
+
+/** Official cache order is tools → system → messages. Last-tool breakpoint keeps the tools prefix when system later changes. */
+function toAnthropicTools(tools: ProviderChatRequest['tools']): Array<Record<string, unknown>> {
+  return tools.map((t, i) => {
+    const def: Record<string, unknown> = {
+      name: t.name,
+      description: t.description,
+      input_schema: t.parameters
+    }
+    if (i === tools.length - 1) {
+      def.cache_control = { type: 'ephemeral' }
+    }
+    return def
+  })
 }
 
 function applyCacheControl(
@@ -297,7 +314,7 @@ async function postAnthropicMessages(
         signal,
         body: JSON.stringify(attempt.body)
       },
-      { maxAttempts: 5 }
+      { maxAttempts: CHAT_FETCH_MAX_ATTEMPTS }
     )
     if (last.ok) return last
     if (last.status === 401 || last.status === 403) return last
@@ -313,12 +330,7 @@ export function buildAnthropicBody(req: ProviderChatRequest): Record<string, unk
       ? { stable: req.systemStable ?? '', volatile: req.systemVolatile ?? '' }
       : req.system
   const cached = applyCacheControl(systemForCache, converted.messages)
-  const tools = req.tools.map((t) => ({
-    name: t.name,
-    description: t.description,
-    input_schema: t.parameters,
-    ...(req.strictTools !== false && req.tools.length ? { strict: true } : {})
-  }))
+  const tools = toAnthropicTools(req.tools)
   const body: Record<string, unknown> = {
     model: req.model,
     max_tokens: defaultMaxTokens(req.model, req.maxOutputTokens),
@@ -350,14 +362,18 @@ export const anthropicProvider: LlmProvider = {
     if (!req.apiKey) throw new Error('Anthropic API key not set')
     let res: Response
     try {
-      res = await fetchWithRetry('https://api.anthropic.com/v1/models?limit=100', {
-        method: 'GET',
-        headers: {
-          'x-api-key': req.apiKey,
-          'anthropic-version': '2023-06-01'
+      res = await fetchWithRetry(
+        'https://api.anthropic.com/v1/models?limit=100',
+        {
+          method: 'GET',
+          headers: {
+            'x-api-key': req.apiKey,
+            'anthropic-version': '2023-06-01'
+          },
+          signal: req.signal
         },
-        signal: req.signal
-      })
+        { circuitKey: false }
+      )
     } catch (err) {
       if (req.signal?.aborted) throw err
       logProviderFailure('anthropic', 'network', {})
@@ -415,12 +431,7 @@ export const anthropicProvider: LlmProvider = {
 
     const cached = applyCacheControl(systemForCache, converted.messages)
 
-    const tools = req.tools.map((t) => ({
-      name: t.name,
-      description: t.description,
-      input_schema: t.parameters,
-      ...(req.strictTools !== false && req.tools.length ? { strict: true } : {})
-    }))
+    const tools = toAnthropicTools(req.tools)
 
     const native = req.anthropicNative
     const betas = ['prompt-caching-2024-07-31']
@@ -458,7 +469,7 @@ export const anthropicProvider: LlmProvider = {
     if (native && native.enableContextManagement) {
       const clearEdit: Record<string, unknown> = {
         type: 'clear_tool_uses_20250919',
-        keep: { type: 'tool_uses', value: native.clearToolUsesKeep }
+        keep: { type: 'tool_uses', value: native.clearToolUsesKeep ?? 0 }
       }
       if (
         typeof native.clearToolUsesTriggerTokens === 'number' &&
@@ -503,8 +514,7 @@ export const anthropicProvider: LlmProvider = {
       res = await postAnthropicMessages(baseHeaders, betas, body, req.signal)
     } catch (err) {
       if (req.signal.aborted) throw err
-      logProviderFailure('anthropic', 'network', {})
-      yield { type: 'error', error: formatError(err) }
+      yield providerFetchFailureChunk('anthropic', err)
       return
     }
 
@@ -513,7 +523,7 @@ export const anthropicProvider: LlmProvider = {
       logProviderFailure('anthropic', 'http', {
         status: res.status
       })
-      yield { type: 'error', error: formatProviderHttpError(res.status, text, 'anthropic') }
+      yield { type: 'error', error: formatProviderHttpError(res.status, text, 'anthropic'), errorCode: 'PROVIDER_HTTP' }
       return
     }
 
@@ -549,12 +559,16 @@ export const anthropicProvider: LlmProvider = {
         : lastUsage?.cacheCreationInputTokens
       const reasoningTokens = hasReasoning ? usage.thinking_tokens : lastUsage?.reasoningTokens
 
+      const billed = billedCostFromUsage(usage)
+
       const next: TokenUsage = {
         inputTokens: inputTokens as number | undefined,
+        inputTokensIncludesCache: false,
         outputTokens: outputTokens as number | undefined,
         cachedInputTokens: cachedInputTokens as number | undefined,
         cacheCreationInputTokens: cacheCreationInputTokens as number | undefined,
-        reasoningTokens: reasoningTokens as number | undefined
+        reasoningTokens: reasoningTokens as number | undefined,
+        ...billed
       }
       if (next.inputTokens !== undefined && next.outputTokens !== undefined) {
         next.totalTokens = next.inputTokens + next.outputTokens
@@ -673,7 +687,6 @@ export const anthropicProvider: LlmProvider = {
       type: 'done',
       usage: lastUsage,
       stopReason,
-      malformedChunks: drops.dropped || undefined,
       compaction: compactionText.trim() || undefined,
       reasoningState:
         thinkingBlocks.length > 0

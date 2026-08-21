@@ -66,7 +66,13 @@ export const ALLOWED_LOG_FIELD_KEYS = new Set([
   'checkpointId',
   'id',
   'version',
-  'removed'
+  'removed',
+  /** Incomplete-turn / stream stop taxonomy (not user content). */
+  'stopReason',
+  /** Top-level tool-arg key names only (comma-separated; not values). */
+  'argsKeys',
+  'circuitKey',
+  'retryAfterMs'
 ])
 
 const PATH_IN_TEXT =

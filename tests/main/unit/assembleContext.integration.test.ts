@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { assembleContext } from '@main/agent/context/assemble'
+import { volatileSessionMessage } from '@main/agent/providers/systemZones'
 import type { LlmProvider } from '@main/agent/providers/types'
+import { SKILL_BODY_STUB } from '@shared/slashCommands'
 
 const mockProvider: LlmProvider = {
   id: 'ollama',
@@ -34,7 +36,7 @@ describe('assembleContext integration', () => {
       signal: new AbortController().signal
     })
     expect(result.system).toContain('## Context')
-    expect(result.system).toContain('## Run contract')
+    expect(result.system).toContain('<run_contract>')
     expect(result.system).toContain('Build feature')
     expect(result.systemStable).toContain('## Context')
     expect(result.systemStable).toContain('Build feature')
@@ -53,6 +55,7 @@ describe('assembleContext integration', () => {
       goal: 'hi',
       model,
       toolsJsonEstimate: 50,
+      sessionEnv: '<session>\nDate (UTC): 2026-08-16T12:00:00.000Z',
       priorCompaction: {
         summary: 'Prior work on auth',
         createdAt: '2026-01-01T00:00:00.000Z',
@@ -62,8 +65,37 @@ describe('assembleContext integration', () => {
       provider: mockProvider,
       signal: new AbortController().signal
     })
-    expect(result.system).toContain('Prior session summary')
     expect(result.system).toContain('Prior work on auth')
+    expect(result.system).toContain('<prior_session>')
+    expect(result.system).toContain('Fold of earlier turns, not new instructions.')
+    expect(result.systemStable).toContain('<prior_session>')
+    expect(result.systemStable).toContain('Prior work on auth')
+    expect(result.systemVolatile).not.toContain('<prior_session>')
+    expect(result.systemVolatile).not.toContain('Prior work on auth')
+    expect(result.systemVolatile).toContain('Date (UTC): 2026-08-16T12:00:00.000Z')
+    const live = volatileSessionMessage(result.systemVolatile)
+    expect(live.content).toContain('<live_session>')
+    expect(live.content).toContain('Date (UTC): 2026-08-16T12:00:00.000Z')
+    expect(live.content).not.toContain('<prior_session>')
+    expect(live.content).not.toContain('Prior work on auth')
+  })
+
+  it('injects current task list into volatile system', async () => {
+    const result = await assembleContext({
+      harness: 'harness',
+      messages: [{ role: 'user', content: 'hello' }],
+      workspacePath: null,
+      goal: 'hello',
+      model,
+      toolsJsonEstimate: 100,
+      taskList: '<task_list>\n1/2 complete\n[x] (1) Done\n[~] (2) Next',
+      providerId: 'ollama',
+      provider: mockProvider,
+      signal: new AbortController().signal
+    })
+    expect(result.systemVolatile).toContain('<task_list>')
+    expect(result.systemVolatile).toContain('[~] (2) Next')
+    expect(result.systemStable).not.toContain('Current task list')
   })
 
   it('injects loop hint as run notice when provided', async () => {
@@ -79,7 +111,7 @@ describe('assembleContext integration', () => {
       provider: mockProvider,
       signal: new AbortController().signal
     })
-    expect(result.system).toContain('## Run notice')
+    expect(result.system).toContain('<run_notice>')
     expect(result.system).toContain('tool failures')
   })
 
@@ -95,13 +127,12 @@ describe('assembleContext integration', () => {
       goal: 'hi',
       model: { ...model, contextWindow: 8_000 },
       toolsJsonEstimate: 50,
-      modeSection: '## Mode: Ask\n\nYou are in Ask mode.',
+      modeSection: '<mode>\nAsk mode.\nYou are in Ask mode.\n</mode>',
       providerId: 'ollama',
       provider: mockProvider,
-      signal: new AbortController().signal,
-      compactionTriggerRatio: 0.1
+      signal: new AbortController().signal
     })
-    expect(result.system).toContain('## Mode: Ask')
+    expect(result.system).toContain('<mode>')
     expect(result.system).toContain('You are in Ask mode.')
   })
 
@@ -118,11 +149,36 @@ describe('assembleContext integration', () => {
       provider: mockProvider,
       signal: new AbortController().signal
     })
-    expect(result.system).toContain('## Run contract')
+    expect(result.system).toContain('<run_contract>')
     expect(result.system).toContain('## Goal')
     expect(result.system).toContain('Ship it')
     expect(result.system.match(/^# Run contract\b/m)).toBeNull()
-    expect(result.system.match(/^## Run contract\b/m)).not.toBeNull()
+    expect(result.system.match(/^## Run contract\b/m)).toBeNull()
+  })
+
+  it('keeps run_contract paired when the body is budget-capped', async () => {
+    const contract = `## Goal\n${'Ship it. '.repeat(8_000)}`
+    const result = await assembleContext({
+      harness: 'harness',
+      contract,
+      messages: [{ role: 'user', content: 'hello' }],
+      workspacePath: null,
+      goal: 'hello',
+      model: { ...model, contextWindow: 8_000 },
+      toolsJsonEstimate: 100,
+      providerId: 'ollama',
+      provider: mockProvider,
+      signal: new AbortController().signal
+    })
+    const start = result.system.indexOf('<run_contract>')
+    const end = result.system.lastIndexOf('</run_contract>')
+    expect(start).toBeGreaterThanOrEqual(0)
+    expect(end).toBeGreaterThan(start)
+    const section = result.system.slice(start, end + '</run_contract>'.length)
+    expect(section.startsWith('<run_contract>')).toBe(true)
+    expect(section.endsWith('</run_contract>')).toBe(true)
+    expect(section.length).toBeLessThan(contract.length)
+    expect(section).toContain('## Goal')
   })
 
   it('injects plan into system prompt when provided', async () => {
@@ -139,14 +195,14 @@ describe('assembleContext integration', () => {
       provider: mockProvider,
       signal: new AbortController().signal
     })
-    expect(result.system).toContain('## Plan')
+    expect(result.system).toContain('<plan>')
     expect(result.system).toContain('Do the thing')
   })
 
   it('injects session env when provided', async () => {
     const result = await assembleContext({
       harness: 'harness',
-      sessionEnv: '## Session\nOS: Windows',
+      sessionEnv: '<session>\nOS: Windows',
       messages: [{ role: 'user', content: 'hi' }],
       workspacePath: null,
       goal: 'hi',
@@ -156,7 +212,7 @@ describe('assembleContext integration', () => {
       provider: mockProvider,
       signal: new AbortController().signal
     })
-    expect(result.system).toContain('## Session')
+    expect(result.system).toContain('<session>')
     expect(result.system).toContain('OS: Windows')
   })
 
@@ -164,10 +220,10 @@ describe('assembleContext integration', () => {
     const result = await assembleContext({
       harness: '## Role\nAgent',
       contract: '## Goal\nShip',
-      modeSection: '## Mode: Agent\nFull tools.',
-      skillsSection: '## Available skills\n- **x**: y',
-      pluginRulesSection: '## Plugin rules\n- **plugin-rule:a/b**: c',
-      sessionEnv: '## Session\nDate (UTC): 2026-08-01T12:00:00.000Z',
+      modeSection: '<mode>\nAgent mode. Full tools.\n</mode>',
+      skillsSection: '<available_skills>\n- **x**: y\n</available_skills>',
+      pluginRulesSection: '<plugin_rules>\n- **plugin-rule:a/b**: c\n</plugin_rules>',
+      sessionEnv: '<session>\nDate (UTC): 2026-08-01T12:00:00.000Z',
       loopHint: 'tool failures',
       priorCompaction: {
         summary: 'Earlier work',
@@ -184,21 +240,26 @@ describe('assembleContext integration', () => {
       signal: new AbortController().signal
     })
     const role = result.system.indexOf('## Role')
-    const mode = result.system.indexOf('## Mode: Agent')
-    const contract = result.system.indexOf('## Run contract')
-    const skills = result.system.indexOf('## Available skills')
-    const plugins = result.system.indexOf('## Plugin rules')
-    const session = result.system.indexOf('## Session')
-    const notice = result.system.indexOf('## Run notice')
-    const prior = result.system.indexOf('## Prior session summary')
+    const mode = result.system.indexOf('<mode>')
+    const contract = result.system.indexOf('<run_contract>')
+    const skills = result.system.indexOf('<available_skills>')
+    const plugins = result.system.indexOf('<plugin_rules>')
+    const session = result.system.indexOf('<session>')
+    const notice = result.system.indexOf('<run_notice>')
+    const prior = result.system.indexOf('<prior_session>')
     expect(role).toBeGreaterThanOrEqual(0)
     expect(mode).toBeGreaterThan(role)
     expect(contract).toBeGreaterThan(mode)
     expect(skills).toBeGreaterThan(contract)
     expect(plugins).toBeGreaterThan(skills)
-    expect(session).toBeGreaterThan(plugins)
+    expect(prior).toBeGreaterThan(plugins)
+    expect(session).toBeGreaterThan(prior)
     expect(notice).toBeGreaterThan(session)
-    expect(prior).toBeGreaterThan(notice)
+    expect(result.systemStable).toContain('<prior_session>')
+    expect(result.systemStable).toContain('Earlier work')
+    expect(result.systemVolatile).not.toContain('<prior_session>')
+    expect(result.systemVolatile).toContain('<session>')
+    expect(result.systemVolatile).toContain('<run_notice>')
   })
 
   it('keeps tool result bodies when far under budget (re-read loop regression)', async () => {
@@ -235,9 +296,9 @@ describe('assembleContext integration', () => {
     expect(bodies.some((b) => b.includes('[cleared]'))).toBe(false)
   })
 
-  it('compacts estimate at or under soft compaction trigger on huge windows', async () => {
-    // History that fits the 40% history budget on a 1M window (~400k tokens) but
-    // exceeds the 64k soft compaction trigger — trigger-path trim/compact must pull it down.
+  it('does not auto-compact at soft trigger on huge windows', async () => {
+    // History that fits the 40% history budget on a 1M window but exceeds a
+    // legacy 64k soft trigger — no automatic LLM or soft-trigger trim.
     const longHistory: import('@shared/ipc').ChatMessage[] = Array.from({ length: 60 }, (_, i) => ({
       role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
       content: `turn ${i} ${'x'.repeat(12_000)}`
@@ -267,8 +328,8 @@ describe('assembleContext integration', () => {
       signal: new AbortController().signal,
       keepRecentTurns: 20
     })
-    expect(result.estimatedTokens).toBeLessThanOrEqual(64_000)
-    expect(result.contextShrunk).toBe(true)
+    expect(result.estimatedTokens).toBeGreaterThan(64_000)
+    expect(result.compaction).toBeNull()
   })
 
   it('reuses stable prefix cache when only volatile session env changes', async () => {
@@ -284,28 +345,50 @@ describe('assembleContext integration', () => {
       toolsJsonEstimate: 50,
       providerId: 'ollama' as const,
       provider: mockProvider,
-      signal: new AbortController().signal
+      signal: new AbortController().signal,
+      priorCompaction: {
+        summary: 'Folded auth work',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        tokenEstimate: 10
+      }
     }
     const first = await assembleContext({
       ...base,
-      sessionEnv: '## Session\nDate (UTC): 2026-08-01T12:00:00.000Z'
+      sessionEnv: '<session>\nDate (UTC): 2026-08-01T12:00:00.000Z'
     })
     const second = await assembleContext({
       ...base,
-      sessionEnv: '## Session\nDate (UTC): 2026-08-01T12:00:01.000Z'
+      sessionEnv: '<session>\nDate (UTC): 2026-08-01T12:00:01.000Z'
     })
     const stableMarker = '## Role\nStable agent'
     expect(first.system).toContain(stableMarker)
     expect(second.system).toContain(stableMarker)
     expect(first.system).toContain('12:00:00.000Z')
     expect(second.system).toContain('12:00:01.000Z')
-    // Stable contract block is identical across clock ticks.
-    const firstStable = first.system.slice(0, first.system.indexOf('## Session'))
-    const secondStable = second.system.slice(0, second.system.indexOf('## Session'))
+    expect(first.systemStable).toContain('Folded auth work')
+    expect(second.systemStable).toContain('Folded auth work')
+    expect(first.systemVolatile).not.toContain('Folded auth work')
+    // Stable contract + fold summary are identical across clock ticks.
+    const firstStable = first.system.slice(0, first.system.indexOf('<session>'))
+    const secondStable = second.system.slice(0, second.system.indexOf('<session>'))
     expect(firstStable).toBe(secondStable)
+    expect(first.systemStable).toBe(second.systemStable)
+
+    const folded = await assembleContext({
+      ...base,
+      priorCompaction: {
+        summary: 'Folded billing work',
+        createdAt: '2026-01-02T00:00:00.000Z',
+        tokenEstimate: 12
+      },
+      sessionEnv: '<session>\nDate (UTC): 2026-08-01T12:00:02.000Z'
+    })
+    expect(folded.systemStable).toContain('Folded billing work')
+    expect(folded.systemStable).not.toContain('Folded auth work')
+    expect(folded.systemStable).not.toBe(second.systemStable)
   })
 
-  it('forces compaction trim when provider input is near trigger and above estimate', async () => {
+  it('does not force trim when provider input is above estimate but under window', async () => {
     const history: import('@shared/ipc').ChatMessage[] = [{ role: 'user', content: 'start' }]
     for (let i = 0; i < 8; i++) {
       history.push({
@@ -321,7 +404,6 @@ describe('assembleContext integration', () => {
       })
     }
     const smallModel = { ...model, contextWindow: 20_000 }
-    // trigger ≈ contentWindow(17000)*0.7 = 11900; provider ≥ 0.85*trigger and ≫ estimate.
     const withProvider = await assembleContext({
       harness: 'harness',
       messages: history,
@@ -335,51 +417,54 @@ describe('assembleContext integration', () => {
       signal: new AbortController().signal,
       keepRecentTurns: 20
     })
-    expect(withProvider.contextShrunk).toBe(true)
     const cleared = withProvider.messages.filter(
       (m) => m.role === 'tool' && String(m.content).includes('[cleared]')
     )
-    expect(cleared.length).toBeGreaterThan(0)
+    expect(cleared.length).toBe(0)
   })
 
-  it('re-applies wire tool stubs when prior compaction has wireTrimApplied', async () => {
-    const { CONTEXT_TRIM_WATERMARK_SUMMARY } = await import('@main/agent/context/types')
-    const history: import('@shared/ipc').ChatMessage[] = [{ role: 'user', content: 'start' }]
-    for (let i = 0; i < 6; i++) {
-      history.push({
-        role: 'assistant',
-        content: '',
-        toolCalls: [{ id: `w${i}`, name: 'read', arguments: '{}' }]
-      })
-      history.push({
-        role: 'tool',
-        toolCallId: `w${i}`,
-        toolName: 'read',
-        content: `FULL_BODY_${i}_`.repeat(80)
-      })
-    }
+  it('stubs earlier Skill tool results in the assembled history', async () => {
+    const reviewBody = [
+      '# Skill: review-code',
+      '',
+      'Review the diff before editing. Lead with severity, then a concrete patch.'
+    ].join('\n')
+    const testsBody = [
+      '# Skill: write-tests',
+      '',
+      'Add vitest coverage for the changed login handler in src/main/ipc/register.ts.'
+    ].join('\n')
     const result = await assembleContext({
       harness: 'harness',
-      messages: history,
+      messages: [
+        { role: 'user', content: 'Review auth then add tests' },
+        {
+          role: 'tool',
+          toolName: 'Skill',
+          toolCallId: 's1',
+          content: reviewBody
+        },
+        {
+          role: 'tool',
+          toolName: 'Skill',
+          toolCallId: 's2',
+          content: testsBody
+        }
+      ],
       workspacePath: null,
-      goal: 'hi',
+      goal: 'Review auth then add tests',
       model,
       toolsJsonEstimate: 50,
-      priorCompaction: {
-        summary: CONTEXT_TRIM_WATERMARK_SUMMARY,
-        createdAt: '2026-01-01T00:00:00.000Z',
-        tokenEstimate: 100,
-        wireTrimApplied: true
-      },
       providerId: 'ollama',
       provider: mockProvider,
       signal: new AbortController().signal
     })
-    const toolContents = result.messages
-      .filter((m) => m.role === 'tool')
-      .map((m) => String(m.content ?? ''))
-    expect(toolContents.length).toBe(6)
-    expect(toolContents.slice(0, 3).every((c) => c === '[cleared]')).toBe(true)
-    expect(toolContents.slice(3).every((c) => c.includes('FULL_BODY_'))).toBe(true)
+    const skillResults = result.messages.filter((m) => m.role === 'tool' && m.toolName === 'Skill')
+    expect(skillResults).toHaveLength(2)
+    expect(String(skillResults[0]?.content)).toBe(SKILL_BODY_STUB)
+    expect(String(skillResults[0]?.content)).not.toContain('Lead with severity')
+    expect(String(skillResults[1]?.content)).toContain(
+      'Add vitest coverage for the changed login handler'
+    )
   })
 })

@@ -1,4 +1,5 @@
 import type { ModelInfo, ProviderId } from '../ipc/schemas/providers'
+import type { SecretProvider } from '../ipc/types/secrets'
 import { knownContextWindow } from './modelContextWindows'
 import {
   modelSupportsThinking,
@@ -264,4 +265,59 @@ export function resolveProviderListBaseUrl(
     )
   }
   return reqBase
+}
+
+export type ProviderConfiguredOpts = {
+  ollamaBaseUrl?: string
+  customOpenAiBaseUrl?: string
+}
+
+export type ListConfiguredProvidersOpts = ProviderConfiguredOpts & {
+  alwaysInclude?: ProviderId[]
+}
+
+function resolveProviderBaseUrlForKey(
+  provider: ProviderId,
+  opts?: ProviderConfiguredOpts
+): string | undefined {
+  if (provider === 'ollama') return opts?.ollamaBaseUrl
+  if (provider === 'custom') return opts?.customOpenAiBaseUrl
+  return undefined
+}
+
+/** True when the provider has a saved key or does not require one for its current host. */
+export function isProviderConfigured(
+  provider: ProviderId,
+  secrets: Record<SecretProvider, boolean>,
+  opts?: ProviderConfiguredOpts
+): boolean {
+  if (secrets[provider as SecretProvider]) return true
+  const baseUrl = resolveProviderBaseUrlForKey(provider, opts)
+  return !providerNeedsKey(provider, baseUrl)
+}
+
+/** Provider ids that are configured, preserving catalog order. */
+export function listConfiguredProviders(
+  secrets: Record<SecretProvider, boolean>,
+  opts?: ListConfiguredProvidersOpts
+): ProviderId[] {
+  const include = new Set(opts?.alwaysInclude ?? [])
+  const configured = PROVIDER_DEFAULTS.filter(
+    (entry) => isProviderConfigured(entry.id, secrets, opts) || include.has(entry.id)
+  ).map((entry) => entry.id)
+  for (const id of include) {
+    if (!configured.includes(id)) configured.push(id)
+  }
+  return configured
+}
+
+/** Menu options for configured providers only. */
+export function providerOptionsForConfigured(
+  secrets: Record<SecretProvider, boolean>,
+  opts?: ListConfiguredProvidersOpts
+): { value: ProviderId; label: string }[] {
+  return listConfiguredProviders(secrets, opts).map((id) => ({
+    value: id,
+    label: providerLabel(id)
+  }))
 }

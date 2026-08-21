@@ -1,13 +1,16 @@
 import { createHash } from 'crypto'
-
-/** After this many consecutive all-failure tool steps, run read-only tools one at a time. */
-export const CONSECUTIVE_TOOL_FAILURE_SERIAL_THRESHOLD = 2
+import type { ChatMessage } from '../../shared/ipc'
+import { contentToText } from '../../shared/ipc'
+import { codebaseSearchHitPathsFromResult } from './codeindex/search'
+import { readPathArg } from './tools/argAccess'
+import { searchHitPathsFromResult } from './tools/search'
+import { loopHintForRetainedDecisions } from './context/retainedDecisions'
 
 /** Stop the run after this many consecutive steps with a failed tool call. */
 export const MAX_CONSECUTIVE_TOOL_FAILURE_STEPS = 8
 
 /** Stop the run when the same tool call(s) (name + args) repeats this many steps in a row. */
-export const MAX_IDENTICAL_STEP_STREAK = 6
+export const MAX_IDENTICAL_STEP_STREAK = 3
 
 export type LoopStopReason = 'tool_failure_streak' | 'identical_step_streak'
 
@@ -51,7 +54,7 @@ export function mcpNotInCatalogErrorMessage(
     ? `It is already pinned — wait for the next model step so the sticky catalog can admit it.`
     : `Use mcp_list_tools then request_mcp_tools to pin it once, then wait for the next model step (do not keep calling it this step).`
   return [
-    `MCP tool "${toolName}" ${MCP_NOT_IN_CATALOG_MARKER} (omitted by context budget, idle unload, or mode).`,
+    `MCP tool "${toolName}" ${MCP_NOT_IN_CATALOG_MARKER} (omitted by context budget or mode).`,
     pinNote
   ].join(' ')
 }
@@ -78,33 +81,26 @@ export function loopHintForMcpNotInCatalogFailFast(
   ].join(' ')
 }
 
-/** Tell the model which MCP tools were dropped from the tools catalog this run. */
+/** Tell the model which pinned MCP tools were dropped from the tools catalog this step (budget). */
 export function loopHintForOmittedMcpTools(omittedNames: readonly string[]): string | undefined {
   if (omittedNames.length === 0) return undefined
   const preview = omittedNames.slice(0, 8).join(', ')
   const more = omittedNames.length > 8 ? ` (+${omittedNames.length - 8} more)` : ''
   return [
-    `${omittedNames.length} MCP tool(s) were deferred from this step's catalog (unpinned by default / tools soft cap): ${preview}${more}.`,
-    'mcp_list_tools shows connected tools (including deferred). Call request_mcp_tools to pin needed tools for the next step, or disable unused MCP servers in Settings → Marketplace.'
+    `${omittedNames.length} pinned MCP tool(s) were omitted from this step's catalog to fit the tools budget: ${preview}${more}.`,
+    'Release unused pins with release_mcp_tools, disable unused MCP servers in Marketplace → Manage, then pin again with request_mcp_tools if still needed.'
   ].join(' ')
 }
 
-/** Tell the model pinned MCP schemas were unloaded (idle TTL / soft max / release). */
+/** Tell the model pinned MCP schemas were unloaded (unused TTL or release_mcp_tools). */
 export function loopHintForEvictedMcpTools(evictedNames: readonly string[]): string | undefined {
   if (evictedNames.length === 0) return undefined
   const preview = evictedNames.slice(0, 8).join(', ')
   const more = evictedNames.length > 8 ? ` (+${evictedNames.length - 8} more)` : ''
   return [
-    `${evictedNames.length} pinned MCP tool(s) were unloaded from this step's catalog (idle TTL or pinned soft max): ${preview}${more}.`,
+    `${evictedNames.length} pinned MCP tool(s) were unloaded from this step's catalog: ${preview}${more}.`,
     'Call request_mcp_tools to pin them again for the next step if still needed. Prefer release_mcp_tools when finished with a server to free schema tokens sooner.'
   ].join(' ')
-}
-
-/** Composer status line when MCP tools are shed for context budget. */
-export function runNoticeForOmittedMcpTools(omittedCount: number): string | undefined {
-  if (omittedCount <= 0) return undefined
-  const n = omittedCount === 1 ? '1 MCP tool was' : `${omittedCount} MCP tools were`
-  return `${n} deferred from the step catalog — pin with request_mcp_tools, or disable unused MCP servers in Settings → Marketplace.`
 }
 
 export function combineLoopHints(...hints: Array<string | undefined>): string | undefined {
@@ -112,41 +108,121 @@ export function combineLoopHints(...hints: Array<string | undefined>): string | 
   return parts.length ? parts.join('\n\n') : undefined
 }
 
-/** When auto-compaction runs but produces no summary (provider error / empty). */
+/** When auto-compaction cannot fold yet (too little history / nothing foldable). */
 export function loopHintForCompactionFailure(): string {
   return [
-    'Automatic history compaction produced no summary; older turns were trimmed to keep recent context.',
-    'Move durable facts into memory, ask the user to run /compact, or /clear when starting an unrelated task.'
+    'Automatic history compaction had nothing foldable yet (history too short or already recent).',
+    'Move durable facts into memory with memory_write.'
   ].join(' ')
 }
 
-/** When the compaction LLM is skipped because it would not pay back under the soft trigger. */
-export function loopHintForCompactionPaybackSkip(reason: string): string {
-  const base =
-    reason === 'residual_above_trigger'
-      ? 'Compaction LLM skipped — even a summary would leave context above the soft trigger.'
-      : reason === 'prefer_trim'
-        ? 'Compaction LLM skipped — prior summary exists; trimmed instead of re-summarizing.'
-        : 'Compaction LLM skipped — foldable history too small to justify a summarize call.'
-  return `${base} Prefer /clear between unrelated tasks, or /compact when you need continuity.`
+/** When the summarizer output failed extractive verification and was discarded. */
+export function loopHintForCompactionVerifyFailed(): string {
+  return [
+    'Automatic history compaction produced a summary that failed verification and was not applied.',
+    'Move durable facts into memory with memory_write.'
+  ].join(' ')
 }
 
-/** Composer / run notice when high thinking effort runs long (does not change settings). */
-export function runNoticeForHighThinkingCost(step: number): string {
-  return `High thinking effort is still on at step ${step} — reasoning tokens accumulate every step. Lower effort in the composer for simpler work, or /clear between tasks.`
+export function loopHintAfterCompaction(
+  decisions?: readonly string[]
+): string | undefined {
+  return loopHintForRetainedDecisions(decisions)
 }
 
-/** Composer notice when context remains far above the soft compaction trigger. */
+/** Model loop hint when context remains far above the soft compaction trigger. */
 export function runNoticeForContextAboveSoftTrigger(): string {
-  return 'Context is still large after compaction. Prefer /clear for a new task, or /compact with a focus while continuing this one.'
+  return 'Context is still large after compaction. Continue; auto-compact will fold again at the next threshold. Move durable facts into memory with memory_write.'
 }
 
-export function maxParallelReadToolsForFailureStreak(
+/** Summarize the most recent failed tool message for loop hints. */
+export function summarizeRecentToolFailure(
+  messages: ReadonlyArray<ChatMessage>
+): { tool: string; summary: string } | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg?.role !== 'tool' || msg.ok !== false || !msg.toolName?.trim()) continue
+    return {
+      tool: msg.toolName.trim(),
+      summary: contentToText(msg.content).trim().slice(0, 240)
+    }
+  }
+  return undefined
+}
+
+/** System loop hint when identical tool call(s) repeat (before hard stop). */
+export function loopHintForIdenticalStepStreak(streak: number): string | undefined {
+  if (streak < 2) return undefined
+  if (streak >= MAX_IDENTICAL_STEP_STREAK) {
+    return 'The same tool call(s) repeated — change approach instead of retrying identical arguments.'
+  }
+  return 'You repeated the same tool call shape — adjust arguments or choose a different tool before retrying.'
+}
+
+/** System loop hint when tool calls fail repeatedly (structured feedback pattern). */
+export function loopHintForConsecutiveToolFailures(
   streak: number,
-  defaultMax: number
-): number {
-  if (streak >= CONSECUTIVE_TOOL_FAILURE_SERIAL_THRESHOLD) return 1
-  return defaultMax
+  recent?: { tool: string; summary: string }
+): string | undefined {
+  if (streak < 2) return undefined
+
+  const lines = [
+    streak >= 4
+      ? `Tool calls have failed ${streak} steps in a row — stop repeating the same call shape.`
+      : 'Recent tool calls failed — read the last tool_result errors before retrying.'
+  ]
+
+  if (
+    recent?.tool === 'edit' &&
+    /empty arguments|empty contents|path: Required|truncated during streaming/i.test(recent.summary)
+  ) {
+    lines.push(
+      'edit requires path plus non-empty contents (full file) or diff (unified @@ hunks). Never call edit with {}. Use diff to remove contents explicitly.'
+    )
+  } else if (
+    recent?.tool === 'str_replace' &&
+    /empty arguments|path: Required|truncated during streaming/i.test(recent.summary)
+  ) {
+    lines.push('str_replace requires path, old_string, and new_string — never call it with {}.')
+  } else if (
+    recent?.tool === 'multi_edit' &&
+    /empty arguments|empty contents|edits(?:\.|:)|each edit requires|truncated during streaming/i.test(recent.summary)
+  ) {
+    lines.push(
+      'multi_edit requires edits: [{ path, contents }] or edits: [{ path, diff }]. Send each complete edit object together. Empty contents cannot replace an existing non-empty file; use diff to remove contents explicitly.'
+    )
+  } else if (
+    recent?.tool === 'todo_write' &&
+    /empty arguments|todos: Required|invalid args/i.test(recent.summary)
+  ) {
+    lines.push(
+      'todo_write requires todos: [{ id, content, status }] or merge:true with an empty todos list.'
+    )
+  } else if (
+    recent?.tool === 'ask_question' &&
+    /question or questions is required|questions must contain at least 1|questions\[.*\]\.type must be|questions\[.*\]\.prompt is required|must be a JSON array|must be one complete JSON object|Invalid arguments/i.test(
+      recent.summary
+    )
+  ) {
+    lines.push(
+      'ask_question requires questions: [{ id, prompt, type: "boolean"|"text"|"single"|"multi", options? }] or legacy { question: "…" }. Never call it with {}.'
+    )
+  } else if (
+    recent?.tool === 'read' &&
+    /offset\/limit cannot be combined with startLine\/endLine/i.test(recent.summary)
+  ) {
+    lines.push(
+      'read: omit offset/limit when using startLine/endLine. offset/limit is a byte window, not a line range.'
+    )
+  }
+
+  if (streak >= 6) {
+    lines.push(
+      'If context looks stale, narrow the task or memory_write durable facts.'
+    )
+  }
+
+  return lines.join(' ')
 }
 
 export function normalizeWorkspaceRelPath(path: string): string {
@@ -170,7 +246,8 @@ export function editPathsFromToolCall(
   args: Record<string, unknown>
 ): string[] {
   if (name === 'edit' || name === 'str_replace') {
-    const path = typeof args.path === 'string' ? normalizeWorkspaceRelPath(args.path) : ''
+    const raw = readPathArg(args)
+    const path = raw ? normalizeWorkspaceRelPath(raw) : ''
     return path ? [path] : []
   }
   if (name === 'multi_edit' && Array.isArray(args.edits)) {
@@ -192,7 +269,8 @@ export function deletePathFromToolCall(
   args: Record<string, unknown>
 ): string | null {
   if (name !== 'delete') return null
-  const path = typeof args.path === 'string' ? normalizeWorkspaceRelPath(args.path) : ''
+  const raw = readPathArg(args)
+  const path = raw ? normalizeWorkspaceRelPath(raw) : ''
   return path || null
 }
 
@@ -216,7 +294,8 @@ export function readPathFromToolCall(
   args: Record<string, unknown>
 ): string | null {
   if (name !== 'read') return null
-  const path = typeof args.path === 'string' ? normalizeWorkspaceRelPath(args.path) : ''
+  const raw = readPathArg(args)
+  const path = raw ? normalizeWorkspaceRelPath(raw) : ''
   return path || null
 }
 
@@ -228,9 +307,31 @@ export function isConcreteWorkspacePath(value: string): boolean {
   return true
 }
 
+/**
+ * Receipt/checkpoint paths must look like real workspace files — not comma-glued
+ * command args, bare punctuation, or assertion fragments from terminal output.
+ */
+export function isPlausibleWorkspaceFilePath(value: string): boolean {
+  const path = normalizeWorkspaceRelPath(value)
+  if (!isConcreteWorkspacePath(path)) return false
+  if (path.includes(',')) return false
+  if (/[;|&<>]/.test(path)) return false
+  if (/^[=+-]+$/.test(path)) return false
+  if (path.includes(')') && !path.includes('(')) return false
+  if (!path.includes('/') && !/\.[a-zA-Z0-9][\w.-]*$/.test(path)) return false
+  return true
+}
+
 /** Tools whose successful concrete paths count as inspect for path tracking. */
 export function isInspectToolName(name: string): boolean {
-  return name === 'read' || name === 'grep' || name === 'glob'
+  return (
+    name === 'read' ||
+    name === 'list_dir' ||
+    name === 'grep' ||
+    name === 'glob' ||
+    name === 'search' ||
+    name === 'codebase_search'
+  )
 }
 
 /** Tools whose successful results can make earlier diagnostics stale. */
@@ -239,19 +340,20 @@ export function isFileMutationToolName(name: string): boolean {
 }
 
 /**
- * Paths that count as “seen”: `read`, or concrete `grep` include / `glob` pattern
- * (no wildcards).
+ * Paths that count as “seen”: `read`, concrete `grep` include / `glob` pattern
+ * (no wildcards), `search` hit paths, or `codebase_search` hit paths from tool result text.
  */
 export function inspectPathsFromToolCall(
   name: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  resultContent?: string
 ): string[] {
   if (name === 'read') {
     const path = readPathFromToolCall(name, args)
     return path ? [path] : []
   }
   if (name === 'grep') {
-    // Canonical `include`; coerce also maps hallucinated `path` → include before validate.
+    // Prefer `include`; fall back to hallucinated `path` for known-path tracking only.
     const raw = typeof args.include === 'string' ? args.include : args.path
     if (typeof raw === 'string' && isConcreteWorkspacePath(raw)) {
       return [normalizeWorkspaceRelPath(raw)]
@@ -263,6 +365,21 @@ export function inspectPathsFromToolCall(
     if (isConcreteWorkspacePath(pattern)) return [normalizeWorkspaceRelPath(pattern)]
     return []
   }
+  if (name === 'list_dir') {
+    const path = typeof args.path === 'string' ? normalizeWorkspaceRelPath(args.path) : ''
+    if (path && isConcreteWorkspacePath(path)) return [path]
+    return []
+  }
+  if (name === 'search' && typeof resultContent === 'string' && resultContent) {
+    return searchHitPathsFromResult(resultContent)
+      .map((p) => normalizeWorkspaceRelPath(p))
+      .filter((p) => isConcreteWorkspacePath(p))
+  }
+  if (name === 'codebase_search' && typeof resultContent === 'string' && resultContent) {
+    return codebaseSearchHitPathsFromResult(resultContent)
+      .map((p) => normalizeWorkspaceRelPath(p))
+      .filter((p) => isConcreteWorkspacePath(p))
+  }
   return []
 }
 
@@ -270,7 +387,8 @@ export function applyToolCallToKnownPaths(
   known: Set<string>,
   name: string,
   args: Record<string, unknown>,
-  ok: boolean
+  ok: boolean,
+  resultContent?: string
 ): void {
   if (!ok) return
   const deleted = deletePathFromToolCall(name, args)
@@ -278,7 +396,7 @@ export function applyToolCallToKnownPaths(
     invalidateKnownPathsAfterDelete(known, deleted)
     return
   }
-  for (const path of inspectPathsFromToolCall(name, args)) {
+  for (const path of inspectPathsFromToolCall(name, args, resultContent)) {
     known.add(path)
   }
   for (const path of editPathsFromToolCall(name, args)) {
@@ -359,9 +477,13 @@ type SeedMessage = {
 export function seedKnownPathsFromMessages(messages: readonly SeedMessage[]): Set<string> {
   const known = new Set<string>()
   const successfulCallIds = new Set<string>()
+  const resultByCallId = new Map<string, string>()
   for (const msg of messages) {
     if (msg.role === 'tool' && msg.toolCallId && msg.ok !== false) {
       successfulCallIds.add(msg.toolCallId)
+      if (typeof msg.content === 'string') {
+        resultByCallId.set(msg.toolCallId, msg.content)
+      }
     }
   }
   for (const msg of messages) {
@@ -369,7 +491,7 @@ export function seedKnownPathsFromMessages(messages: readonly SeedMessage[]): Se
       for (const call of msg.toolCalls) {
         if (!successfulCallIds.has(call.id)) continue
         const args = parseToolArgs(call.arguments)
-        applyToolCallToKnownPaths(known, call.name, args, true)
+        applyToolCallToKnownPaths(known, call.name, args, true, resultByCallId.get(call.id))
       }
     }
   }
@@ -400,24 +522,12 @@ export function nextIdenticalStepStreak(
   return fingerprint === prevFingerprint ? prevStreak + 1 : 1
 }
 
-/** Central loop-safety decision for consecutive tool-failure / identical tool-step streaks. */
-export function loopStopDecision(state: {
+/** Central loop-safety decision — never stops the run. */
+export function loopStopDecision(_state: {
   /** Progress metadata only — not a stop condition. */
   step: number
-  consecutiveToolFailureSteps: number
+  consecutiveToolFailureSteps?: number
   identicalStepStreak: number
 }): LoopStop | undefined {
-  if (state.consecutiveToolFailureSteps >= MAX_CONSECUTIVE_TOOL_FAILURE_STEPS) {
-    return {
-      reason: 'tool_failure_streak',
-      message: `Stopped after ${state.consecutiveToolFailureSteps} consecutive steps with a failed tool call. Inspect the last tool errors, adjust, and retry.`
-    }
-  }
-  if (state.identicalStepStreak >= MAX_IDENTICAL_STEP_STREAK) {
-    return {
-      reason: 'identical_step_streak',
-      message: `Stopped after the same tool call(s) repeated ${state.identicalStepStreak} consecutive tool steps in a row (likely a loop). Change approach, or start a new chat with fresh context.`
-    }
-  }
   return undefined
 }

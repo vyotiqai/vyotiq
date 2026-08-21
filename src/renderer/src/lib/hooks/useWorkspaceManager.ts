@@ -13,6 +13,7 @@ import type {
 } from '@shared/ipc'
 import type { UiAgentQuestionAnswer } from '@shared/transcript'
 import { toLogErr } from '@shared/errors'
+import { isResumableInterruptedRun } from '@shared/runInterrupt'
 import { logger } from '@shared/logger'
 import { workspacePathsEqual, findByWorkspacePath } from '@shared/workspacePathMatch'
 import {
@@ -22,11 +23,25 @@ import {
 import { ensureChatUiPerfDump } from './chatUiPerf'
 import {
   clearWorkspaceHotUi,
+  clearWorkspaceHotComposerDraft,
   getWorkspaceHotUi,
   hasWorkspaceHotUi,
+  resolveHotComposerDraft,
   seedWorkspaceHotUi,
+  setWorkspaceHotComposerDraft,
   setWorkspaceHotUi
 } from './workspaceHotUiStore'
+import {
+  clearComposerAttachments,
+  clearComposerAttachmentsForWorkspace,
+  composerAttachmentKey
+} from './composerAttachmentStore'
+import { pushToast } from '@renderer/lib/ui'
+import {
+  backgroundRunFinishedMessage,
+  finishedBackgroundRuns,
+  shouldShowBackgroundRunToast
+} from '@renderer/lib/chat/backgroundRunToast'
 import type { ChatPane, ChatPaneLayout, PaneDropZone, SessionDragPayload } from '@renderer/lib/chat/chatPaneLayout'
 import {
   applyPaneDrop,
@@ -56,6 +71,7 @@ export type PaneCapacityContext = {
 
 const ACTIVE_RUNS_POLL_MS = 5_000
 const ACTIVE_RUNS_WARN_INTERVAL_MS = 60_000
+const INTERRUPTED_RUNS_TOAST_KEY = 'vyotiq:interrupted-runs-toast'
 
 /** Rehydrate ask_question cards after remount while main is still waiting. */
 async function restorePendingQuestions(
@@ -83,7 +99,7 @@ async function restorePendingApprovals(
   }
 }
 const ORPHAN_SYNC_DEBOUNCE_MS = 600
-const OPEN_RUN_TAB_LIMIT = 10
+const OPEN_RUN_TAB_LIMIT = 4
 /** Cap orphan IPC buffers for runIds not yet mapped to a controller. */
 const ORPHAN_EVENT_BUFFER_MAX = 128
 const ORPHAN_APPROVAL_BUFFER_MAX = 16
@@ -109,6 +125,11 @@ const ORPHAN_CRITICAL_TYPES = new Set<AgentEvent['type']>([
   'incomplete',
   'error',
   'tool_progress',
+  'agent_instance_update',
+  'compaction_started',
+  'compaction_verifying',
+  'compaction_verify_retry',
+  'compaction_verify_failed',
   'compaction',
   'mcp_tools_omitted',
   'mode_changed'
@@ -223,7 +244,44 @@ export function resolveComposerDraft(
   const key = draftKeyForRun(runId)
   if (key in ui.composerDraftByRunId) return ui.composerDraftByRunId[key] ?? ''
   if (!runId) return ui.composerDraft
+  // Pre-per-run persistence: single composerDraft + empty map while a run is active.
+  if (ui.composerDraft && Object.keys(ui.composerDraftByRunId).length === 0) {
+    return ui.composerDraft
+  }
   return ''
+}
+
+/** @internal — drop one run's draft entry (identity-stable when absent). */
+export function omitRunComposerDraft(
+  composerDraftByRunId: Record<string, string>,
+  runId: string
+): Record<string, string> {
+  if (!(runId in composerDraftByRunId)) return composerDraftByRunId
+  const { [runId]: _removed, ...rest } = composerDraftByRunId
+  return rest
+}
+
+/**
+ * Copy legacy workspace `composerDraft` into the per-run map when upgrading old UI state.
+ * @internal
+ */
+export function migrateLegacyComposerDraftMap(
+  ui: Pick<WorkspaceUiSlice, 'composerDraft' | 'composerDraftByRunId'>,
+  activeRunId: string | null
+): Record<string, string> {
+  const map = { ...ui.composerDraftByRunId }
+  if (!ui.composerDraft) return map
+  if (!(DRAFT_SCROLL_KEY in map)) {
+    map[DRAFT_SCROLL_KEY] = ui.composerDraft
+  }
+  if (
+    activeRunId &&
+    !(activeRunId in map) &&
+    Object.keys(ui.composerDraftByRunId).length === 0
+  ) {
+    map[activeRunId] = ui.composerDraft
+  }
+  return map
 }
 
 /** Keep scroll entries for open tabs and active run; draft only while drafting. @internal */
@@ -281,6 +339,8 @@ export function reconcileOpenRunIds(
 export type WorkspaceContext = {
   path: string
   runs: RunSummary[]
+  /** Inline agent instances nested under parent chats in the sidebar. */
+  instanceRuns: RunSummary[]
   runsCapped: boolean
   runsError: string | null
   /** False until the first listRuns settles — drives the sidebar skeleton. */
@@ -341,6 +401,7 @@ function contextFromRegistry(path: string, registry: WorkspacesState): Workspace
   return {
     path,
     runs: [],
+    instanceRuns: [],
     runsCapped: false,
     runsError: null,
     runsLoaded: false,
@@ -367,7 +428,12 @@ function findSettingsOverride(
   return findByWorkspacePath(overrides, path)
 }
 
-export function useWorkspaceManager() {
+export function useWorkspaceManager(options?: {
+  /** Inline instance panes currently mounted (any split pane, not only the focused one). */
+  openInstanceRunIds?: readonly string[]
+}) {
+  const openInstanceRunIdsRef = useRef<readonly string[]>(options?.openInstanceRunIds ?? [])
+  openInstanceRunIdsRef.current = options?.openInstanceRunIds ?? []
   const [registry, setRegistry] = useState<WorkspacesState | null>(null)
   const [contexts, setContexts] = useState<Record<string, WorkspaceContext>>({})
   const [activeRuns, setActiveRuns] = useState<{ runId: string; workspacePath: string }[]>([])
@@ -378,6 +444,7 @@ export function useWorkspaceManager() {
   const [paneLayout, setPaneLayout] = useState<ChatPaneLayout | null>(null)
 
   const controllersRef = useRef(new Map<string, ChatStreamController>())
+  const autoResumeAttemptedRef = useRef(new Set<string>())
   const paneLayoutRef = useRef<ChatPaneLayout | null>(null)
   const paneLayoutHydratedRef = useRef(false)
   const paneCapacityContextRef = useRef<PaneCapacityContext>({
@@ -398,6 +465,9 @@ export function useWorkspaceManager() {
   const controllerLruRef = useRef<string[]>([])
   const backgroundRunIdsRef = useRef(new Set<string>())
   const refreshRunsRef = useRef<(path: string) => Promise<void>>(async () => {})
+  const openRunTabInWorkspaceRef = useRef<
+    (workspacePath: string, runId: string | null) => void
+  >(() => {})
   const lastActiveRunsWarnAtRef = useRef(0)
   const activeRunsRef = useRef<{ runId: string; workspacePath: string }[]>([])
   const orphanSyncTimersRef = useRef(new Map<string, number>())
@@ -416,6 +486,7 @@ export function useWorkspaceManager() {
   /** True when this run's transcript is mounted in any open pane. */
   const isRunUiVisible = useCallback((runId: string): boolean => {
     if (backgroundRunIdsRef.current.has(runId)) return false
+    if (openInstanceRunIdsRef.current.includes(runId)) return true
     const layout = paneLayoutRef.current
     if (layout?.panes.some((pane) => pane.runId === runId)) return true
 
@@ -424,9 +495,10 @@ export function useWorkspaceManager() {
 
     if (layout && layout.panes.length > 1) {
       for (const pane of layout.panes) {
-        if (pane.runId !== null || !workspacePathsEqual(pane.workspacePath, ws)) continue
+        if (pane.runId !== null) continue
+        if (!workspacePathsEqual(pane.workspacePath, ws)) continue
         const ctx = findByWorkspacePath(contextsRef.current, ws)
-        if (ctx?.activeRunId == null) return true
+        if (ctx?.activeRunId === runId) return true
       }
       return false
     }
@@ -434,11 +506,58 @@ export function useWorkspaceManager() {
     const activePath = registryRef.current?.activePath
     if (!activePath || !workspacePathsEqual(ws, activePath)) return false
     const ctx = findByWorkspacePath(contextsRef.current, ws)
-    if (!ctx) return false
-    if (ctx.activeRunId === runId) return true
-    if (ctx.activeRunId == null) return true
-    return false
+    return ctx?.activeRunId === runId
   }, [])
+
+  const lastUiSubscribeKeyRef = useRef('')
+  const lastUiSubscribeIdsRef = useRef<string[]>([])
+
+  const collectVisibleRunIds = useCallback((): string[] => {
+    const ids = new Set<string>()
+    for (const id of openInstanceRunIdsRef.current) {
+      if (id) ids.add(id)
+    }
+    const layout = paneLayoutRef.current
+    if (layout) {
+      for (const pane of layout.panes) {
+        if (pane.runId) ids.add(pane.runId)
+      }
+    }
+    for (const entry of activeRunsRef.current) {
+      if (isRunUiVisible(entry.runId)) ids.add(entry.runId)
+    }
+    if (layout && layout.panes.length > 1) {
+      return [...ids]
+    }
+    const activePath = registryRef.current?.activePath
+    if (activePath) {
+      const ctx = findByWorkspacePath(contextsRef.current, activePath)
+      if (ctx?.activeRunId && isRunUiVisible(ctx.activeRunId)) ids.add(ctx.activeRunId)
+    }
+    return [...ids]
+  }, [isRunUiVisible])
+
+  const syncChatUiSubscriptions = useCallback((): void => {
+    if (!window.vyotiq?.chatUiSubscribe) return
+    const ids = collectVisibleRunIds()
+    const key = ids.slice().sort().join('\0')
+    if (key === lastUiSubscribeKeyRef.current) return
+    const prev = lastUiSubscribeIdsRef.current
+    lastUiSubscribeKeyRef.current = key
+    lastUiSubscribeIdsRef.current = ids
+    const nextSet = new Set(ids)
+    for (const id of prev) {
+      if (nextSet.has(id)) continue
+      const ctrl = controllersRef.current.get(id)
+      if (ctrl && (ctrl.running || ctrl.pendingRun)) {
+        ctrl.markUiCatchUpNeeded()
+        ctrl.setUiSuspended(true)
+      }
+    }
+    void window.vyotiq
+      .chatUiSubscribe({ runIds: ids })
+      .catch((err: unknown) => logger.warn('chatUiSubscribe failed', { scope: 'chat', err }))
+  }, [collectVisibleRunIds])
 
   const applyUiSuspendForController = useCallback(
     (runId: string, ctrl: ChatStreamController): void => {
@@ -737,7 +856,12 @@ export function useWorkspaceManager() {
             }
             touchLru(assignedId)
           } else if (key === draftKey && controllersRef.current.get(key) === current) {
+            // Stream events may have created a run-scoped controller before chatStart
+            // returned — keep the draft that owns the optimistic user send.
+            existingAssigned.dispose()
+            controllersRef.current.set(assignedId, current)
             controllersRef.current.delete(key)
+            touchLru(assignedId)
           }
         }
         registerRunId(assignedId, workspacePath)
@@ -834,6 +958,7 @@ export function useWorkspaceManager() {
           const nextCtx: WorkspaceContext = {
             ...ctx,
             runs: res.data.runs,
+            instanceRuns: res.data.instanceRuns ?? [],
             runsCapped: res.data.capped,
             runsError: null,
             runsLoaded: true,
@@ -851,8 +976,8 @@ export function useWorkspaceManager() {
                 }
               : {})
           }
+          contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
           if (reconciled.changed) {
-            contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
             schedulePersistUiState(workspacePath, nextCtx)
           }
           return {
@@ -866,12 +991,26 @@ export function useWorkspaceManager() {
           [workspacePath]: {
             ...ctx,
             runs: [],
+            instanceRuns: [],
             runsCapped: false,
             runsError: res.error,
             runsLoaded: true
           }
         }
       })
+      if (res.ok) {
+        const resumableCount = res.data.runs.filter(isResumableInterruptedRun).length
+        if (
+          resumableCount > 0 &&
+          typeof sessionStorage !== 'undefined' &&
+          !sessionStorage.getItem(INTERRUPTED_RUNS_TOAST_KEY)
+        ) {
+          sessionStorage.setItem(INTERRUPTED_RUNS_TOAST_KEY, '1')
+          pushToast(
+            `${resumableCount} interrupted run${resumableCount === 1 ? '' : 's'} — open a chat and tap Continue`
+          )
+        }
+      }
       bump()
     },
     [bump, schedulePersistUiState]
@@ -894,6 +1033,7 @@ export function useWorkspaceManager() {
         return controllersRef.current.get(runId) === ctrl
       }
       ctrl.setTranscriptLoading(true)
+      let autoResumeAfterLoad = false
       try {
         const res = await window.vyotiq.loadRun(workspacePath, runId)
         if (!stillCurrent()) return
@@ -940,8 +1080,34 @@ export function useWorkspaceManager() {
         if (!stillCurrent()) return
         ctrl.hydrateTranscript(res.data.messages, events)
         bump()
+        if (
+          stillCurrent() &&
+          !ctrl.running &&
+          !ctrl.pendingRun &&
+          isResumableInterruptedRun(
+            res.data.status
+              ? {
+                  status: res.data.status,
+                  resumable: res.data.resumable,
+                  error: res.data.error
+                }
+              : null
+          ) &&
+          !autoResumeAttemptedRef.current.has(runId)
+        ) {
+          const settingsRes = await window.vyotiq.getSettings()
+          if (!stillCurrent()) return
+          if (settingsRes.ok && settingsRes.data.autoResumeInterruptedRuns) {
+            autoResumeAttemptedRef.current.add(runId)
+            autoResumeAfterLoad = true
+          }
+        }
       } finally {
         if (stillCurrent()) ctrl.setTranscriptLoading(false)
+        if (stillCurrent() && autoResumeAfterLoad) {
+          pushToast('Resuming interrupted run…')
+          void ctrl.resumeInterrupted()
+        }
       }
     },
     [bump, ensureController]
@@ -959,6 +1125,7 @@ export function useWorkspaceManager() {
       let didReattach = false
       for (const entry of entries) {
         runIdToWorkspaceRef.current.set(entry.runId, entry.workspacePath)
+        if (!isRunUiVisible(entry.runId)) continue
         const ctrl = ensureController(entry.workspacePath, entry.runId)
         if (!ctrl.running) {
           await ctrl.reattachActiveRun(entry.runId)
@@ -968,9 +1135,10 @@ export function useWorkspaceManager() {
         await restorePendingApprovals(ctrl, entry.runId)
         applyUiSuspendForController(entry.runId, ctrl)
       }
+      syncChatUiSubscriptions()
       if (didReattach) bump()
     },
-    [applyUiSuspendForController, bump, ensureController]
+    [applyUiSuspendForController, bump, ensureController, isRunUiVisible, syncChatUiSubscriptions]
   )
 
   const pollActiveRuns = useCallback(async (): Promise<void> => {
@@ -1007,6 +1175,38 @@ export function useWorkspaceManager() {
         continue
       }
       void refreshRunsRef.current(entry.workspacePath)
+    }
+    for (const entry of finishedBackgroundRuns(
+      prevActive,
+      nextActive,
+      backgroundRunIdsRef.current
+    )) {
+      const ctx = findByWorkspacePath(contextsRef.current, entry.workspacePath)
+      const run =
+        ctx?.runs.find((r) => r.runId === entry.runId) ??
+        ctx?.instanceRuns.find((r) => r.runId === entry.runId)
+      const layout = paneLayoutRef.current
+      const focusedPane = layout
+        ? (layout.panes.find((p) => p.paneId === layout.focusedPaneId) ?? layout.panes[0] ?? null)
+        : null
+      const focusedId =
+        focusedPane?.runId ??
+        (registryRef.current?.activePath
+          ? contextsRef.current[registryRef.current.activePath]?.activeRunId
+          : null) ??
+        null
+      if (
+        shouldShowBackgroundRunToast({
+          windowFocused: typeof document !== 'undefined' && document.hasFocus(),
+          focusedRunId: focusedId,
+          finishedRunId: entry.runId
+        })
+      ) {
+        pushToast(backgroundRunFinishedMessage(run?.goal), 'info', 6000, () => {
+          openRunTabInWorkspaceRef.current(entry.workspacePath, entry.runId)
+        })
+      }
+      backgroundRunIdsRef.current.delete(entry.runId)
     }
     const activeIds = new Set(nextActive.map((entry) => entry.runId))
     await reattachActiveRuns(nextActive)
@@ -1051,51 +1251,55 @@ export function useWorkspaceManager() {
   }, [reattachActiveRuns, bump])
 
   const applyRegistry = useCallback((state: WorkspacesState) => {
-    setRegistry(state)
-    setContexts((prev) => {
-      const next: Record<string, WorkspaceContext> = {}
-      for (const path of state.openPaths) {
-        const existing = prev[path]
-        if (existing) {
-          const ui = state.uiStateByPath[path] ?? defaultUiState()
-          const refUi = contextsRef.current[path]?.ui
-          const scrollTopByRunId = { ...(ui.scrollTopByRunId ?? {}) }
-          if (ui.scrollTop > 0 && ui.activeRunId && scrollTopByRunId[ui.activeRunId] === undefined) {
-            scrollTopByRunId[ui.activeRunId] = ui.scrollTop
-          }
-          const composerDraft =
-            existing.ui.composerDraft !== ''
-              ? existing.ui.composerDraft
-              : (refUi?.composerDraft || ui.composerDraft)
-          const composerDraftByRunId = {
-            ...(ui.composerDraftByRunId ?? {}),
-            ...existing.ui.composerDraftByRunId,
-            ...(refUi?.composerDraftByRunId ?? {})
-          }
-          next[path] = {
-            ...existing,
-            activeRunId: existing.activeRunId ?? ui.activeRunId,
-            openRunIds:
-              existing.openRunIds.length > 0 ? existing.openRunIds : [...ui.openRunIds],
-            ui: {
-              scrollTop: refUi?.scrollTop ?? existing.ui.scrollTop ?? ui.scrollTop,
-              scrollTopByRunId: {
-                ...scrollTopByRunId,
-                ...existing.ui.scrollTopByRunId,
-                ...(refUi?.scrollTopByRunId ?? {})
-              },
-              composerDraft,
-              composerDraftByRunId,
-              agentMode: existing.ui.agentMode ?? refUi?.agentMode ?? ui.agentMode ?? 'agent'
-            },
-            settingsOverride: findSettingsOverride(state.settingsOverridesByPath, path)
-          }
-        } else {
-          next[path] = contextFromRegistry(path, state)
+    registryRef.current = state
+    const prev = contextsRef.current
+    const next: Record<string, WorkspaceContext> = {}
+    for (const path of state.openPaths) {
+      const existing = prev[path]
+      if (existing) {
+        const ui = state.uiStateByPath[path] ?? defaultUiState()
+        const refUi = prev[path]?.ui
+        const scrollTopByRunId = { ...(ui.scrollTopByRunId ?? {}) }
+        if (ui.scrollTop > 0 && ui.activeRunId && scrollTopByRunId[ui.activeRunId] === undefined) {
+          scrollTopByRunId[ui.activeRunId] = ui.scrollTop
         }
+        const composerDraft = refUi?.composerDraft ?? existing.ui.composerDraft ?? ui.composerDraft
+        const composerDraftByRunId = migrateLegacyComposerDraftMap(
+          {
+            composerDraft,
+            composerDraftByRunId: {
+              ...(ui.composerDraftByRunId ?? {}),
+              ...existing.ui.composerDraftByRunId,
+              ...(refUi?.composerDraftByRunId ?? {})
+            }
+          },
+          existing.activeRunId ?? ui.activeRunId
+        )
+        next[path] = {
+          ...existing,
+          activeRunId: existing.activeRunId ?? ui.activeRunId,
+          openRunIds:
+            existing.openRunIds.length > 0 ? existing.openRunIds : [...ui.openRunIds],
+          ui: {
+            scrollTop: refUi?.scrollTop ?? existing.ui.scrollTop ?? ui.scrollTop,
+            scrollTopByRunId: {
+              ...scrollTopByRunId,
+              ...existing.ui.scrollTopByRunId,
+              ...(refUi?.scrollTopByRunId ?? {})
+            },
+            composerDraft,
+            composerDraftByRunId,
+            agentMode: existing.ui.agentMode ?? refUi?.agentMode ?? ui.agentMode ?? 'agent'
+          },
+          settingsOverride: findSettingsOverride(state.settingsOverridesByPath, path)
+        }
+      } else {
+        next[path] = contextFromRegistry(path, state)
       }
-      return next
-    })
+    }
+    contextsRef.current = next
+    setRegistry(state)
+    setContexts(next)
   }, [])
 
   useEffect(() => {
@@ -1105,23 +1309,40 @@ export function useWorkspaceManager() {
       const ctx = contextsRef.current[path] ?? contexts[path]
       if (!ctx) continue
       if (!hasWorkspaceHotUi(path)) {
+        const migrated = migrateLegacyComposerDraftMap(ctx.ui, ctx.activeRunId)
         seedWorkspaceHotUi(path, {
           composerDraft: ctx.ui.composerDraft,
+          composerDraftByRunId: migrated,
           sessionQuery: ctx.sessionQuery
         })
       } else {
         // Keep store draft in sync when registry restores a non-empty draft onto an empty store path.
         const hot = getWorkspaceHotUi(path)
-        if (hot.composerDraft === '' && ctx.ui.composerDraft !== '') {
+        const migrated = migrateLegacyComposerDraftMap(ctx.ui, ctx.activeRunId)
+        const needsWorkspaceDraft =
+          resolveHotComposerDraft(hot, null) === '' && ctx.ui.composerDraft !== ''
+        const missingRunDrafts = Object.entries(migrated).some(
+          ([key, value]) => value && !(key in hot.composerDraftByRunId)
+        )
+        if (needsWorkspaceDraft || missingRunDrafts) {
           seedWorkspaceHotUi(path, {
-            composerDraft: ctx.ui.composerDraft,
+            composerDraft: needsWorkspaceDraft
+              ? ctx.ui.composerDraft
+              : resolveHotComposerDraft(hot, null) || ctx.ui.composerDraft,
+            composerDraftByRunId: {
+              ...migrated,
+              ...hot.composerDraftByRunId
+            },
             sessionQuery: hot.sessionQuery || ctx.sessionQuery
           })
         }
       }
     }
     for (const path of Object.keys(contexts)) {
-      if (!open.has(path)) clearWorkspaceHotUi(path)
+      if (!open.has(path)) {
+        clearWorkspaceHotUi(path)
+        clearComposerAttachmentsForWorkspace(path)
+      }
     }
   }, [registry, contexts])
 
@@ -1189,51 +1410,43 @@ export function useWorkspaceManager() {
   useEffect(() => {
     if (!window.vyotiq?.onChatEvent) return
     return window.vyotiq.onChatEvent((event) => {
-      const workspacePath = runIdToWorkspaceRef.current.get(event.runId)
-      let ctrl = controllersRef.current.get(event.runId)
-      if (!ctrl && workspacePath) {
-        ctrl = ensureController(workspacePath, event.runId)
-      }
+      const ctrl = controllersRef.current.get(event.runId)
       if (!ctrl) {
         bufferOrphanEvent(event.runId, event)
         return
       }
-      if (!isRunUiVisible(event.runId)) {
+      if (isRunUiVisible(event.runId)) {
+        void ctrl.resumeUiIfNeeded()
+      } else {
         ctrl.setUiSuspended(true)
       }
       ctrl.handleEvent(event)
     })
-  }, [bufferOrphanEvent, ensureController, isRunUiVisible])
+  }, [bufferOrphanEvent, isRunUiVisible])
 
   useEffect(() => {
     if (!window.vyotiq?.onToolApprovalRequest) return
     return window.vyotiq.onToolApprovalRequest((request) => {
-      const workspacePath = runIdToWorkspaceRef.current.get(request.runId)
-      const ctrl =
-        controllersRef.current.get(request.runId) ??
-        (workspacePath ? ensureController(workspacePath, request.runId) : undefined)
+      const ctrl = controllersRef.current.get(request.runId)
       if (!ctrl) {
         bufferOrphanApproval(request.runId, request)
         return
       }
       ctrl.handleApprovalRequest(request)
     })
-  }, [bufferOrphanApproval, ensureController])
+  }, [bufferOrphanApproval])
 
   useEffect(() => {
     if (!window.vyotiq?.onAgentQuestionRequest) return
     return window.vyotiq.onAgentQuestionRequest((request) => {
-      const workspacePath = runIdToWorkspaceRef.current.get(request.runId)
-      const ctrl =
-        controllersRef.current.get(request.runId) ??
-        (workspacePath ? ensureController(workspacePath, request.runId) : undefined)
+      const ctrl = controllersRef.current.get(request.runId)
       if (!ctrl) {
         bufferOrphanQuestion(request.runId, request)
         return
       }
       ctrl.handleQuestionRequest(request)
     })
-  }, [bufferOrphanQuestion, ensureController])
+  }, [bufferOrphanQuestion])
 
   useEffect(() => {
     void pollActiveRuns()
@@ -1315,12 +1528,30 @@ export function useWorkspaceManager() {
     }
   }, [activeContext?.activeRunId, activeWorkspace, commitPaneLayout])
 
+  const openInstanceRunIdsKey = (options?.openInstanceRunIds ?? []).join('\0')
+
+  useEffect(() => {
+    syncChatUiSubscriptions()
+  }, [
+    openInstanceRunIdsKey,
+    paneLayout,
+    activeContext?.activeRunId,
+    activeWorkspace,
+    syncChatUiSubscriptions
+  ])
+
   const getFocusedPane = useCallback((): ChatPane | null => {
     const layout = paneLayoutRef.current
     if (!layout) return null
     return (
       layout.panes.find((p) => p.paneId === layout.focusedPaneId) ?? layout.panes[0] ?? null
     )
+  }, [])
+
+  const getPaneById = useCallback((paneId: string): ChatPane | null => {
+    const layout = paneLayoutRef.current
+    if (!layout) return null
+    return layout.panes.find((p) => p.paneId === paneId) ?? null
   }, [])
 
   const getReservedPx = useCallback((): number => {
@@ -1458,17 +1689,6 @@ export function useWorkspaceManager() {
       const activeForWorkspace = activeRunsRef.current.filter((run) =>
         workspacePathsEqual(run.workspacePath, path)
       )
-      if (
-        activeForWorkspace.length > 0 &&
-        !window.confirm(
-          `This workspace has ${activeForWorkspace.length} active run(s). Stop ${
-            activeForWorkspace.length === 1 ? 'it' : 'them'
-          } and close the workspace?`
-        )
-      ) {
-        return
-      }
-
       flushPersistUiState(path)
 
       if (!window.vyotiq?.removeWorkspace) return
@@ -1594,12 +1814,36 @@ export function useWorkspaceManager() {
     ]
   )
 
+  openRunTabInWorkspaceRef.current = openRunTabInWorkspace
+
   const openRunTab = useCallback(
     (runId: string | null): void => {
-      if (!activeWorkspace) return
-      openRunTabInWorkspace(activeWorkspace, runId)
+      const path = getFocusedPane()?.workspacePath ?? activeWorkspace
+      if (!path) return
+      openRunTabInWorkspace(path, runId)
     },
-    [activeWorkspace, openRunTabInWorkspace]
+    [activeWorkspace, getFocusedPane, openRunTabInWorkspace]
+  )
+
+  const openNewChatInPane = useCallback(
+    (paneId: string): void => {
+      const layout = paneLayoutRef.current
+      const pane = layout?.panes.find((p) => p.paneId === paneId) ?? null
+      const path = pane?.workspacePath ?? activeWorkspace
+      if (!path) return
+      openRunTabInWorkspace(path, null, { syncLayout: false })
+      if (layout && pane) {
+        commitPaneLayout({
+          ...layout,
+          panes: layout.panes.map((p) =>
+            p.paneId === paneId ? { ...p, workspacePath: path, runId: null } : p
+          )
+        })
+        return
+      }
+      openRunTab(null)
+    },
+    [activeWorkspace, commitPaneLayout, openRunTab, openRunTabInWorkspace]
   )
 
   const openRunInWorkspace = useCallback(
@@ -1671,9 +1915,18 @@ export function useWorkspaceManager() {
 
   const closeRunTab = useCallback(
     (runId: string): void => {
-      if (!activeWorkspace) return
-      const ctx = contextsRef.current[activeWorkspace]
+      const workspacePath = getFocusedPane()?.workspacePath ?? activeWorkspace
+      if (!workspacePath) return
+      const ctx =
+        contextsRef.current[workspacePath] ??
+        findByWorkspacePath(contextsRef.current, workspacePath)
       if (!ctx) return
+      const entryKey =
+        contextsRef.current[workspacePath] !== undefined
+          ? workspacePath
+          : (Object.keys(contextsRef.current).find((k) =>
+              workspacePathsEqual(k, workspacePath)
+            ) ?? workspacePath)
       const ctrl = controllersRef.current.get(runId)
       if (ctrl?.running || ctrl?.pendingRun) {
         backgroundRunIdsRef.current.add(runId)
@@ -1685,16 +1938,16 @@ export function useWorkspaceManager() {
       const activeRunId =
         ctx.activeRunId === runId ? openRunIds[openRunIds.length - 1] ?? null : ctx.activeRunId
       const nextCtx = { ...ctx, openRunIds, activeRunId }
-      contextsRef.current = { ...contextsRef.current, [activeWorkspace]: nextCtx }
+      contextsRef.current = { ...contextsRef.current, [entryKey]: nextCtx }
       setContexts((prev) => ({
         ...prev,
-        [activeWorkspace]: nextCtx
+        [entryKey]: nextCtx
       }))
-      schedulePersistUiState(activeWorkspace, nextCtx)
+      schedulePersistUiState(entryKey, nextCtx)
       const layout = paneLayoutRef.current
       if (layout) {
         commitPaneLayout(
-          removeSessionFromLayout(layout, { workspacePath: activeWorkspace, runId })
+          removeSessionFromLayout(layout, { workspacePath: entryKey, runId })
         )
       }
       if (activeRunId) {
@@ -1707,7 +1960,14 @@ export function useWorkspaceManager() {
       }
       bump()
     },
-    [activeWorkspace, bump, commitPaneLayout, forgetRunRouting, schedulePersistUiState]
+    [
+      activeWorkspace,
+      bump,
+      commitPaneLayout,
+      forgetRunRouting,
+      getFocusedPane,
+      schedulePersistUiState
+    ]
   )
 
   const purgeDeletedRunUi = useCallback(
@@ -1717,12 +1977,23 @@ export function useWorkspaceManager() {
       if (layout) {
         commitPaneLayout(removeSessionFromLayout(layout, { workspacePath, runId }))
       }
-      if (!ctx) return
+      if (!ctx) {
+        clearWorkspaceHotComposerDraft(workspacePath, runId)
+        const attKey = composerAttachmentKey(workspacePath, runId)
+        if (attKey) clearComposerAttachments(attKey)
+        return
+      }
       const scrollTopByRunId = omitRunScrollTop(ctx.ui.scrollTopByRunId, runId)
-      if (scrollTopByRunId === ctx.ui.scrollTopByRunId) return
+      const composerDraftByRunId = omitRunComposerDraft(ctx.ui.composerDraftByRunId, runId)
+      const scrollChanged = scrollTopByRunId !== ctx.ui.scrollTopByRunId
+      const draftChanged = composerDraftByRunId !== ctx.ui.composerDraftByRunId
+      clearWorkspaceHotComposerDraft(workspacePath, runId)
+      const attKey = composerAttachmentKey(workspacePath, runId)
+      if (attKey) clearComposerAttachments(attKey)
+      if (!scrollChanged && !draftChanged) return
       const nextCtx: WorkspaceContext = {
         ...ctx,
-        ui: { ...ctx.ui, scrollTopByRunId }
+        ui: { ...ctx.ui, scrollTopByRunId, composerDraftByRunId }
       }
       contextsRef.current = { ...contextsRef.current, [workspacePath]: nextCtx }
       setContexts((prev) => ({ ...prev, [workspacePath]: nextCtx }))
@@ -1749,7 +2020,9 @@ export function useWorkspaceManager() {
         [workspacePath]: nextCtx
       }
       setContexts((prev) => ({ ...prev, [workspacePath]: nextCtx }))
-      setWorkspaceHotUi(workspacePath, { composerDraft: runId ? ctx.ui.composerDraft : draft })
+      // Always write the typed draft for this run key — never leave hot UI on the legacy
+      // workspace draft while composerDraftByRunId already has the keystroke.
+      setWorkspaceHotComposerDraft(workspacePath, runId, draft)
       schedulePersistUiState(workspacePath, nextCtx)
     },
     [schedulePersistUiState]
@@ -1766,13 +2039,29 @@ export function useWorkspaceManager() {
   )
 
   const setAgentMode = useCallback(
-    (mode: AgentInteractionMode, options?: { syncOnly?: boolean }) => {
-      const path = getFocusedPane()?.workspacePath ?? activeWorkspace
+    (
+      mode: AgentInteractionMode,
+      options?: { syncOnly?: boolean; workspacePath?: string; runId?: string | null }
+    ) => {
+      const focused = getFocusedPane()
+      const path = options?.workspacePath ?? focused?.workspacePath ?? activeWorkspace
       if (!path) return
-      const ctx = contextsRef.current[path]
+      const ctx =
+        contextsRef.current[path] ?? findByWorkspacePath(contextsRef.current, path)
       if (!ctx) return
+      const storedPath =
+        contextsRef.current[path] != null
+          ? path
+          : (Object.keys(contextsRef.current).find((key) =>
+              workspacePathsEqual(key, path)
+            ) ?? path)
       if (ctx.ui.agentMode === mode) return
-      const runId = ctx.activeRunId
+      const runId =
+        options?.runId !== undefined
+          ? options.runId
+          : options?.workspacePath
+            ? ctx.activeRunId
+            : (focused?.runId ?? ctx.activeRunId)
       const controller = runId ? controllersRef.current.get(runId) : undefined
       if (
         !options?.syncOnly &&
@@ -1796,10 +2085,10 @@ export function useWorkspaceManager() {
       }
       contextsRef.current = {
         ...contextsRef.current,
-        [path]: nextCtx
+        [storedPath]: nextCtx
       }
-      setContexts((prev) => ({ ...prev, [path]: nextCtx }))
-      schedulePersistUiState(path, nextCtx)
+      setContexts((prev) => ({ ...prev, [storedPath]: nextCtx }))
+      schedulePersistUiState(storedPath, nextCtx)
     },
     [activeWorkspace, getFocusedPane, schedulePersistUiState]
   )
@@ -1941,9 +2230,12 @@ export function useWorkspaceManager() {
         error: activeController.error,
         errorCode: activeController.errorCode,
         runNotice: activeController.runNotice,
+        compacting: activeController.compacting,
         incomplete: activeController.incomplete,
         networkWait: activeController.networkWait,
         contextUsage: activeController.contextUsage,
+        turnUsage: activeController.turnUsage,
+        turnStatus: activeController.turnStatus,
         runStartedAt: activeController.runStartedAt,
         runTerminalTick: activeController.runTerminalTick,
         pendingRun: activeController.pendingRun,
@@ -1951,12 +2243,15 @@ export function useWorkspaceManager() {
         collapsedTurnIndices: activeController.collapsedTurnIndices,
         writeCheckpoint: activeController.writeCheckpoint,
         pendingFollowUps: activeController.pendingFollowUps,
+        agentInstances: activeController.agentInstances,
         subscribeItems: activeController.subscribeItems.bind(activeController),
         getItemsRevision: activeController.getItemsRevision.bind(activeController),
         getItems: () => activeController.items,
         subscribeMeta: activeController.subscribeMeta.bind(activeController),
         getMetaRevision: activeController.getMetaRevision.bind(activeController),
-        getContextUsage: activeController.getContextUsage.bind(activeController)
+        getContextUsage: activeController.getContextUsage.bind(activeController),
+        getTurnUsage: activeController.getTurnUsage.bind(activeController),
+        getCostHint: activeController.getCostHint.bind(activeController)
       }
     : {
         items: [] as ChatStreamController['items'],
@@ -1967,9 +2262,12 @@ export function useWorkspaceManager() {
         error: null as string | null,
         errorCode: null as string | null,
         runNotice: null as string | null,
+        compacting: false,
         incomplete: null as ChatStreamController['incomplete'],
         networkWait: null as ChatStreamController['networkWait'],
         contextUsage: null,
+        turnUsage: [] as ChatStreamController['turnUsage'],
+        turnStatus: null as ChatStreamController['turnStatus'],
         runStartedAt: null as number | null,
         runTerminalTick: 0,
         pendingRun: false,
@@ -1977,12 +2275,15 @@ export function useWorkspaceManager() {
         collapsedTurnIndices: [] as number[],
         writeCheckpoint: null as ChatStreamController['writeCheckpoint'],
         pendingFollowUps: [] as ChatStreamController['pendingFollowUps'],
+        agentInstances: {} as ChatStreamController['agentInstances'],
         subscribeItems: (_listener: () => void) => () => {},
         getItemsRevision: () => 0,
         getItems: () => [] as ChatStreamController['items'],
         subscribeMeta: (_listener: () => void) => () => {},
         getMetaRevision: () => 0,
-        getContextUsage: () => null
+        getContextUsage: () => null,
+        getTurnUsage: () => [] as ChatStreamController['turnUsage'],
+        getCostHint: () => null
       }
 
   const collapsedTurns = useMemo(
@@ -2049,12 +2350,15 @@ export function useWorkspaceManager() {
   const activeScrollTop = focusedWorkspacePath
     ? (() => {
         const ctx = findByWorkspacePath(contexts, focusedWorkspacePath)
-        if (!ctx) return 0
-        return (
-          ctx.ui.scrollTopByRunId[scrollKeyForRun(focusedRunId)] ?? ctx.ui.scrollTop
-        )
+        if (!ctx) return undefined
+        const key = scrollKeyForRun(focusedRunId)
+        if (key in ctx.ui.scrollTopByRunId) return ctx.ui.scrollTopByRunId[key]
+        if (Object.keys(ctx.ui.scrollTopByRunId).length === 0 && ctx.ui.scrollTop > 0) {
+          return ctx.ui.scrollTop
+        }
+        return undefined
       })()
-    : 0
+    : undefined
 
   const getPaneChatSnapshot = useCallback(
     (workspacePath: string, runId: string | null) => {
@@ -2068,9 +2372,12 @@ export function useWorkspaceManager() {
         error: ctrl.error,
         errorCode: ctrl.errorCode,
         runNotice: ctrl.runNotice,
+        compacting: ctrl.compacting,
         incomplete: ctrl.incomplete,
         networkWait: ctrl.networkWait,
         contextUsage: ctrl.contextUsage,
+        turnUsage: ctrl.turnUsage,
+        turnStatus: ctrl.turnStatus,
         runStartedAt: ctrl.runStartedAt,
         runTerminalTick: ctrl.runTerminalTick,
         pendingRun: ctrl.pendingRun,
@@ -2078,12 +2385,15 @@ export function useWorkspaceManager() {
         collapsedTurnIndices: ctrl.collapsedTurnIndices,
         writeCheckpoint: ctrl.writeCheckpoint,
         pendingFollowUps: ctrl.pendingFollowUps,
+        agentInstances: ctrl.agentInstances,
         subscribeItems: ctrl.subscribeItems.bind(ctrl),
         getItemsRevision: ctrl.getItemsRevision.bind(ctrl),
         getItems: () => ctrl.items,
         subscribeMeta: ctrl.subscribeMeta.bind(ctrl),
         getMetaRevision: ctrl.getMetaRevision.bind(ctrl),
-        getContextUsage: ctrl.getContextUsage.bind(ctrl)
+        getContextUsage: ctrl.getContextUsage.bind(ctrl),
+        getTurnUsage: ctrl.getTurnUsage.bind(ctrl),
+        getCostHint: ctrl.getCostHint.bind(ctrl)
       }
     },
     [ensureController]
@@ -2100,11 +2410,13 @@ export function useWorkspaceManager() {
             editFollowUp: activeController.editFollowUp.bind(activeController),
             sendFollowUpNow: activeController.sendFollowUpNow.bind(activeController),
             stop: activeController.stop.bind(activeController),
+            resumeInterrupted: activeController.resumeInterrupted.bind(activeController),
             reset: activeController.reset.bind(activeController),
             loadTranscript: activeController.loadTranscript.bind(activeController),
             loadToolContent: activeController.loadToolContent.bind(activeController),
             clearError: activeController.clearError.bind(activeController),
             applyManualCompaction: activeController.applyManualCompaction.bind(activeController),
+            setCompacting: activeController.setCompacting.bind(activeController),
             markWriteCheckpointUndone:
               activeController.markWriteCheckpointUndone.bind(activeController),
             applyWriteCheckpointResolution:
@@ -2168,6 +2480,8 @@ export function useWorkspaceManager() {
     isSessionOpenInPane,
     isSessionFocusedInPane,
     getFocusedPane,
+    getPaneById,
+    openNewChatInPane,
     getPaneChatSnapshot,
     getMaxPaneCount,
     setPaneCapacityContext,

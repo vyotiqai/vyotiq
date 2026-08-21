@@ -10,7 +10,8 @@ function pathKey(path: string): string {
   return isWindowsStylePath(path) ? path.toLowerCase() : path
 }
 
-function isInsideRoot(resolved: string, realRoot: string): boolean {
+/** True when `resolved` is `realRoot` or a path under it (symlink-aware callers pass realpaths). */
+export function isInsideRoot(resolved: string, realRoot: string): boolean {
   const rootKey = pathKey(canonicalizeWorkspacePath(realRoot))
   const resolvedKey = pathKey(canonicalizeWorkspacePath(resolved))
   const sep = isWindowsStylePath(realRoot) ? '\\' : '/'

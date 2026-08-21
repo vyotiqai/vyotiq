@@ -30,8 +30,57 @@ type PendingAuth = {
 
 const pendingByServerId = new Map<string, PendingAuth>()
 
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
+const MARK_SVG =
+  '<svg viewBox="0 0 1024 1024" width="40" height="40" aria-hidden="true">' +
+  '<path fill="currentColor" d="M 797.6256 512.0000 L 369.1872 759.3590 L 369.1872 264.6410 Z"/>' +
+  '<path fill="currentColor" d="M 837.6256 535.0940 L 837.6256 700.0000 L 512.0000 888.0000 L 369.1872 805.5470 Z"/>' +
+  '<path fill="currentColor" d="M 329.1872 782.4530 L 186.3744 700.0000 L 186.3744 324.0000 L 329.1872 241.5470 Z"/>' +
+  '<path fill="currentColor" d="M 369.1872 218.4530 L 512.0000 136.0000 L 837.6256 324.0000 L 837.6256 488.9060 Z"/>' +
+  '</svg>'
+
 function htmlPage(title: string, body: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title></head><body style="font-family:system-ui;padding:2rem"><h1>${title}</h1><p>${body}</p></body></html>`
+  const safeTitle = escapeHtml(title)
+  const safeBody = escapeHtml(body)
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${safeTitle} · Vyotiq</title>
+  <style>
+    :root { color-scheme: light dark; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      font-family: system-ui, sans-serif;
+      background: #000;
+      color: #fff;
+    }
+    main { text-align: center; padding: 2rem; max-width: 28rem; }
+    .mark { color: #fff; margin: 0 auto 1.25rem; }
+    h1 { font-size: 1.15rem; font-weight: 500; letter-spacing: 0.04em; margin: 0 0 0.5rem; }
+    p { margin: 0; color: #a3a3a3; line-height: 1.45; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="mark">${MARK_SVG}</div>
+    <h1>${safeTitle}</h1>
+    <p>${safeBody}</p>
+  </main>
+</body>
+</html>`
 }
 
 /**

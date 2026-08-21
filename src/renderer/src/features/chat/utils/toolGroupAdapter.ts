@@ -1,6 +1,7 @@
 import type { UiGroupTiming, UiToolRow } from '@shared/transcript'
 import { mcpDoneLabel, mcpRunningLabel } from '@shared/utils/mcpToolMeta'
 import {
+  inferFileWriteAction,
   isUnresolvedToolName,
   mcpToolSummary,
   parseArgsRecord,
@@ -9,7 +10,13 @@ import {
 } from '@shared/toolSummary'
 import { formatElapsed } from '@shared/utils/timeFormat'
 import {
+  formatAgentInstanceShortId,
+  parseAgentInstanceRunId,
+  parseAgentInstanceRunIdFromArgs
+} from '@shared/utils/agentInstance'
+import {
   categoryLabels,
+  getToolHeaderMeta,
   isInterruptedToolContent,
   mixedGroupLabels,
   toolCategory,
@@ -28,6 +35,8 @@ export type ToolGroupNestedTool = {
   title: string
   subtitle: string
   status: UiToolRow['status']
+  /** Material file-type icon path when the tool targets a real file. */
+  filePath?: string
 }
 
 export type ToolGroupState = 'pending' | 'completed' | 'interrupted'
@@ -49,7 +58,7 @@ const CATEGORY_COUNT_LABELS: Record<ToolGroupCategory, [singular: string, plural
   search: ['lookup', 'lookups'],
   command: ['command', 'commands'],
   browse: ['directory', 'directories'],
-  browser: ['page', 'pages']
+  browser: ['action', 'actions']
 }
 
 const CATEGORY_MIXED_VERBS: Record<ToolGroupCategory, { running: string; done: string }> = {
@@ -98,9 +107,10 @@ function compositeMixedLabels(tools: ToolGroupNestedTool[]): { running: string; 
 
 function groupLabels(
   tools: ToolGroupNestedTool[],
-  names: string[]
+  rows: UiToolRow[]
 ): { running: string; done: string } {
   const first = tools[0]
+  const names = rows.map((row) => row.name)
   if (!first) return mixedGroupLabels()
   if (names.length > 0 && names.every((name) => name === names[0])) {
     const mcp = parseMcpToolDisplay(names[0]!)
@@ -110,9 +120,12 @@ function groupLabels(
         done: mcpDoneLabel(mcp.toolName)
       }
     }
+    const allCreated = rows.every(
+      (row) => inferFileWriteAction(row.name, row.content) === 'created'
+    )
     const specific = {
-      running: toolLabel(names[0]!, 'running'),
-      done: toolLabel(names[0]!, 'done')
+      running: toolLabel(names[0]!, 'running', rows[0]?.content),
+      done: allCreated ? 'Created' : toolLabel(names[0]!, 'done')
     }
     if (specific.running !== 'Running' && specific.done !== 'Done') return specific
   }
@@ -120,12 +133,30 @@ function groupLabels(
     // Same category (e.g. glob+grep): join per-tool verbs, not the generic category label.
     const unique = [...new Set(names.filter(Boolean))]
     if (unique.length > 0) {
-      const runningParts = unique.map((n) => toolLabel(n, 'running').toLowerCase())
-      const doneParts = unique.map((n) => toolLabel(n, 'done').toLowerCase())
+      const runningParts = unique.map((n) => {
+        const row = rows.find((item) => item.name === n)
+        return toolLabel(n, 'running', row?.content).toLowerCase()
+      })
+      const doneParts = unique.map((n) => {
+        const row = rows.find((item) => item.name === n)
+        return toolLabel(n, 'done', row?.content).toLowerCase()
+      })
       if (
         runningParts.every((p) => p !== 'running') &&
         doneParts.every((p) => p !== 'done')
       ) {
+        // Listing-family tools share the same verb but add different nouns
+        // (`Listing`, `Listing memory`). Joining those creates noisy labels such
+        // as "Listed and listed memory"; the category label already carries the
+        // useful action and the summary carries the count.
+        const runningVerb = runningParts.map((part) => part.split(/\s+/)[0]).filter(Boolean)
+        const doneVerb = doneParts.map((part) => part.split(/\s+/)[0]).filter(Boolean)
+        if (
+          new Set(runningVerb).size === 1 &&
+          new Set(doneVerb).size === 1
+        ) {
+          return categoryLabels(first.category)
+        }
         return {
           running: joinComposite(runningParts),
           done: joinComposite(doneParts)
@@ -137,10 +168,30 @@ function groupLabels(
   return compositeMixedLabels(tools)
 }
 
+function isUnknownToolContent(content: string | undefined): boolean {
+  return /^Unknown tool[:\s"]/i.test((content ?? '').trim())
+}
+
 function toolSubtitle(tool: UiToolRow): string {
   if (isUnresolvedToolName(tool.name)) return ''
+  // Unknown builtins: never promote args.path (e.g. "placeholder") as the subtitle.
+  if (isUnknownToolContent(tool.content)) return ''
+  if (
+    tool.name === 'spawn_agent_instance' ||
+    tool.name === 'await_agent_instance' ||
+    tool.name === 'pull_agent_instance' ||
+    tool.name === 'merge_agent_instance'
+  ) {
+    const runId =
+      parseAgentInstanceRunId(tool.content) ?? parseAgentInstanceRunIdFromArgs(tool.argsPreview)
+    if (runId) return formatAgentInstanceShortId(runId)
+  }
   const summary = tool.summary?.trim() || summarizeToolArgs(tool.name, tool.argsPreview)
-  if (!summary) return '…'
+  if (!summary) {
+    // ask_question with no recoverable title must not render "Asked …".
+    if (tool.name === 'ask_question') return ''
+    return '…'
+  }
   if (tool.name === 'terminal') return summary.slice(0, 80)
   if (tool.name === 'read' || tool.name === 'edit' || tool.name === 'str_replace' || tool.name === 'delete') {
     const parts = summary.split(/[/\\]/)
@@ -160,16 +211,26 @@ function toolSubtitle(tool: UiToolRow): string {
 }
 
 function nestedRowTitle(tool: UiToolRow, subtitle: string, inGroup: boolean): string {
+  // Unknown tool rows: show humanized name, not args.path ("placeholder").
+  if (isUnknownToolContent(tool.content)) {
+    return toolLabel(tool.name, tool.status, tool.content)
+  }
   if (inGroup) {
-    if (subtitle && subtitle !== '…') return subtitle
+    // Group header already shows Preparing… — avoid repeating it on each row.
+    if (isUnresolvedToolName(tool.name)) return ''
+    // Keep a directory listing visibly distinct from a later read of the same
+    // path. The path remains the subtitle, so the chronological actions are
+    // both preserved without relying on filename repetition alone.
+    if (tool.name === 'list_dir') return toolLabel(tool.name, tool.status, tool.content)
+    if (subtitle && subtitle !== '…' && subtitle !== tool.name) return subtitle
     const preview = tool.argsPreview?.trim()
     if (preview) {
       const fromArgs = toolSubtitle({ ...tool, argsPreview: preview })
-      if (fromArgs && fromArgs !== '…') return fromArgs
+      if (fromArgs && fromArgs !== '…' && fromArgs !== tool.name) return fromArgs
     }
     if (tool.name && tool.name !== 'tool') {
       const summary = tool.summary?.trim()
-      if (summary) return truncateText(summary, 80)
+      if (summary && summary !== tool.name) return truncateText(summary, 80)
     }
   }
   if (tool.status === 'running' && isUnresolvedToolName(tool.name)) {
@@ -183,6 +244,9 @@ function formatCount(value: number, label: string, plural: string): string {
 }
 
 function summarizeCounts(tools: ToolGroupNestedTool[]): string {
+  // Unresolved streaming names default to category "file" — exclude them so the
+  // header does not read "Preparing… 2 files".
+  const counted = tools.filter((tool) => !isUnresolvedToolName(tool.name))
   const counts: Record<ToolGroupCategory, number> = {
     file: 0,
     edit: 0,
@@ -191,7 +255,7 @@ function summarizeCounts(tools: ToolGroupNestedTool[]): string {
     browse: 0,
     browser: 0
   }
-  for (const tool of tools) counts[tool.category] += 1
+  for (const tool of counted) counts[tool.category] += 1
 
   const parts: string[] = []
   if (counts.file > 0) {
@@ -211,8 +275,20 @@ function summarizeCounts(tools: ToolGroupNestedTool[]): string {
     parts.push(formatCount(counts.command, s, p))
   }
   if (counts.browse > 0) {
-    const [s, p] = CATEGORY_COUNT_LABELS.browse
-    parts.push(formatCount(counts.browse, s, p))
+    const browseTools = counted.filter((tool) => tool.category === 'browse')
+    const directoryCount = browseTools.filter((tool) => tool.name === 'list_dir').length
+    const memoryCount = browseTools.filter((tool) => tool.name === 'memory_list').length
+    const otherCount = browseTools.length - directoryCount - memoryCount
+    if (directoryCount > 0) {
+      const [s, p] = CATEGORY_COUNT_LABELS.browse
+      parts.push(formatCount(directoryCount, s, p))
+    }
+    if (memoryCount > 0) {
+      parts.push(formatCount(memoryCount, 'memory listing', 'memory listings'))
+    }
+    if (otherCount > 0) {
+      parts.push(formatCount(otherCount, 'listing', 'listings'))
+    }
   }
   if (counts.browser > 0) {
     const [s, p] = CATEGORY_COUNT_LABELS.browser
@@ -246,13 +322,15 @@ export function mapToolGroupProps(
   const inGroup = tools.length > 1
   const nestedTools: ToolGroupNestedTool[] = tools.map((tool) => {
     const subtitle = toolSubtitle(tool)
+    const meta = getToolHeaderMeta(tool)
     return {
       id: tool.id,
       name: tool.name,
       category: toolCategory(tool.name),
       title: nestedRowTitle(tool, subtitle, inGroup),
-      subtitle: inGroup ? '' : subtitle,
-      status: tool.status
+      subtitle: inGroup && tool.name !== 'list_dir' ? '' : subtitle,
+      status: tool.status,
+      ...(meta.filePath ? { filePath: meta.filePath } : {})
     }
   })
 
@@ -265,10 +343,7 @@ export function mapToolGroupProps(
     else if (state === 'pending') elapsedMs = Date.now() - groupTiming.startedAt
   }
 
-  const labels = groupLabels(
-    nestedTools,
-    tools.map((tool) => tool.name)
-  )
+  const labels = groupLabels(nestedTools, tools)
   // Interrupted groups never completed — header uses the in-progress verb.
   const settledLabel = state === 'interrupted' ? labels.running : labels.done
 

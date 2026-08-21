@@ -9,8 +9,15 @@ import {
   pruneScrollTopByRunId,
   omitRunScrollTop,
   reconcileOpenRunIds,
-  resolveComposerDraft
+  resolveComposerDraft,
+  omitRunComposerDraft,
+  migrateLegacyComposerDraftMap
 } from '@renderer/lib/hooks/useWorkspaceManager'
+import {
+  getWorkspaceHotUi,
+  resolveHotComposerDraft,
+  resetWorkspaceHotUiStoreForTests
+} from '@renderer/lib/hooks/workspaceHotUiStore'
 import type { AgentEvent, WorkspacesState } from '@shared/ipc'
 
 type Handler = (event: AgentEvent) => void
@@ -48,6 +55,7 @@ describe('useWorkspaceManager', () => {
   let handler: Handler | null = null
   const chatStart = vi.fn()
   const chatCancel = vi.fn()
+  const chatUiSubscribe = vi.fn()
   const getWorkspaces = vi.fn()
   const listRuns = vi.fn()
   const listActiveRuns = vi.fn()
@@ -59,6 +67,7 @@ describe('useWorkspaceManager', () => {
 
   beforeEach(() => {
     handler = null
+    resetWorkspaceHotUiStoreForTests()
     try {
       localStorage.removeItem('vyotiq.chatPaneLayout')
     } catch {
@@ -66,6 +75,8 @@ describe('useWorkspaceManager', () => {
     }
     chatStart.mockReset()
     chatCancel.mockReset()
+    chatUiSubscribe.mockReset()
+    chatUiSubscribe.mockResolvedValue({ ok: true, data: true })
     getWorkspaces.mockReset()
     listRuns.mockReset()
     listActiveRuns.mockReset()
@@ -102,6 +113,7 @@ describe('useWorkspaceManager', () => {
     window.vyotiq = {
       chatStart,
       chatCancel,
+      chatUiSubscribe,
       getWorkspaces,
       listRuns,
       listActiveRuns,
@@ -254,6 +266,109 @@ describe('useWorkspaceManager', () => {
     expect(result.current.paneLayout?.focusedPaneId).toBe(paneShowingB!.paneId)
   })
 
+  it('setAgentMode with workspacePath updates that workspace, not the focused pane', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+      expect(result.current.paneLayout?.panes.length).toBe(1)
+    })
+
+    const anchorPaneId = result.current.paneLayout!.panes[0]!.paneId
+    await act(async () => {
+      result.current.openRunTab('run-a')
+    })
+    await act(async () => {
+      result.current.dropSessionOnPane(anchorPaneId, 'right', {
+        workspacePath: '/ws-b',
+        runId: 'run-b'
+      })
+    })
+    await waitFor(() => {
+      expect(result.current.paneLayout?.panes).toHaveLength(2)
+    })
+
+    const paneB = result.current.paneLayout!.panes.find((p) => p.runId === 'run-b')
+    expect(paneB).toBeTruthy()
+    expect(result.current.paneLayout!.focusedPaneId).toBe(paneB!.paneId)
+
+    await act(async () => {
+      result.current.setAgentMode('ask', { workspacePath: '/ws-a', runId: 'run-a' })
+    })
+
+    expect(result.current.contexts['/ws-a']?.ui.agentMode).toBe('ask')
+    expect(result.current.contexts['/ws-b']?.ui.agentMode).toBe('agent')
+  })
+
+  it('queues mode on a live run unless syncOnly (switch_mode echo)', async () => {
+    const chatQueueMode = vi.fn().mockResolvedValue({ ok: true, data: true })
+    // @ts-expect-error test bridge
+    window.vyotiq.chatQueueMode = chatQueueMode
+
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    chatStart.mockResolvedValueOnce({ ok: true, data: { runId: 'run-live', invokeId: 1 } })
+    await act(async () => {
+      await result.current.chatActions?.send('go')
+    })
+    await act(async () => {
+      handler?.({ type: 'status', runId: 'run-live', status: 'running' })
+    })
+    expect(result.current.chat.running).toBe(true)
+
+    await act(async () => {
+      result.current.setAgentMode('plan', { workspacePath: '/ws-a', runId: 'run-live' })
+    })
+    expect(chatQueueMode).toHaveBeenCalledWith({ runId: 'run-live', mode: 'plan' })
+    expect(result.current.contexts['/ws-a']?.ui.agentMode).toBe('plan')
+
+    chatQueueMode.mockClear()
+    await act(async () => {
+      result.current.setAgentMode('agent', {
+        workspacePath: '/ws-a',
+        runId: 'run-live',
+        syncOnly: true
+      })
+    })
+    expect(chatQueueMode).not.toHaveBeenCalled()
+    expect(result.current.contexts['/ws-a']?.ui.agentMode).toBe('agent')
+  })
+
+  it('openNewChatInPane clears only that pane session', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.paneLayout?.panes.length).toBe(1)
+    })
+    const anchorPaneId = result.current.paneLayout!.panes[0]!.paneId
+    await act(async () => {
+      result.current.openRunTab('run-a')
+    })
+    await act(async () => {
+      result.current.dropSessionOnPane(anchorPaneId, 'right', {
+        workspacePath: '/ws-b',
+        runId: 'run-b'
+      })
+    })
+    await waitFor(() => {
+      expect(result.current.paneLayout?.panes).toHaveLength(2)
+    })
+    const paneA = result.current.paneLayout!.panes.find((p) => p.runId === 'run-a')
+    expect(paneA).toBeTruthy()
+
+    await act(async () => {
+      result.current.openNewChatInPane(paneA!.paneId)
+    })
+
+    const after = result.current.paneLayout!.panes
+    expect(after.find((p) => p.paneId === paneA!.paneId)?.runId).toBeNull()
+    expect(after.find((p) => p.runId === 'run-b')).toBeTruthy()
+  })
+
   it('removes closed-workspace panes when workspace is removed', async () => {
     const { result } = renderHook(() => useWorkspaceManager())
 
@@ -318,7 +433,7 @@ describe('useWorkspaceManager', () => {
       ok: true,
       data: [{ runId: 'run-bg', workspacePath: '/ws-a', invokeId: 3 }]
     })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
 
     const { result } = renderHook(() => useWorkspaceManager())
 
@@ -351,7 +466,9 @@ describe('useWorkspaceManager', () => {
     })
 
     expect(removeWorkspace).toHaveBeenCalledWith('/ws-a', true)
+    expect(confirm).not.toHaveBeenCalled()
     expect(result.current.isRunActiveInBackground('run-bg')).toBe(false)
+    confirm.mockRestore()
   })
 
   it('moves running run to background when run tab is closed', async () => {
@@ -483,6 +600,27 @@ describe('useWorkspaceManager', () => {
   })
 
   it('reattaches active runs from listActiveRuns on mount', async () => {
+    getWorkspaces.mockResolvedValue({
+      ok: true,
+      data: defaultRegistry({
+        uiStateByPath: {
+          '/ws-a': {
+            activeRunId: 'run-live',
+            openRunIds: ['run-live'],
+            scrollTop: 0,
+            scrollTopByRunId: {},
+            composerDraft: ''
+          },
+          '/ws-b': {
+            activeRunId: null,
+            openRunIds: [],
+            scrollTop: 0,
+            scrollTopByRunId: {},
+            composerDraft: ''
+          }
+        }
+      })
+    })
     listActiveRuns.mockResolvedValue({
       ok: true,
       data: [{ runId: 'run-live', workspacePath: '/ws-a', invokeId: 7 }]
@@ -513,6 +651,101 @@ describe('useWorkspaceManager', () => {
     expect(ctrl?.items.some((i) => i.kind === 'message' && i.content === 'partial')).toBe(true)
   })
 
+  it('does not hydrate hidden instance runs from listActiveRuns', async () => {
+    getWorkspaces.mockResolvedValue({
+      ok: true,
+      data: defaultRegistry({
+        uiStateByPath: {
+          '/ws-a': {
+            activeRunId: 'run-parent',
+            openRunIds: ['run-parent'],
+            scrollTop: 0,
+            scrollTopByRunId: {},
+            composerDraft: ''
+          },
+          '/ws-b': {
+            activeRunId: null,
+            openRunIds: [],
+            scrollTop: 0,
+            scrollTopByRunId: {},
+            composerDraft: ''
+          }
+        }
+      })
+    })
+    listActiveRuns.mockResolvedValue({
+      ok: true,
+      data: [
+        { runId: 'run-parent', workspacePath: '/ws-a', invokeId: 1 },
+        { runId: 'run-child', workspacePath: '/ws-a', invokeId: 2 }
+      ]
+    })
+    loadRun.mockResolvedValue({
+      ok: true,
+      data: { runId: 'run-parent', messages: [{ role: 'user', content: 'go' }] }
+    })
+
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeRuns.map((r) => r.runId).sort()).toEqual([
+        'run-child',
+        'run-parent'
+      ])
+    })
+
+    expect(loadRun).toHaveBeenCalledWith('/ws-a', 'run-parent')
+    expect(loadRun).not.toHaveBeenCalledWith('/ws-a', 'run-child')
+  })
+
+  it('subscribes token streams for every open instance pane', async () => {
+    getWorkspaces.mockResolvedValue({
+      ok: true,
+      data: defaultRegistry({
+        uiStateByPath: {
+          '/ws-a': {
+            activeRunId: 'run-parent',
+            openRunIds: ['run-parent'],
+            scrollTop: 0,
+            scrollTopByRunId: {},
+            composerDraft: ''
+          },
+          '/ws-b': {
+            activeRunId: null,
+            openRunIds: [],
+            scrollTop: 0,
+            scrollTopByRunId: {},
+            composerDraft: ''
+          }
+        }
+      })
+    })
+    listActiveRuns.mockResolvedValue({
+      ok: true,
+      data: [
+        { runId: 'run-parent', workspacePath: '/ws-a', invokeId: 1 },
+        { runId: 'run-child-a', workspacePath: '/ws-a', invokeId: 2 },
+        { runId: 'run-child-b', workspacePath: '/ws-a', invokeId: 3 }
+      ]
+    })
+    loadRun.mockResolvedValue({
+      ok: true,
+      data: { runId: 'run-parent', messages: [{ role: 'user', content: 'go' }] }
+    })
+
+    const { result } = renderHook(() =>
+      useWorkspaceManager({ openInstanceRunIds: ['run-child-a', 'run-child-b'] })
+    )
+
+    await waitFor(() => {
+      expect(chatUiSubscribe).toHaveBeenCalled()
+    })
+
+    const subscribed = chatUiSubscribe.mock.calls.map((call) => call[0]?.runIds as string[])
+    const last = subscribed[subscribed.length - 1] ?? []
+    expect(last).toEqual(expect.arrayContaining(['run-child-a', 'run-child-b', 'run-parent']))
+  })
+
   it('does not demux buffered events to the wrong workspace before run id mapping', async () => {
     let resolveA: (value: { ok: true; data: { runId: string } }) => void = () => {}
     let resolveB: (value: { ok: true; data: { runId: string } }) => void = () => {}
@@ -526,6 +759,19 @@ describe('useWorkspaceManager', () => {
     chatStart
       .mockImplementationOnce(() => pendingA)
       .mockImplementationOnce(() => pendingB)
+    loadRun.mockImplementation(async (_ws: string, runId: string) => ({
+      ok: true as const,
+      data: {
+        runId,
+        messages:
+          runId === 'run-b'
+            ? [
+                { role: 'user', content: 'hello from b' },
+                { role: 'assistant', content: 'Hi B' }
+              ]
+            : [{ role: 'user', content: 'hello' }]
+      }
+    }))
 
     const { result } = renderHook(() => useWorkspaceManager())
 
@@ -1136,5 +1382,53 @@ describe('resolveComposerDraft', () => {
     expect(resolveComposerDraft(ui, 'run-1')).toBe('run-one')
     expect(resolveComposerDraft(ui, 'run-2')).toBe('')
     expect(resolveComposerDraft(ui, null)).toBe('workspace-draft')
+  })
+
+  it('falls back to legacy composerDraft when map is empty and a run is active', () => {
+    const ui = {
+      composerDraft: 'pre-migration',
+      composerDraftByRunId: {} as Record<string, string>
+    }
+    expect(resolveComposerDraft(ui, 'run-1')).toBe('pre-migration')
+  })
+})
+
+describe('setComposerDraftForPane hot UI', () => {
+  it('writes typed draft into hot UI for a non-null runId', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    act(() => {
+      result.current.openRunTab('run-hot-1')
+    })
+
+    act(() => {
+      result.current.setComposerDraftForPane('/ws-a', 'run-hot-1', 'typed on run')
+    })
+
+    const hot = getWorkspaceHotUi('/ws-a')
+    expect(resolveHotComposerDraft(hot, 'run-hot-1')).toBe('typed on run')
+    expect(resolveComposerDraft(result.current.activeContext!.ui, 'run-hot-1')).toBe(
+      'typed on run'
+    )
+  })
+})
+
+describe('omitRunComposerDraft / migrateLegacyComposerDraftMap', () => {
+  it('omits a run draft key without touching siblings', () => {
+    expect(omitRunComposerDraft({ a: '1', b: '2' }, 'a')).toEqual({ b: '2' })
+    expect(omitRunComposerDraft({ a: '1' }, 'missing')).toEqual({ a: '1' })
+  })
+
+  it('migrates legacy workspace draft into active run + __draft__ keys', () => {
+    const migrated = migrateLegacyComposerDraftMap(
+      { composerDraft: 'hello', composerDraftByRunId: {} },
+      'run-1'
+    )
+    expect(migrated['run-1']).toBe('hello')
+    expect(migrated.__draft__).toBe('hello')
   })
 })

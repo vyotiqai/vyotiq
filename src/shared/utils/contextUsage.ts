@@ -1,10 +1,9 @@
 import type { AgentEvent, PersistedEvent } from '../ipc'
 import { isAgentEvent } from './eventUtils'
 import {
-  allocateBudgetShares,
-  compactionTriggerFromRaw,
   contentWindowFromRaw,
-  DEFAULT_COMPACTION_TRIGGER_RATIO
+  proactiveCompactThresholdTokens,
+  remainingContentTokens
 } from '../domain/contextBudget'
 import {
   emptyStepUsageTotals,
@@ -43,6 +42,39 @@ const EMPTY_LAYERS: ContextLayerBreakdown = {
   buffer: 0
 }
 
+/**
+ * Align layer splits with the billed total and derive buffer from the content budget.
+ * Provider input often differs from local estimates; absorb the delta into history.
+ */
+export function reconcileContextLayers(
+  layers: ContextLayerBreakdown,
+  used: number,
+  rawWindow: number,
+  contentWindow?: number
+): ContextLayerBreakdown {
+  const system = Math.max(0, layers.system)
+  const tools = Math.max(0, layers.tools)
+  let history = Math.max(0, layers.history)
+  const contentSum = system + history + tools
+  const billed = Math.max(0, Number.isFinite(used) ? used : 0)
+
+  if (contentSum > 0 && billed > 0 && billed !== contentSum) {
+    history = Math.max(0, history + (billed - contentSum))
+  } else if (contentSum <= 0 && billed > 0) {
+    history = billed
+  }
+
+  const measured = system + history + tools
+  const budget =
+    contentWindow && contentWindow > 0 ? contentWindow : contentWindowFromRaw(rawWindow)
+  return {
+    system,
+    history,
+    tools,
+    buffer: remainingContentTokens(budget, measured > 0 ? measured : billed)
+  }
+}
+
 export function contextUsageFromEvent(
   event: AgentEvent,
   stepUsage: StepUsageTotals = emptyStepUsageTotals(),
@@ -51,9 +83,13 @@ export function contextUsageFromEvent(
 ): ContextUsageState | null {
   if (event.type !== 'context_usage') return null
   const used = event.inputTokens ?? event.estimatedTokens
-  // Prefer event layers; otherwise keep prior estimate split for display when
-  // provider events omit layers (provider totals are not layer-aligned).
-  const layers = event.layers ?? previousLayers ?? EMPTY_LAYERS
+  const rawLayers = event.layers ?? previousLayers ?? EMPTY_LAYERS
+  const layers = reconcileContextLayers(
+    rawLayers,
+    used,
+    event.contextWindow,
+    event.contentWindow
+  )
   return {
     step: event.step,
     used,
@@ -96,22 +132,21 @@ export function summarizeContextUsageFromEvents(
  */
 export function alignContextUsageToModelWindow(
   usage: ContextUsageState,
-  modelWindow: number,
-  triggerRatio = DEFAULT_COMPACTION_TRIGGER_RATIO
+  modelWindow: number
 ): ContextUsageState {
   if (!Number.isFinite(modelWindow) || modelWindow <= 0 || modelWindow === usage.window) {
     return usage
   }
-  const shares = allocateBudgetShares(modelWindow)
   const contentWindow = contentWindowFromRaw(modelWindow)
+  const oldContent =
+    usage.contentWindow > 0 ? usage.contentWindow : contentWindowFromRaw(usage.window)
+  const triggerRatio = usage.compactionTrigger / Math.max(1, oldContent)
+  const layers = reconcileContextLayers(usage.layers, usage.used, modelWindow, contentWindow)
   return {
     ...usage,
     window: modelWindow,
     contentWindow,
-    compactionTrigger: compactionTriggerFromRaw(modelWindow, triggerRatio),
-    layers: {
-      ...usage.layers,
-      buffer: shares.buffer
-    }
+    compactionTrigger: proactiveCompactThresholdTokens(contentWindow, triggerRatio),
+    layers
   }
 }

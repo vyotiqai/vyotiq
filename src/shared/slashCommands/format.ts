@@ -1,3 +1,8 @@
+/** Rewrite skill-instruction tag opens/closes so a body cannot close the wrap. */
+function neutralizeSkillInstructionTags(body: string): string {
+  return body.replace(/<\s*\/?\s*skill\s+instructions\b/gi, (match) => match.replace('<', '&lt;'))
+}
+
 /** Inject skill body as a strong this-turn instruction plus user trailing text. */
 export function formatSkillInvocation(
   skillName: string,
@@ -9,7 +14,7 @@ export function formatSkillInvocation(
     `[Skill: ${skillName}]`,
     '',
     '<skill instructions>',
-    body.trim(),
+    neutralizeSkillInstructionTags(body.trim()),
     '</skill instructions>',
     '',
     'User request:',
@@ -66,22 +71,49 @@ export function stubSkillInvocationContent(text: string): string | null {
   return formatSkillInvocation(parsed.skillName, SKILL_BODY_STUB, parsed.userRequest)
 }
 
+function isSkillToolResultMessage(m: { role: string; toolName?: string }): boolean {
+  return m.role === 'tool' && m.toolName === 'Skill'
+}
+
+function isSkillToolResultStubbed(content: unknown): boolean {
+  return typeof content === 'string' && content.trim() === SKILL_BODY_STUB
+}
+
 /**
  * Stub skill bodies on user turns that already have follow-up messages so later
  * assemble / durable history do not resend the full skill text every step.
  * The latest message (open skill turn) keeps the full body for the current model call.
+ * Earlier Skill **tool** results are stubbed the same way; the latest Skill tool
+ * result stays intact for the current step.
  */
 export function stubPastSkillInvocationsInMessages<
-  T extends { role: string; content: unknown }
+  T extends { role: string; content: unknown; toolName?: string }
 >(messages: T[]): { messages: T[]; stubbedCount: number } {
   let stubbedCount = 0
-  const out = messages.map((m, i) => {
+  const afterSlash = messages.map((m, i) => {
     if (m.role !== 'user' || typeof m.content !== 'string') return m
     if (i >= messages.length - 1) return m
     const stubbed = stubSkillInvocationContent(m.content)
     if (!stubbed) return m
     stubbedCount += 1
     return { ...m, content: stubbed }
+  })
+  let lastSkillToolIdx = -1
+  for (let i = afterSlash.length - 1; i >= 0; i--) {
+    const msg = afterSlash[i]
+    if (msg && isSkillToolResultMessage(msg)) {
+      lastSkillToolIdx = i
+      break
+    }
+  }
+  if (lastSkillToolIdx < 0) {
+    return { messages: afterSlash, stubbedCount }
+  }
+  const out = afterSlash.map((m, i) => {
+    if (!isSkillToolResultMessage(m) || i === lastSkillToolIdx) return m
+    if (isSkillToolResultStubbed(m.content)) return m
+    stubbedCount += 1
+    return { ...m, content: SKILL_BODY_STUB }
   })
   return { messages: out, stubbedCount }
 }

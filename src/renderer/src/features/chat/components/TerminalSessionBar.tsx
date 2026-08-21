@@ -1,6 +1,15 @@
-import { cn, IconButton, Tooltip } from '@renderer/lib/ui'
+import { useLayoutEffect, useRef, useState } from 'react'
+import { cn, Tooltip } from '@renderer/lib/ui'
 import { Icon } from '@renderer/lib/icons'
 import type { PtySessionInfo } from '@shared/ipc'
+import {
+  DOCK_CHROME_ICON_HOVER,
+  DOCK_QUICK_LAUNCH_BTN,
+  dockPanelTabButtonClass,
+  dockPanelTabCloseClass,
+  dockPanelTabShellClass,
+  tabMiddleClickHandlers
+} from './PanelChrome'
 
 /**
  * PTY session tabs (+ / split). Rendered in the dock tab bar when the terminal
@@ -25,65 +34,118 @@ export function TerminalSessionBar({
   onToggleSplit: () => void
   className?: string
 }) {
+  const rootRef = useRef<HTMLDivElement>(null)
+  const [compact, setCompact] = useState(false)
   const activeSession = sessions.find((s) => s.id === activeId) ?? null
+
+  useLayoutEffect(() => {
+    const el = rootRef.current
+    if (!el) return
+
+    const measure = (): void => {
+      // clientWidth 0 = not laid out yet (pre-paint / jsdom) — keep full chrome.
+      setCompact(el.clientWidth > 0 && el.clientWidth < 168)
+    }
+
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
 
   return (
     <div
-      className={cn('flex min-w-0 items-center gap-0.5', className)}
+      ref={rootRef}
+      className={cn('inline-flex h-7 w-full min-w-0 max-w-full items-center gap-0.5', className)}
       data-terminal-session-bar
       role="tablist"
       aria-label="Terminal sessions"
     >
-      {sessions.map((s) => (
-        <div
-          key={s.id}
-          className={cn(
-            'group inline-flex h-7 max-w-[9rem] shrink-0 items-center gap-0.5 rounded-md pl-2 pr-1',
-            s.id === activeId ? 'bg-surface text-fg' : 'text-muted hover:bg-surface/60'
-          )}
+      {sessions.length > 0 ? (
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:h-0 [&::-webkit-scrollbar]:w-0">
+          {sessions.map((s) => {
+            const selected = s.id === activeId
+            const inSplit = Boolean(splitId && s.id === splitId)
+            const label = s.running ? s.title : `${s.title} (exited)`
+            const emphasized = selected || inSplit
+            return (
+              <div
+                key={s.id}
+                className={cn(
+                  dockPanelTabShellClass(emphasized, true),
+                  !selected && inSplit && 'bg-surface/55'
+                )}
+                {...tabMiddleClickHandlers(() => onKill(s.id))}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  title={label}
+                  tabIndex={emphasized ? 0 : -1}
+                  className={dockPanelTabButtonClass(emphasized)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Delete') {
+                      e.preventDefault()
+                      onKill(s.id)
+                    }
+                  }}
+                  onClick={() => onSelect(s.id)}
+                >
+                  <Icon
+                    name="terminal"
+                    size={14}
+                    className={cn('shrink-0', emphasized ? 'text-fg' : 'text-secondary')}
+                  />
+                  <span className="min-w-0 truncate">{label}</span>
+                </button>
+                <Tooltip content={`Close ${s.title}`}>
+                  <button
+                    type="button"
+                    className={dockPanelTabCloseClass(emphasized)}
+                    aria-label={`Close ${s.title}`}
+                    aria-keyshortcuts="Delete"
+                    tabIndex={emphasized ? 0 : -1}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      onKill(s.id)
+                    }}
+                  >
+                    <Icon name="close" size={10} />
+                  </button>
+                </Tooltip>
+              </div>
+            )
+          })}
+        </div>
+      ) : null}
+      <Tooltip content="New terminal">
+        <button
+          type="button"
+          className={cn(DOCK_QUICK_LAUNCH_BTN, DOCK_CHROME_ICON_HOVER)}
+          aria-label="New terminal"
+          onClick={onCreate}
         >
+          <Icon name="plus" size={14} className="shrink-0" />
+        </button>
+      </Tooltip>
+      {activeSession && !compact ? (
+        <Tooltip content={splitId ? 'Unsplit terminals' : 'Split terminal'}>
           <button
             type="button"
-            role="tab"
-            aria-selected={s.id === activeId}
-            className="inline-flex min-w-0 items-center gap-1 truncate text-xs leading-tight"
-            onClick={() => onSelect(s.id)}
+            className={cn(
+              DOCK_QUICK_LAUNCH_BTN,
+              DOCK_CHROME_ICON_HOVER,
+              splitId && 'bg-surface text-fg shadow-sm'
+            )}
+            aria-label={splitId ? 'Unsplit terminals' : 'Split terminal'}
+            aria-pressed={splitId != null}
+            onClick={onToggleSplit}
           >
-            <Icon name="terminal" size={12} className="shrink-0 opacity-70" />
-            <span className="truncate">
-              {s.title}
-              {!s.running ? ' (exited)' : ''}
-            </span>
+            <Icon name="columns" size={14} className="shrink-0" />
           </button>
-          <Tooltip content={`Close ${s.title}`}>
-            <button
-              type="button"
-              className="inline-grid size-5 shrink-0 place-items-center rounded-md opacity-0 vy-transition hover:bg-surface-2 group-hover:opacity-100 group-focus-within:opacity-100"
-              aria-label={`Close ${s.title}`}
-              onClick={() => onKill(s.id)}
-            >
-              <Icon name="close" size={10} />
-            </button>
-          </Tooltip>
-        </div>
-      ))}
-      <IconButton
-        icon="plus"
-        label="New terminal"
-        variant="bare"
-        size="sm"
-        className="text-muted"
-        onClick={onCreate}
-      />
-      {activeSession ? (
-        <IconButton
-          icon="columns"
-          label={splitId ? 'Unsplit terminals' : 'Split terminal'}
-          variant="bare"
-          size="sm"
-          className={cn('text-muted', splitId && 'text-fg')}
-          onClick={onToggleSplit}
-        />
+        </Tooltip>
       ) : null}
     </div>
   )

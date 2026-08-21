@@ -1,7 +1,9 @@
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { z } from 'zod'
 import { atomicWriteJson } from '@main/storage/atomicWrite'
+import type { ChatMessage } from '../../../shared/ipc'
+import { wrapPromptSection } from '../promptSections'
 
 export const TodoStatusSchema = z.enum(['pending', 'in_progress', 'completed', 'cancelled'])
 export type TodoStatus = z.infer<typeof TodoStatusSchema>
@@ -40,10 +42,112 @@ export function readTodos(runDir: string): TodoItem[] {
   }
 }
 
-function serializeTodoContent(todos: TodoItem[]): string {
+export function hasInProgressTodo(runDir: string): boolean {
+  return readTodos(runDir).some((todo) => todo.status === 'in_progress')
+}
+
+/** True when message history still contains a todo_write tool call/result. */
+export function messagesHaveTodoWrite(messages: readonly ChatMessage[]): boolean {
+  for (const message of messages) {
+    if (message.role === 'assistant' && message.toolCalls?.some((tc) => tc.name === 'todo_write')) {
+      return true
+    }
+    if (message.role === 'tool' && message.toolName === 'todo_write') return true
+  }
+  return false
+}
+
+const ITEM_WITH_ID_RE = /^(\[[ x~-]\])\s+\(([^)]+)\)\s+(.+)$/
+const MARK_TO_STATUS: Record<string, TodoStatus> = {
+  '[ ]': 'pending',
+  '[~]': 'in_progress',
+  '[x]': 'completed',
+  '[-]': 'cancelled'
+}
+
+/** Parse checklist lines produced by {@link serializeTodoContent}. */
+export function parseSerializedTodoContent(content: string): TodoItem[] {
+  const items: TodoItem[] = []
+  for (const line of content.split('\n')) {
+    const match = line.match(ITEM_WITH_ID_RE)
+    if (!match) continue
+    const status = MARK_TO_STATUS[match[1]!]
+    if (!status) continue
+    const id = match[2]!.trim()
+    const text = match[3]!.trim()
+    if (!id || !text) continue
+    items.push({ id, content: text, status })
+  }
+  return items
+}
+
+function latestTodoWriteContent(messages: readonly ChatMessage[]): string | null {
+  let last: string | null = null
+  for (const message of messages) {
+    if (message.role !== 'tool' || message.toolName !== 'todo_write') continue
+    if (message.ok === false) continue
+    if (typeof message.content !== 'string' || !message.content.trim()) continue
+    last = message.content
+  }
+  return last
+}
+
+/**
+ * Keep run-dir todos.json aligned with truncated history after rewind:
+ * - no remaining todo_write → delete the file
+ * - otherwise rewrite from the latest kept successful todo_write snapshot
+ */
+export function syncTodosAfterRewind(runDir: string, messages: readonly ChatMessage[]): void {
+  const path = todoPath(runDir)
+  if (!messagesHaveTodoWrite(messages)) {
+    if (existsSync(path)) rmSync(path, { force: true })
+    return
+  }
+  const content = latestTodoWriteContent(messages)
+  if (!content) {
+    if (existsSync(path)) rmSync(path, { force: true })
+    return
+  }
+  const todos = parseSerializedTodoContent(content)
+  if (todos.length === 0) {
+    if (existsSync(path)) rmSync(path, { force: true })
+    return
+  }
+  atomicWriteJson(path, { updatedAt: new Date().toISOString(), todos })
+}
+
+/** Drop run-dir todos.json when rewind removed every todo_write from history. */
+export function clearTodosIfOrphaned(runDir: string, messages: readonly ChatMessage[]): void {
+  syncTodosAfterRewind(runDir, messages)
+}
+
+/** Collapse whitespace so checklist lines stay one-item-per-line for the UI parser. */
+export function sanitizeTodoItemContent(content: string): string {
+  return content.replace(/\s+/g, ' ').trim()
+}
+
+function normalizeTodoItems(todos: TodoItem[]): TodoItem[] {
+  const byId = new Map<string, TodoItem>()
+  for (const todo of todos) {
+    byId.set(todo.id, {
+      ...todo,
+      content: sanitizeTodoItemContent(todo.content) || todo.content.trim() || todo.id
+    })
+  }
+  return [...byId.values()]
+}
+
+/** Checklist text shown in the transcript and injected into model context. */
+export function serializeTodoContent(todos: TodoItem[]): string {
   const done = todos.filter((todo) => todo.status === 'completed').length
-  const lines = todos.map((todo) => `${STATUS_MARK[todo.status]} ${todo.content}`)
+  const lines = todos.map((todo) => `${STATUS_MARK[todo.status]} (${todo.id}) ${todo.content}`)
   return [`${done}/${todos.length} complete`, ...lines].join('\n')
+}
+
+/** Volatile system section so the list survives compaction folds. */
+export function formatTodosContextSection(todos: TodoItem[]): string {
+  if (todos.length === 0) return ''
+  return wrapPromptSection('task_list', serializeTodoContent(todos))
 }
 
 /** Cancel in-progress tasks left open when a run is interrupted. */
@@ -75,29 +179,31 @@ export function finalizeTodosOnRunEnd(
  *
  * The list lives in the run directory rather than the message history so it
  * stays the same size no matter how many times the model rewrites it, and it
- * survives a reload of the transcript.
+ * survives a reload of the transcript. After compaction, assembleContext also
+ * re-injects the current list from disk into the volatile system section.
  */
 export function toolTodoWrite(
   runDir: string,
   todos: TodoItem[],
   merge = false
-): { content: string; todos: TodoItem[] } {
+): { content: string; todos: TodoItem[]; notice?: string } {
   if (!runDir) throw new Error('todo_write is only available inside a run')
 
+  const incoming = normalizeTodoItems(todos)
   let next: TodoItem[]
   if (merge) {
     const byId = new Map(readTodos(runDir).map((todo) => [todo.id, todo]))
-    for (const todo of todos) byId.set(todo.id, { ...byId.get(todo.id), ...todo })
+    for (const todo of incoming) byId.set(todo.id, { ...byId.get(todo.id), ...todo })
     next = [...byId.values()]
   } else {
-    next = todos
+    next = incoming
   }
 
   const inProgressIndexes: number[] = []
   for (let i = 0; i < next.length; i++) {
     if (next[i]!.status === 'in_progress') inProgressIndexes.push(i)
   }
-  let coerceNotice: string | undefined
+  let notice: string | undefined
   if (inProgressIndexes.length > 1) {
     const keepIdx = inProgressIndexes[inProgressIndexes.length - 1]!
     const demoted: string[] = []
@@ -108,14 +214,14 @@ export function toolTodoWrite(
       }
       return todo
     })
-    coerceNotice = `Note: only one task may be in_progress; demoted ${demoted.join(', ')} to pending (kept ${next[keepIdx]!.id}).`
+    notice = `only one task may be in_progress; demoted ${demoted.join(', ')} to pending (kept ${next[keepIdx]!.id})`
   }
 
   atomicWriteJson(todoPath(runDir), { updatedAt: new Date().toISOString(), todos: next })
 
-  const content = serializeTodoContent(next)
   return {
-    content: coerceNotice ? `${coerceNotice}\n${content}` : content,
-    todos: next
+    content: serializeTodoContent(next),
+    todos: next,
+    ...(notice ? { notice } : {})
   }
 }

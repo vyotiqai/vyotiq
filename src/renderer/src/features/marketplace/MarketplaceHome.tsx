@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, type KeyboardEvent, type RefObject } from 'react'
 import type {
   MarketplaceCatalogEntry,
   MarketplaceInstalledItem,
@@ -6,6 +6,7 @@ import type {
   McpServerStatus
 } from '@shared/ipc'
 import { Button, Input, cn } from '@renderer/lib/ui'
+import { marketplaceOverrideKind } from '@shared/domain/marketplaceEnablement'
 import { PackageIcon } from './PackageIcon'
 import { MarketplaceFeedbackBanner } from './MarketplaceFeedbackBanner'
 import { categoryTitle, kindLabel } from './marketplaceLabels'
@@ -28,9 +29,12 @@ const CARD_SELECTED = 'border-border-strong bg-surface-2'
 function activityFor(
   entry: MarketplaceCatalogEntry,
   installedById: Map<string, MarketplaceInstalledItem>,
-  mcpStatusById: Map<string, McpServerStatus>
+  mcpStatusById: Map<string, McpServerStatus>,
+  workspaceEnabled?: boolean
 ): PackageActivity {
-  return packageActivity(entry, installedById.get(entry.id), mcpStatusById.get(entry.id))
+  return packageActivity(entry, installedById.get(entry.id), mcpStatusById.get(entry.id), {
+    workspaceEnabled
+  })
 }
 
 function catalogEntryForInstalled(
@@ -70,6 +74,7 @@ function PackageCard({
   activity,
   selected,
   formLocked,
+  installing,
   showAdd,
   onOpen,
   onAdd
@@ -78,6 +83,8 @@ function PackageCard({
   activity: PackageActivity
   selected: boolean
   formLocked?: boolean
+  /** True only for the package currently being installed. */
+  installing?: boolean
   showAdd?: boolean
   onOpen: () => void
   onAdd?: () => void
@@ -85,6 +92,7 @@ function PackageCard({
   const comingSoon = activity.kind === 'coming-soon'
   const installed = activity.kind !== 'available' && activity.kind !== 'coming-soon'
   const locked = Boolean(formLocked)
+  const showInstalling = Boolean(installing)
 
   return (
     <div
@@ -149,14 +157,14 @@ function PackageCard({
           <Button
             variant="subtle"
             className="shrink-0 self-center"
-            pending={locked}
+            pending={showInstalling}
             disabled={locked}
             onClick={(e) => {
               e.stopPropagation()
               onAdd?.()
             }}
           >
-            {locked ? 'Installing…' : 'Add'}
+            {showInstalling ? 'Installing…' : 'Add'}
           </Button>
         )
       ) : null}
@@ -169,6 +177,7 @@ function CategorySection({
   entries,
   installedById,
   mcpStatusById,
+  workspaceEnabledForId,
   selectedEntryId,
   onOpen
 }: {
@@ -176,6 +185,7 @@ function CategorySection({
   entries: MarketplaceCatalogEntry[]
   installedById: Map<string, MarketplaceInstalledItem>
   mcpStatusById: Map<string, McpServerStatus>
+  workspaceEnabledForId: MarketplaceController['workspaceEnabledForId']
   selectedEntryId: string | null
   onOpen: (entry: MarketplaceCatalogEntry) => void
 }) {
@@ -202,7 +212,12 @@ function CategorySection({
           <PackageCard
             key={`${entry.source}-${entry.id}`}
             entry={entry}
-            activity={activityFor(entry, installedById, mcpStatusById)}
+            activity={activityFor(
+              entry,
+              installedById,
+              mcpStatusById,
+              workspaceEnabledForId(marketplaceOverrideKind(entry.kind), entry.id)
+            )}
             selected={selectedEntryId === entry.id}
             onOpen={() => onOpen(entry)}
           />
@@ -215,25 +230,31 @@ function CategorySection({
 export function MarketplaceHome({
   controller,
   selectedEntryId,
+  searchRef,
   onOpenDetail,
-  onOpenManage
+  onOpenManage,
+  onRequestClose
 }: {
   controller: MarketplaceController
   selectedEntryId: string | null
+  searchRef?: RefObject<HTMLInputElement | null>
   onOpenDetail: (entry: MarketplaceCatalogEntry) => void
-  onOpenManage: () => void
+  onOpenManage: (opts?: { mcpAdd?: boolean }) => void
+  onRequestClose?: () => void
 }) {
   const {
     catalog,
     catalogLoading,
     installed,
     mcpStatusById,
+    workspaceEnabledForId,
     kindFilter,
     setKindFilter,
     query,
     setQuery,
     feedback,
     formLocked,
+    busyTargetId,
     installFromCatalog,
     refreshCatalog
   } = controller
@@ -289,14 +310,26 @@ export function MarketplaceHome({
     installedEntries.length > 0 || featured.length > 0 || byCategory.length > 0
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-5">
       <div className="flex flex-wrap items-center gap-2">
         <Input
+          ref={searchRef}
           className="min-w-[180px] flex-1"
-          placeholder="Search plugins, skills, MCPs…"
+          placeholder="Search packages, skills, MCPs…"
           value={query}
           aria-label="Search marketplace"
           onChange={(e) => setQuery(e.target.value)}
+          onKeyDown={(e: KeyboardEvent<HTMLInputElement>) => {
+            if (e.key !== 'Escape') return
+            if (query) {
+              e.preventDefault()
+              setQuery('')
+              return
+            }
+            if (!onRequestClose) return
+            e.preventDefault()
+            onRequestClose()
+          }}
         />
         <select
           className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-fg"
@@ -307,7 +340,7 @@ export function MarketplaceHome({
           <option value="all">All</option>
           <option value="mcp">MCP</option>
           <option value="skill">Skills</option>
-          <option value="plugin">Plugins</option>
+          <option value="plugin">Packages</option>
         </select>
         <Button
           variant="subtle"
@@ -328,19 +361,19 @@ export function MarketplaceHome({
             <p className="m-0 text-sm text-fg">No matching packages in the curated catalog.</p>
             <p className="m-0 text-xs text-secondary">
               External MCPs (GitHub URLs, npm packages, npx/uvx commands, or Cursor/Claude JSON) are
-              added under Manage → Add — they won’t appear in this search until installed from the
+              added under Manage → MCPs → New — they won’t appear in this search until installed from the
               catalog or added manually.
             </p>
             <div>
-              <Button variant="subtle" onClick={onOpenManage}>
+              <Button variant="subtle" onClick={() => onOpenManage({ mcpAdd: true })}>
                 Open Manage to add
               </Button>
             </div>
           </div>
         ) : (
           <p className="m-0 text-sm text-muted">
-            No packages in catalog. Open Manage to add MCP servers, or configure a registry under
-            Settings → Registry.
+            No packages in catalog. Open Manage to add MCP servers, or set a registry URL under
+            Manage (Package Registry).
           </p>
         )
       ) : (
@@ -349,7 +382,7 @@ export function MarketplaceHome({
             <section className="flex flex-col gap-2">
               <div className="flex items-center justify-between gap-2">
                 <h2 className="m-0 text-sm font-medium text-fg">Installed</h2>
-                <Button variant="subtle" onClick={onOpenManage}>
+                <Button variant="subtle" onClick={() => onOpenManage()}>
                   Manage
                 </Button>
               </div>
@@ -358,7 +391,12 @@ export function MarketplaceHome({
                   <PackageCard
                     key={`installed-${entry.source}-${entry.id}`}
                     entry={entry}
-                    activity={activityFor(entry, installedById, mcpStatusById)}
+                    activity={activityFor(
+                      entry,
+                      installedById,
+                      mcpStatusById,
+                      workspaceEnabledForId(marketplaceOverrideKind(entry.kind), entry.id)
+                    )}
                     selected={selectedEntryId === entry.id}
                     showAdd
                     onOpen={() => onOpenDetail(entry)}
@@ -376,9 +414,15 @@ export function MarketplaceHome({
                   <PackageCard
                     key={`${entry.source}-${entry.id}`}
                     entry={entry}
-                    activity={activityFor(entry, installedById, mcpStatusById)}
+                    activity={activityFor(
+                      entry,
+                      installedById,
+                      mcpStatusById,
+                      workspaceEnabledForId(marketplaceOverrideKind(entry.kind), entry.id)
+                    )}
                     selected={selectedEntryId === entry.id}
                     formLocked={formLocked}
+                    installing={busyTargetId === entry.id}
                     showAdd
                     onOpen={() => onOpenDetail(entry)}
                     onAdd={() => void installFromCatalog(entry)}
@@ -395,6 +439,7 @@ export function MarketplaceHome({
               entries={entries}
               installedById={installedById}
               mcpStatusById={mcpStatusById}
+              workspaceEnabledForId={workspaceEnabledForId}
               selectedEntryId={selectedEntryId}
               onOpen={onOpenDetail}
             />

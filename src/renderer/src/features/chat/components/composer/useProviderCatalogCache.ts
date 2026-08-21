@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { normalizeCustomOpenAiBaseUrl, ollamaNativeHost } from '@shared/providers'
 import type { ModelInfo, ProviderId } from '@shared/ipc'
+import { findOllamaCatalogModel } from '@shared/reasoning'
 
 type CacheEntry = {
   models: ModelInfo[] | null
@@ -25,6 +26,20 @@ function isRetryableFailure(entry: CacheEntry): boolean {
   return Date.now() - entry.failedAt >= ERROR_RETRY_MS
 }
 
+/** True when list/tags left thinking unknown or omitted the context window. */
+export function ollamaCatalogNeedsShow(model: ModelInfo | undefined): boolean {
+  if (model == null) return true
+  const hasEffortLadder =
+    model.supportsThinking === true &&
+    model.thinkingMode === 'effort' &&
+    (model.supportedThinkingEfforts?.length ?? 0) > 0
+  const hasContext = model.contextWindow != null && model.contextWindow > 0
+  if (!hasContext) return true
+  if (hasEffortLadder) return false
+  if (model.supportsThinking === false) return false
+  return true
+}
+
 export function useProviderCatalogCache(
   baseUrls?: { ollamaBaseUrl?: string; customOpenAiBaseUrl?: string } | string,
   modelsRefreshKey?: string | number
@@ -43,11 +58,29 @@ export function useProviderCatalogCache(
   }, [])
 
   const loadProvider = useCallback(
-    async (provider: ProviderId, opts?: { forceRefresh?: boolean }): Promise<CacheEntry> => {
+    async (
+      provider: ProviderId,
+      opts?: { forceRefresh?: boolean; model?: string }
+    ): Promise<CacheEntry> => {
       // Settled successes stick. Failures stick briefly, then expire so a later
       // provider browse / remount can recover without force-refresh loops.
       const existing = cacheRef.current[provider]
-      if (!opts?.forceRefresh && existing && !existing.loading && !isRetryableFailure(existing)) {
+      const selected =
+        provider === 'ollama' && opts?.model && existing?.models
+          ? findOllamaCatalogModel(existing.models, opts.model)
+          : existing?.models?.find((m) => m.id === opts?.model)
+      const needsOllamaShow =
+        provider === 'ollama' &&
+        Boolean(opts?.model) &&
+        existing?.models != null &&
+        ollamaCatalogNeedsShow(selected)
+      if (
+        !opts?.forceRefresh &&
+        existing &&
+        !existing.loading &&
+        !isRetryableFailure(existing) &&
+        !needsOllamaShow
+      ) {
         return existing
       }
 
@@ -76,7 +109,8 @@ export function useProviderCatalogCache(
         const res = await window.vyotiq.listModels({
           provider,
           baseUrl,
-          forceRefresh: opts?.forceRefresh
+          forceRefresh: opts?.forceRefresh,
+          model: opts?.model
         })
 
         const entry: CacheEntry = res.ok

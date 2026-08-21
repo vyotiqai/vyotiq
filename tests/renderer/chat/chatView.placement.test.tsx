@@ -2,15 +2,19 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ChatView } from '@renderer/features/chat/ChatView'
+import { emptySecretStatus } from '@shared/ipc'
 import { TitleBar } from '@renderer/app/TitleBar'
 import { BreakpointProvider } from '@renderer/lib/context/BreakpointProvider'
 import { TitleBarAccessoryProvider } from '@renderer/lib/context/TitleBarAccessory'
 import { clampDockWidthPx, DOCK_WIDTH_DEFAULT_PX, readSidebarWidthPxForCapacity } from '@renderer/lib/utils/layout'
+import { resetDockImmersiveStore } from '@renderer/lib/hooks/dockImmersiveStore'
+import { minimalReadyPlanMarkdown } from '@renderer/features/chat/utils/planDraft'
 
 beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn()
+  resetDockImmersiveStore()
   try {
     localStorage.removeItem('vyotiq.browserPanelOpen')
     localStorage.removeItem('vyotiq.rightPanel')
@@ -102,6 +106,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -118,7 +123,6 @@ const baseProps = {
   chatSettings: {
     provider: 'ollama' as const,
     model: 'qwen2.5',
-    compactionTriggerRatio: 0.7,
     keepRecentTurns: 12,
     thinkingEnabled: true,
     thinkingEffort: 'medium' as const,
@@ -127,7 +131,8 @@ const baseProps = {
   onChatSettingsChange: vi.fn(),
   onProviderModel: vi.fn(),
   onSend: vi.fn(),
-  onStop: vi.fn()
+  onStop: vi.fn(),
+  secrets: emptySecretStatus()
 }
 
 describe('ChatView composer placement', () => {
@@ -155,11 +160,124 @@ describe('ChatView composer placement', () => {
     expect(screen.getByPlaceholderText('Search or enter URL')).toBeTruthy()
   })
 
+  it('shows the real Files panel from the Chat side rail', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Show files panel/i }))
+    expect(screen.getByRole('tabpanel', { name: 'Files' })).toBeTruthy()
+    expect(screen.getByText('ws')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Show files panel/i })).toBeNull()
+  })
+
+  it('hands prefetched recovery to FilesPanel without loading recovery twice', async () => {
+    const workspaceEditorRecoveryLoad = vi.fn().mockResolvedValue({
+      ok: true,
+      data: {
+        source: 'app',
+        sessionToken: 'session-token-for-chat-view',
+        generation: 3,
+        snapshot: {
+          version: 1,
+          activeTabId: 'recovered-tab',
+          selectedPath: 'README.md',
+          expandedPaths: [''],
+          treeSort: 'name',
+          wordWrap: false,
+          savedAt: new Date().toISOString(),
+          tabs: [
+            {
+              id: 'recovered-tab',
+              path: 'README.md',
+              kind: 'text',
+              content: 'hello',
+              encoding: 'utf8',
+              eol: 'lf',
+              bom: false,
+              version: null,
+              dirty: true,
+              cursor: 0,
+              selections: [{ from: 0, to: 0 }],
+              bookmarks: [],
+              template: null
+            }
+          ]
+        }
+      }
+    })
+    const workspaceFileList = vi.fn().mockResolvedValue({
+      ok: true,
+      data: {
+        path: '',
+        entries: [
+          {
+            name: 'README.md',
+            path: 'README.md',
+            kind: 'file',
+            size: 5,
+            mtimeMs: 1,
+            hidden: false,
+            symlinkTargetInsideWorkspace: null
+          }
+        ],
+        total: 1,
+        nextOffset: null,
+        truncated: false
+      }
+    })
+    const workspaceFileRead = vi.fn().mockResolvedValue({
+      ok: true,
+      data: {
+        path: 'README.md',
+        kind: 'text',
+        content: 'hello',
+        encoding: 'utf8',
+        eol: 'lf',
+        bom: false,
+        size: 5,
+        version: {
+          size: 5,
+          mtimeMs: 1,
+          sha256: 'a'.repeat(64)
+        },
+        truncated: false
+      }
+    })
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.vyotiq as object),
+        workspaceEditorRecoveryLoad,
+        workspaceFileList,
+        workspaceFileRead,
+        workspaceEditorRecoverySave: vi.fn().mockResolvedValue({ ok: true, data: true }),
+        workspaceEditorRecoveryClear: vi.fn().mockResolvedValue({ ok: true, data: true })
+      }
+    })
+    vi.useFakeTimers()
+    render(<ChatView {...baseProps} items={[]} />)
+
+    await act(async () => {
+      vi.advanceTimersByTime(900)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(workspaceEditorRecoveryLoad).toHaveBeenCalledTimes(1)
+    expect(screen.getByRole('tab', { name: /README\.md/i })).toBeTruthy()
+    expect(workspaceFileList).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the terminal panel with Ctrl+`', () => {
+    render(<ChatView {...baseProps} items={[]} />)
+    fireEvent.keyDown(window, { key: '`', ctrlKey: true })
+    expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
+  })
+
   it('closes one dock tab without clearing the remaining tabs', () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
-    fireEvent.click(screen.getByRole('button', { name: /Add panel/i }))
-    fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
     expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
     expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
@@ -186,10 +304,9 @@ describe('ChatView composer placement', () => {
     expect(screen.queryByText(/Agent commands/i)).toBeNull()
     expect(screen.queryByRole('button', { name: /Split terminal/i })).toBeNull()
     expect(screen.getByRole('button', { name: /Expand panel/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /Add panel/i })).toBeTruthy()
+    expect(document.querySelector('[data-dock-quick-launch]')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: /Add panel/i }))
-    fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
     // Keep-alive: prior panels stay mounted but hidden.
     expect(
@@ -199,7 +316,7 @@ describe('ChatView composer placement', () => {
       document.querySelector('[data-changes-panel]')?.parentElement?.className
     ).toMatch(/\bflex\b/)
     expect(await screen.findByText('Not a git repository', {}, { timeout: 5000 })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: /files panel/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /Show files panel/i })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /Close Changes/i }))
     // Closing Changes via the tab leaves Terminal mounted.
@@ -389,8 +506,7 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
-    fireEvent.click(screen.getByRole('button', { name: /Add panel/i }))
-    fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
   })
 
@@ -404,7 +520,7 @@ describe('ChatView composer placement', () => {
           ok: true,
           data: {
             exists: true,
-            content: '# Plan\n\n1. Do the thing\n',
+            content: minimalReadyPlanMarkdown(),
             path: '/ws/.vyotiq/runs/run-1/plan.md'
           }
         })
@@ -424,6 +540,125 @@ describe('ChatView composer placement', () => {
     expect(await screen.findByRole('tab', { name: /^Plan$/i })).toBeTruthy()
     expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
   })
+
+    it('shows tasks under the owning user prompt in transcript order', async () => {
+      Object.defineProperty(window, 'vyotiq', {
+        configurable: true,
+        writable: true,
+        value: {
+          ...(window.vyotiq as object),
+          readRunArtifact: vi.fn().mockImplementation(async (req: { name?: string }) => {
+            if (req.name === 'todos.json') {
+              return {
+                ok: true,
+                data: {
+                  exists: true,
+                  content: JSON.stringify({
+                    updatedAt: '2026-01-01T00:00:00.000Z',
+                    todos: [{ id: '1', content: 'Ship it', status: 'in_progress' }]
+                  }),
+                  name: 'todos.json'
+                }
+              }
+            }
+            return { ok: false, error: 'none' }
+          })
+        }
+      })
+
+      render(
+        <ChatView
+          {...baseProps}
+          agentMode="agent"
+          activeRunId="run-1"
+          running
+          items={[
+            {
+              kind: 'message',
+              id: 'user-0',
+              role: 'user',
+              content: 'audit the entire codebase end to end',
+              at: '2024-01-01T00:00:00.000Z'
+            },
+            {
+              kind: 'tool',
+              id: 'todo1',
+              tool: {
+                id: 'todo1',
+                name: 'todo_write',
+                summary: '1 task',
+                status: 'done'
+              }
+            },
+            {
+              kind: 'message',
+              id: 'a1',
+              role: 'assistant',
+              content: 'Working on it.',
+              at: '2024-01-01T00:00:01.000Z'
+            },
+            {
+              kind: 'message',
+              id: 'user-2',
+              role: 'user',
+              content: 'delete it',
+              at: '2024-01-01T00:00:02.000Z'
+            }
+          ]}
+        />
+      )
+
+      expect(await screen.findByText('Ship it')).toBeTruthy()
+      expect(document.querySelector('[data-prompt-pin]')).toBeNull()
+      const band = document.querySelector('[data-tasks-ceiling]')
+      expect(band).toBeTruthy()
+      expect(band?.closest('[data-transcript-scroll]')).toBeTruthy()
+
+      const owningPrompt = screen.getByText('audit the entire codebase end to end')
+      const followUp = screen.getByText('delete it')
+      expect(owningPrompt.closest('[data-transcript-scroll]')).toBeTruthy()
+      expect(followUp.closest('[data-transcript-scroll]')).toBeTruthy()
+      expect(
+        owningPrompt.compareDocumentPosition(band!) & Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy()
+      expect(band!.compareDocumentPosition(followUp) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+      expect(screen.queryByRole('tab', { name: /^Tasks$/i })).toBeNull()
+      expect(document.querySelector('[data-tasks-panel]')).toBeNull()
+    })
+
+    it('keeps prompts in normal scroll order when the turn has no tasks', async () => {
+      render(
+        <ChatView
+          {...baseProps}
+          agentMode="agent"
+          activeRunId="run-1"
+          running
+          items={[
+            {
+              kind: 'message',
+              id: 'user-0',
+              role: 'user',
+              content: 'just say hello',
+              at: '2024-01-01T00:00:00.000Z'
+            },
+            {
+              kind: 'message',
+              id: 'a1',
+              role: 'assistant',
+              content: 'Hello.',
+              at: '2024-01-01T00:00:01.000Z'
+            }
+          ]}
+        />
+      )
+
+      const prompt = await screen.findByText('just say hello')
+      expect(prompt.closest('[data-transcript-scroll]')).toBeTruthy()
+      expect(document.querySelector('[data-prompt-pin]')).toBeNull()
+      expect(document.querySelector('[data-tasks-ceiling]')).toBeNull()
+      expect(screen.getByText('Hello.').closest('[data-transcript-scroll]')).toBeTruthy()
+    })
 
   it('shows Recents in the empty browser panel when history exists', () => {
     localStorage.setItem(
@@ -509,20 +744,23 @@ describe('ChatView composer placement', () => {
   it('centers the hero composer with symmetric gutter and column', () => {
     render(<ChatView {...baseProps} items={[]} />)
 
-    const hero = document.querySelector('[role="status"]')
+    const hero = document.querySelector('[data-chat-hero]')
     expect(hero?.className).toMatch(/px-4/)
     expect(hero?.className).not.toMatch(/pr-10/)
 
     const heroColumn = document.querySelector('[data-composer-hero]')
     expect(heroColumn?.className).toMatch(/mx-auto/)
     expect(heroColumn?.className).toMatch(/max-w-\[840px\]/)
+    expect(document.querySelector('[data-hero-brand]')).toBeNull()
+    expect(document.querySelector('[data-brand-lockup]')).toBeNull()
+    expect(document.querySelector('[data-chat-start-work]')).toBeNull()
   })
 
   it('top-aligns the side rail on empty hero', () => {
     render(<ChatView {...baseProps} items={[]} />)
     const rail = document.querySelector('[data-chat-side-rail]')
     expect(rail?.className).toMatch(/justify-start/)
-    expect(rail?.className).toMatch(/pt-2/)
+    expect(rail?.className).toMatch(/pt-4/)
     expect(rail?.className).not.toMatch(/justify-center/)
   })
 
@@ -543,12 +781,12 @@ describe('ChatView composer placement', () => {
     )
     const rail = document.querySelector('[data-chat-side-rail]')
     expect(rail?.className).toMatch(/justify-start/)
-    expect(rail?.className).toMatch(/pt-2/)
+    expect(rail?.className).toMatch(/pt-4/)
   })
 
   it('uses symmetric gutter on empty hero (rail overlays edge)', () => {
     render(<ChatView {...baseProps} items={[]} />)
-    const hero = document.querySelector('[role="status"]')
+    const hero = document.querySelector('[data-chat-hero]')
     expect(hero?.className).toMatch(/px-4/)
     expect(hero?.className).not.toMatch(/pr-10/)
     expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
@@ -557,8 +795,7 @@ describe('ChatView composer placement', () => {
   it('switches panels via dock tabs while keeping prior panels mounted', () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
-    fireEvent.click(screen.getByRole('button', { name: /Add panel/i }))
-    fireEvent.click(screen.getByRole('menuitem', { name: /Changes/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
     expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
     expect(document.querySelector('[data-dock-tab-bar]')).toBeTruthy()
     // Multi-tab strip keeps both Terminal and Changes.
@@ -574,11 +811,10 @@ describe('ChatView composer placement', () => {
     ).toMatch(/\bhidden\b/)
   })
 
-  it('opens a missing panel from the dock Add panel menu', () => {
+  it('opens a missing panel from the dock quick launch icons', () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
-    fireEvent.click(screen.getByRole('button', { name: /Add panel/i }))
-    fireEvent.click(screen.getByRole('menuitem', { name: /Browser/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
     expect(document.querySelector('[data-agent-browser-panel]')).toBeTruthy()
     expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
     expect(screen.getByRole('tab', { name: /^Browser$/i })).toBeTruthy()
@@ -653,7 +889,7 @@ describe('ChatView composer placement', () => {
     expect(accessory?.className).not.toMatch(/app-region-no-drag/)
     const tablist = immersiveBar?.querySelector('[role="tablist"]')
     expect(tablist?.className).toMatch(/app-region-no-drag/)
-    expect(tablist?.className).not.toMatch(/\bflex-1\b/)
+    expect(tablist?.className).toMatch(/\bflex-1\b/)
     expect(immersiveBar?.querySelector('[data-titlebar-drag-spacer]')).toBeTruthy()
 
     // Agent tab matches other tabs: icon then label.
@@ -664,9 +900,18 @@ describe('ChatView composer placement', () => {
     expect(agentChildren[0]?.tagName.toLowerCase()).toBe('svg')
     expect(agentChildren[1]?.textContent).toMatch(/^Agent$/i)
 
-    expect(screen.getByRole('button', { name: /^Add panel$/i })).toBeTruthy()
+    const quickLaunch = document.querySelector('[data-dock-quick-launch]')
+    expect(quickLaunch).toBeTruthy()
+    expect(quickLaunch?.closest('.app-region-no-drag')).toBeTruthy()
     const collapse = screen.getByRole('button', { name: /^Collapse panel$/i })
     expect(collapse.parentElement?.className).toMatch(/\bpr-2\b/)
+    // Quick launch shares the right cluster with collapse (drag spacer sits between tabs and actions).
+    expect(quickLaunch?.parentElement).toBe(collapse.parentElement)
+    const spacer = immersiveBar?.querySelector('[data-titlebar-drag-spacer]')
+    expect(spacer).toBeTruthy()
+    expect(
+      spacer!.compareDocumentPosition(quickLaunch!) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
   })
 
   it('portals side-dock tabs into the titlebar aligned to the dock column', () => {
@@ -692,6 +937,9 @@ describe('ChatView composer placement', () => {
     expect(dock?.querySelector('[data-dock-tab-bar]')).toBeNull()
     expect(screen.getByRole('tab', { name: /^Browser$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^Expand panel$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Expand panel$/i }).parentElement?.className).toMatch(
+      /\bpr-2\b/
+    )
     expect(screen.getByPlaceholderText('Search or enter URL')).toBeTruthy()
 
     // Tabs strip is dock width minus caption buttons so left edge matches the panel.
@@ -784,14 +1032,41 @@ describe('ChatView composer placement', () => {
 
     expect(document.querySelector('[data-composer-hero]')).toBeNull()
     expect(document.querySelector('[data-composer-dock]')).toBeTruthy()
+    expect(document.querySelector('[data-empty-brand]')).toBeNull()
     expect(screen.getAllByText(/loading chat/i).length).toBeGreaterThan(0)
   })
 
-  it('uses dock layout for an active run tab with no messages', () => {
+  it('uses hero layout for an active run tab with no messages', () => {
     render(<ChatView {...baseProps} items={[]} activeRunId="run-1" />)
 
-    expect(document.querySelector('[data-composer-hero]')).toBeNull()
+    expect(document.querySelector('[data-composer-hero]')).toBeTruthy()
+    expect(document.querySelector('[data-chat-hero]')).toBeTruthy()
+    expect(document.querySelector('[data-composer-dock]')).toBeNull()
+    expect(document.querySelector('[data-empty-brand]')).toBeNull()
+    expect(document.querySelector('[data-brand-lockup]')).toBeNull()
+    expect(document.querySelector('[data-chat-start-work]')).toBeNull()
     expect(screen.queryByText(/\/create-rule/)).toBeNull()
+  })
+
+  it('hides the empty-chat lockup once the transcript has messages', () => {
+    render(
+      <ChatView
+        {...baseProps}
+        activeRunId="run-1"
+        items={[
+          {
+            kind: 'message',
+            id: 'm1',
+            role: 'user',
+            content: 'hello',
+            at: '2024-01-01T00:00:00.000Z'
+          }
+        ]}
+      />
+    )
+
+    expect(document.querySelector('[data-empty-brand]')).toBeNull()
+    expect(document.querySelector('[data-composer-dock]')).toBeTruthy()
   })
 
   it('aligns docked composer with the transcript column', () => {
@@ -876,5 +1151,254 @@ describe('ChatView composer placement', () => {
       <ChatView {...baseProps} items={items} chatSurfaceEpoch={1} activeRunId="run-1" />
     )
     expect(document.querySelector('[data-transcript-scroll]')).not.toBe(first)
+  })
+
+  it('shows agent session tabs when immersive Agent is focused', () => {
+    const onOpenRunTab = vi.fn()
+    const onCloseRunTab = vi.fn()
+    render(
+      <ChatView
+        {...baseProps}
+        items={[]}
+        activeRunId="run-a"
+        openRunIds={['run-a', 'run-b']}
+        runs={[
+          {
+            runId: 'run-a',
+            goal: 'First chat',
+            status: 'done',
+            updatedAt: '2024-01-01T00:00:00.000Z'
+          },
+          {
+            runId: 'run-b',
+            goal: 'Second chat',
+            status: 'done',
+            updatedAt: '2024-01-02T00:00:00.000Z'
+          }
+        ]}
+        onOpenRunTab={onOpenRunTab}
+        onCloseRunTab={onCloseRunTab}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
+    // Expand focuses the panel tab; switch back to Agent.
+    fireEvent.click(screen.getByRole('tab', { name: /^Agent$/i }))
+
+    expect(document.querySelector('[data-agent-session-bar]')).toBeTruthy()
+    expect(document.querySelector('[data-agent-session-bar-host]')).toBeTruthy()
+    // Agent sessions lead the strip (where the Agent chip was); panel tabs follow.
+    const tabBar = document.querySelector('[data-dock-tab-variant="immersive"]')
+    const host = tabBar?.querySelector('[data-agent-session-bar-host]')
+    const terminalTab = screen.getByRole('tab', { name: /^Terminal$/i })
+    expect(host?.compareDocumentPosition(terminalTab) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByRole('tab', { name: /^Agent$/i })).toBeNull()
+    expect(screen.getByRole('tab', { name: /^First chat$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Second chat$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^New chat$/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Close First chat$/i }))
+    expect(onCloseRunTab).toHaveBeenCalledWith('run-a')
+
+    fireEvent.click(screen.getByRole('tab', { name: /^Second chat$/i }))
+    expect(onOpenRunTab).toHaveBeenCalledWith('run-b')
+    fireEvent.click(screen.getByRole('button', { name: /^New chat$/i }))
+    expect(onOpenRunTab).toHaveBeenCalledWith(null)
+
+    // Panel tab restores the static Agent chip; session bar hides.
+    fireEvent.click(screen.getByRole('tab', { name: /^Terminal$/i }))
+    expect(document.querySelector('[data-agent-session-bar]')).toBeNull()
+    expect(screen.getByRole('tab', { name: /^Agent$/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Collapse panel$/i }))
+    expect(document.querySelector('[data-agent-session-bar]')).toBeNull()
+  })
+
+  it('includes activeRunId in agent session tabs when missing from openRunIds', () => {
+    render(
+      <ChatView
+        {...baseProps}
+        items={[]}
+        activeRunId="run-orphan"
+        openRunIds={['run-a']}
+        runs={[
+          {
+            runId: 'run-a',
+            goal: 'Open tab',
+            status: 'done',
+            updatedAt: '2024-01-01T00:00:00.000Z'
+          },
+          {
+            runId: 'run-orphan',
+            goal: 'Orphan active',
+            status: 'done',
+            updatedAt: '2024-01-02T00:00:00.000Z'
+          }
+        ]}
+        onOpenRunTab={vi.fn()}
+        onCloseRunTab={vi.fn()}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Expand panel$/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /^Agent$/i }))
+
+    expect(screen.getByRole('tab', { name: /^Open tab$/i })).toBeTruthy()
+    const orphan = screen.getByRole('tab', { name: /^Orphan active$/i })
+    expect(orphan).toBeTruthy()
+    expect(orphan.getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('button', { name: /^New chat$/i })).toBeTruthy()
+
+    // Agent chip stripped → ArrowRight on panel tablist lands on first panel.
+    const strip = document.querySelector(
+      '[data-dock-tab-variant="immersive"] [data-dock-panel-tablist]'
+    )
+    expect(strip).toBeTruthy()
+    fireEvent.keyDown(strip!, { key: 'ArrowRight' })
+    expect(screen.getByRole('tab', { name: /^Terminal$/i }).getAttribute('aria-selected')).toBe(
+      'true'
+    )
+    expect(document.querySelector('[data-agent-session-bar]')).toBeNull()
+  })
+
+  function gitChangedFile(path: string) {
+    return {
+      path,
+      status: 'modified' as const,
+      added: 1,
+      removed: 0,
+      addedStaged: 0,
+      removedStaged: 0,
+      addedUnstaged: 1,
+      removedUnstaged: 0,
+      binary: false,
+      staged: false,
+      unstaged: true
+    }
+  }
+
+  async function settleGitChrome() {
+    vi.stubGlobal('requestIdleCallback', (cb: IdleRequestCallback) => {
+      cb({ didTimeout: false, timeRemaining: () => 1 } as IdleDeadline)
+      return 1
+    })
+    vi.stubGlobal('cancelIdleCallback', () => undefined)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2_500)
+    })
+  }
+
+  it('omits start-work on empty hero when git is clean', async () => {
+    vi.useFakeTimers()
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.vyotiq as object),
+        gitStatus: vi.fn().mockResolvedValue({
+          ok: true,
+          data: {
+            kind: 'ok',
+            status: {
+              branch: 'main',
+              files: [],
+              truncated: false,
+              fileCount: 0,
+              added: 0,
+              removed: 0,
+              hasRemote: true,
+              hasCommits: true
+            }
+          }
+        })
+      }
+    })
+    render(<ChatView {...baseProps} items={[]} onComposerDraftChange={vi.fn()} />)
+    await settleGitChrome()
+    expect(document.querySelector('[data-chat-start-work]')).toBeNull()
+  })
+
+  it('fills the composer from uncommitted files on empty hero', async () => {
+    vi.useFakeTimers()
+    const onComposerDraftChange = vi.fn()
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.vyotiq as object),
+        gitStatus: vi.fn().mockResolvedValue({
+          ok: true,
+          data: {
+            kind: 'ok',
+            status: {
+              branch: 'main',
+              files: [
+                gitChangedFile('src/loop.ts'),
+                gitChangedFile('src/ChatView.tsx'),
+                gitChangedFile('src/App.tsx'),
+                gitChangedFile('a.ts'),
+                gitChangedFile('b.ts'),
+                gitChangedFile('c.ts')
+              ],
+              truncated: false,
+              fileCount: 6,
+              added: 6,
+              removed: 0,
+              hasRemote: true,
+              hasCommits: true
+            }
+          }
+        })
+      }
+    })
+    render(<ChatView {...baseProps} items={[]} onComposerDraftChange={onComposerDraftChange} />)
+    await settleGitChrome()
+    const control = screen.getByRole('button', { name: 'Review src/loop.ts, src/ChatView.tsx, +4' })
+    expect(document.querySelector('[data-changes-panel]')).toBeNull()
+    fireEvent.click(control)
+    expect(onComposerDraftChange).toHaveBeenCalledWith('Review src/loop.ts, src/ChatView.tsx, +4.')
+    expect(document.querySelector('[data-changes-panel]')).toBeNull()
+  })
+
+  it('fills the composer from uncommitted files on an empty run', async () => {
+    vi.useFakeTimers()
+    const onComposerDraftChange = vi.fn()
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.vyotiq as object),
+        gitStatus: vi.fn().mockResolvedValue({
+          ok: true,
+          data: {
+            kind: 'ok',
+            status: {
+              branch: 'main',
+              files: [gitChangedFile('src/loop.ts')],
+              truncated: false,
+              fileCount: 1,
+              added: 1,
+              removed: 0,
+              hasRemote: true,
+              hasCommits: true
+            }
+          }
+        })
+      }
+    })
+    render(
+      <ChatView
+        {...baseProps}
+        items={[]}
+        activeRunId="run-1"
+        onComposerDraftChange={onComposerDraftChange}
+      />
+    )
+    await settleGitChrome()
+    fireEvent.click(screen.getByRole('button', { name: 'Review src/loop.ts' }))
+    expect(onComposerDraftChange).toHaveBeenCalledWith('Review src/loop.ts.')
+    expect(document.querySelector('[data-chat-hero]')).toBeTruthy()
+    expect(document.querySelector('[data-composer-dock]')).toBeNull()
+    expect(document.querySelector('[data-changes-panel]')).toBeNull()
   })
 })

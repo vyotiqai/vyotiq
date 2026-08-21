@@ -1,0 +1,390 @@
+---
+import BaseLayout from './BaseLayout.astro'
+import LandingIcon from '../components/LandingIcon.astro'
+import SiteFooter from '../components/SiteFooter.astro'
+import SiteHeader from '../components/SiteHeader.astro'
+import { SITE_BRAND, SITE_PRODUCT } from '../lib/site'
+import {
+  docsHref,
+  docsPageContext,
+  docsSearchEntries,
+  groupedDocs,
+  type DocsSearchEntry
+} from '../lib/docs'
+
+type Heading = { depth: number; slug: string; text: string }
+
+interface Props {
+  title: string
+  description: string
+  currentId?: string | null
+  headings?: Heading[]
+  type?: 'quickstart' | 'guide' | 'concept' | 'reference' | 'troubleshooting'
+  audience?: string
+  owner?: string
+  sources?: string[]
+  lastVerified?: string
+}
+
+const {
+  title,
+  description,
+  currentId = null,
+  headings = [],
+  type,
+  audience,
+  owner,
+  sources = [],
+  lastVerified
+} = Astro.props
+
+const groups = await groupedDocs()
+const searchEntries = await docsSearchEntries()
+const toc = headings.filter((h) => h.depth === 2 || h.depth === 3)
+const pageTitle = `${title} — ${SITE_PRODUCT}`
+const onIndex = currentId == null
+const context = currentId ? await docsPageContext(currentId) : null
+const pageUrl = new URL(Astro.url.pathname, Astro.site)
+const structuredData = [
+  {
+    '@context': 'https://schema.org',
+    '@type': 'BreadcrumbList',
+    itemListElement: [
+      {
+        '@type': 'ListItem',
+        position: 1,
+        name: 'Docs',
+        item: new URL('/docs', Astro.site).href
+      },
+      ...(context
+        ? [
+            {
+              '@type': 'ListItem',
+              position: 2,
+              name: title
+            }
+          ]
+        : [])
+    ]
+  },
+  ...(!onIndex
+    ? [
+        {
+          '@context': 'https://schema.org',
+          '@type': 'TechArticle',
+          headline: title,
+          description,
+          audience: audience ? { '@type': 'Audience', audienceType: audience } : undefined,
+          url: pageUrl.href,
+          author: { '@type': 'Organization', name: owner ?? SITE_BRAND }
+        }
+      ]
+    : [])
+]
+---
+
+<BaseLayout title={pageTitle} description={description} structuredData={structuredData}>
+  <SiteHeader />
+  <div class="wrap docs-shell py-10 md:py-14">
+    <aside class="docs-nav" aria-label="Docs">
+      <button class="docs-search-button" type="button" data-docs-search-open>
+        <LandingIcon name="search" size={15} />
+        <span>Search docs</span>
+        <kbd>Ctrl K</kbd>
+      </button>
+      <details class="docs-nav-box" id="docs-nav-box" open>
+        <summary class="docs-nav-summary">Docs menu</summary>
+        <a
+          class:list={['docs-nav-index', onIndex && 'docs-nav-current']}
+          href="/docs"
+          aria-current={onIndex ? 'page' : undefined}
+        >
+          Docs
+        </a>
+        {
+          groups.map((group) => (
+            <div class="docs-nav-group">
+              <p class="docs-nav-heading">{group.label}</p>
+              <ul>
+                {group.entries.map((entry) => {
+                  const current = entry.id === currentId
+                  return (
+                    <li>
+                      <a
+                        href={docsHref(entry.id)}
+                        class:list={[current && 'docs-nav-current']}
+                        aria-current={current ? 'page' : undefined}
+                      >
+                        {entry.data.title}
+                      </a>
+                    </li>
+                  )
+                })}
+              </ul>
+            </div>
+          ))
+        }
+      </details>
+    </aside>
+
+    <main id="main-content" class="min-w-0" tabindex="-1">
+      <article class:list={['doc-prose', onIndex && 'docs-index-prose']}>
+        {
+          context ? (
+            <nav class="docs-breadcrumbs" aria-label="Breadcrumb">
+              <a href="/docs">Docs</a>
+              <span aria-hidden="true">/</span>
+              <span>{context.sectionLabel}</span>
+              <span aria-hidden="true">/</span>
+              <span aria-current="page">{title}</span>
+            </nav>
+          ) : null
+        }
+        <h1>{title}</h1>
+        <p class="doc-lede">{description}</p>
+        {
+          !onIndex && type && audience && owner && lastVerified ? (
+            <dl class="docs-page-meta">
+              <div>
+                <dt>Type</dt>
+                <dd>{type}</dd>
+              </div>
+              <div>
+                <dt>For</dt>
+                <dd>{audience}</dd>
+              </div>
+              <div>
+                <dt>Verified</dt>
+                <dd>Agent V {lastVerified}</dd>
+              </div>
+              <div>
+                <dt>Owner</dt>
+                <dd>{owner}</dd>
+              </div>
+            </dl>
+          ) : null
+        }
+        <slot />
+        {
+          context && context.related.length > 0 ? (
+            <section class="docs-related" aria-labelledby="related-pages-heading">
+              <h2 id="related-pages-heading">Related pages</h2>
+              <ul>
+                {context.related.map((entry) => (
+                  <li>
+                    <a href={docsHref(entry.id)}>{entry.data.title}</a>
+                    <span> — {entry.data.description}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null
+        }
+        {
+          context ? (
+            <nav class="docs-pager" aria-label="Documentation pages">
+              {context.previous ? (
+                <a href={docsHref(context.previous.id)} rel="prev">
+                  <span class="inline-flex items-center gap-1">
+                    <LandingIcon name="chevron-left" size={13} />
+                    Previous
+                  </span>
+                  <strong>{context.previous.data.title}</strong>
+                </a>
+              ) : (
+                <span />
+              )}
+              {context.next ? (
+                <a href={docsHref(context.next.id)} rel="next">
+                  <span class="inline-flex items-center justify-end gap-1">
+                    Next
+                    <LandingIcon name="chevron-right" size={13} />
+                  </span>
+                  <strong>{context.next.data.title}</strong>
+                </a>
+              ) : null}
+            </nav>
+          ) : null
+        }
+        {
+          sources.length > 0 ? (
+            <details class="docs-sources">
+              <summary>Product sources checked</summary>
+              <ul>
+                {sources.map((source) => (
+                  <li>
+                    <code>{source}</code>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null
+        }
+      </article>
+    </main>
+
+    {
+      toc.length > 0 ? (
+        <nav class="docs-toc" aria-label="On this page">
+          <p class="docs-nav-heading">On this page</p>
+          <ul>
+            {toc.map((heading) => (
+              <li class:list={[heading.depth === 3 && 'docs-toc-h3']}>
+                <a href={`#${heading.slug}`}>{heading.text}</a>
+              </li>
+            ))}
+          </ul>
+          <button class="docs-copy-button" type="button" data-docs-copy>
+            <LandingIcon name="copy" size={14} />
+            <span data-docs-copy-label>Copy page</span>
+          </button>
+        </nav>
+      ) : null
+    }
+  </div>
+  <dialog class="docs-search-dialog" aria-labelledby="docs-search-title" data-docs-search-dialog>
+    <div class="docs-search-header">
+      <div>
+        <h2 id="docs-search-title">Search documentation</h2>
+        <p>Search page titles, summaries, headings, and content.</p>
+      </div>
+      <button type="button" data-docs-search-close aria-label="Close documentation search">
+        <LandingIcon name="x" size={15} />
+        <span class="sr-only">Close</span>
+      </button>
+    </div>
+    <label class="docs-search-field">
+      <span class="sr-only">Search documentation</span>
+      <input
+        type="search"
+        placeholder="Search docs…"
+        autocomplete="off"
+        data-docs-search-input
+      />
+      <kbd>Esc</kbd>
+    </label>
+    <p class="docs-search-status" aria-live="polite" data-docs-search-status></p>
+    <ul class="docs-search-results" data-docs-search-results></ul>
+  </dialog>
+  <script
+    type="application/json"
+    id="docs-search-data"
+    set:html={JSON.stringify(searchEntries satisfies DocsSearchEntry[])}
+  />
+  <SiteFooter />
+  <script is:inline>
+    (function () {
+      var box = document.getElementById('docs-nav-box')
+      if (!(box instanceof HTMLDetailsElement)) return
+      var mq = window.matchMedia('(min-width: 48rem)')
+      function sync() {
+        box.open = mq.matches
+      }
+      sync()
+      mq.addEventListener('change', sync)
+    })()
+  </script>
+  <script>
+    type SearchEntry = {
+      title: string
+      description: string
+      section: string
+      href: string
+      text: string
+    }
+
+    const dialog = document.querySelector<HTMLDialogElement>('[data-docs-search-dialog]')
+    const input = document.querySelector<HTMLInputElement>('[data-docs-search-input]')
+    const results = document.querySelector<HTMLUListElement>('[data-docs-search-results]')
+    const status = document.querySelector<HTMLElement>('[data-docs-search-status]')
+    const copyLabel = document.querySelector<HTMLElement>('[data-docs-copy-label]')
+    const raw = document.querySelector<HTMLScriptElement>('#docs-search-data')?.textContent ?? '[]'
+    const entries = JSON.parse(raw) as SearchEntry[]
+
+    function renderSearch(query = ''): void {
+      if (!results || !status) return
+      const terms = query.toLowerCase().trim().split(/\s+/).filter(Boolean)
+      const matches = entries
+        .map((entry) => {
+          const haystack =
+            `${entry.title} ${entry.description} ${entry.section} ${entry.text}`.toLowerCase()
+          const score = terms.reduce((total, term) => {
+            if (!haystack.includes(term)) return -1000
+            if (entry.title.toLowerCase().includes(term)) return total + 8
+            if (entry.description.toLowerCase().includes(term)) return total + 4
+            return total + 1
+          }, 0)
+          return { entry, score }
+        })
+        .filter((match) => terms.length === 0 || match.score >= 0)
+        .sort((a, b) => b.score - a.score || a.entry.title.localeCompare(b.entry.title))
+        .slice(0, 12)
+
+      results.replaceChildren(
+        ...matches.map(({ entry }) => {
+          const item = document.createElement('li')
+          const link = document.createElement('a')
+          const heading = document.createElement('strong')
+          const summary = document.createElement('span')
+          const section = document.createElement('small')
+          link.href = entry.href
+          heading.textContent = entry.title
+          summary.textContent = entry.description
+          section.textContent = entry.section
+          link.append(heading, summary, section)
+          item.append(link)
+          return item
+        })
+      )
+      status.textContent =
+        matches.length === 0
+          ? `No documentation matches “${query.trim()}”.`
+          : `${matches.length} result${matches.length === 1 ? '' : 's'}`
+    }
+
+    function openSearch(): void {
+      if (!dialog) return
+      if (!dialog.open) dialog.showModal()
+      renderSearch(input?.value)
+      requestAnimationFrame(() => input?.focus())
+    }
+
+    document.querySelectorAll<HTMLElement>('[data-docs-search-open]').forEach((button) => {
+      button.addEventListener('click', openSearch)
+    })
+    document.querySelector<HTMLElement>('[data-docs-search-close]')?.addEventListener('click', () => {
+      dialog?.close()
+    })
+    input?.addEventListener('input', () => renderSearch(input.value))
+    dialog?.addEventListener('click', (event) => {
+      if (event.target === dialog) dialog.close()
+    })
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && dialog?.open) {
+        event.preventDefault()
+        dialog.close()
+        return
+      }
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault()
+        openSearch()
+      }
+    })
+
+    document.querySelector<HTMLElement>('[data-docs-copy]')?.addEventListener('click', async (event) => {
+      const button = event.currentTarget
+      if (!(button instanceof HTMLButtonElement) || !copyLabel) return
+      const article = document.querySelector<HTMLElement>('.doc-prose')
+      const text = `${document.title}\n${location.href}\n\n${article?.innerText ?? ''}`.trim()
+      try {
+        await navigator.clipboard.writeText(text)
+        copyLabel.textContent = 'Copied'
+      } catch {
+        copyLabel.textContent = 'Copy failed'
+      }
+      window.setTimeout(() => {
+        copyLabel.textContent = 'Copy page'
+      }, 1600)
+    })
+  </script>
+</BaseLayout>

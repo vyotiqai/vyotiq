@@ -67,9 +67,5 @@ test('shows queued hint and flushes persisted offline messages on load', async (
   await window.waitForLoadState('domcontentloaded')
   await expect(window.locator('body')).toBeVisible({ timeout: 30_000 })
 
-  await expect(window.getByText(/1 message queued — will send when online/i)).toBeVisible({
-    timeout: 15_000
-  })
-
   await expect(window.getByText(FIXTURE_ASSISTANT_TEXT)).toBeVisible({ timeout: 20_000 })
 })

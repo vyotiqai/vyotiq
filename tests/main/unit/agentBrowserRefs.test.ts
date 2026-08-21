@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { formatInteractiveRefs, parseBrowserTarget } from '@main/app/agentBrowserRefs'
+import {
+  formatInteractiveRefs,
+  formatInteractiveRefsWithinBudget,
+  parseBrowserTarget
+} from '@main/app/agentBrowserRefs'
 
 describe('parseBrowserTarget', () => {
   it('parses @eN and eN refs', () => {
@@ -39,5 +43,31 @@ describe('formatInteractiveRefs', () => {
         }
       ])
     ).toContain('role="menu item"')
+  })
+})
+
+describe('formatInteractiveRefsWithinBudget', () => {
+  const many = Array.from({ length: 20 }, (_, i) => ({
+    id: `e${i + 1}`,
+    selector: `div:nth-of-type(${i + 1}) > a`,
+    tag: 'A',
+    role: 'link',
+    name: `Result ${i + 1}`
+  }))
+
+  it('omits trailing refs when over budget', () => {
+    const { text, included, omitted } = formatInteractiveRefsWithinBudget(many, 180)
+    expect(included).toBeGreaterThan(0)
+    expect(omitted).toBeGreaterThan(0)
+    expect(included + omitted).toBe(many.length)
+    expect(text).toMatch(/more interactive refs omitted/)
+    expect(text).toContain('@e1')
+  })
+
+  it('includes all refs when budget is ample', () => {
+    const { included, omitted, text } = formatInteractiveRefsWithinBudget(many, 50_000)
+    expect(included).toBe(20)
+    expect(omitted).toBe(0)
+    expect(text).not.toMatch(/omitted/)
   })
 })

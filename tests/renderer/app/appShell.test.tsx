@@ -162,7 +162,7 @@ describe('AppShell', () => {
     fireEvent.click(screen.getByRole('button', { name: /collapse sidebar/i }))
     expect(screen.getByRole('button', { name: /expand sidebar/i })).toBeTruthy()
     expect(screen.queryByRole('textbox', { name: /search chats/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /^new chat$/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /^new chat$/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /^search chats$/i })).toBeNull()
     expect(screen.getByRole('button', { name: /^settings$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^marketplace$/i })).toBeTruthy()
@@ -250,6 +250,35 @@ describe('AppShell', () => {
           contentEditable
           tabIndex={0}
         />
+      </AppShell>
+    )
+    const composer = screen.getByRole('textbox', { name: /^message$/i })
+    fireEvent.keyDown(window, { key: 'l', ctrlKey: true })
+    expect(document.activeElement).toBe(composer)
+  })
+
+  it('focuses the browser URL with Ctrl/Cmd+L when that dock is visible', () => {
+    render(
+      <AppShell {...baseProps}>
+        <div>
+          <div role="textbox" aria-label="Message" contentEditable tabIndex={0} />
+          <input data-browser-url placeholder="Search or enter URL" />
+        </div>
+      </AppShell>
+    )
+    fireEvent.keyDown(window, { key: 'l', ctrlKey: true })
+    expect(document.activeElement).toBe(screen.getByPlaceholderText('Search or enter URL'))
+  })
+
+  it('focuses the composer with Ctrl/Cmd+L when the browser dock is inert', () => {
+    render(
+      <AppShell {...baseProps}>
+        <div>
+          <div role="textbox" aria-label="Message" contentEditable tabIndex={0} />
+          <div inert>
+            <input data-browser-url placeholder="Search or enter URL" />
+          </div>
+        </div>
       </AppShell>
     )
     const composer = screen.getByRole('textbox', { name: /^message$/i })
@@ -402,6 +431,51 @@ describe('AppShell', () => {
     input.focus()
     fireEvent.keyDown(input, { key: 'n', ctrlKey: true })
     expect(onNewChat).not.toHaveBeenCalled()
+  })
+
+  it('fires new-chat and settings chords from the main composer', () => {
+    const onNewChat = vi.fn()
+    const onOpenSettings = vi.fn()
+    render(
+      <AppShell {...baseProps} onNewChat={onNewChat} onOpenSettings={onOpenSettings}>
+        <div role="textbox" aria-label="Message" contentEditable tabIndex={0} />
+      </AppShell>
+    )
+    const composer = screen.getByRole('textbox', { name: /^message$/i })
+    composer.focus()
+    fireEvent.keyDown(composer, { key: 'n', ctrlKey: true })
+    fireEvent.keyDown(composer, { key: ',', ctrlKey: true })
+    expect(onNewChat).toHaveBeenCalledTimes(1)
+    expect(onOpenSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('closes the current chat tab with Ctrl+W from the composer', () => {
+    const onCloseChat = vi.fn()
+    render(
+      <AppShell {...baseProps} onCloseChat={onCloseChat}>
+        <div role="textbox" aria-label="Message" contentEditable tabIndex={0} />
+      </AppShell>
+    )
+    fireEvent.keyDown(window, { key: 'w', ctrlKey: true })
+    expect(onCloseChat).toHaveBeenCalledTimes(1)
+
+    const composer = screen.getByRole('textbox', { name: /^message$/i })
+    composer.focus()
+    fireEvent.keyDown(composer, { key: 'w', ctrlKey: true })
+    expect(onCloseChat).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not close the chat tab from a non-composer input', () => {
+    const onCloseChat = vi.fn()
+    render(
+      <AppShell {...baseProps} onCloseChat={onCloseChat}>
+        <input aria-label="Draft" />
+      </AppShell>
+    )
+    const input = screen.getByRole('textbox', { name: /draft/i })
+    input.focus()
+    fireEvent.keyDown(input, { key: 'w', ctrlKey: true })
+    expect(onCloseChat).not.toHaveBeenCalled()
   })
 
   it('keeps the chat list visible when runsError is set', () => {

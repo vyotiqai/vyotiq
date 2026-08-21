@@ -2,11 +2,12 @@ import type { LlmProvider } from './providers/types'
 import { logger } from '../../shared/logger'
 import type { WeaknessSummary } from './harnessReview'
 
-const REWRITE_SYSTEM = `You rewrite Agent V's system harness markdown (resources/harness/default.md).
+const REWRITE_SYSTEM = `You rewrite Agent V's system harness (resources/harness/default.md).
 
 Rules:
-- Output ONLY the full rewritten markdown body (no fences, no preamble).
-- Keep the harness small and behavior-centric.
+- Output ONLY the full rewritten harness body (no fences, no preamble).
+- Preserve the XML section tags (<role>, <capabilities>, <tool_policy>, <constraints>, <work_style>, <memory>, <compaction>, <output_format>, <patterns>, <reference_points>, <scope_boundaries>, <aliases>, <examples>). Do not convert them back to markdown ## headers.
+- Keep the harness small and behavior-centric. Do not restate runtime-enforced limits (concurrency, serial execution, approval gates, auto-compact thresholds, safety-stop counts).
 - Address the receipt weaknesses / evidence buckets in Work style, Tool policy, or similar sections.
 - Do not remove human-gated apply / vitest gate language if present.
 - Do not instruct disabling HARNESS_EVAL_TESTS, vitest, or harness-apply validation.

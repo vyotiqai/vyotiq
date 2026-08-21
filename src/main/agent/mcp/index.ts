@@ -8,6 +8,7 @@ import type { McpServer } from '../../../shared/ipc'
 import type { McpServerStatus } from '../../../shared/ipc'
 import type { ToolDefinition } from '../providers/types'
 import { logger } from '../../../shared/logger'
+import { neutralizeUntrustedBody, wrapUntrustedContent } from '../untrustedContent'
 import { mcpToolSummary } from '../../../shared/toolSummary'
 import type { ToolResult } from '../tools'
 import { sanitizedTerminalEnv } from '../tools/terminal'
@@ -45,6 +46,18 @@ import { readWorkspacesState } from '../../workspace/workspaces'
 import { listActiveRuns } from '../runRegistry'
 import { AppError, formatError, isAbortError, mcpConnectErrorCode } from '../../../shared/errors'
 import { assertPublicUrl } from '../tools/webFetch'
+import {
+  assertCircuitClosed,
+  circuitKeyMcpConnect,
+  circuitKeyMcpInvoke,
+  isCircuitOpenError,
+  MCP_CONNECT_CIRCUIT_POLICY,
+  recordCircuitFailure,
+  recordCircuitSuccess,
+  releaseCircuitProbe,
+  resetCircuit,
+  resetCircuitsByPrefix
+} from '../circuitBreaker'
 
 export {
   gitMcpNotARepoMessage,
@@ -186,7 +199,11 @@ type McpSession = {
 export type McpResourceEntry = McpResourceSummary & { serverId: string }
 export type McpPromptEntry = McpPromptSummary & { serverId: string }
 
-const MCP_CONTENT_CAP = 100_000
+const MCP_CONTENT_CAP = Number.POSITIVE_INFINITY
+
+function wrapMcpPayload(body: string, origin: string): string {
+  return wrapUntrustedContent(body, { source: 'mcp', origin })
+}
 
 async function probeResourcesAndPrompts(client: Client): Promise<{
   resources: McpResourceSummary[]
@@ -202,7 +219,9 @@ async function probeResourcesAndPrompts(client: Client): Promise<{
         resources.push({
           uri: resource.uri,
           name: resource.name,
-          description: resource.description,
+          description: resource.description
+            ? neutralizeUntrustedBody(resource.description)
+            : undefined,
           mimeType: resource.mimeType
         })
       }
@@ -216,7 +235,9 @@ async function probeResourcesAndPrompts(client: Client): Promise<{
       for (const prompt of listed.prompts ?? []) {
         prompts.push({
           name: prompt.name,
-          description: prompt.description,
+          description: prompt.description
+            ? neutralizeUntrustedBody(prompt.description)
+            : undefined,
           arguments: prompt.arguments
         })
       }
@@ -251,6 +272,7 @@ function resolveSessionForServer(
   serverId: string,
   workspacePath?: string | null
 ): { key: string; session: McpSession } | null {
+  const explicit = workspacePath?.trim() || null
   const wp = resolveStdioWorkspacePath(workspacePath)
   if (wp) {
     const stdioKey = mcpStdioSessionKey(serverId, wp)
@@ -260,6 +282,8 @@ function resolveSessionForServer(
   }
   const remote = sessions.get(serverId)
   if (remote) return { key: serverId, session: remote }
+  // Explicit cwd (e.g. instance worktree) must not borrow another workspace's stdio session.
+  if (explicit) return null
   for (const [key, session] of sessions) {
     const parsed = parseMcpStdioSessionKey(key)
     if (parsed?.serverId === serverId) return { key, session }
@@ -331,10 +355,8 @@ function rebuildToolsByNameIndex(): void {
   }
 }
 
-/** Skip re-attempting a failed connect with the same config until cooldown expires. */
-const CONNECT_RETRY_COOLDOWN_MS = 60_000
-type ConnectFailure = { at: number; configKey: string }
-const connectFailures = new Map<string, ConnectFailure>()
+/** Last connect-config fingerprint per session key — config changes reset the connect circuit. */
+const connectConfigByKey = new Map<string, string>()
 
 /** In-flight connect promises — concurrent callers for the same id share one attempt. */
 const connecting = new Map<string, Promise<void>>()
@@ -492,10 +514,14 @@ export function getMcpServerStatus(
 
 export async function refreshMcpServers(servers: McpServer[]): Promise<McpServerStatus[]> {
   // Force reconnect so dead stdio/HTTP sessions are recovered (sync alone skips existing entries).
-  connectFailures.clear()
+  resetCircuitsByPrefix('mcp-connect:')
+  resetCircuitsByPrefix('mcp-invoke:')
+  connectConfigByKey.clear()
   for (const id of [...sessions.keys()]) {
     await disconnectMcpServer(id)
   }
+  // Disconnect does not change the sync fingerprint; clear so syncMcpServers reconnects.
+  lastSyncedServersFp = ''
   await syncMcpServers(servers)
   return getMcpServerStatus(servers)
 }
@@ -727,7 +753,9 @@ export async function connectMcpServer(
       mcpReadOnlyHints.set(fullName, t.annotations?.readOnlyHint === true)
       return {
         name: fullName,
-        description: t.description ?? `MCP tool ${t.name} (${server.name})`,
+        description: neutralizeUntrustedBody(
+          t.description ?? `MCP tool ${t.name} (${server.name})`
+        ),
         parameters: (t.inputSchema as Record<string, unknown>) ?? { type: 'object', properties: {} }
       }
     })
@@ -832,8 +860,10 @@ export async function syncMcpServers(
         if (!connectErrors.has(key) && !connectErrors.has(server.id)) continue
         const err = connectErrors.get(key) ?? connectErrors.get(server.id)
         if (isGitMcpNotARepoError(err)) continue
-        connectFailures.delete(key)
-        connectFailures.delete(server.id)
+        resetCircuit(circuitKeyMcpConnect(key))
+        resetCircuit(circuitKeyMcpConnect(server.id))
+        connectConfigByKey.delete(key)
+        connectConfigByKey.delete(server.id)
       }
     }
     if (
@@ -944,8 +974,10 @@ async function syncMcpServersUnlocked(
     const connectedKey = sessionConfigKeys.get(key)
     if (sessions.has(key) && connectedKey !== configKey) {
       await disconnectMcpSessionByKey(key)
-      connectFailures.delete(key)
-      connectFailures.delete(server.id)
+      resetCircuit(circuitKeyMcpConnect(key))
+      resetCircuit(circuitKeyMcpConnect(server.id))
+      connectConfigByKey.delete(key)
+      connectConfigByKey.delete(server.id)
     }
     if (sessions.has(key)) return
 
@@ -954,7 +986,6 @@ async function syncMcpServersUnlocked(
         const message = gitMcpNotARepoMessage(workspacePath)
         const prior = connectErrors.get(key)
         connectErrors.set(key, message)
-        connectFailures.set(key, { at: Date.now(), configKey })
         if (prior !== message) {
           logger.warn('MCP connect skipped — workspace is not a Git repository', {
             scope: 'mcp',
@@ -966,28 +997,28 @@ async function syncMcpServersUnlocked(
         return
       }
       if (isGitMcpNotARepoError(connectErrors.get(key))) {
-        connectFailures.delete(key)
         connectErrors.delete(key)
       }
     }
 
-    const priorFail = connectFailures.get(key) ?? connectFailures.get(server.id)
-    if (
-      priorFail &&
-      priorFail.configKey === configKey &&
-      Date.now() - priorFail.at < CONNECT_RETRY_COOLDOWN_MS
-    ) {
-      return
+    if (connectConfigByKey.get(key) !== configKey) {
+      resetCircuit(circuitKeyMcpConnect(key))
+      connectConfigByKey.set(key, configKey)
+    }
+    try {
+      assertCircuitClosed(circuitKeyMcpConnect(key), MCP_CONNECT_CIRCUIT_POLICY)
+    } catch (err) {
+      if (isCircuitOpenError(err)) return
+      throw err
     }
     try {
       await connectMcpServer(server, workspacePath)
-      connectFailures.delete(key)
-      connectFailures.delete(server.id)
+      recordCircuitSuccess(circuitKeyMcpConnect(key))
     } catch (err) {
       const message = formatError(err)
       const code = mcpConnectErrorCode(err)
       connectErrors.set(key, message)
-      connectFailures.set(key, { at: Date.now(), configKey })
+      recordCircuitFailure(circuitKeyMcpConnect(key), MCP_CONNECT_CIRCUIT_POLICY)
       const logged = new AppError(message, {
         code,
         severity: 'warn',
@@ -1025,7 +1056,10 @@ export function listMcpToolDefinitions(): ToolDefinition[] {
     for (const tool of session.tools) {
       if (seen.has(tool.name)) continue
       seen.add(tool.name)
-      out.push(tool)
+      out.push({
+        ...tool,
+        description: neutralizeUntrustedBody(tool.description)
+      })
     }
   }
   return out
@@ -1051,7 +1085,9 @@ export async function listMcpResources(
           serverId: id,
           uri: resource.uri,
           name: resource.name,
-          description: resource.description,
+          description: resource.description
+            ? neutralizeUntrustedBody(resource.description)
+            : undefined,
           mimeType: resource.mimeType
         })
       }
@@ -1065,6 +1101,16 @@ export async function listMcpResources(
   return out
 }
 
+function beginMcpInvoke(sessionKey: string): { ok: true } | { ok: false; error: string } {
+  try {
+    assertCircuitClosed(circuitKeyMcpInvoke(sessionKey))
+    return { ok: true }
+  } catch (err) {
+    if (isCircuitOpenError(err)) return { ok: false, error: err.message }
+    throw err
+  }
+}
+
 export async function readMcpResource(
   serverId: string,
   uri: string,
@@ -1075,6 +1121,8 @@ export async function readMcpResource(
   if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
   const access = assertMcpServerAccess(serverId, enabledIds, workspacePath)
   if (!access.ok) return access
+  const gate = beginMcpInvoke(access.sessionKey)
+  if (!gate.ok) return gate
   try {
     const result = await access.session.client.readResource({ uri }, { signal })
     const text = formatResourceContents(
@@ -1085,9 +1133,14 @@ export async function readMcpResource(
         mimeType?: string
       }>
     )
-    return { ok: true, content: text || '(empty)' }
+    recordCircuitSuccess(circuitKeyMcpInvoke(access.sessionKey))
+    return { ok: true, content: wrapMcpPayload(text || '(empty)', `${serverId}:${uri}`) }
   } catch (err) {
-    if (signal.aborted || isAbortError(err)) throw err
+    if (signal.aborted || isAbortError(err)) {
+      releaseCircuitProbe(circuitKeyMcpInvoke(access.sessionKey))
+      throw err
+    }
+    recordCircuitFailure(circuitKeyMcpInvoke(access.sessionKey))
     connectErrors.set(access.sessionKey, formatError(err))
     await disconnectMcpSessionByKey(access.sessionKey)
     return { ok: false, error: formatError(err) }
@@ -1113,7 +1166,9 @@ export async function listMcpPrompts(
         out.push({
           serverId: id,
           name: prompt.name,
-          description: prompt.description,
+          description: prompt.description
+            ? neutralizeUntrustedBody(prompt.description)
+            : undefined,
           arguments: prompt.arguments
         })
       }
@@ -1138,6 +1193,8 @@ export async function getMcpPrompt(
   if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
   const access = assertMcpServerAccess(serverId, enabledIds, workspacePath)
   if (!access.ok) return access
+  const gate = beginMcpInvoke(access.sessionKey)
+  if (!gate.ok) return gate
   try {
     const result = await access.session.client.getPrompt(
       { name, arguments: promptArgs },
@@ -1150,9 +1207,14 @@ export async function getMcpPrompt(
         content?: { type?: string; text?: string } | string
       }>
     )
-    return { ok: true, content: (header + body).trim() || '(empty)' }
+    recordCircuitSuccess(circuitKeyMcpInvoke(access.sessionKey))
+    return { ok: true, content: wrapMcpPayload((header + body).trim() || '(empty)', `${serverId}/${name}`) }
   } catch (err) {
-    if (signal.aborted || isAbortError(err)) throw err
+    if (signal.aborted || isAbortError(err)) {
+      releaseCircuitProbe(circuitKeyMcpInvoke(access.sessionKey))
+      throw err
+    }
+    recordCircuitFailure(circuitKeyMcpInvoke(access.sessionKey))
     connectErrors.set(access.sessionKey, formatError(err))
     await disconnectMcpSessionByKey(access.sessionKey)
     return { ok: false, error: formatError(err) }
@@ -1179,6 +1241,10 @@ export async function invokeMcpTool(
     return { ok: false, summary, content: access.error }
   }
   const session = access.session
+  const gate = beginMcpInvoke(access.sessionKey)
+  if (!gate.ok) {
+    return { ok: false, summary, content: gate.error }
+  }
   try {
     const result = await session.client.callTool(
       { name: toolName, arguments: args },
@@ -1190,12 +1256,15 @@ export async function invokeMcpTool(
       .join('\n')
     const ok = result.isError !== true
     const prefix = ok ? '' : `[MCP ${fullToolName ?? toolName} error]\n`
-    const content = (prefix + (text || '(empty)')).slice(0, 100_000)
+    const content = prefix + wrapMcpPayload((text || '(empty)').slice(0, MCP_CONTENT_CAP), `${serverId}/${toolName}`)
+    recordCircuitSuccess(circuitKeyMcpInvoke(access.sessionKey))
     return { ok, summary, content }
   } catch (err) {
     if (signal.aborted || isAbortError(err)) {
+      releaseCircuitProbe(circuitKeyMcpInvoke(access.sessionKey))
       throw new DOMException('Aborted', 'AbortError')
     }
+    recordCircuitFailure(circuitKeyMcpInvoke(access.sessionKey))
     const message = formatError(err)
     const transient =
       /timeout|ETIMEDOUT|ECONNRESET|socket hang up/i.test(message)
@@ -1230,7 +1299,8 @@ export function resetMcpSessionsForTests(): void {
   connectErrors.clear()
   sessionConfigKeys.clear()
   mcpReadOnlyHints.clear()
-  connectFailures.clear()
+  connectConfigByKey.clear()
+  resetCircuitsByPrefix('mcp-')
   connecting.clear()
   syncChain = Promise.resolve()
   lastSyncedServersFp = null
@@ -1267,11 +1337,13 @@ export function registerMcpSessionForTests(
     | 'getPrompt'
     | 'getServerCapabilities'
     | 'close'
-  >
+  > &
+    Partial<Pick<Client, 'callTool'>>,
+  tools: ToolDefinition[] = []
 ): void {
   sessions.set(serverId, {
     client: client as Client,
     transport: {} as Transport,
-    tools: []
+    tools
   })
 }

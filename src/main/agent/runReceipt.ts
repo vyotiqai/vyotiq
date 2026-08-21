@@ -10,6 +10,7 @@ import type {
 import { contentToText, RUN_RECEIPT_VERSION, RunReceiptSchema } from '../../shared/ipc'
 import {
   applyToolCallToKnownPaths,
+  isPlausibleWorkspaceFilePath,
   normalizeWorkspaceRelPath,
   toolArgsFromCall,
   unreadExistingEditPaths
@@ -86,20 +87,32 @@ function unreadEditPathsFromMessages(messages: readonly SeedToolMessage[]): stri
       .filter((msg) => msg.role === 'tool' && msg.toolCallId && msg.ok !== false)
       .map((msg) => msg.toolCallId!)
   )
+  const resultByCallId = new Map<string, string>()
+  for (const msg of messages) {
+    if (msg.role === 'tool' && msg.toolCallId && msg.ok !== false) {
+      resultByCallId.set(msg.toolCallId, contentToText(msg.content ?? ''))
+    }
+  }
   // Transcript replay has no filesystem snapshot; treat edited paths as pre-existing.
   const pathExists = (): boolean => true
   for (const msg of messages) {
     if (msg.role !== 'assistant' || !msg.toolCalls) continue
     for (const call of msg.toolCalls) {
       const args = toolArgsFromCall(call.arguments)
-      if (call.name === 'read' || call.name === 'grep' || call.name === 'glob') {
-        applyToolCallToKnownPaths(known, call.name, args, successfulCallIds.has(call.id))
+      const ok = successfulCallIds.has(call.id)
+      if (
+        call.name === 'read' ||
+        call.name === 'grep' ||
+        call.name === 'glob' ||
+        call.name === 'codebase_search'
+      ) {
+        applyToolCallToKnownPaths(known, call.name, args, ok, resultByCallId.get(call.id))
         continue
       }
       for (const path of unreadExistingEditPaths(known, call.name, args, pathExists)) {
         unread.add(path)
       }
-      applyToolCallToKnownPaths(known, call.name, args, successfulCallIds.has(call.id))
+      applyToolCallToKnownPaths(known, call.name, args, ok, resultByCallId.get(call.id))
     }
   }
   return [...unread].sort()
@@ -114,12 +127,12 @@ export function wroteFilesFromEvents(events: readonly PersistedEvent[]): string[
     for (const entry of ev.files) {
       if (typeof entry === 'string') {
         const path = normalizeWorkspaceRelPath(entry)
-        if (path) paths.push(path)
+        if (path && isPlausibleWorkspaceFilePath(path)) paths.push(path)
         continue
       }
       if (entry && typeof entry === 'object' && typeof (entry as { path?: unknown }).path === 'string') {
         const path = normalizeWorkspaceRelPath((entry as { path: string }).path)
-        if (path) paths.push(path)
+        if (path && isPlausibleWorkspaceFilePath(path)) paths.push(path)
       }
     }
     return paths
@@ -239,9 +252,6 @@ export function buildRunReceipt(input: {
     ...(typeof input.status.invokeId === 'number' ? { invokeId: input.status.invokeId } : {}),
     ...(input.status.goal ? { goal: input.status.goal } : {}),
     ...(input.status.mode ? { mode: input.status.mode } : {}),
-    ...(typeof input.status.consecutiveToolFailureSteps === 'number'
-      ? { consecutiveToolFailureSteps: input.status.consecutiveToolFailureSteps }
-      : {}),
     ...(input.status.error ? { statusError: input.status.error } : {}),
     ...(incomplete ? { incomplete } : {}),
     ...(tokenUsage ? { tokenUsage } : {}),

@@ -7,10 +7,11 @@ import {
   statSync
 } from 'fs'
 import { dirname, join, relative } from 'path'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { resolveInsideWorkspace } from '../workspace/safePath'
 import { atomicWriteFile, atomicWriteJson } from '@main/storage/atomicWrite'
 import { logger } from '../../shared/logger'
+import { isPlausibleWorkspaceFilePath } from './loopPolicy'
 
 export type CheckpointFileAction = 'created' | 'modified' | 'deleted'
 
@@ -22,6 +23,11 @@ export type CheckpointFileEntry = {
   action: CheckpointFileAction
   /** False for recursive directory deletes (v1 cannot restore). */
   undoable: boolean
+  /**
+   * SHA-256 of workspace content after the write (created/modified).
+   * Restore skips when current content differs (user edit after the agent).
+   */
+  hash?: string
   /** Set when the user Keep/Discard resolves this path. */
   resolved?: CheckpointFileResolution
 }
@@ -57,6 +63,28 @@ function assertValidCheckpointId(id: string): void {
 
 function normalizeRelPath(rel: string): string {
   return rel.replace(/\\/g, '/')
+}
+
+function toCheckpointRelPath(workspaceRoot: string, pathArg: string): string {
+  try {
+    const resolved = resolveInsideWorkspace(workspaceRoot, pathArg)
+    const rel = normalizeRelPath(relative(workspaceRoot, resolved))
+    if (rel && !rel.startsWith('..')) return rel
+  } catch {
+    /* fall through to slash-normalize */
+  }
+  return normalizeRelPath(pathArg)
+}
+
+function hashExistingFile(path: string): string | undefined {
+  if (!existsSync(path)) return undefined
+  try {
+    const st = statSync(path)
+    if (!st.isFile()) return undefined
+    return createHash('sha256').update(readFileSync(path)).digest('hex')
+  } catch {
+    return undefined
+  }
 }
 
 function blobPathFor(checkpointDir: string, relPath: string): string {
@@ -156,6 +184,9 @@ export class InvokeWriteCheckpoint {
     const resolved = resolveInsideWorkspace(this.workspaceRoot, pathArg)
     const rel = normalizeRelPath(relative(this.workspaceRoot, resolved))
     if (!rel || rel.startsWith('..')) return
+    // Recursive dir deletes are recorded as bare directory names (no extension).
+    // Plausible-file checks reject those; still allow the checkpoint entry.
+    if (!opts?.recursiveDir && !isPlausibleWorkspaceFilePath(rel)) return
     if (this.files.has(rel)) return
 
     const exists = existsSync(resolved)
@@ -206,6 +237,7 @@ export class InvokeWriteCheckpoint {
     const resolved = resolveInsideWorkspace(this.workspaceRoot, pathArg)
     const rel = normalizeRelPath(relative(this.workspaceRoot, resolved))
     if (!rel || rel.startsWith('..')) return
+    if (!isPlausibleWorkspaceFilePath(rel)) return
     if (this.files.has(rel)) return
 
     if (kind === 'created') {
@@ -232,11 +264,25 @@ export class InvokeWriteCheckpoint {
     })
   }
 
+  private stampPostWriteHashes(): void {
+    for (const file of this.files.values()) {
+      if (!file.undoable || file.action === 'deleted') continue
+      try {
+        const resolved = resolveInsideWorkspace(this.workspaceRoot, file.path)
+        const hash = hashExistingFile(resolved)
+        if (hash) file.hash = hash
+      } catch {
+        // Leave unhashed; restore falls back to unguarded copy/delete.
+      }
+    }
+  }
+
   /** Persist if any files were recorded; returns meta or null. */
   finalize(): WriteCheckpointMeta | null {
     if (this.finalized) return null
     this.finalized = true
     if (this.files.size === 0) return null
+    this.stampPostWriteHashes()
 
     const meta: WriteCheckpointMeta = {
       id: this.id,
@@ -346,6 +392,16 @@ function restoreOneFile(
   const resolved = resolveInsideWorkspace(workspaceRoot, file.path)
   try {
     if (file.action === 'created') {
+      if (file.hash) {
+        const current = hashExistingFile(resolved)
+        if (current && current !== file.hash) {
+          logger.warn('Skipping checkpoint restore; file changed after the agent write', {
+            scope: 'agent',
+            path: file.path
+          })
+          return 'skipped'
+        }
+      }
       if (existsSync(resolved)) {
         rmSync(resolved, { force: true })
       }
@@ -353,6 +409,36 @@ function restoreOneFile(
     }
     const blob = blobPathFor(checkpointDir, file.path)
     if (!existsSync(blob)) return 'skipped'
+
+    if (file.action === 'modified' && file.hash) {
+      const current = hashExistingFile(resolved)
+      if (!current) return 'skipped'
+      if (current !== file.hash) {
+        const priorHash = hashExistingFile(blob)
+        if (current === priorHash) return 'restored'
+        logger.warn('Skipping checkpoint restore; file changed after the agent write', {
+          scope: 'agent',
+          path: file.path
+        })
+        return 'skipped'
+      }
+    }
+
+    if (file.action === 'deleted') {
+      const current = hashExistingFile(resolved)
+      if (current) {
+        const priorHash = hashExistingFile(blob)
+        if (current !== priorHash) {
+          logger.warn('Skipping checkpoint restore; file changed after the agent write', {
+            scope: 'agent',
+            path: file.path
+          })
+          return 'skipped'
+        }
+        return 'restored'
+      }
+    }
+
     mkdirSync(dirname(resolved), { recursive: true })
     copyFileSync(blob, resolved)
     return 'restored'
@@ -453,7 +539,7 @@ export function resolveWrites(
 
   const targetPaths =
     opts.paths && opts.paths.length > 0
-      ? new Set(opts.paths.map((p) => normalizeRelPath(p)))
+      ? new Set(opts.paths.map((p) => toCheckpointRelPath(workspaceRoot, p)))
       : null
 
   const checkpointDir = join(runDir, 'checkpoints', id)
@@ -483,9 +569,14 @@ export function resolveWrites(
     }
   }
 
-  const fullyResolved = meta.files.every((f) => Boolean(f.resolved) || !f.undoable)
-  // Treat non-undoable without resolution as needing an explicit resolve; if all
-  // undoable are resolved, mark checkpoint done.
+  // When every undoable file is handled, stamp leftover non-undoable as kept so
+  // disk meta.resolved matches the UI fullyResolved banner clear.
+  const undoablesDone = meta.files.every((f) => Boolean(f.resolved) || !f.undoable)
+  if (undoablesDone) {
+    for (const file of meta.files) {
+      if (!file.resolved && !file.undoable) file.resolved = 'kept'
+    }
+  }
   const allHandled = meta.files.every((f) => Boolean(f.resolved))
   if (allHandled) {
     markCheckpointFullyResolved(runDir, meta)
@@ -498,7 +589,7 @@ export function resolveWrites(
     kept,
     discarded,
     skipped,
-    fullyResolved: allHandled || fullyResolved
+    fullyResolved: allHandled
   }
 }
 
@@ -506,6 +597,8 @@ export type RewindWritesResult = {
   checkpointIds: string[]
   restored: string[]
   skipped: string[]
+  /** True when an undoable file could not be restored (I/O or hash conflict). */
+  undoableRestoreFailed: boolean
 }
 
 /**
@@ -513,8 +606,9 @@ export type RewindWritesResult = {
  * `fromUserMessageIndex` (newest first). Ignores UI Keep/Discard and prior
  * undone flags so edit-and-resend can rewind multi-turn history.
  *
- * Checkpoints without `anchorUserMessageIndex` are included when rewinding
- * (legacy runs) so we never leave later-turn writes unrestored.
+ * Checkpoints without `anchorUserMessageIndex` (legacy runs) are only restored
+ * when rewinding to the start of the transcript (`fromUserMessageIndex === 0`).
+ * Including them on a mid-history rewind would undo earlier-turn writes.
  */
 export function rewindWritesFrom(
   runDir: string,
@@ -526,29 +620,43 @@ export function rewindWritesFrom(
   const checkpointIds: string[] = []
   const restored: string[] = []
   const skipped: string[] = []
+  let undoableRestoreFailed = false
 
   for (let i = index.checkpoints.length - 1; i >= 0; i--) {
     const entry = index.checkpoints[i]!
     const meta = loadMeta(runDir, entry.id)
     if (!meta) continue
     const anchor = meta.anchorUserMessageIndex
-    if (anchor !== undefined && anchor < fromUserMessageIndex) continue
+    if (anchor !== undefined) {
+      if (anchor < fromUserMessageIndex) continue
+    } else if (fromUserMessageIndex > 0) {
+      continue
+    }
 
     const checkpointDir = join(runDir, 'checkpoints', entry.id)
+    let hadIoFailure = false
     for (const file of [...meta.files].reverse()) {
       const outcome = restoreOneFile(workspaceRoot, checkpointDir, file)
       if (outcome === 'restored') {
         file.resolved = 'discarded'
         restored.push(file.path)
+      } else if (file.undoable) {
+        hadIoFailure = true
+        skipped.push(file.path)
       } else {
         skipped.push(file.path)
       }
     }
-    markCheckpointFullyResolved(runDir, meta)
+    if (hadIoFailure) {
+      undoableRestoreFailed = true
+      saveMeta(runDir, meta)
+    } else {
+      markCheckpointFullyResolved(runDir, meta)
+    }
     checkpointIds.push(meta.id)
   }
 
-  return { checkpointIds, restored, skipped }
+  return { checkpointIds, restored, skipped, undoableRestoreFailed }
 }
 
 /** Test helper: clear all active sessions. */

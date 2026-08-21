@@ -62,9 +62,7 @@ export const PROVIDER_BRAND_DATA = {
   openrouter: { Component: OpenRouter, colorPrimary: OpenRouterColor },
   perplexity: { Component: Perplexity, colorPrimary: PerplexityColor },
   qwen: { Component: Qwen, colorPrimary: QwenColor },
-  xai: { Component: XAI, colorPrimary: XAIColor },
-  /** OpenAI-compatible custom host — reuse OpenAI mark as brand fallback. */
-  custom: { Component: OpenAI, colorPrimary: OpenAIColor }
+  xai: { Component: XAI, colorPrimary: XAIColor }
 } as const satisfies Record<string, ProviderBrandData>
 
 export const PROVIDER_BRAND_ALIASES: Record<string, ProviderBrandSlug> = {

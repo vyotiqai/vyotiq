@@ -90,6 +90,9 @@ describe('SidebarTopBar layout', () => {
 
     }
 
+    expect(toolbar.querySelector('[data-sidebar-brand-toggle] [data-brand-mark]')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /collapse sidebar/i })).toBeTruthy()
+
   })
 
 

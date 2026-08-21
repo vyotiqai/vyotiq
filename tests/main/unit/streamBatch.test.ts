@@ -2,11 +2,14 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import {
   ChatEventBatcher,
   ChatEventDispatcher,
+  excludeChatEventUiSubscription,
   getChatEventBatchStats,
   resetChatEventBatchStats,
   resetChatEventDispatcher,
-  setChatEventActivePathResolver
+  setChatEventActivePathResolver,
+  setChatEventUiSubscriptions
 } from '@main/ipc/streamBatch'
+import { registerRunAbort, resetActiveRunsForTests } from '@main/agent/runRegistry'
 import type { AgentEvent } from '@shared/ipc'
 
 describe('ChatEventBatcher', () => {
@@ -255,7 +258,7 @@ describe('ChatEventDispatcher priority', () => {
     vi.useRealTimers()
   })
 
-  it('flushes active-workspace deltas before background on shared timer', () => {
+  it('does not flush background deltas when the focused run timer fires', () => {
     const order: string[] = []
     setChatEventActivePathResolver(() => '/ws-active')
 
@@ -266,11 +269,10 @@ describe('ChatEventDispatcher priority', () => {
     dispatcher.push('run-bg', { type: 'text_delta', runId: 'run-bg', text: 'b' })
     dispatcher.push('run-fg', { type: 'text_delta', runId: 'run-fg', text: 'a' })
 
-    // Active path schedules 16ms; advancing 16 should flush both with fg first.
     vi.advanceTimersByTime(16)
-
-    expect(order[0]).toBe('fg:text_delta')
-    expect(order[1]).toBe('bg:text_delta')
+    expect(order).toEqual(['fg:text_delta'])
+    vi.advanceTimersByTime(64)
+    expect(order).toEqual(['fg:text_delta', 'bg:text_delta'])
   })
 
   it('keeps latest background usage per step', () => {
@@ -307,5 +309,90 @@ describe('ChatEventDispatcher priority', () => {
     expect(sent).toHaveLength(2)
     expect(sent[0]).toMatchObject({ type: 'step_usage', inputTokens: 3, step: 1 })
     expect(sent[1]).toMatchObject({ type: 'step_usage', inputTokens: 9, step: 2 })
+  })
+
+  it('uses background batch interval only for inactive workspaces', () => {
+    const sent: AgentEvent[] = []
+    setChatEventActivePathResolver(() => '/ws-active')
+    const dispatcher = new ChatEventDispatcher()
+    dispatcher.attach('run-bg', '/ws-bg', (ev) => sent.push(ev))
+    dispatcher.push('run-bg', { type: 'text_delta', runId: 'run-bg', text: 'a' })
+    vi.advanceTimersByTime(16)
+    expect(sent).toHaveLength(0)
+    vi.advanceTimersByTime(64)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('does not slow the focused run when many runs are attached', () => {
+    resetActiveRunsForTests()
+    for (let i = 0; i < 8; i++) {
+      registerRunAbort(`cap-${i}`, '/ws-active')
+    }
+    const sent: AgentEvent[] = []
+    setChatEventActivePathResolver(() => '/ws-active')
+    const dispatcher = new ChatEventDispatcher()
+    dispatcher.attach('run-fg', '/ws-active', (ev) => sent.push(ev))
+    dispatcher.push('run-fg', { type: 'text_delta', runId: 'run-fg', text: 'a' })
+    vi.advanceTimersByTime(16)
+    expect(sent).toHaveLength(1)
+  })
+
+  it('flushes only the same run when a non-delta arrives', () => {
+    const order: string[] = []
+    const dispatcher = new ChatEventDispatcher()
+    dispatcher.attach('run-a', '/ws', (ev) => order.push(`a:${ev.type}`))
+    dispatcher.attach('run-b', '/ws', (ev) => order.push(`b:${ev.type}`))
+    dispatcher.push('run-a', { type: 'text_delta', runId: 'run-a', text: 'a' })
+    dispatcher.push('run-b', { type: 'text_delta', runId: 'run-b', text: 'b' })
+    dispatcher.push('run-a', { type: 'status', runId: 'run-a', status: 'running' })
+    expect(order).toEqual(['a:text_delta', 'a:status'])
+    vi.advanceTimersByTime(16)
+    expect(order).toEqual(['a:text_delta', 'a:status', 'b:text_delta'])
+  })
+
+  it('does not emit gated deltas for unsubscribed runs', () => {
+    const sent: AgentEvent[] = []
+    const dispatcher = new ChatEventDispatcher()
+    dispatcher.attach('parent', '/ws', (ev) => sent.push(ev))
+    dispatcher.attach('child', '/ws', (ev) => sent.push(ev))
+    excludeChatEventUiSubscription('child')
+    dispatcher.push('parent', { type: 'text_delta', runId: 'parent', text: 'p' })
+    dispatcher.push('child', { type: 'text_delta', runId: 'child', text: 'c' })
+    dispatcher.push('child', { type: 'status', runId: 'child', status: 'running' })
+    vi.advanceTimersByTime(16)
+    expect(sent.map((ev) => `${ev.runId}:${ev.type}`)).toEqual([
+      'child:status',
+      'parent:text_delta'
+    ])
+    expect(getChatEventBatchStats().uiGated).toBe(1)
+  })
+
+  it('does not emit tool_start for unsubscribed runs', () => {
+    const sent: AgentEvent[] = []
+    const dispatcher = new ChatEventDispatcher()
+    dispatcher.attach('child', '/ws', (ev) => sent.push(ev))
+    excludeChatEventUiSubscription('child')
+    dispatcher.push('child', {
+      type: 'tool_start',
+      runId: 'child',
+      toolCallId: 't1',
+      name: 'read',
+      summary: 'read a.ts'
+    })
+    dispatcher.push('child', { type: 'status', runId: 'child', status: 'running' })
+    expect(sent.map((ev) => ev.type)).toEqual(['status'])
+    expect(getChatEventBatchStats().uiGated).toBe(1)
+  })
+
+  it('streams a child after subscribe replaces the visible set', () => {
+    const sent: AgentEvent[] = []
+    const dispatcher = new ChatEventDispatcher()
+    dispatcher.attach('child', '/ws', (ev) => sent.push(ev))
+    excludeChatEventUiSubscription('child')
+    dispatcher.push('child', { type: 'text_delta', runId: 'child', text: 'hidden' })
+    setChatEventUiSubscriptions(['child'])
+    dispatcher.push('child', { type: 'text_delta', runId: 'child', text: 'shown' })
+    vi.advanceTimersByTime(16)
+    expect(sent).toEqual([{ type: 'text_delta', runId: 'child', text: 'shown' }])
   })
 })

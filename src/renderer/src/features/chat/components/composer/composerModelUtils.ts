@@ -194,3 +194,21 @@ export function supportedTiersForModel(
   const tiers = inferSupportedServiceTiers(modelId, provider)
   return tiers.length > 0 ? tiers : []
 }
+
+/** True when the catalog fell back to static seed models (connection/key/empty live list). */
+export function isSeedFallbackWarning(warning: string | null | undefined): boolean {
+  if (!warning) return false
+  return /seed defaults|not live models|not installed models/i.test(warning)
+}
+
+/**
+ * Live catalog rows for the model picker. Keep previous models while a refresh
+ * is in flight — wiping here drops `modelMeta` and makes Think flicker.
+ */
+export function pickerModelsFromCatalogEntry(
+  entry: { models: ModelInfo[] | null; warning: string | null; loading?: boolean } | undefined
+): ModelInfo[] | null {
+  if (!entry || isSeedFallbackWarning(entry.warning)) return null
+  if (!entry.models?.length) return null
+  return entry.models
+}

@@ -20,6 +20,8 @@ export type SidebarProps = {
   workspaceHasBackgroundRun?: (path: string) => boolean
   onSessionQuery: (q: string) => void
   onOpenSettings: () => void
+  onOpenNotificationSettings?: () => void
+  focusedRunId?: string | null
   onOpenMarketplace: () => void
   onOpenChat: () => void
   onNewChat: () => void
@@ -28,6 +30,7 @@ export type SidebarProps = {
   onDeleteRunInWorkspace?: (path: string, runId: string) => void
   isRunOpenInPane?: (path: string, runId: string) => boolean
   isRunFocusedInPane?: (path: string, runId: string) => boolean
+  openInstanceRunId?: string | null
   onCloseDrawer: () => void
   onToggleSidebar: () => void
   collapsed?: boolean
@@ -38,6 +41,7 @@ export type SidebarProps = {
 
 export type WorkspaceSidebarRuns = {
   runs: RunSummary[]
+  instanceRuns?: RunSummary[]
   runsCapped?: boolean
   runsError?: string | null
   runsLoaded?: boolean
@@ -50,6 +54,7 @@ export type WorkspaceSidebarGroup = {
   isActiveWorkspace: boolean
   expanded: boolean
   filteredRuns: RunSummary[]
+  instanceRuns: RunSummary[]
   groupedRuns: RunRecencyGroup[]
   runsCapped?: boolean
   runsError?: string | null

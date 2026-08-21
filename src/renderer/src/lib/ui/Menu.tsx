@@ -19,13 +19,13 @@ export type MenuOption = {
   value: string
   label: string
   group?: string
+  disabled?: boolean
 }
 
-const interactive =
-  'vy-transition disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
+const interactive = 'vy-transition disabled:vy-disabled-state'
 
 const menuTriggerClass = cn(
-  'inline-flex max-w-[200px] min-h-7 items-center gap-1 rounded-md border border-border bg-surface px-2 text-xs tracking-[var(--vy-tracking)] text-fg',
+  'inline-flex max-w-full min-h-7 items-center gap-1 rounded-md border border-border bg-surface px-2 text-xs tracking-[var(--vy-tracking)] text-fg',
   'hover:bg-surface-2 hover:border-border-strong active:bg-surface-2',
   interactive
 )
@@ -92,7 +92,8 @@ export function Menu({
     panelRef,
     placement,
     align: 'end',
-    disabled
+    disabled,
+    trapFocus: true
   })
 
   const filtered = useMemo(() => {
@@ -116,10 +117,12 @@ export function Menu({
 
   const pick = useCallback(
     (next: string) => {
+      const opt = options.find((o) => o.value === next)
+      if (opt?.disabled) return
       onChange(next)
       closeMenu(true)
     },
-    [onChange, closeMenu]
+    [onChange, closeMenu, options]
   )
 
   useEffect(() => {
@@ -201,7 +204,10 @@ export function Menu({
     open && position ? (
       <div
         ref={panelRef}
-        className="fixed z-dropdown overflow-hidden rounded-md border border-border bg-card shadow-menu animate-fade-in"
+        className={cn(
+          'fixed z-dropdown overflow-hidden rounded-md border border-border bg-card shadow-menu animate-menu-in',
+          placement === 'up' ? 'origin-bottom' : 'origin-top'
+        )}
         style={{
           top: position.placement === 'up' ? undefined : position.top,
           bottom:
@@ -210,8 +216,7 @@ export function Menu({
               : undefined,
           left: undefined,
           right: window.innerWidth - position.left,
-          width: position.width,
-          transform: 'translateX(0)'
+          width: position.width
         }}
         role="presentation"
         onKeyDown={onListKeyDown}
@@ -284,7 +289,7 @@ export function Menu({
                       id={`${listId}-opt-${opt.value}`}
                       role="option"
                       aria-selected={isSelected}
-                      aria-labelledby={groupId}
+                      aria-disabled={opt.disabled || undefined}
                       tabIndex={-1}
                       ref={(el) => {
                         optionRefs.current[index] = el
@@ -293,10 +298,20 @@ export function Menu({
                         menuOptionClass,
                         isSelected && 'bg-surface-2 text-fg-strong',
                         isActive && !isSelected && 'bg-surface',
-                        isActive && 'outline-none ring-0'
+                        isActive && 'outline-none ring-0',
+                        opt.disabled && 'cursor-not-allowed opacity-[var(--vy-disabled-opacity)]'
                       )}
-                      onClick={() => pick(opt.value)}
+                      onClick={() => {
+                        if (!opt.disabled) pick(opt.value)
+                      }}
                       onMouseEnter={() => setActiveIndex(index)}
+                      onKeyDown={(e) => {
+                        if (opt.disabled) return
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          pick(opt.value)
+                        }
+                      }}
                     >
                       <span className="min-w-0 flex-1 truncate">{opt.label}</span>
                       {isSelected ? (

@@ -32,6 +32,12 @@ const ALLOWED_ATTRS = new Set([
 
 const SAFE_HREF = /^(https?:|mailto:|#|\/[^/])/i
 
+export function isSafeMarkdownHref(value: string | undefined): value is string {
+  if (!value) return false
+  const trimmed = value.trim()
+  return !trimmed.startsWith('//') && SAFE_HREF.test(trimmed)
+}
+
 /** Shiki themes only ever emit these declarations — anything else is not highlight markup. */
 const ALLOWED_STYLE_PROPS = new Set([
   'color',

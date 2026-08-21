@@ -12,6 +12,7 @@ describe('parseGeminiUsage', () => {
       })
     ).toEqual({
       inputTokens: 1200,
+      inputTokensIncludesCache: true,
       outputTokens: 80,
       totalTokens: 1280,
       cachedInputTokens: 400,
@@ -46,6 +47,7 @@ describe('parseGeminiUsage', () => {
       })
     ).toEqual({
       inputTokens: 900,
+      inputTokensIncludesCache: true,
       outputTokens: 50,
       totalTokens: 950,
       cachedInputTokens: 300,
@@ -62,6 +64,7 @@ describe('parseGeminiUsage', () => {
       })
     ).toEqual({
       inputTokens: 100,
+      inputTokensIncludesCache: true,
       outputTokens: 20,
       totalTokens: 120,
       cachedInputTokens: undefined,

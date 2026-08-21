@@ -1,9 +1,8 @@
-import type { ProviderId, Settings } from '../../../shared/ipc'
+import type { ProviderId } from '../../../shared/ipc'
 import {
   isOllamaCloudHost,
   providerNeedsKey
 } from '../../../shared/domain/providers'
-import { hasImageGenKey, isImageGenProviderId, type ImageGenProviderId } from './imageGen'
 
 export type ProviderPreflightFailure = {
   code: 'PROVIDER_AUTH' | 'PROVIDER_KEYCHAIN' | 'PROVIDER_KEY_DECRYPT'
@@ -49,21 +48,4 @@ export function preflightChatProviderAuth(opts: {
     code: 'PROVIDER_AUTH',
     message: `API key for ${providerId} is not set. Add it in Settings → Providers.`
   }
-}
-
-/** Soft warning when a fixed image provider is selected without a usable key. */
-export function preflightImageProviderWarning(settings: Settings): string | null {
-  const raw = settings.imageProvider?.trim() || 'auto'
-  if (!raw || raw === 'auto') return null
-  if (!isImageGenProviderId(raw)) {
-    return `imageProvider "${raw}" is not a known image provider. Set it to auto or a supported id in Settings.`
-  }
-  if (
-    hasImageGenKey(raw as ImageGenProviderId, {
-      customOpenAiBaseUrl: settings.customOpenAiBaseUrl
-    })
-  ) {
-    return null
-  }
-  return `Image provider is set to "${raw}" but no API key is available. generate_image will fail until you add a key in Settings → Providers.`
 }

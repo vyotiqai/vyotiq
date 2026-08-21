@@ -8,7 +8,11 @@ import { installRendererErrorHandlers } from './logging/handlers'
 import './styles.css'
 
 async function boot(): Promise<void> {
-  await initRendererLogging()
+  try {
+    await initRendererLogging()
+  } catch (err) {
+    console.warn('[boot] renderer logging init failed; continuing', err)
+  }
   installRendererErrorHandlers()
 
   let telemetryEnabled = false

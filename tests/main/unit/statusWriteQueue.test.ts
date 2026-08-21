@@ -52,19 +52,30 @@ describe('statusWriteQueue', () => {
     const afterSteps = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as { step: number }
     expect(afterSteps.step).toBe(2)
 
-    enqueueStatusPatch(dir, { consecutiveToolFailureSteps: 1 })
+    enqueueStatusPatch(dir, { error: 'tool failed' })
     const beforeDebounce = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as {
-      consecutiveToolFailureSteps?: number
+      error?: string
     }
-    expect(beforeDebounce.consecutiveToolFailureSteps).toBeUndefined()
+    expect(beforeDebounce.error).toBeUndefined()
 
     await vi.advanceTimersByTimeAsync(250)
     await flushStatusWrites(dir)
 
     const afterDebounce = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as {
-      consecutiveToolFailureSteps?: number
+      error?: string
     }
-    expect(afterDebounce.consecutiveToolFailureSteps).toBe(1)
+    expect(afterDebounce.error).toBe('tool failed')
+  })
+
+  it('flushes mode patches immediately', async () => {
+    enqueueStatusPatch(dir, { mode: 'plan' })
+    // Mode must not sit behind the 250ms coalesce timer (resume reads status.mode).
+    await flushStatusWrites(dir)
+
+    const after = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as {
+      mode?: string
+    }
+    expect(after.mode).toBe('plan')
   })
 
   it('flushes terminal status immediately', async () => {
@@ -92,6 +103,20 @@ describe('statusWriteQueue', () => {
     await flushStatusWrites(dir)
     const after = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as { goal?: string }
     expect(after.goal).toBe('updated goal')
+  })
+
+  it('re-arms a bounded retry after a failed flush', async () => {
+    renameMock.mockRejectedValueOnce(new Error('locked'))
+    enqueueStatusPatch(dir, { goal: 'keep me' })
+    await expect(flushStatusWrites(dir)).rejects.toThrow('locked')
+    expect(pendingPatchForTests(dir)).toMatchObject({ goal: 'keep me' })
+
+    await vi.advanceTimersByTimeAsync(250)
+    await flushStatusWrites(dir)
+
+    const after = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as { goal?: string }
+    expect(after.goal).toBe('keep me')
+    expect(pendingPatchForTests(dir)).toEqual({})
   })
 
   it('serializes writeStatusImmediate through the async chain', async () => {

@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { cn, Switch, Tooltip } from '@renderer/lib/ui'
-import { matchShortcut, shortcutLabel } from '@renderer/lib/shortcuts'
+import { isEditableShortcutTarget, matchShortcut, shortcutLabel } from '@renderer/lib/shortcuts'
 import { Icon, type IconName } from '@renderer/lib/icons'
 import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
 import type { GitBranchEntry, GitChangedFile, GitLogEntry, GitStatus } from '@shared/ipc'
+import { namedGitBranch } from '@shared/utils/gitBranch'
 import type { UiItem } from '@shared/transcript'
 import { ChangeSummary } from './ChangeSummary'
 import {
+  DOCK_PANEL_TOOLBAR,
   DOCK_TOOLBAR_BTN,
   DOCK_TOOLBAR_ICON_BTN,
   DockSplitButton,
-  EmptyPanel
+  EmptyPanel,
+  PanelToolbarDropdown
 } from './PanelChrome'
 import { type DiffLayout } from './DiffPreview'
 import {
@@ -23,7 +26,10 @@ import {
   collectLastTurnChangedFiles,
   collectLastTurnFileDiffs,
   collectSessionChangedFiles,
-  collectSessionFileDiffs
+  collectSessionFileDiffs,
+  mergeCheckpointChangedFiles,
+  checkpointOnlyChangedFiles,
+  type CheckpointChangedFile
 } from '../utils/turnFileDiffs'
 
 type ChangeScope = 'agent' | 'uncommitted' | 'staged' | 'unstaged' | 'commits'
@@ -128,6 +134,7 @@ export function ChangesPanel({
   gitRevision = 0,
   chrome: chromeProp,
   onGitMutated,
+  onOpenFile,
   onViewPr,
   writeFileResolutions,
   resolvablePaths,
@@ -138,6 +145,7 @@ export function ChangesPanel({
   onDiscardWriteFile,
   onKeepAllWrites,
   onDiscardAllWrites,
+  writeCheckpointFiles,
   active = true,
   preferredScope = 'uncommitted',
   preferredScopeToken = 0
@@ -148,8 +156,9 @@ export function ChangesPanel({
   gitRevision?: number
   /** Shared chrome from ChatView — avoids a second gitStatus fetch when the dock is open. */
   chrome?: GitChrome
-  /** Notify parent (composer git chrome) after commits / refreshes from this panel. */
+  /** Notify parent after commits / refreshes from this panel. */
   onGitMutated?: () => void
+  onOpenFile?: (path: string, options?: import('./FilesPanel').WorkspaceFileOpenOptions) => void
   onViewPr?: () => void
   writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
   resolvablePaths?: ReadonlySet<string>
@@ -160,6 +169,8 @@ export function ChangesPanel({
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
   onDiscardAllWrites?: () => void | Promise<unknown>
+  /** Latest writes_checkpoint files (terminal/MCP observed writes). */
+  writeCheckpointFiles?: readonly CheckpointChangedFile[]
   /** When false (hidden mounted dock), do not intercept Ctrl/Cmd+F/R. */
   active?: boolean
   /** Scope requested by the parent (e.g. transcript Open Changes → agent). */
@@ -175,12 +186,22 @@ export function ChangesPanel({
     0
   )
   const chrome = chromeProp ?? localChrome
-  // Agent scope = last user turn only (matches “Last Agent Turn” label).
-  const agentFiles = useMemo(() => collectLastTurnChangedFiles(items), [items])
+  const toolAgentFiles = useMemo(() => collectLastTurnChangedFiles(items), [items])
+  const agentFiles = useMemo(
+    () => mergeCheckpointChangedFiles(toolAgentFiles, writeCheckpointFiles),
+    [toolAgentFiles, writeCheckpointFiles]
+  )
   const agentDiffs = useMemo(() => collectLastTurnFileDiffs(items), [items])
-  // Session-wide rollup under git scopes.
-  const sessionAgentFiles = useMemo(() => collectSessionChangedFiles(items), [items])
+  const sessionToolAgentFiles = useMemo(() => collectSessionChangedFiles(items), [items])
+  const sessionAgentFiles = useMemo(
+    () => mergeCheckpointChangedFiles(sessionToolAgentFiles, writeCheckpointFiles),
+    [sessionToolAgentFiles, writeCheckpointFiles]
+  )
   const sessionAgentDiffs = useMemo(() => collectSessionFileDiffs(items), [items])
+  const agentCheckpointOnly = useMemo(
+    () => checkpointOnlyChangedFiles(toolAgentFiles, writeCheckpointFiles),
+    [toolAgentFiles, writeCheckpointFiles]
+  )
 
   const [scope, setScope] = useState<ChangeScope>(preferredScope)
   const [scopeOpen, setScopeOpen] = useState(false)
@@ -194,8 +215,8 @@ export function ChangesPanel({
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
   const [composing, setComposing] = useState(false)
-  const [composePrefersPush, setComposePrefersPush] = useState(true)
   const [message, setMessage] = useState('')
+  const [messageGenerating, setMessageGenerating] = useState(false)
   const [pushOpen, setPushOpen] = useState(false)
   const [branchOpen, setBranchOpen] = useState(false)
   const [branches, setBranches] = useState<GitBranchEntry[]>([])
@@ -204,10 +225,14 @@ export function ChangesPanel({
   const [selectedCommit, setSelectedCommit] = useState<GitLogEntry | null>(null)
   const [commitFiles, setCommitFiles] = useState<GitChangedFile[]>([])
   const [commitsBusy, setCommitsBusy] = useState(false)
+  const [commitFilesBusy, setCommitFilesBusy] = useState(false)
   const toolbarMenusRef = useRef<HTMLDivElement>(null)
   const findInputRef = useRef<HTMLInputElement>(null)
   const commitsSeqRef = useRef(0)
+  const commitFilesSeqRef = useRef(0)
   const branchesSeqRef = useRef(0)
+  const messageGenerationSeqRef = useRef(0)
+  const messageEditedRef = useRef(false)
 
   const closeMenus = useCallback(() => {
     setScopeOpen(false)
@@ -226,6 +251,9 @@ export function ChangesPanel({
     setSelectedPath(null)
     setComposing(false)
     setMessage('')
+    setMessageGenerating(false)
+    messageGenerationSeqRef.current += 1
+    messageEditedRef.current = false
     setFindOpen(false)
     setFindQuery('')
     closeMenus()
@@ -255,35 +283,37 @@ export function ChangesPanel({
   }, [displayScope, scope])
 
   useEffect(() => {
-    if (!scopeOpen && !menuOpen && !pushOpen && !branchOpen) return undefined
+    if (!pushOpen) return undefined
     const onPointerDown = (e: PointerEvent): void => {
       if (toolbarMenusRef.current && !toolbarMenusRef.current.contains(e.target as Node)) {
-        closeMenus()
+        setPushOpen(false)
       }
     }
     document.addEventListener('pointerdown', onPointerDown)
     return () => document.removeEventListener('pointerdown', onPointerDown)
-  }, [scopeOpen, menuOpen, pushOpen, branchOpen, closeMenus])
+  }, [pushOpen])
 
-  const refreshCommits = useCallback(async () => {
+  const refreshCommits = useCallback(async (): Promise<GitLogEntry[]> => {
     const seq = ++commitsSeqRef.current
     if (!workspacePath || !window.vyotiq?.gitLog) {
       if (seq === commitsSeqRef.current) setCommits([])
-      return
+      return []
     }
     setCommitsBusy(true)
     try {
       const res = await window.vyotiq.gitLog({ workspacePath, limit: 40 })
-      if (seq !== commitsSeqRef.current) return
+      if (seq !== commitsSeqRef.current) return []
       if (!res.ok) {
         setCommits([])
-        return
+        chrome.reportNotice(res.error, true)
+        return []
       }
       setCommits(res.data)
+      return res.data
     } finally {
       if (seq === commitsSeqRef.current) setCommitsBusy(false)
     }
-  }, [workspacePath])
+  }, [workspacePath, chrome])
 
   const refreshBranches = useCallback(async () => {
     if (!workspacePath || !window.vyotiq?.gitBranches) {
@@ -306,28 +336,34 @@ export function ChangesPanel({
   }, [workspacePath])
 
   useEffect(() => {
-    if (!active) return
+    if (!active || displayScope !== 'commits') return
     void refreshCommits()
-  }, [active, refreshCommits, gitRevision])
+  }, [active, displayScope, refreshCommits, gitRevision])
 
   useEffect(() => {
     if (scope !== 'commits' || !selectedCommit || !workspacePath) {
       setCommitFiles([])
+      setCommitFilesBusy(false)
       return
     }
+    const seq = ++commitFilesSeqRef.current
     let cancelled = false
+    setCommitFilesBusy(true)
     void window.vyotiq?.gitCommitFiles?.({ workspacePath, sha: selectedCommit.sha }).then((res) => {
-      if (cancelled) return
+      if (cancelled || seq !== commitFilesSeqRef.current) return
       if (!res.ok) {
         setCommitFiles([])
+        chrome.reportNotice(res.error, true)
         return
       }
       setCommitFiles(res.data.files)
+    }).finally(() => {
+      if (!cancelled && seq === commitFilesSeqRef.current) setCommitFilesBusy(false)
     })
     return () => {
       cancelled = true
     }
-  }, [scope, selectedCommit, workspacePath])
+  }, [scope, selectedCommit, workspacePath, chrome])
 
   useEffect(() => {
     if (!findOpen) return
@@ -338,6 +374,7 @@ export function ChangesPanel({
   useEffect(() => {
     if (!active) return undefined
     const onKey = (e: KeyboardEvent): void => {
+      if (isEditableShortcutTarget(e.target)) return
       if (matchShortcut(e, 'find')) {
         e.preventDefault()
         setFindOpen(true)
@@ -346,12 +383,12 @@ export function ChangesPanel({
       if (matchShortcut(e, 'refresh')) {
         e.preventDefault()
         chrome.refresh()
-        void refreshCommits()
+        if (displayScope === 'commits') void refreshCommits()
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [active, chrome, refreshCommits])
+  }, [active, chrome, displayScope, refreshCommits])
 
   const status: GitStatus | null = chrome.status
   const gitFiles = useMemo(() => status?.files ?? [], [status?.files])
@@ -461,17 +498,45 @@ export function ChangesPanel({
 
   const sendCommit = useCallback(
     (push: boolean) => {
-      void chrome.commit(message, push, commitMode).then((ok) => {
+      void chrome.commit(message, push, commitMode).then(async (ok) => {
         if (!ok) return
         setMessage('')
+        setMessageGenerating(false)
+        messageGenerationSeqRef.current += 1
+        messageEditedRef.current = false
         setComposing(false)
         setPushOpen(false)
         onGitMutated?.()
-        void refreshCommits()
+        setScope('commits')
+        setSelectedCommit(null)
+        setExpanded(new Set())
+        setSelectedPath(null)
+        const list = await refreshCommits()
+        setSelectedCommit(list[0] ?? null)
       })
     },
     [chrome, message, commitMode, onGitMutated, refreshCommits]
   )
+
+  const sendCreatePr = useCallback(() => {
+    void chrome.createPr(message, commitMode, true).then(async (ok) => {
+      if (!ok) return
+      setMessage('')
+      setMessageGenerating(false)
+      messageGenerationSeqRef.current += 1
+      messageEditedRef.current = false
+      setComposing(false)
+      setPushOpen(false)
+      onGitMutated?.()
+      setScope('commits')
+      setSelectedCommit(null)
+      setExpanded(new Set())
+      setSelectedPath(null)
+      const list = await refreshCommits()
+      setSelectedCommit(list[0] ?? null)
+      onViewPr?.()
+    })
+  }, [chrome, message, commitMode, onGitMutated, onViewPr, refreshCommits])
 
   const sendStageAll = useCallback(() => {
     void chrome.stageAll().then((ok) => {
@@ -480,22 +545,55 @@ export function ChangesPanel({
     })
   }, [chrome, onGitMutated])
 
-  const openCompose = useCallback(
-    (prefersPush: boolean) => {
-      setComposePrefersPush(prefersPush)
-      setMessage(defaultCommitMessage(filteredFiles, filteredFiles.length))
-      setComposing(true)
-      setPushOpen(false)
-    },
-    [filteredFiles]
-  )
+  const onMessageChange = useCallback((value: string) => {
+    messageEditedRef.current = true
+    setMessage(value)
+  }, [])
+
+  const cancelCompose = useCallback(() => {
+    messageGenerationSeqRef.current += 1
+    messageEditedRef.current = false
+    setMessageGenerating(false)
+    setComposing(false)
+  }, [])
+
+  const openCompose = useCallback(() => {
+    const fallback = defaultCommitMessage(visibleGitFiles, visibleGitFiles.length)
+    const sequence = ++messageGenerationSeqRef.current
+    messageEditedRef.current = false
+    setMessage(workspacePath ? '' : fallback)
+    setComposing(true)
+    setPushOpen(false)
+    setMessageGenerating(false)
+
+    if (!workspacePath) return
+    setMessageGenerating(true)
+    void window.vyotiq
+      .gitGenerateCommitMessage({ workspacePath, mode: commitMode })
+      .then((result) => {
+        if (sequence !== messageGenerationSeqRef.current || messageEditedRef.current) return
+        if (result.ok && result.data.source === 'agent' && result.data.message) {
+          setMessage(result.data.message)
+        } else {
+          setMessage(fallback)
+        }
+      })
+      .catch(() => {
+        if (sequence !== messageGenerationSeqRef.current || messageEditedRef.current) return
+        setMessage(fallback)
+      })
+      .finally(() => {
+        if (sequence !== messageGenerationSeqRef.current) return
+        setMessageGenerating(false)
+      })
+  }, [commitMode, visibleGitFiles, workspacePath])
 
   const checkoutBranch = useCallback(
     async (branch: string) => {
       if (!workspacePath || !window.vyotiq?.gitCheckout) return
       if (status && status.fileCount > 0) {
         const confirmed = window.confirm(
-          `Working tree has uncommitted changes. Check out "${branch}" anyway?`
+          `Working tree has uncommitted changes. Git will refuse to check out "${branch}" if those files would be overwritten.`
         )
         if (!confirmed) return
       }
@@ -505,6 +603,8 @@ export function ChangesPanel({
         chrome.refresh()
         onGitMutated?.()
         void refreshCommits()
+      } else {
+        chrome.reportNotice(res.error, true)
       }
     },
     [workspacePath, status, closeMenus, chrome, onGitMutated, refreshCommits]
@@ -528,8 +628,8 @@ export function ChangesPanel({
   const empty =
     displayScope === 'agent'
       ? agentFiles.length === 0
-      : displayScope === 'commits' && !selectedCommit
-        ? commits.length === 0 && !commitsBusy
+      : displayScope === 'commits'
+        ? false
         : filteredFiles.length === 0 && !chrome.busy
 
   const emptyTitle = !workspacePath
@@ -554,14 +654,20 @@ export function ChangesPanel({
           ? 'Agent edits will appear here with Keep / Discard when available.'
           : chrome.result?.kind === 'not_repo'
             ? 'This workspace has no .git directory. Git working-tree changes cannot be listed.'
-            : displayScope === 'commits'
-              ? 'No commits found in this repository.'
-              : 'Working tree changes will appear here when files differ from HEAD.'
+            : 'Working tree changes will appear here when files differ from HEAD.'
+
+  const commitsEmptyTitle =
+    chrome.result?.kind === 'not_repo' ? 'Not a git repository' : 'No commits yet'
+  const commitsEmptyBody =
+    chrome.result?.kind === 'not_repo'
+      ? 'This workspace has no .git directory. Git history cannot be listed.'
+      : chrome.result?.kind === 'unavailable'
+        ? chrome.result.detail
+        : 'Commits on this branch will appear here after the first git commit.'
 
   const showGitEmpty =
     empty &&
     (displayScope === 'agent' ||
-      displayScope === 'commits' ||
       !workspacePath ||
       chrome.error != null ||
       chrome.result?.kind === 'unavailable' ||
@@ -575,7 +681,7 @@ export function ChangesPanel({
     displayScope === 'commits' || displayScope === 'agent'
       ? undefined
       : {
-          busy: chrome.busy,
+          busy: chrome.busy || Boolean(resolveBusy),
           onStage: (path: string) => {
             void chrome.stagePaths([path]).then((ok) => {
               if (ok) onGitMutated?.()
@@ -593,19 +699,22 @@ export function ChangesPanel({
   const fetchGitDiff = useCallback(
     async (path: string) => {
       if (!workspacePath) return { error: 'No workspace' }
+      void gitRevision
       const file = filteredFilesRef.current.find((f) => f.path === path)
       const staged = file ? fileDiffStagedRef.current(file) : false
+      const vsHead = displayScope === 'uncommitted' && !commitSha
       const res = await window.vyotiq.gitDiff({
         workspacePath,
         path,
         staged: commitSha ? undefined : staged,
         ignoreWhitespace,
-        sha: commitSha ?? undefined
+        sha: commitSha ?? undefined,
+        ...(vsHead ? { vsHead: true } : {})
       })
       if (!res.ok) return { error: res.error }
       return { content: res.data.content }
     },
-    [workspacePath, ignoreWhitespace, commitSha]
+    [workspacePath, ignoreWhitespace, commitSha, gitRevision, displayScope]
   )
 
   return (
@@ -615,70 +724,67 @@ export function ChangesPanel({
       role="region"
       aria-label="Changes"
     >
-      <div
-        ref={toolbarMenusRef}
-        className="flex h-8 shrink-0 items-center gap-1.5 border-b border-border/40 px-2"
-      >
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
-        <div className="relative shrink-0">
-          <button
-            type="button"
-            className="inline-flex h-6 max-w-[9rem] items-center gap-1 rounded-md px-1.5 text-caption leading-none text-fg hover:bg-surface-2"
-            onClick={() => {
-              const next = !scopeOpen
-              closeMenus()
-              setScopeOpen(next)
-            }}
-            aria-expanded={scopeOpen}
-          >
-            <Icon name="branch" size={12} className="shrink-0 text-muted" />
-            <span className="truncate">
-              {displayScope === 'commits' && selectedCommit
-                ? selectedCommit.shortSha
-                : displayScope === 'commits'
-                  ? 'All Commits'
-                  : SCOPE_LABEL[displayScope]}
-            </span>
-            <Icon name="chevron" size={10} className="shrink-0 text-muted" />
-          </button>
-          {scopeOpen ? (
-            <div className="absolute left-0 top-full z-dropdown mt-0.5 min-w-[13rem] rounded-md border border-border bg-bg py-1 shadow-lg">
-              {(Object.keys(SCOPE_LABEL) as ChangeScope[]).map((key) => {
-                const totalsForScope = scopeTotals[key]
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    className={cn(
-                      'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption hover:bg-surface',
-                      displayScope === key ? 'text-fg' : 'text-muted'
-                    )}
-                    onClick={() => {
-                      setScope(key)
-                      if (key !== 'commits') setSelectedCommit(null)
-                      setExpanded(new Set())
-                      setSelectedPath(null)
-                      closeMenus()
-                    }}
-                  >
-                    <Icon name={SCOPE_ICON[key]} size={12} className="shrink-0 text-muted" />
-                    <span className="min-w-0 flex-1 truncate">
-                      {SCOPE_LABEL[key]}
-                      <ScopeDelta
-                        added={totalsForScope.added}
-                        removed={totalsForScope.removed}
-                      />
-                    </span>
-                    {displayScope === key ? <Icon name="check" size={12} className="shrink-0" /> : null}
-                    {key === 'commits' ? (
-                      <Icon name="chevronRight" size={10} className="shrink-0 text-muted" />
-                    ) : null}
-                  </button>
-                )
-              })}
-            </div>
-          ) : null}
-        </div>
+      <div ref={toolbarMenusRef} className={DOCK_PANEL_TOOLBAR}>
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+        <PanelToolbarDropdown
+          open={scopeOpen}
+          onOpenChange={(next) => {
+            closeMenus()
+            setScopeOpen(next)
+          }}
+          placement="down"
+          align="start"
+          aria-label="Change scope"
+          trigger={({ ref, 'aria-expanded': expanded, 'aria-controls': controls, onClick }) => (
+            <button
+              ref={ref}
+              type="button"
+              className="inline-flex h-6 max-w-[9rem] items-center gap-1 rounded-md px-1.5 text-caption leading-none text-fg hover:bg-surface-2"
+              onClick={onClick}
+              aria-expanded={expanded}
+              aria-controls={controls}
+            >
+              <Icon name="branch" size={12} className="shrink-0 text-muted" />
+              <span className="truncate">
+                {displayScope === 'commits' && selectedCommit
+                  ? selectedCommit.shortSha
+                  : displayScope === 'commits'
+                    ? 'All Commits'
+                    : SCOPE_LABEL[displayScope]}
+              </span>
+              <Icon name="chevron" size={10} className="shrink-0 text-muted" />
+            </button>
+          )}
+        >
+          {(Object.keys(SCOPE_LABEL) as ChangeScope[]).map((key) => {
+            const totalsForScope = scopeTotals[key]
+            return (
+              <button
+                key={key}
+                type="button"
+                role="menuitem"
+                className={cn(
+                  'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption hover:bg-surface',
+                  displayScope === key ? 'text-fg' : 'text-muted'
+                )}
+                onClick={() => {
+                  setScope(key)
+                  if (key !== 'commits') setSelectedCommit(null)
+                  setExpanded(new Set())
+                  setSelectedPath(null)
+                  closeMenus()
+                }}
+              >
+                <Icon name={SCOPE_ICON[key]} size={12} className="shrink-0 text-muted" />
+                <span className="min-w-0 flex-1 truncate">
+                  {SCOPE_LABEL[key]}
+                  <ScopeDelta added={totalsForScope.added} removed={totalsForScope.removed} />
+                </span>
+                {displayScope === key ? <Icon name="check" size={12} className="shrink-0" /> : null}
+              </button>
+            )
+          })}
+        </PanelToolbarDropdown>
 
         <span className="shrink-0 tabular-nums text-caption leading-none text-muted">
           {totals.added > 0 ? <span className="text-success">+{totals.added}</span> : null}
@@ -687,116 +793,138 @@ export function ChangesPanel({
           ) : null}
         </span>
 
-        <div className="relative min-w-0 flex-1">
-          <button
-            type="button"
-            className="inline-flex h-6 w-full min-w-0 max-w-full items-center gap-1 rounded-md px-1.5 text-caption leading-none text-muted hover:bg-surface-2 hover:text-fg"
-            disabled={!workspacePath || chrome.result?.kind !== 'ok'}
-            onClick={() => {
-              const next = !branchOpen
-              closeMenus()
-              setBranchOpen(next)
-              if (next) void refreshBranches()
-            }}
-            aria-expanded={branchOpen}
-            title={status?.branch ?? 'Switch branch'}
-          >
-            <Icon name="branch" size={12} className="shrink-0" />
-            <span className="min-w-0 flex-1 truncate text-left">{status?.branch ?? 'branch'}</span>
-            <Icon name="chevron" size={10} className="shrink-0" />
-          </button>
-          {branchOpen ? (
-            <div className="absolute left-0 top-full z-dropdown mt-0.5 max-h-56 min-w-[12rem] overflow-auto rounded-md border border-border bg-bg py-1 shadow-lg">
-              {branchesBusy ? (
-                <p className="m-0 px-2.5 py-1.5 text-caption text-muted">Loading…</p>
-              ) : branches.length === 0 ? (
-                <p className="m-0 px-2.5 py-1.5 text-caption text-muted">No local branches</p>
-              ) : (
-                branches.map((b) => (
-                  <button
-                    key={b.name}
-                    type="button"
-                    className={cn(
-                      'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption hover:bg-surface',
-                      b.current ? 'text-fg' : 'text-muted'
-                    )}
-                    disabled={b.current}
-                    onClick={() => void checkoutBranch(b.name)}
-                  >
-                    <span className="min-w-0 flex-1 truncate">{b.name}</span>
-                    {b.current ? <Icon name="check" size={12} className="shrink-0" /> : null}
-                  </button>
-                ))
-              )}
-            </div>
-          ) : null}
-        </div>
+        <PanelToolbarDropdown
+          open={branchOpen}
+          onOpenChange={(next) => {
+            closeMenus()
+            setBranchOpen(next)
+            if (next) void refreshBranches()
+          }}
+          placement="down"
+          align="start"
+          aria-label="Switch branch"
+          panelClassName="max-h-56 overflow-auto"
+          trigger={({ ref, 'aria-expanded': expanded, 'aria-controls': controls, onClick }) => (
+            <button
+              ref={ref}
+              type="button"
+              className="inline-flex h-6 max-w-[9rem] min-w-0 items-center gap-1 rounded-md px-1.5 text-caption leading-none text-muted hover:bg-surface-2 hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]"
+              disabled={!workspacePath || chrome.result?.kind !== 'ok'}
+              onClick={onClick}
+              aria-expanded={expanded}
+              aria-controls={controls}
+              title={namedGitBranch(status?.branch) ?? 'Switch branch'}
+            >
+              <Icon name="branch" size={12} className="shrink-0" />
+              <span className="min-w-0 flex-1 truncate text-left">
+                {namedGitBranch(status?.branch) ?? 'detached'}
+              </span>
+              <Icon name="chevron" size={10} className="shrink-0" />
+            </button>
+          )}
+        >
+          {branchesBusy ? (
+            <p className="m-0 px-2.5 py-1.5 text-caption text-muted">Loading…</p>
+          ) : branches.length === 0 ? (
+            <p className="m-0 px-2.5 py-1.5 text-caption text-muted">No local branches</p>
+          ) : (
+            branches.map((b) => (
+              <button
+                key={b.name}
+                type="button"
+                role="menuitem"
+                className={cn(
+                  'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption hover:bg-surface',
+                  b.current ? 'text-fg' : 'text-muted'
+                )}
+                disabled={b.current}
+                onClick={() => void checkoutBranch(b.name)}
+              >
+                <span className="min-w-0 flex-1 truncate">{b.name}</span>
+                {b.current ? <Icon name="check" size={12} className="shrink-0" /> : null}
+              </button>
+            ))
+          )}
+        </PanelToolbarDropdown>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1">
-          <div className="relative">
-            <Tooltip content="More changes actions">
+        <div className="flex shrink-0 flex-wrap items-center gap-1">
+          <PanelToolbarDropdown
+            open={menuOpen}
+            onOpenChange={(next) => {
+              closeMenus()
+              setMenuOpen(next)
+            }}
+            placement="down"
+            align="end"
+            minWidthPx={224}
+            aria-label="More changes actions"
+            trigger={({ ref, 'aria-expanded': expanded, 'aria-controls': controls, onClick }) => (
+              <Tooltip content="More changes actions">
+                <button
+                  ref={ref}
+                  type="button"
+                  className={DOCK_TOOLBAR_ICON_BTN}
+                  aria-label="More changes actions"
+                  onClick={onClick}
+                  aria-expanded={expanded}
+                  aria-controls={controls}
+                >
+                  ···
+                </button>
+              </Tooltip>
+            )}
+          >
+            <div className="relative">
               <button
                 type="button"
-                className={DOCK_TOOLBAR_ICON_BTN}
-                aria-label="More changes actions"
-                onClick={() => {
-                  const next = !menuOpen
-                  closeMenus()
-                  setMenuOpen(next)
-                }}
+                role="menuitem"
+                className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-caption hover:bg-surface"
+                onClick={() => setLayoutOpen((v) => !v)}
+                aria-expanded={layoutOpen}
               >
-                ···
+                <span>
+                  Layout{' '}
+                  <span className="text-muted">
+                    {layout === 'unified' ? 'Unified' : 'Split'}
+                  </span>
+                </span>
+                <Icon name="chevronRight" size={10} className="text-muted" />
               </button>
-            </Tooltip>
-            {menuOpen ? (
-              <div className="absolute right-0 top-full z-dropdown mt-0.5 min-w-[14rem] rounded-md border border-border bg-bg py-1 shadow-lg">
-                <div className="relative">
-                  <button
-                    type="button"
-                    className="flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-caption hover:bg-surface"
-                    onClick={() => setLayoutOpen((v) => !v)}
-                    aria-expanded={layoutOpen}
-                  >
-                    <span>
-                      Layout{' '}
-                      <span className="text-muted">
-                        {layout === 'unified' ? 'Unified' : 'Split'}
-                      </span>
-                    </span>
-                    <Icon name="chevronRight" size={10} className="text-muted" />
-                  </button>
-                  {layoutOpen ? (
-                    <div className="absolute left-full top-0 z-dropdown ml-0.5 min-w-[7rem] rounded-md border border-border bg-bg py-1 shadow-lg">
-                      {(['unified', 'split'] as const).map((mode) => (
-                        <button
-                          key={mode}
-                          type="button"
-                          className={cn(
-                            'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption capitalize hover:bg-surface',
-                            layout === mode ? 'text-fg' : 'text-muted'
-                          )}
-                          onClick={() => {
-                            setLayout(mode)
-                            setLayoutOpen(false)
-                            closeMenus()
-                          }}
-                        >
-                          {mode}
-                          {layout === mode ? <Icon name="check" size={12} className="ml-auto" /> : null}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null}
+              {layoutOpen ? (
+                <div className="absolute left-full top-0 z-dropdown ml-0.5 min-w-[7rem] rounded-md border border-border bg-bg py-1 shadow-lg">
+                  {(['unified', 'split'] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      role="menuitem"
+                      className={cn(
+                        'flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-caption capitalize hover:bg-surface',
+                        layout === mode ? 'text-fg' : 'text-muted'
+                      )}
+                      onClick={() => {
+                        setLayout(mode)
+                        setLayoutOpen(false)
+                        closeMenus()
+                      }}
+                    >
+                      {mode}
+                      {layout === mode ? <Icon name="check" size={12} className="ml-auto" /> : null}
+                    </button>
+                  ))}
                 </div>
-                <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-caption text-fg">
-                  Ignore Whitespace
-                  <Switch
-                    checked={ignoreWhitespace}
-                    onCheckedChange={setIgnoreWhitespace}
-                    label="Ignore Whitespace"
-                  />
-                </label>
+              ) : null}
+            </div>
+                {displayScope !== 'agent' ? (
+                  <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-caption text-fg">
+                    Ignore Whitespace
+                    <Switch
+                      checked={ignoreWhitespace}
+                      onCheckedChange={setIgnoreWhitespace}
+                      label="Ignore Whitespace"
+                    />
+                  </label>
+                ) : null}
                 <label className="flex cursor-pointer items-center justify-between gap-2 px-2.5 py-1.5 text-caption text-fg">
                   Word Wrap
                   <Switch
@@ -816,25 +944,30 @@ export function ChangesPanel({
                   Find in Changes
                   <span className="text-2xs text-muted">{shortcutLabel('find')}</span>
                 </button>
+                {displayScope !== 'agent' ? (
+                  <>
+                    <button
+                      type="button"
+                      className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
+                      onClick={expandAll}
+                    >
+                      Expand All
+                    </button>
+                    <button
+                      type="button"
+                      className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
+                      onClick={() => {
+                        setExpanded(new Set())
+                        closeMenus()
+                      }}
+                    >
+                      Collapse All
+                    </button>
+                  </>
+                ) : null}
                 <button
                   type="button"
-                  className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
-                  onClick={expandAll}
-                >
-                  Expand All
-                </button>
-                <button
-                  type="button"
-                  className="flex w-full px-2.5 py-1.5 text-left text-caption hover:bg-surface"
-                  onClick={() => {
-                    setExpanded(new Set())
-                    closeMenus()
-                  }}
-                >
-                  Collapse All
-                </button>
-                <button
-                  type="button"
+                  role="menuitem"
                   className="flex w-full items-center justify-between px-2.5 py-1.5 text-left text-caption hover:bg-surface"
                   onClick={() => {
                     chrome.refresh()
@@ -845,9 +978,7 @@ export function ChangesPanel({
                   Refresh Changes
                   <span className="text-2xs text-muted">{shortcutLabel('refresh')}</span>
                 </button>
-              </div>
-            ) : null}
-          </div>
+          </PanelToolbarDropdown>
 
           {onViewPr ? (
             <button type="button" className={DOCK_TOOLBAR_BTN} onClick={onViewPr}>
@@ -856,11 +987,11 @@ export function ChangesPanel({
             </button>
           ) : null}
 
-          {displayScope === 'unstaged' && status && filteredFiles.length > 0 ? (
+          {displayScope === 'unstaged' && status && visibleGitFiles.length > 0 ? (
             <button
               type="button"
               className={DOCK_TOOLBAR_BTN}
-              disabled={chrome.busy}
+              disabled={chrome.busy || Boolean(resolveBusy)}
               onClick={sendStageAll}
             >
               Stage All
@@ -869,25 +1000,26 @@ export function ChangesPanel({
 
           {(displayScope === 'uncommitted' || displayScope === 'staged') &&
           status &&
-          filteredFiles.length > 0 ? (
+          visibleGitFiles.length > 0 ? (
             composing ? (
               <CommitComposer
                 compact
                 className="mr-1"
                 inputClassName="mr-1 h-6 w-36 rounded-md border border-border bg-bg px-1.5 text-caption leading-none text-fg outline-none"
                 message={message}
-                onMessageChange={setMessage}
-                busy={chrome.busy}
+                onMessageChange={onMessageChange}
+                busy={chrome.busy || Boolean(resolveBusy) || messageGenerating}
+                generating={messageGenerating}
                 hasRemote={Boolean(status.hasRemote)}
-                primaryPushes={composePrefersPush && commitPrimaryPushes}
                 onCommit={sendCommit}
-                onCancel={() => setComposing(false)}
+                onCreatePr={sendCreatePr}
+                onCancel={cancelCompose}
               />
             ) : status.hasRemote ? (
               <DockSplitButton
                 primaryLabel={commitPrimaryPushes ? 'Commit & Push' : 'Commit'}
-                primaryDisabled={chrome.busy}
-                onPrimaryClick={() => openCompose(commitPrimaryPushes)}
+                primaryDisabled={chrome.busy || Boolean(resolveBusy)}
+                onPrimaryClick={openCompose}
                 menuOpen={pushOpen}
                 onMenuToggle={() => setPushOpen((v) => !v)}
                 menuAriaLabel="More commit options"
@@ -897,7 +1029,7 @@ export function ChangesPanel({
                       <button
                         type="button"
                         className="flex w-full whitespace-nowrap px-2.5 py-1.5 text-left text-caption hover:bg-surface"
-                        onClick={() => openCompose(!commitPrimaryPushes)}
+                        onClick={openCompose}
                       >
                         {commitPrimaryPushes ? 'Commit' : 'Commit & Push'}
                       </button>
@@ -909,8 +1041,8 @@ export function ChangesPanel({
               <button
                 type="button"
                 className={DOCK_TOOLBAR_BTN}
-                disabled={chrome.busy}
-                onClick={() => openCompose(false)}
+                disabled={chrome.busy || Boolean(resolveBusy)}
+                onClick={openCompose}
               >
                 Commit
               </button>
@@ -973,32 +1105,49 @@ export function ChangesPanel({
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-2">
         {!workspacePath ? (
-          <EmptyPanel icon="branch" title={emptyTitle} body={emptyBody} />
-        ) : displayScope !== 'agent' && displayScope !== 'commits' && chrome.loading && !chrome.ready ? (
-          <EmptyPanel
-            icon="branch"
-            title="Loading changes…"
-            body="Reading git status for this workspace."
-          />
-        ) : showGitEmpty ? (
-          <EmptyPanel icon="branch" title={emptyTitle} body={emptyBody} />
+          <EmptyPanel icon="branch" title={emptyTitle} body={emptyBody} centered />
         ) : displayScope === 'agent' ? (
-          <div className="min-h-0 flex-1 overflow-auto" data-diff-scroll-root>
-            <ChangeSummary
-              files={agentFiles}
-              fileDiffs={agentDiffs}
-              fileResolutions={writeFileResolutions}
-              resolvablePaths={resolvablePaths}
-              canResolve={canResolve}
-              resolveBusy={resolveBusy}
-              resolveBlockedReason={resolveBlockedReason}
-              onKeepFile={onKeepWriteFile}
-              onDiscardFile={onDiscardWriteFile}
-              onKeepAll={onKeepAllWrites}
-              onDiscardAll={onDiscardAllWrites}
-            />
-          </div>
+          agentFiles.length === 0 && agentCheckpointOnly.length === 0 ? (
+            <EmptyPanel icon="branch" title={emptyTitle} body={emptyBody} centered />
+          ) : (
+            <div className="min-h-0 flex-1 overflow-auto" data-diff-scroll-root>
+              {agentCheckpointOnly.length > 0 ? (
+                <p className="m-0 mb-2 px-0.5 text-caption text-muted" role="note">
+                  {agentCheckpointOnly.length}{' '}
+                  {agentCheckpointOnly.length === 1 ? 'file' : 'files'} changed via terminal or MCP
+                  tools (no edit-tool diff).
+                </p>
+              ) : null}
+              <ChangeSummary
+                files={agentFiles}
+                fileDiffs={agentDiffs}
+                fileResolutions={writeFileResolutions}
+                resolvablePaths={resolvablePaths}
+                canResolve={canResolve}
+                resolveBusy={Boolean(resolveBusy || chrome.busy)}
+                resolveBlockedReason={
+                  chrome.busy ? 'Git operation in progress' : resolveBlockedReason
+                }
+                onKeepFile={onKeepWriteFile}
+                onDiscardFile={onDiscardWriteFile}
+                onKeepAll={onKeepAllWrites}
+                onDiscardAll={onDiscardAllWrites}
+                layout={layout}
+                wordWrap={wordWrap}
+                findQuery={findQuery}
+              />
+            </div>
+          )
         ) : displayScope === 'commits' && !selectedCommit ? (
+          commitsBusy && commits.length === 0 ? (
+            <EmptyPanel
+              icon="branch"
+              title="Loading commits…"
+              body="Reading git history for this branch."
+            />
+          ) : commits.length === 0 ? (
+            <EmptyPanel icon="branch" title={commitsEmptyTitle} body={commitsEmptyBody} />
+          ) : (
           <ul className="m-0 min-h-0 flex-1 list-none overflow-auto rounded-md border border-border/50 bg-surface p-0">
             <li className="border-b border-border/40 px-3 py-1.5 text-caption text-fg">
               {commits.length} {commits.length === 1 ? 'Commit' : 'Commits'}
@@ -1025,6 +1174,15 @@ export function ChangesPanel({
               </li>
             ))}
           </ul>
+          )
+        ) : displayScope !== 'commits' && chrome.loading && !chrome.ready ? (
+          <EmptyPanel
+            icon="branch"
+            title="Loading changes…"
+            body="Reading git status for this workspace."
+          />
+        ) : showGitEmpty ? (
+          <EmptyPanel icon="branch" title={emptyTitle} body={emptyBody} />
         ) : (
           <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto" data-diff-scroll-root>
             {displayScope === 'commits' && selectedCommit ? (
@@ -1046,6 +1204,19 @@ export function ChangesPanel({
                 <span className="min-w-0 flex-1 truncate text-fg">{selectedCommit.subject}</span>
               </div>
             ) : null}
+            {displayScope === 'commits' && selectedCommit && commitFilesBusy && browserFiles.length === 0 ? (
+              <EmptyPanel
+                icon="branch"
+                title="Loading commit…"
+                body="Reading files changed in this commit."
+              />
+            ) : displayScope === 'commits' && selectedCommit && !commitFilesBusy && browserFiles.length === 0 ? (
+              <EmptyPanel
+                icon="branch"
+                title="No files in this commit"
+                body="This commit has no file changes to preview."
+              />
+            ) : (
             <ChangedFilesBrowser
               ownScroll={false}
               files={browserFiles}
@@ -1059,8 +1230,12 @@ export function ChangesPanel({
               wordWrap={wordWrap}
               findQuery={findQuery}
               stageActions={stageActions}
+              workspacePath={workspacePath}
+              onOpenFile={onOpenFile}
             />
+            )}
             {workspacePath &&
+            displayScope !== 'commits' &&
             chrome.result?.kind !== 'not_repo' &&
             sessionAgentFiles.length > 0 ? (
               <div className="shrink-0">
@@ -1073,12 +1248,17 @@ export function ChangesPanel({
                   fileResolutions={writeFileResolutions}
                   resolvablePaths={resolvablePaths}
                   canResolve={canResolve}
-                  resolveBusy={resolveBusy}
-                  resolveBlockedReason={resolveBlockedReason}
+                  resolveBusy={Boolean(resolveBusy || chrome.busy)}
+                  resolveBlockedReason={
+                    chrome.busy ? 'Git operation in progress' : resolveBlockedReason
+                  }
                   onKeepFile={onKeepWriteFile}
                   onDiscardFile={onDiscardWriteFile}
                   onKeepAll={onKeepAllWrites}
                   onDiscardAll={onDiscardAllWrites}
+                  layout={layout}
+                  wordWrap={wordWrap}
+                  findQuery={findQuery}
                 />
               </div>
             ) : null}

@@ -15,6 +15,9 @@ export function shouldDeferAppEscapeStop(opts?: {
   // Overlay drawer, lightbox, or other modal dialog
   if (document.querySelector('[role="dialog"][aria-modal="true"]')) return true
 
+  // Tool approval gate — Esc denies instead of stopping the run
+  if (document.querySelector('[data-tool-approval]')) return true
+
   // Sidebar inline delete / workspace-close confirm (Esc cancels, must not stop run)
   if (document.querySelector('[data-inline-confirm]')) return true
 
@@ -24,6 +27,9 @@ export function shouldDeferAppEscapeStop(opts?: {
   // Composer mention / slash menus (portal listboxes)
   if (document.querySelector('[role="listbox"][aria-label="Slash commands"]')) return true
   if (document.querySelector('[role="listbox"][aria-label="Mentions"]')) return true
+
+  // In-composer dictation strip — Esc cancels listening / ignores in-flight transcribe
+  if (document.querySelector('[data-dictation-session]')) return true
 
   // Inline cancel-edit composer — Escape cancels the edit
   const inline = document.querySelector('[data-composer-inline]')

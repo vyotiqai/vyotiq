@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   knownContextWindow,
+  resolveModelContextWindow,
   withResolvedContextWindow
 } from '@shared/domain/modelContextWindows'
 import { seedModelsFor } from '@shared/providers'
@@ -63,6 +64,55 @@ describe('knownContextWindow', () => {
   })
 })
 
+describe('resolveModelContextWindow', () => {
+  it('prefers live catalog over known table when API reports a real window', () => {
+    expect(
+      resolveModelContextWindow({ id: 'gpt-5.6', contextWindow: 200_000 }, 'openai')
+    ).toBe(200_000)
+  })
+
+  it('backfills from known when catalog omits length', () => {
+    expect(
+      resolveModelContextWindow({ id: 'gpt-5.6', contextWindow: undefined }, 'openai')
+    ).toBe(1_048_576)
+  })
+
+  it('replaces generic 128k when known window is larger', () => {
+    expect(
+      resolveModelContextWindow(
+        { id: 'deepseek-v4-flash', contextWindow: 128_000 },
+        'deepseek'
+      )
+    ).toBe(1_000_000)
+  })
+})
+
+describe('Ollama Cloud known windows', () => {
+  it('looks up Cloud ids after stripping :cloud and size tags', () => {
+    expect(knownContextWindow('gpt-oss:120b', 'ollama')).toBe(131_072)
+    expect(knownContextWindow('gpt-oss:120b-cloud', 'ollama')).toBe(131_072)
+    expect(knownContextWindow('glm-5.2', 'ollama')).toBe(976_000)
+    expect(knownContextWindow('gemma4:31b-cloud', 'ollama')).toBe(262_144)
+    expect(knownContextWindow('gemma4:e4b', 'ollama')).toBe(262_144)
+    expect(knownContextWindow('minimax-m3', 'ollama')).toBe(512_000)
+    expect(knownContextWindow('kimi-k3:cloud', 'ollama')).toBe(1_048_576)
+  })
+
+  it('does not invent a window for unlisted local Ollama ids', () => {
+    expect(knownContextWindow('llama3.2', 'ollama')).toBeUndefined()
+    expect(knownContextWindow('qwen2.5', 'ollama')).toBeUndefined()
+  })
+
+  it('prefers live show over the Cloud fallback table', () => {
+    expect(
+      resolveModelContextWindow({ id: 'glm-5.2', contextWindow: 200_000 }, 'ollama')
+    ).toBe(200_000)
+    expect(
+      resolveModelContextWindow({ id: 'glm-5.2', contextWindow: 128_000 }, 'ollama')
+    ).toBe(976_000)
+  })
+})
+
 describe('DeepSeek seed + budget', () => {
   it('seeds V4 models with 1M windows', () => {
     const seeds = seedModelsFor('deepseek')
@@ -81,5 +131,17 @@ describe('DeepSeek seed + budget', () => {
     expect(contextWindowFor(model)).toBe(1_000_000)
     // content budget is non-buffer shares (85%), not a second buffer subtract
     expect(contentWindow(model)).toBe(850_000)
+  })
+
+  it('applies DeepSeek provider heuristic via providerId when id is unlisted', () => {
+    const model = {
+      id: 'deepseek-experimental-xyz',
+      inputModalities: ['text'] as const,
+      outputModalities: ['text'] as const,
+      supportsTools: true,
+      supportsVision: false
+    }
+    expect(contextWindowFor(model)).toBe(128_000)
+    expect(contextWindowFor(model, 'deepseek')).toBe(1_000_000)
   })
 })

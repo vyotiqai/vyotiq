@@ -84,6 +84,30 @@ describe('installMarketplacePackage ack', () => {
   })
 })
 
+describe('npm pack + registry download guards', () => {
+  it('rejects flag/path/URL npm pack targets', async () => {
+    const { assertSafeNpmPackTarget } = await import('@main/marketplace/install')
+    for (const bad of ['-f', '../evil', 'C:\\pkg', 'file:./x', 'https://evil/pkg']) {
+      expect(() => assertSafeNpmPackTarget(bad)).toThrow(/Invalid npm package name/i)
+    }
+    expect(assertSafeNpmPackTarget('@scope/pkg')).toBe('@scope/pkg')
+    expect(assertSafeNpmPackTarget('simple-pkg')).toBe('simple-pkg')
+  })
+
+  it('requires catalog downloadUrl to match registry origin', async () => {
+    const { assertRegistryDownloadUrl } = await import('@main/marketplace/install')
+    expect(
+      assertRegistryDownloadUrl(
+        'https://registry.example.com/v1/packages/a/versions/1/download',
+        'https://registry.example.com'
+      )
+    ).toMatch(/registry\.example\.com/)
+    expect(() =>
+      assertRegistryDownloadUrl('https://evil.example/pkg.zip', 'https://registry.example.com')
+    ).toThrow(/match the configured registry origin/i)
+  })
+})
+
 describe('assertExtractContained', () => {
   let dest: string
 

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { encode as encodeO200k } from 'gpt-tokenizer/encoding/o200k_base'
 import { encode as encodeCl100k } from 'gpt-tokenizer/encoding/cl100k_base'
 import type { ModelInfo } from '../../../shared/ipc/schemas/providers'
@@ -13,11 +14,13 @@ const LARGE_TEXT_CHARS = 100_000
 const HEURISTIC_CHARS_PER_TOKEN = 4
 
 /**
- * Assembly re-counts the whole history on every step, so the same strings are
- * tokenized over and over. Keys are references to strings that already exist in
- * the message array, so this holds pointers rather than copies.
+ * Assembly re-counts the whole history on every step. Small strings keep the
+ * text as the key (cheap + pointer-shareable). Larger strings use a length+hash
+ * key so the Map does not pin full tool bodies after messages can GC.
  */
 const CACHE_LIMIT = 4000
+/** Above this, cache by hash instead of retaining the full string as a Map key. */
+const INLINE_KEY_CHARS = 256
 const cache = new Map<string, number>()
 
 type TokenizerPerfStats = {
@@ -62,7 +65,11 @@ export function encodingForModel(model?: ModelInfo): EncodingName {
 }
 
 function cacheKey(encoding: EncodingName, text: string): string {
-  return encoding === 'o200k_base' ? text : `${encoding}\u0000${text}`
+  if (text.length <= INLINE_KEY_CHARS) {
+    return encoding === 'o200k_base' ? text : `${encoding}\u0000${text}`
+  }
+  const digest = createHash('sha256').update(text).digest('base64url').slice(0, 24)
+  return `${encoding}\u0000${text.length}\u0000${digest}`
 }
 
 function encodeWith(encoding: EncodingName, text: string): number {
@@ -179,4 +186,12 @@ export async function countTextsTokensAsync(
 /** Exposed for tests; the cache is otherwise process-lifetime. */
 export function resetTokenizerCache(): void {
   cache.clear()
+}
+
+/** Test helper: true if any Map key literally contains `needle`. */
+export function tokenizerCacheKeyContains(needle: string): boolean {
+  for (const key of cache.keys()) {
+    if (key.includes(needle)) return true
+  }
+  return false
 }

@@ -3,8 +3,15 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  extraShortcutCatalog,
+  focusBrowserUrlIfOpen,
+  focusComposerMessage,
+  isMainComposerTarget,
   matchShortcut,
+  shouldBlockAppShortcut,
+  shouldBlockPanelShortcut,
   shouldDeferAppEscapeStop,
+  shortcutCatalog,
   shortcutLabel
 } from '@renderer/lib/shortcuts'
 
@@ -54,6 +61,32 @@ describe('matchShortcut', () => {
       false
     )
   })
+
+  it('matches dictation Ctrl/Cmd+M', () => {
+    expect(matchShortcut(keyEvent('m', { ctrlKey: true }), 'dictation')).toBe(true)
+    expect(matchShortcut(keyEvent('M', { metaKey: true }), 'dictation')).toBe(true)
+    expect(matchShortcut(keyEvent('m', { ctrlKey: true, shiftKey: true }), 'dictation')).toBe(
+      false
+    )
+  })
+
+  it('matches mode cycle with optional shift and panel chords', () => {
+    expect(matchShortcut(keyEvent('.', { ctrlKey: true }), 'cycleMode')).toBe(true)
+    expect(matchShortcut(keyEvent('.', { ctrlKey: true, shiftKey: true }), 'cycleMode')).toBe(
+      true
+    )
+    expect(matchShortcut(keyEvent('`', { ctrlKey: true }), 'panelTerminal')).toBe(true)
+    expect(matchShortcut(keyEvent('e', { metaKey: true }), 'panelChanges')).toBe(true)
+    expect(matchShortcut(keyEvent('b', { ctrlKey: true, shiftKey: true }), 'panelBrowser')).toBe(
+      true
+    )
+    expect(matchShortcut(keyEvent('w', { ctrlKey: true }), 'closeChat')).toBe(true)
+    expect(matchShortcut(keyEvent('w', { ctrlKey: true, shiftKey: true }), 'closeChat')).toBe(
+      false
+    )
+    expect(matchShortcut(keyEvent('b', { ctrlKey: true }), 'panelBrowser')).toBe(false)
+    expect(matchShortcut(keyEvent('b', { ctrlKey: true, shiftKey: true }), 'sidebar')).toBe(false)
+  })
 })
 
 describe('shortcutLabel', () => {
@@ -65,7 +98,21 @@ describe('shortcutLabel', () => {
     expect(shortcutLabel('settings')).toBe('Ctrl+,')
     expect(shortcutLabel('find')).toBe('Ctrl+F')
     expect(shortcutLabel('refresh')).toBe('Ctrl+R')
+    expect(shortcutLabel('dictation')).toBe('Ctrl+M')
     expect(shortcutLabel('stop')).toBe('Esc')
+    expect(shortcutLabel('cycleMode')).toBe('Ctrl+.')
+    expect(shortcutLabel('panelTerminal')).toBe('Ctrl+`')
+    expect(shortcutLabel('panelBrowser')).toBe('Ctrl+Shift+B')
+    expect(shortcutLabel('closeChat')).toBe('Ctrl+W')
+    expect(shortcutCatalog().some((row) => row.id === 'search' && row.label === 'Ctrl+K')).toBe(
+      true
+    )
+    expect(extraShortcutCatalog().some((row) => row.id === 'jump-latest' && row.label === 'End')).toBe(
+      true
+    )
+    expect(extraShortcutCatalog().some((row) => row.id === 'jump-top' && row.label === 'Home')).toBe(
+      true
+    )
   })
 
   it('uses ⌘ on darwin', () => {
@@ -74,6 +121,7 @@ describe('shortcutLabel', () => {
     expect(shortcutLabel('search')).toBe('⌘K')
     expect(shortcutLabel('focusComposer')).toBe('⌘L')
     expect(shortcutLabel('settings')).toBe('⌘,')
+    expect(shortcutLabel('panelBrowser')).toBe('⌘⇧B')
   })
 })
 
@@ -119,6 +167,13 @@ describe('shouldDeferAppEscapeStop', () => {
     expect(shouldDeferAppEscapeStop()).toBe(true)
   })
 
+  it('defers when a dictation session strip is on screen', () => {
+    const strip = document.createElement('div')
+    strip.setAttribute('data-dictation-session', 'listening')
+    document.body.appendChild(strip)
+    expect(shouldDeferAppEscapeStop()).toBe(true)
+  })
+
   it('defers when focus is inside inline cancel-edit composer', () => {
     const wrap = document.createElement('div')
     wrap.setAttribute('data-composer-inline', 'true')
@@ -161,5 +216,91 @@ describe('shouldDeferAppEscapeStop', () => {
 
   it('does not defer when nothing is open', () => {
     expect(shouldDeferAppEscapeStop()).toBe(false)
+  })
+
+  it('defers when a tool approval gate is on screen', () => {
+    const gate = document.createElement('div')
+    gate.setAttribute('data-tool-approval', '')
+    document.body.appendChild(gate)
+    expect(shouldDeferAppEscapeStop()).toBe(true)
+    gate.remove()
+  })
+})
+
+describe('shouldBlockPanelShortcut', () => {
+  it('allows the composer and xterm, blocks other inputs', () => {
+    const composer = document.createElement('div')
+    composer.setAttribute('role', 'textbox')
+    composer.setAttribute('aria-label', 'Message')
+    composer.contentEditable = 'true'
+    document.body.appendChild(composer)
+    expect(shouldBlockPanelShortcut(composer)).toBe(false)
+    composer.remove()
+
+    const xterm = document.createElement('textarea')
+    xterm.className = 'xterm-helper-textarea'
+    document.body.appendChild(xterm)
+    expect(shouldBlockPanelShortcut(xterm)).toBe(false)
+    xterm.remove()
+
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    expect(shouldBlockPanelShortcut(input)).toBe(true)
+    input.remove()
+  })
+})
+
+describe('shouldBlockAppShortcut', () => {
+  it('blocks generic inputs and allows the main composer', () => {
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    expect(shouldBlockAppShortcut(input)).toBe(true)
+    input.remove()
+
+    const composer = document.createElement('div')
+    composer.setAttribute('role', 'textbox')
+    composer.setAttribute('aria-label', 'Message')
+    composer.contentEditable = 'true'
+    document.body.appendChild(composer)
+    expect(isMainComposerTarget(composer)).toBe(true)
+    expect(shouldBlockAppShortcut(composer)).toBe(false)
+    composer.remove()
+  })
+})
+
+describe('focusComposerMessage', () => {
+  it('focuses the Message textbox when present and editable', () => {
+    const composer = document.createElement('div')
+    composer.setAttribute('role', 'textbox')
+    composer.setAttribute('aria-label', 'Message')
+    composer.contentEditable = 'true'
+    composer.tabIndex = 0
+    document.body.appendChild(composer)
+    expect(focusComposerMessage()).toBe(true)
+    expect(document.activeElement).toBe(composer)
+    composer.remove()
+  })
+})
+
+describe('focusBrowserUrlIfOpen', () => {
+  it('focuses a visible URL field and skips an inert dock', () => {
+    const wrap = document.createElement('div')
+    const input = document.createElement('input')
+    input.setAttribute('data-browser-url', '')
+    input.tabIndex = 0
+    wrap.appendChild(input)
+    document.body.appendChild(wrap)
+    expect(focusBrowserUrlIfOpen()).toBe(true)
+    expect(document.activeElement).toBe(input)
+
+    wrap.setAttribute('inert', '')
+    const other = document.createElement('div')
+    other.tabIndex = 0
+    document.body.appendChild(other)
+    other.focus()
+    expect(focusBrowserUrlIfOpen()).toBe(false)
+    expect(document.activeElement).toBe(other)
+    wrap.remove()
+    other.remove()
   })
 })

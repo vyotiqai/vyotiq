@@ -21,6 +21,11 @@ export function CodeBlockCopyButton({
     }
   }, [])
 
+  const clearTimers = (): void => {
+    for (const id of timersRef.current) window.clearTimeout(id)
+    timersRef.current = []
+  }
+
   const schedule = (fn: () => void, ms: number): void => {
     const id = window.setTimeout(() => {
       timersRef.current = timersRef.current.filter((t) => t !== id)
@@ -43,11 +48,13 @@ export function CodeBlockCopyButton({
       )}
       onClick={() => {
         void copyText(text).then((ok) => {
+          clearTimers()
           if (ok) {
             setCopied(true)
             setCopyError(false)
             schedule(() => setCopied(false), 1200)
           } else {
+            setCopied(false)
             setCopyError(true)
             schedule(() => setCopyError(false), 1600)
           }

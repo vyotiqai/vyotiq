@@ -1,4 +1,4 @@
-import { type McpServerStatus, type SecretProvider, type Settings } from '@shared/ipc'
+import { type SecretProvider, type Settings } from '@shared/ipc'
 import { formatWorkspaceName } from '@renderer/lib/utils/formatWorkspaceName'
 
 export function isValidHttpUrl(value: string): boolean {
@@ -21,33 +21,30 @@ export function defaultKeyProvider(
   return settingsProvider
 }
 
-export function mcpStatusLabel(
-  status: McpServerStatus | undefined,
-  opts?: { workspaceEnabled?: boolean }
-): string {
-  if (opts?.workspaceEnabled === false) {
-    if (status?.connected) {
-      const n = status.toolCount
-      return `Force off here · connected globally · ${n} tool${n === 1 ? '' : 's'}`
-    }
-    return 'Force off in this workspace'
-  }
-  if (!status || !status.enabled) return 'Disabled'
-  if (status.connected) {
-    const n = status.toolCount
-    return `Connected · ${n} tool${n === 1 ? '' : 's'}`
-  }
-  if (status.error) return 'Connection failed'
-  return 'Not connected'
+/** One hostname or `*.suffix` per line (commas also accepted). Empty = allow all. */
+export function parseBrowserDomainAllowlist(text: string): string[] {
+  return text
+    .split(/[\n,]+/)
+    .map((raw) => normalizeBrowserDomainEntry(raw))
+    .filter(Boolean)
 }
 
-export function mcpStatusClass(
-  status: McpServerStatus | undefined,
-  opts?: { workspaceEnabled?: boolean }
-): string {
-  if (opts?.workspaceEnabled === false) return 'text-secondary'
-  if (!status || !status.enabled) return 'text-secondary'
-  if (status.connected) return 'text-success'
-  if (status.error) return 'text-danger'
-  return 'text-secondary'
+export function formatBrowserDomainAllowlist(list: string[] | undefined | null): string {
+  if (!list || list.length === 0) return ''
+  return list.join('\n')
+}
+
+function normalizeBrowserDomainEntry(raw: string): string {
+  let entry = raw.trim()
+  if (!entry) return ''
+  try {
+    if (entry.includes('://')) {
+      entry = new URL(entry).hostname
+    } else if (entry.includes('/')) {
+      entry = new URL(`https://${entry}`).hostname
+    }
+  } catch {
+    // keep literal hostname / wildcard entry
+  }
+  return entry.replace(/\.$/, '')
 }

@@ -1,6 +1,12 @@
-import { useCallback } from 'react'
+import { useCallback, useEffect, useRef } from 'react'
 import { cn } from '@renderer/lib/ui/cn'
 import type { AgentInteractionMode } from '@shared/ipc'
+import {
+  isMainComposerTarget,
+  matchShortcut,
+  shouldBlockAppShortcut,
+  shortcutLabel
+} from '@renderer/lib/shortcuts'
 import { chromePillButton } from './composerChrome'
 
 const MODES: { value: AgentInteractionMode; label: string; short: string }[] = [
@@ -30,6 +36,7 @@ export function ModePicker({
   running?: boolean
   className?: string
 }) {
+  const rootRef = useRef<HTMLDivElement>(null)
   const advance = useCallback(
     (reverse: boolean) => {
       onModeChange(nextMode(mode, reverse))
@@ -38,20 +45,49 @@ export function ModePicker({
   )
 
   const locked = Boolean(disabled || running)
+
+  useEffect(() => {
+    if (locked) return undefined
+    const onKey = (e: KeyboardEvent): void => {
+      if (!matchShortcut(e, 'cycleMode')) return
+      if (shouldBlockAppShortcut(e.target)) return
+      const root = rootRef.current
+      if (!root) return
+      const shell = root.closest('[data-composer-shell]')
+      const target = e.target instanceof Node ? e.target : null
+      const inThisShell = Boolean(target && shell?.contains(target))
+      if (isMainComposerTarget(target) || inThisShell) {
+        if (!inThisShell) return
+      } else {
+        const pane = root.closest('[data-chat-pane]')
+        if (pane?.getAttribute('data-chat-pane-focused') === '0') return
+      }
+      e.preventDefault()
+      advance(e.shiftKey)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [locked, advance])
+
   const current = MODES.find((m) => m.value === mode) ?? MODES[2]!
   const upcoming = MODES.find((m) => m.value === nextMode(mode, false))!
+  const chord = shortcutLabel('cycleMode')
 
   const ariaLabel = running
     ? `${current.label} mode (locked while running)`
     : `${current.label} mode. Click for ${upcoming.label}.`
 
   return (
-    <div className={cn('relative flex h-7 shrink-0 items-center', className)}>
+    <div ref={rootRef} className={cn('relative flex h-7 shrink-0 items-center', className)}>
       <button
         type="button"
         disabled={locked}
         aria-label={ariaLabel}
-        title={running ? ariaLabel : `${ariaLabel} Shift-click for previous.`}
+        title={
+          running
+            ? ariaLabel
+            : `${ariaLabel} Shift-click or ${chord} (Shift for previous).`
+        }
         className={cn(chromePillButton, 'text-fg')}
         onMouseDown={(e) => e.preventDefault()}
         onClick={(e) => {

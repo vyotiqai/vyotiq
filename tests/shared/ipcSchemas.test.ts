@@ -11,6 +11,7 @@ import {
   RenameRunRequestSchema,
   LoadRunEventsRequestSchema,
   ExtractAttachmentRequestSchema,
+  DictationTranscribeRequestSchema,
   MAX_ATTACHMENT_DATA_CHARS,
   SetSettingsRequestSchema,
   SetSecretRequestSchema,
@@ -22,10 +23,15 @@ import {
   AgentQuestionResponseSchema,
   WindowMaximizedChangedSchema,
   LoadRunRequestSchema,
+  LoadRunResultSchema,
   LoadToolResultRequestSchema,
   SettingsSchema,
   DEFAULT_SETTINGS,
+  DEFAULT_NOTIFICATION_SETTINGS,
+  NotificationItemSchema,
+  NotificationMutateRequestSchema,
   TelemetryStatusSchema,
+  AppInfoSchema,
   SECRET_PROVIDERS,
   SecretProviderSchema,
   emptySecretStatus,
@@ -40,13 +46,52 @@ import {
   ToolApprovalResponseSchema,
   ActiveRunSchema,
   GitStatusResultSchema,
-  GitStatusSchema
+  GitStatusSchema,
+  WorkspaceEditorRecoverySaveRequestSchema,
+  WorkspaceEditorRecoverySnapshotSchema
 } from '@shared/ipc'
 import { IPC } from '@shared/channels'
 import { PROVIDER_DEFAULTS, seedModelsFor } from '@shared/providers'
 import type { VyotiqApi } from '@shared/vyotiqApi'
 
 describe('ipc schemas', () => {
+
+  it('requires a recovery session token and bounds aggregate recovery content', () => {
+    const snapshot = {
+      version: 1 as const,
+      activeTabId: null,
+      tabs: [],
+      savedAt: new Date().toISOString()
+    }
+    const content = 'x'.repeat(12 * 1024 * 1024 + 1)
+    expect(
+      WorkspaceEditorRecoverySaveRequestSchema.safeParse({
+        workspacePath: '/workspace',
+        generation: 0,
+        snapshot
+      }).success
+    ).toBe(false)
+    expect(
+      WorkspaceEditorRecoverySnapshotSchema.safeParse({
+        ...snapshot,
+        tabs: Array.from({ length: 4 }, (_, index) => ({
+          id: `tab-${index}`,
+          path: `tab-${index}.txt`,
+          kind: 'text' as const,
+          content,
+          encoding: 'utf8' as const,
+          eol: 'none' as const,
+          bom: false,
+          version: null,
+          dirty: true,
+          cursor: 0,
+          selections: [],
+          bookmarks: [],
+          template: null
+        }))
+      }).success
+    ).toBe(false)
+  })
 
   it('parses chat start with tool messages', () => {
     const messages = [
@@ -61,6 +106,19 @@ describe('ipc schemas', () => {
     const parsed = ChatStartRequestSchema.parse({ messages, workspacePath: '/ws' })
     expect(parsed.messages).toHaveLength(3)
     expect(ChatMessageSchema.parse(messages[2]).toolCallId).toBe('1')
+  })
+
+  it('keeps optional user send timestamps on chat messages', () => {
+    const parsed = ChatMessageSchema.parse({
+      role: 'user',
+      content: 'hi',
+      at: '2026-07-24T12:00:00.000Z'
+    })
+    expect(parsed.at).toBe('2026-07-24T12:00:00.000Z')
+    expect(ChatMessageSchema.parse({ role: 'user', content: 'hi' }).at).toBeUndefined()
+    expect(
+      ChatMessageSchema.safeParse({ role: 'user', content: 'hi', at: 'not-a-datetime' }).success
+    ).toBe(false)
   })
 
   it('rejects full messages on chatStart resume unless incremental', () => {
@@ -82,6 +140,19 @@ describe('ipc schemas', () => {
     ).toBe(true)
     expect(
       ChatStartRequestSchema.safeParse({ messages: [user], workspacePath: '/ws' }).success
+    ).toBe(true)
+    expect(
+      ChatStartRequestSchema.safeParse({
+        workspacePath: '/ws',
+        runId: 'run-1',
+        messages: []
+      }).success
+    ).toBe(true)
+    expect(
+      ChatStartRequestSchema.safeParse({
+        workspacePath: '/ws',
+        runId: 'run-1'
+      }).success
     ).toBe(true)
   })
 
@@ -124,6 +195,9 @@ describe('ipc schemas', () => {
     }
     expect(PROVIDER_DEFAULTS).toHaveLength(10)
     expect(ListModelsRequestSchema.parse({ provider: 'groq' }).provider).toBe('groq')
+    expect(ListModelsRequestSchema.parse({ provider: 'ollama', model: 'glm-5.2' }).model).toBe(
+      'glm-5.2'
+    )
     expect(IPC.listModels).toBe('models:list')
   })
 
@@ -278,6 +352,27 @@ describe('ipc schemas', () => {
     ).toBe(400)
     expect(
       AgentEventSchema.parse({
+        type: 'step_usage',
+        runId: 'r1',
+        step: 4,
+        inputTokens: 10,
+        outputTokens: 2,
+        billedCost: 0.0123,
+        billedCostSaved: -0.001
+      }).billedCost
+    ).toBe(0.0123)
+    expect(
+      AgentEventSchema.parse({
+        type: 'step_usage',
+        runId: 'r1',
+        step: 5,
+        inputTokens: 10,
+        outputTokens: 40,
+        generationMs: 2500
+      }).generationMs
+    ).toBe(2500)
+    expect(
+      AgentEventSchema.parse({
         type: 'context_usage',
         runId: 'r1',
         step: 1,
@@ -319,6 +414,63 @@ describe('ipc schemas', () => {
         message: 'Use /clear when starting an unrelated task.'
       }).kind
     ).toBe('long_run_task_boundary')
+    expect(
+      AgentEventSchema.parse({
+        type: 'compaction_started',
+        runId: 'r1',
+        mode: 'auto'
+      })
+    ).toEqual({
+      type: 'compaction_started',
+      runId: 'r1',
+      mode: 'auto'
+    })
+    expect(
+      AgentEventSchema.parse({
+        type: 'compaction_verifying',
+        runId: 'r1',
+        summary: 'draft'
+      }).type
+    ).toBe('compaction_verifying')
+    expect(
+      AgentEventSchema.parse({
+        type: 'compaction_verify_retry',
+        runId: 'r1',
+        failures: ['Invented path: src/fake.ts']
+      }).failures
+    ).toEqual(['Invented path: src/fake.ts'])
+    expect(
+      AgentEventSchema.parse({
+        type: 'compaction_verify_failed',
+        runId: 'r1',
+        summary: 'bad fold',
+        failures: ['Missing decision: Use JWT']
+      }).type
+    ).toBe('compaction_verify_failed')
+    expect(
+      AgentEventSchema.safeParse({
+        type: 'compaction_verify_failed',
+        runId: 'r1',
+        failures: Array.from({ length: 17 }, (_, i) => `Invented path: src/f${i}.ts`)
+      }).success
+    ).toBe(false)
+    expect(
+      AgentEventSchema.safeParse({
+        type: 'compaction_verify_failed',
+        runId: 'r1',
+        failures: Array.from({ length: 16 }, (_, i) => `Invented path: src/f${i}.ts`)
+      }).success
+    ).toBe(true)
+    expect(
+      AgentEventSchema.parse({
+        type: 'compaction',
+        runId: 'r1',
+        summary: 'folded',
+        kind: 'summary',
+        verified: true,
+        verifyCoverage: 1
+      }).verified
+    ).toBe(true)
     expect(
       AgentEventSchema.parse({
         type: 'mode_changed',
@@ -449,6 +601,20 @@ describe('ipc schemas', () => {
       runId: 'r1'
     })
     expect(
+      LoadRunResultSchema.parse({
+        runId: 'r1',
+        messages: [{ role: 'user', content: 'hi' }],
+        pendingFollowUps: [{ id: 'fu-1', preview: 'hi', ready: true }],
+        status: 'cancelled',
+        resumable: true,
+        error: 'Interrupted'
+      })
+    ).toMatchObject({
+      runId: 'r1',
+      status: 'cancelled',
+      resumable: true
+    })
+    expect(
       LoadToolResultRequestSchema.parse({
         workspacePath: '/ws',
         runId: 'r1',
@@ -500,6 +666,20 @@ describe('ipc schemas', () => {
     ).toBe('aGk=')
   })
 
+  it('allows cloud dictation without pcm16k and accepts optional pcm16k', () => {
+    const cloud = DictationTranscribeRequestSchema.parse({
+      mime: 'audio/webm',
+      data: 'aGk='
+    })
+    expect(cloud.pcm16k).toBeUndefined()
+    const local = DictationTranscribeRequestSchema.parse({
+      mime: 'audio/webm',
+      data: 'aGk=',
+      pcm16k: 'AAABAA=='
+    })
+    expect(local.pcm16k).toBe('AAABAA==')
+  })
+
   it('maps secret key names to provider booleans', () => {
     const status = secretStatusFromKeys(['openai', 'groq', 'not-a-provider'])
     expect(status.openai).toBe(true)
@@ -541,8 +721,14 @@ describe('ipc schemas', () => {
   it('keeps DEFAULT_SETTINGS aligned with SettingsSchema (incl. telemetry)', () => {
     const parsed = SettingsSchema.parse(DEFAULT_SETTINGS)
     expect(parsed).toEqual(DEFAULT_SETTINGS)
+    expect(parsed.fontScale).toBe('default')
+    expect(parsed.uiDensity).toBe('default')
+    expect(parsed.accentPreset).toBe('neutral')
     expect(parsed.telemetryEnabled).toBe(false)
+    expect(parsed.autoCompactThresholdRatio).toBe(0.55)
+    expect(parsed.settingsVersion).toBe(1)
     expect(parsed.autoModeSwitch).toBe(false)
+    expect(parsed.notifications).toEqual(DEFAULT_NOTIFICATION_SETTINGS)
     // Legacy settings files omit telemetryEnabled — default fills it
     const legacy = SettingsSchema.parse({
       provider: 'ollama',
@@ -551,10 +737,36 @@ describe('ipc schemas', () => {
       theme: 'system'
     })
     expect(legacy.telemetryEnabled).toBe(false)
+    expect(legacy.autoCompactThresholdRatio).toBe(0.55)
+    expect(legacy.settingsVersion).toBe(1)
     expect(legacy.autoModeSwitch).toBe(false)
+    expect(legacy.offlineWaitMode).toBe('default')
+    expect(legacy.fontScale).toBe('default')
+    expect(legacy.uiDensity).toBe('default')
+    expect(legacy.accentPreset).toBe('neutral')
+    expect(parsed.dictation.engine).toBe('openai')
+    expect(legacy.dictation.engine).toBe('openai')
+    expect(legacy.notifications).toEqual(DEFAULT_NOTIFICATION_SETTINGS)
     expect(SetSettingsRequestSchema.parse({ telemetryEnabled: true })).toEqual({
       telemetryEnabled: true
     })
+  })
+
+  it('rejects notification items with an empty title', () => {
+    expect(() =>
+      NotificationItemSchema.parse({
+        id: 'n1',
+        createdAt: '2026-08-16T00:00:00.000Z',
+        read: false,
+        source: 'agent',
+        kind: 'run_done',
+        title: '',
+        body: 'done',
+        dedupeKey: 'run:r1:done'
+      })
+    ).toThrow()
+    expect(NotificationMutateRequestSchema.parse({ id: 'n1' })).toEqual({ id: 'n1' })
+    expect(NotificationMutateRequestSchema.parse({ all: true })).toEqual({ all: true })
   })
 
   it('parses model picker preference fields on settings', () => {
@@ -583,6 +795,26 @@ describe('ipc schemas', () => {
       TelemetryStatusSchema.parse({ dsnConfigured: true, telemetryEnabled: false })
     ).toEqual({ dsnConfigured: true, telemetryEnabled: false })
     expect(() => TelemetryStatusSchema.parse({ dsnConfigured: true })).toThrow()
+  })
+
+  it('parses app info payload', () => {
+    const info = {
+      name: 'Vyotiq',
+      version: '1.0.0',
+      homepage: 'https://vyotiq.com',
+      electron: '43.2.0',
+      chrome: '132.0.6834.196',
+      node: '22.17.0',
+      platform: 'win32',
+      arch: 'x64',
+      osVersion: '10.0.26200'
+    }
+    expect(AppInfoSchema.parse(info)).toEqual(info)
+    expect(() => AppInfoSchema.parse({ name: 'Vyotiq', version: '1.0.0' })).toThrow()
+    expect(() =>
+      AppInfoSchema.parse({ ...info, homepage: 'http://vyotiq.com' })
+    ).toThrow()
+    expect(() => AppInfoSchema.parse({ ...info, homepage: 'not-a-url' })).toThrow()
   })
 
   it('exposes logging IPC channels used by VyotiqApi', () => {
@@ -670,6 +902,7 @@ describe('ipc schemas', () => {
       GitUnstagePathsRequestSchema,
       GitBranchesResultSchema,
       GithubAuthStatusSchema,
+      GithubCliInstallResultSchema,
       ShellOpenExternalRequestSchema,
       SettingsSchema,
       DEFAULT_SETTINGS
@@ -684,6 +917,7 @@ describe('ipc schemas', () => {
     expect(
       GithubAuthStatusSchema.parse({
         ghAvailable: true,
+        ghAuthenticated: false,
         clientIdConfigured: false,
         hasAppToken: false,
         pending: false,
@@ -692,6 +926,13 @@ describe('ipc schemas', () => {
         error: null
       }).pending
     ).toBe(false)
+    expect(
+      GithubCliInstallResultSchema.parse({
+        installed: true,
+        detail: 'GitHub CLI installed with winget.',
+        ghAvailable: true
+      }).ghAvailable
+    ).toBe(true)
     expect(ShellOpenExternalRequestSchema.parse({ url: 'https://github.com' }).url).toContain(
       'github'
     )
@@ -741,5 +982,19 @@ describe('ipc schemas', () => {
     expect(
       BrowserTakeScreenshotRequestSchema.safeParse({ workspacePath: '/ws' }).success
     ).toBe(false)
+  })
+
+  it('parses browser select/close request schemas with optional workspacePath', async () => {
+    const { BrowserSelectTabRequestSchema, BrowserCloseTabRequestSchema } =
+      await import('@shared/ipc')
+    expect(BrowserSelectTabRequestSchema.parse({ tabId: 't1' })).toEqual({ tabId: 't1' })
+    expect(
+      BrowserSelectTabRequestSchema.parse({ tabId: 't1', workspacePath: '/ws' })
+    ).toEqual({ tabId: 't1', workspacePath: '/ws' })
+    expect(BrowserSelectTabRequestSchema.safeParse({}).success).toBe(false)
+    expect(BrowserCloseTabRequestSchema.parse({})).toEqual({})
+    expect(
+      BrowserCloseTabRequestSchema.parse({ tabId: 't1', workspacePath: '/ws' })
+    ).toEqual({ tabId: 't1', workspacePath: '/ws' })
   })
 })

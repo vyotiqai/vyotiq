@@ -7,6 +7,7 @@ import {
   TITLE_BAR_HEIGHT
 } from '@renderer/lib/utils/layout'
 import { MACOS_TITLEBAR_INSET_PX, MACOS_TRAFFIC_LIGHT_Y } from '@shared/windowChrome'
+import { SidebarBrandToggle } from './SidebarBrandToggle'
 import { SidebarSearchChrome } from './SidebarSearchChrome'
 
 export function SidebarTopBar({
@@ -30,10 +31,6 @@ export function SidebarTopBar({
   onSessionQuery: (q: string) => void
   onNewChat: () => void
 }) {
-  const toggleLabel = isDrawer ? 'Close menu' : 'Collapse sidebar'
-  const toggleTitle = isDrawer
-    ? toggleLabel
-    : `${toggleLabel} (${shortcutLabel('sidebar')})`
   const headerStyle = isDarwin ? { paddingLeft: MACOS_TITLEBAR_INSET_PX } : undefined
   const alignWithTitleBar = !isDrawer
 
@@ -48,16 +45,7 @@ export function SidebarTopBar({
         )}
       >
         <div className="app-region-no-drag shrink-0">
-          <IconButton
-            icon={isDrawer ? 'close' : 'sidebar'}
-            label={toggleLabel}
-            title={toggleTitle}
-            size="sm"
-            variant="bare"
-            aria-expanded={isDrawer ? true : undefined}
-            aria-controls={isDrawer ? 'app-nav-drawer' : undefined}
-            onClick={onToggleSidebar}
-          />
+          <SidebarBrandToggle isDrawer={isDrawer} onToggleSidebar={onToggleSidebar} />
         </div>
 
         <div className="app-region-no-drag shrink-0">
@@ -91,22 +79,19 @@ export function SidebarCollapsedHeader({
   isDrawer,
   isCollapsed,
   isDarwin,
-  onToggleSidebar
+  workspaceReady,
+  disabledTitle,
+  onToggleSidebar,
+  onNewChat
 }: {
   isDrawer: boolean
   isCollapsed: boolean
   isDarwin: boolean
+  workspaceReady: boolean
+  disabledTitle?: string
   onToggleSidebar: () => void
+  onNewChat: () => void
 }) {
-  const toggleLabel = isDrawer
-    ? 'Close menu'
-    : isCollapsed
-      ? 'Expand sidebar'
-      : 'Collapse sidebar'
-  const toggleTitle = isDrawer
-    ? toggleLabel
-    : `${toggleLabel} (${shortcutLabel('sidebar')})`
-
   const headerStyle = isDarwin
     ? isCollapsed
       ? { paddingTop: MACOS_TRAFFIC_LIGHT_Y + 10 }
@@ -115,24 +100,33 @@ export function SidebarCollapsedHeader({
 
   return (
     <header
-      className={cn(
-        'app-region-drag flex shrink-0 items-center border-b border-border/30',
-        isCollapsed && isDarwin ? 'min-h-9' : TITLE_BAR_HEIGHT,
-        'justify-center px-1'
-      )}
+      className="app-region-drag flex shrink-0 flex-col items-center border-b border-border/30 px-2 pb-1"
       style={headerStyle}
     >
+      <div
+        className={cn(
+          'flex w-full items-center justify-start',
+          isCollapsed && isDarwin ? 'min-h-9' : TITLE_BAR_HEIGHT
+        )}
+      >
+        <div className="app-region-no-drag">
+          <SidebarBrandToggle
+            isDrawer={isDrawer}
+            isCollapsed={isCollapsed}
+            onToggleSidebar={onToggleSidebar}
+            size="md"
+          />
+        </div>
+      </div>
       <div className="app-region-no-drag">
         <IconButton
-          icon={isDrawer ? 'close' : 'sidebar'}
-          label={toggleLabel}
-          title={toggleTitle}
-          size="md"
+          icon="plus"
+          label="New chat"
+          size="sm"
           variant="bare"
-          className="rounded-lg"
-          aria-expanded={isDrawer ? true : !isCollapsed}
-          aria-controls={isDrawer ? 'app-nav-drawer' : undefined}
-          onClick={onToggleSidebar}
+          disabled={!workspaceReady}
+          title={!workspaceReady ? disabledTitle : `New chat (${shortcutLabel('newChat')})`}
+          onClick={onNewChat}
         />
       </div>
     </header>

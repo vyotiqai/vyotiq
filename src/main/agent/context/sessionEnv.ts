@@ -1,6 +1,6 @@
 import os from 'node:os'
-import type { AgentInteractionMode } from '../../../shared/ipc'
 import { resolveTerminalShell } from '../tools/terminal'
+import { wrapPromptSection } from '../promptSections'
 
 function pad2(n: number): string {
   return String(n).padStart(2, '0')
@@ -20,13 +20,11 @@ function formatUtcOffset(d: Date): string {
 }
 
 /**
- * Fresh per-step session block (UTC + local time/tz, OS, shell, mode).
+ * Fresh per-step session block (UTC + local time/tz, OS, shell).
+ * Mode lives in the mode overlay — not repeated here.
  * Not workspace-cached — callers rebuild every agent step.
  */
-export function buildSessionEnvSection(
-  mode: AgentInteractionMode,
-  terminalShellPref: string | undefined
-): string {
+export function buildSessionEnvSection(terminalShellPref: string | undefined): string {
   const now = new Date()
   const shell = resolveTerminalShell(
     (terminalShellPref as 'auto' | 'cmd' | 'powershell' | 'bash' | undefined) ?? 'auto'
@@ -38,13 +36,13 @@ export function buildSessionEnvSection(
         ? 'macOS'
         : process.platform
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown'
-  return [
-    '## Session',
-    `Date (UTC): ${now.toISOString()}`,
-    `Date (local): ${formatLocalDateTime(now)} (${timeZone}, ${formatUtcOffset(now)})`,
-    `OS: ${platform} (${process.platform} ${process.arch})`,
-    `OS version: ${os.release()}`,
-    `Terminal shell: ${shell}`,
-    `Interaction mode: ${mode}`
-  ].join('\n')
+  return wrapPromptSection(
+    'session',
+    [
+      `Date (UTC): ${now.toISOString()}`,
+      `Date (local): ${formatLocalDateTime(now)} (${timeZone}, ${formatUtcOffset(now)})`,
+      `OS: ${platform} ${process.arch} ${os.release()}`,
+      `Shell (terminal): ${shell}`
+    ].join('\n')
+  )
 }

@@ -1,12 +1,15 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { ListDirBody } from '@renderer/features/chat/toolUi/bodies/ListDirBody'
+import { DeleteBody } from '@renderer/features/chat/toolUi/bodies/DeleteBody'
 import { McpPinBody } from '@renderer/features/chat/toolUi/bodies/McpPinBody'
 import { SkillBody } from '@renderer/features/chat/toolUi/bodies/SkillBody'
+import { SearchBody } from '@renderer/features/chat/toolUi/bodies/SearchBody'
 import { DirListing } from '@renderer/features/chat/toolUi/primitives'
+import { RunSessionProvider } from '@renderer/features/chat/RunSessionContext'
 import type { UiToolRow } from '@shared/transcript'
 
 function tool(overrides: Partial<UiToolRow> & Pick<UiToolRow, 'name'>): UiToolRow {
@@ -63,6 +66,41 @@ describe('ListDirBody', () => {
     expect(screen.getByText('Directory')).toBeTruthy()
     expect(screen.getByText('1 item')).toBeTruthy()
     expect(screen.queryByText(/src —/)).toBeNull()
+  })
+})
+
+describe('DeleteBody', () => {
+  it('renders only additional information instead of repeating the row receipt', () => {
+    const { container } = render(
+      <DeleteBody
+        {...bodyProps}
+        tool={tool({
+          name: 'delete',
+          summary: '.sv.js',
+          argsPreview: JSON.stringify({ path: '.sv.js' }),
+          content: 'Deleted .sv.js'
+        })}
+      />
+    )
+
+    expect(container.firstChild).toBeNull()
+  })
+
+  it('keeps the recursive detail visible without duplicating the receipt', () => {
+    render(
+      <DeleteBody
+        {...bodyProps}
+        tool={tool({
+          name: 'delete',
+          summary: 'dist',
+          argsPreview: JSON.stringify({ path: 'dist', recursive: true }),
+          content: 'Deleted dist'
+        })}
+      />
+    )
+
+    expect(screen.getByText('Recursive delete')).toBeTruthy()
+    expect(screen.queryByText('Deleted dist')).toBeNull()
   })
 })
 
@@ -144,7 +182,7 @@ describe('McpPinBody', () => {
             'Pinned for next step (2): mcp__gh__list_issues, mcp__gh__create_issue',
             'Already pinned: mcp__gh__get_issue',
             'Unknown / unresolved: nope',
-            'Definitions are append-admitted into the sticky catalog on the next model step (prior tool order kept). Idle pins may later unload (TTL / soft max); call release_mcp_tools when done.'
+            'Definitions are append-admitted into the sticky catalog on the next model step (prior tool order kept). Call release_mcp_tools when finished so schema tokens are not paid every later step.'
           ].join('\n')
         })}
       />
@@ -202,5 +240,51 @@ describe('McpPinBody', () => {
       />
     )
     expect(screen.getByText('request_mcp_tools requires an active agent run.')).toBeTruthy()
+  })
+})
+
+describe('SearchBody', () => {
+  it('opens filename and content hits when the session can open workspace files', () => {
+    const openFile = vi.fn()
+    render(
+      <RunSessionProvider
+        value={{
+          workspacePath: '/ws/demo',
+          runId: 'run-1',
+          onOpenWorkspaceFile: openFile
+        }}
+      >
+        <SearchBody
+          {...bodyProps}
+          tool={tool({
+            name: 'search',
+            summary: 'SessionChatColumn file open',
+            argsPreview: JSON.stringify({ query: 'SessionChatColumn file open' }),
+            content: [
+              'file: src/renderer/src/features/chat/SessionChatColumn.tsx',
+              'src/renderer/src/features/chat/ChatView.tsx:1211: onOpenWorkspaceFile={openWorkspaceFile}'
+            ].join('\n')
+          })}
+        />
+      </RunSessionProvider>
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'src/renderer/src/features/chat/SessionChatColumn.tsx'
+      })
+    )
+    expect(openFile).toHaveBeenCalledWith(
+      'src/renderer/src/features/chat/SessionChatColumn.tsx'
+    )
+
+    fireEvent.click(
+      screen.getByRole('button', {
+        name: 'src/renderer/src/features/chat/ChatView.tsx:1211'
+      })
+    )
+    expect(openFile).toHaveBeenCalledWith('src/renderer/src/features/chat/ChatView.tsx', {
+      line: 1211
+    })
   })
 })

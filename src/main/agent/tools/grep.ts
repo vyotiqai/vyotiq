@@ -1,23 +1,24 @@
 import { readFileSync, statSync } from 'fs'
-import { extname } from 'path'
+import { extname, join } from 'path'
 import { assertInsideWorkspace } from '../../../shared/workspacePath'
 import {
   collectWorkspaceFiles,
   globToRegExp,
   TEXT_EXTS,
   throwIfAborted,
-  yieldToEventLoop
+  yieldToEventLoop,
+  type WalkedFile
 } from './walk'
 import { compileUserRegex } from './safeUserRegex'
+import {
+  querySparseCandidates,
+  resolveCandidateFullPaths
+} from '../sparsegrep'
 
 export const GREP_SCAN_CAP = 20_000
 export const GREP_MAX_FILE_BYTES = 512 * 1024
-const SCAN_CAP = GREP_SCAN_CAP
-const MAX_FILE_BYTES = GREP_MAX_FILE_BYTES
+export const GREP_DEFAULT_MAX_RESULTS = 60
 const YIELD_EVERY_FILES = 32
-/** Matched line text clipped to this many characters in the report. */
-export const GREP_MAX_LINE_CHARS = 400
-const MAX_LINE_CHARS = GREP_MAX_LINE_CHARS
 
 export type GrepOptions = {
   /** Glob restricting which files are searched, e.g. `src/**\/*.ts`. */
@@ -28,18 +29,108 @@ export type GrepOptions = {
 }
 
 function compile(pattern: string, caseSensitive: boolean): RegExp {
-  return compileUserRegex(pattern, caseSensitive ? 'g' : 'gi')
+  return compileUserRegex(pattern, caseSensitive ? undefined : 'i')
 }
 
-function clip(line: string): string {
-  return line.length > MAX_LINE_CHARS ? `${line.slice(0, MAX_LINE_CHARS)}…` : line
+/**
+ * Scan one file for matches. Kept synchronous so both the async tool and the
+ * sync test helper share the exact same output format.
+ */
+function grepOneFile(
+  file: WalkedFile,
+  regex: RegExp,
+  maxResults: number,
+  contextLines: number,
+  includeRegex: RegExp | null,
+  state: { out: string[]; matchCount: number; truncated: boolean }
+): void {
+  const { full, rel } = file
+  if (includeRegex && !includeRegex.test(rel)) return
+  if (!TEXT_EXTS.has(extname(full).toLowerCase())) return
+
+  let text: string
+  try {
+    statSync(full)
+    text = readFileSync(full, 'utf8')
+  } catch {
+    return
+  }
+
+  if (!regex.test(text)) return
+
+  const lines = text.split('\n')
+  for (let n = 0; n < lines.length; n++) {
+    if (!regex.test(lines[n]!)) continue
+
+    if (Number.isFinite(maxResults) && state.matchCount >= maxResults) {
+      state.truncated = true
+      return
+    }
+    state.matchCount++
+
+    if (contextLines === 0) {
+      state.out.push(`${rel}:${n + 1}: ${lines[n]!.trim()}`)
+      continue
+    }
+    const from = Math.max(0, n - contextLines)
+    const to = Math.min(lines.length - 1, n + contextLines)
+    state.out.push(`${rel}:${n + 1}`)
+    for (let c = from; c <= to; c++) {
+      state.out.push(`${c === n ? '>' : ' '} ${c + 1}| ${lines[c]!}`)
+    }
+    state.out.push('')
+  }
+}
+
+/**
+ * Scan the candidate set, yielding to the event loop every `YIELD_EVERY_FILES`.
+ */
+async function formatGrepHitsAsync(
+  files: WalkedFile[],
+  pattern: string,
+  options: GrepOptions,
+  maxResults: number,
+  contextLines: number,
+  includeRegex: RegExp | null,
+  signal?: AbortSignal
+): Promise<{ out: string[]; matchCount: number; truncated: boolean }> {
+  const regex = compile(pattern, options.caseSensitive === true)
+  const state = { out: [] as string[], matchCount: 0, truncated: false }
+  for (let i = 0; i < files.length && !state.truncated; i++) {
+    if (i > 0 && i % YIELD_EVERY_FILES === 0) {
+      throwIfAborted(signal)
+      await yieldToEventLoop()
+    }
+    grepOneFile(files[i]!, regex, maxResults, contextLines, includeRegex, state)
+  }
+  return state
+}
+
+function formatGrepHits(
+  files: WalkedFile[],
+  pattern: string,
+  options: GrepOptions,
+  maxResults: number,
+  contextLines: number,
+  includeRegex: RegExp | null
+): { out: string[]; matchCount: number; truncated: boolean } {
+  const regex = compile(pattern, options.caseSensitive === true)
+  const state = { out: [] as string[], matchCount: 0, truncated: false }
+  for (let i = 0; i < files.length && !state.truncated; i++) {
+    grepOneFile(files[i]!, regex, maxResults, contextLines, includeRegex, state)
+  }
+  return state
+}
+
+function resolveMaxResults(maxResults: number | undefined): number {
+  return maxResults == null ? Number.POSITIVE_INFINITY : Math.max(1, maxResults)
 }
 
 /**
  * Regex content search with optional surrounding context.
  *
- * Distinct from `search`, which also matches file names and stops at the first
- * hit per file — grep reports every matching line so the model can judge scope.
+ * Uses trigram candidate prune when sparsegrep index is ready; otherwise live walk.
+ * Output format is identical either way (`rel:line:…`).
  */
 export async function toolGrep(
   workspaceRoot: string,
@@ -50,67 +141,90 @@ export async function toolGrep(
   const trimmed = pattern.trim()
   if (!trimmed) throw new Error('grep requires a non-empty pattern')
 
-  const maxResults = Math.max(1, options.maxResults ?? 60)
-  const contextLines = Math.max(0, Math.min(5, options.contextLines ?? 0))
+  const maxResults = resolveMaxResults(options.maxResults)
+  const contextLines = Math.max(0, options.contextLines ?? 0)
   const includeRegex = options.include ? globToRegExp(options.include) : null
 
   assertInsideWorkspace(workspaceRoot, '.')
-  const files = await collectWorkspaceFiles(workspaceRoot, SCAN_CAP, signal)
   throwIfAborted(signal)
 
-  const out: string[] = []
-  let matchCount = 0
-  let truncated = false
+  let files: WalkedFile[] | null = null
+  let indexMode: 'trigram' | 'live' = 'live'
+  let indexSyncInProgress = false
+  let indexedFileCount = 0
 
-  for (let i = 0; i < files.length && !truncated; i++) {
-    throwIfAborted(signal)
-    if (i > 0 && i % YIELD_EVERY_FILES === 0) {
-      await yieldToEventLoop()
-      throwIfAborted(signal)
+  const sparse = await querySparseCandidates(workspaceRoot, {
+    query: trimmed,
+    kind: 'regex',
+    caseSensitive: options.caseSensitive === true,
+    signal
+  })
+  if (sparse?.lookup.ok) {
+    indexMode = 'trigram'
+    indexedFileCount = sparse.fileCount
+    indexSyncInProgress = !sparse.syncComplete
+    let candidates = resolveCandidateFullPaths(workspaceRoot, sparse.lookup.paths)
+    if (includeRegex) {
+      candidates = candidates.filter((c) => includeRegex.test(c.rel))
     }
-
-    const { full, rel } = files[i]!
-    if (includeRegex && !includeRegex.test(rel)) continue
-    if (!TEXT_EXTS.has(extname(full).toLowerCase())) continue
-
-    let text: string
-    try {
-      if (statSync(full).size > MAX_FILE_BYTES) continue
-      text = readFileSync(full, 'utf8')
-    } catch {
-      continue
-    }
-
-    // A fresh regex per file: `lastIndex` on a global regex leaks across files.
-    const regex = compile(trimmed, options.caseSensitive === true)
-    if (!regex.test(text)) continue
-
-    const lines = text.split('\n')
-    for (let n = 0; n < lines.length; n++) {
-      const lineRegex = compile(trimmed, options.caseSensitive === true)
-      if (!lineRegex.test(lines[n]!)) continue
-
-      if (matchCount >= maxResults) {
-        truncated = true
-        break
-      }
-      matchCount++
-
-      if (contextLines === 0) {
-        out.push(`${rel}:${n + 1}: ${clip(lines[n]!.trim())}`)
-        continue
-      }
-      const from = Math.max(0, n - contextLines)
-      const to = Math.min(lines.length - 1, n + contextLines)
-      out.push(`${rel}:${n + 1}`)
-      for (let c = from; c <= to; c++) {
-        out.push(`${c === n ? '>' : ' '} ${c + 1}| ${clip(lines[c]!)}`)
-      }
-      out.push('')
-    }
+    candidates.sort((a, b) => a.rel.localeCompare(b.rel))
+    files = candidates
   }
 
-  if (matchCount === 0) return `No matches for /${trimmed}/`
+  if (files == null) {
+    indexMode = 'live'
+    files = await collectWorkspaceFiles(workspaceRoot, undefined, signal)
+    throwIfAborted(signal)
+  }
+
+  const { out, matchCount, truncated } = await formatGrepHitsAsync(
+    files,
+    trimmed,
+    options,
+    maxResults,
+    contextLines,
+    includeRegex,
+    signal
+  )
+
+  const notices: string[] = []
+  if (matchCount === 0) {
+    notices.push(`No matches for /${trimmed}/`)
+  } else {
+    const body = out.join('\n').trimEnd()
+    if (body) notices.push(body)
+    if (truncated) notices.push(`… stopped at ${maxResults} matches`)
+  }
+  if (indexSyncInProgress) {
+    notices.push(`index sync in progress (${indexedFileCount} files indexed so far)`)
+  }
+  notices.push(`index=${indexMode}`)
+  return notices.join('\n')
+}
+
+/** Test helper: grep a fixed file list (no index). */
+export function grepFilesForTest(
+  workspaceRoot: string,
+  pattern: string,
+  relPaths: string[],
+  options: GrepOptions = {}
+): string {
+  const maxResults = resolveMaxResults(options.maxResults)
+  const contextLines = Math.max(0, options.contextLines ?? 0)
+  const includeRegex = options.include ? globToRegExp(options.include) : null
+  const files: WalkedFile[] = relPaths.map((rel) => ({
+    full: join(workspaceRoot, ...rel.split('/')),
+    rel
+  }))
+  const { out, matchCount, truncated } = formatGrepHits(
+    files,
+    pattern.trim(),
+    options,
+    maxResults,
+    contextLines,
+    includeRegex
+  )
+  if (matchCount === 0) return `No matches for /${pattern.trim()}/`
   const suffix = truncated ? `\n… stopped at ${maxResults} matches` : ''
   return `${out.join('\n').trimEnd()}${suffix}`
 }

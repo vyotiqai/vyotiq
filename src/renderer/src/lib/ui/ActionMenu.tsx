@@ -58,7 +58,8 @@ export function ActionMenu({
     triggerRef,
     panelRef: listRef,
     placement,
-    align
+    align,
+    trapFocus: true
   })
 
   useEffect(() => {
@@ -109,7 +110,10 @@ export function ActionMenu({
         role="menu"
         aria-label={ariaLabel}
         tabIndex={-1}
-        className="app-region-no-drag fixed z-dropdown m-0 list-none overflow-hidden rounded-md border border-border bg-card p-1 shadow-menu animate-fade-in"
+        className={cn(
+          'app-region-no-drag fixed z-dropdown m-0 list-none overflow-hidden rounded-md border border-border bg-card p-1 shadow-menu animate-menu-in',
+          placement === 'up' ? 'origin-bottom' : 'origin-top'
+        )}
         style={{
           top: position.placement === 'up' ? undefined : position.top,
           bottom:
@@ -117,7 +121,7 @@ export function ActionMenu({
               ? window.innerHeight - position.top
               : undefined,
           // End-align via `right` only — do not also translateX(-100%), which
-          // double-shifts the panel and fights animate-fade-in's transform.
+          // double-shifts the panel.
           left: align === 'end' ? undefined : position.left,
           right: align === 'end' ? window.innerWidth - position.left : undefined,
           minWidth: position.minWidth

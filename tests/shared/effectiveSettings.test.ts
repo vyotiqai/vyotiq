@@ -24,8 +24,8 @@ describe('resolveEffectiveSettings', () => {
       thinkingEnabled: false,
       thinkingEffort: 'high',
       showThinking: false,
-      compactionTriggerRatio: 0.85,
-      keepRecentTurns: 20
+      keepRecentTurns: 20,
+      autoCompactThresholdRatio: 0.35
     })
     expect(effective).toEqual({
       provider: 'openai',
@@ -35,8 +35,8 @@ describe('resolveEffectiveSettings', () => {
       thinkingEnabled: false,
       thinkingEffort: 'high',
       showThinking: false,
-      compactionTriggerRatio: 0.85,
       keepRecentTurns: 20,
+      autoCompactThresholdRatio: 0.35,
       toolApproval: DEFAULT_SETTINGS.toolApproval
     })
   })

@@ -11,9 +11,11 @@ import {
   normalizeEffortForGeminiInteractions,
   normalizeEffortForMistral,
   normalizeEffortForOllamaThink,
+  findOllamaCatalogModel,
   ollamaModelFamily,
   ollamaThinkingHeuristicFields,
-  trailingToolMessages
+  trailingToolMessages,
+  statefulContinuationMessages
 } from '@shared/reasoning'
 
 describe('reasoning', () => {
@@ -85,6 +87,12 @@ describe('reasoning', () => {
     expect(modelSupportsThinking('qwen3-coder:480b-cloud', 'ollama')).toBe(true)
     expect(modelSupportsThinking('qwen2.5', 'ollama')).toBe(false)
     expect(modelSupportsThinking('llama3.2', 'ollama')).toBe(false)
+    expect(modelSupportsThinking('glm-5.2', 'ollama')).toBe(true)
+    expect(modelSupportsThinking('glm-5.1:cloud', 'ollama')).toBe(true)
+    expect(modelSupportsThinking('gemma4:31b-cloud', 'ollama')).toBe(true)
+    expect(modelSupportsThinking('gemma4:e4b', 'ollama')).toBe(true)
+    expect(modelSupportsThinking('minimax-m2.5:cloud', 'ollama')).toBe(true)
+    expect(modelSupportsThinking('gemma3:12b', 'ollama')).toBe(false)
   })
 
   it('detects Mistral reasoning models via reasoning_effort families', () => {
@@ -95,19 +103,27 @@ describe('reasoning', () => {
     expect(thinkingApiFor('mistral-small-latest', 'mistral')).toBe('chat_completions')
   })
 
-  it('sets Ollama gpt-oss effort ladder and boolean mode for others', () => {
+  it('aliases Cloud vs local pulled Ollama ids', () => {
+    expect(findOllamaCatalogModel([{ id: 'gpt-oss:120b' }], 'gpt-oss:120b-cloud')?.id).toBe(
+      'gpt-oss:120b'
+    )
+    expect(findOllamaCatalogModel([{ id: 'glm-5.2:cloud' }], 'glm-5.2')?.id).toBe('glm-5.2:cloud')
+  })
+
+  it('uses Ollama protocol effort ladder for offline seed heuristic', () => {
     const gptOss = ollamaThinkingHeuristicFields('gpt-oss:120b-cloud')
     expect(gptOss.thinkingMode).toBe('effort')
     expect(gptOss.thinkingCanDisable).toBe(false)
     expect(gptOss.supportedThinkingEfforts).toEqual(['low', 'medium', 'high'])
 
     const r1 = ollamaThinkingHeuristicFields('deepseek-r1')
-    expect(r1.thinkingMode).toBe('boolean')
+    expect(r1.thinkingMode).toBe('effort')
     expect(r1.thinkingCanDisable).toBe(true)
-    expect(r1.supportedThinkingEfforts).toBeUndefined()
+    expect(r1.supportedThinkingEfforts).toEqual(['low', 'medium', 'high', 'max'])
 
-    expect(normalizeEffortForOllamaThink('high', ['low', 'medium', 'high'])).toBe('high')
-    expect(normalizeEffortForOllamaThink('minimal', ['low', 'medium', 'high'])).toBe('low')
+    expect(normalizeEffortForOllamaThink('high', ['low', 'medium', 'high', 'max'])).toBe('high')
+    expect(normalizeEffortForOllamaThink('minimal', ['low', 'medium', 'high', 'max'])).toBe('low')
+    expect(normalizeEffortForOllamaThink('xhigh', ['low', 'medium', 'high', 'max'])).toBe('max')
   })
 
   it('maps thinking API per provider', () => {
@@ -207,5 +223,42 @@ describe('reasoning', () => {
     ]
     expect(trailingToolMessages(messages)).toHaveLength(2)
     expect(trailingToolMessages(messages).every((m) => m.role === 'tool')).toBe(true)
+  })
+
+  it('keeps tool-only suffixes after the last reasoning assistant', () => {
+    const messages = [
+      { role: 'user' as const, content: 'go' },
+      {
+        role: 'assistant' as const,
+        content: '',
+        reasoningState: {
+          kind: 'openai_responses' as const,
+          responseId: 'resp_1',
+          outputItems: []
+        },
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+      },
+      { role: 'tool' as const, toolCallId: 'c1', toolName: 'read', content: 'ok' }
+    ]
+    expect(statefulContinuationMessages(messages)).toEqual([messages[2]])
+  })
+
+  it('includes a newer user turn after the last reasoning assistant', () => {
+    const messages = [
+      { role: 'user' as const, content: 'go' },
+      {
+        role: 'assistant' as const,
+        content: 'done',
+        reasoningState: {
+          kind: 'openai_responses' as const,
+          responseId: 'resp_1',
+          outputItems: []
+        }
+      },
+      { role: 'tool' as const, toolCallId: 'c1', toolName: 'read', content: 'ok' },
+      { role: 'user' as const, content: 'now the next thing' }
+    ]
+    expect(trailingToolMessages(messages)).toEqual([])
+    expect(statefulContinuationMessages(messages)).toEqual([messages[2], messages[3]])
   })
 })

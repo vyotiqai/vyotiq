@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useRef,
   useState,
   type Dispatch,
   type FormEvent,
@@ -32,6 +33,7 @@ export function useComposerDraft({
   setFileError,
   running,
   disabled,
+  sendBlocked,
   onSend,
   slashMenuOpen,
   slashActiveCommand,
@@ -40,12 +42,17 @@ export function useComposerDraft({
   onSlashAccept,
   onSlashSubmit,
   resolveSlashSubmitCommand,
+  onSlashResolveError,
   mentionMenuOpen,
   mentionActiveItem,
   onMentionMove,
   onMentionDismiss,
   onMentionAccept,
-  onMentionBack
+  onMentionBack,
+  onEditLastUserMessage,
+  onCancelEdit,
+  getCaretStart,
+  onSubmitted
 }: {
   draft?: string
   onDraftChange?: (draft: string) => void
@@ -61,6 +68,7 @@ export function useComposerDraft({
   setFileError: (error: string | null) => void
   running: boolean
   disabled?: boolean
+  sendBlocked?: boolean
   onSend: (
     text: string,
     images?: string[],
@@ -84,24 +92,52 @@ export function useComposerDraft({
   resolveSlashSubmitCommand?: (
     trigger: string
   ) => SlashCommandDescriptor | null | Promise<SlashCommandDescriptor | null>
+  onSlashResolveError?: (message: string) => void
   mentionMenuOpen?: boolean
   mentionActiveItem?: MentionMenuItem | null
   onMentionMove?: (delta: number) => void
   onMentionDismiss?: () => void
   onMentionAccept?: (item: MentionMenuItem) => void
   onMentionBack?: () => boolean
+  /** Dock composer: ArrowUp on empty draft or caret at start. Return true if edit began. */
+  onEditLastUserMessage?: () => boolean
+  /** Inline edit: Escape cancels the replacement composer. */
+  onCancelEdit?: () => void
+  getCaretStart?: () => number
+  /** Runs after a send is dispatched (Enter, button, or slash) so callers can
+   *  restore composer focus — the contentEditable never fires form submit. */
+  onSubmitted?: () => void
 }) {
   const [internalText, setInternalText] = useState('')
   const isDraftControlled = draft !== undefined && onDraftChange !== undefined
   const text = isDraftControlled ? draft : internalText
-  const setText = isDraftControlled ? onDraftChange : setInternalText
+  const rawSetText = isDraftControlled ? onDraftChange : setInternalText
+  const textRef = useRef(text)
+  const imagesRef = useRef(images)
+  const filesRef = useRef(files)
+  const nativeFilesRef = useRef(nativeFiles)
+  const audioRef = useRef(audio)
+  const submissionRef = useRef(0)
+  const submittingRef = useRef(false)
+  textRef.current = text
+  imagesRef.current = images
+  filesRef.current = files
+  nativeFilesRef.current = nativeFiles
+  audioRef.current = audio
+  const setText = useCallback(
+    (next: string): void => {
+      textRef.current = next
+      rawSetText(next)
+    },
+    [rawSetText]
+  )
   void running
 
   const hasAttachments =
     images.length > 0 || files.length > 0 || nativeFiles.length > 0 || audio.length > 0
-  const canSend = (hasComposerContent(text) || hasAttachments) && !disabled
+  const canSend = (hasComposerContent(text) || hasAttachments) && !disabled && !sendBlocked
 
-  const clearDraft = useCallback((): {
+  const clearDraft = useCallback((submissionId: number): {
     draftText: string
     draftImages: string[]
     draftFiles: AttachedFile[]
@@ -115,12 +151,18 @@ export function useComposerDraft({
     const draftNative = nativeFiles
     const draftAudio = audio
     const restore = (): void => {
-      setText(draftText)
-      setImages(draftImages)
-      setFiles(draftFiles)
-      setNativeFiles?.(draftNative)
-      setAudio?.(draftAudio)
+      if (submissionRef.current !== submissionId) return
+      if (textRef.current === '') setText(draftText)
+      if (imagesRef.current.length === 0) setImages(draftImages)
+      if (filesRef.current.length === 0) setFiles(draftFiles)
+      if (nativeFilesRef.current.length === 0) setNativeFiles?.(draftNative)
+      if (audioRef.current.length === 0) setAudio?.(draftAudio)
     }
+    textRef.current = ''
+    imagesRef.current = []
+    filesRef.current = []
+    nativeFilesRef.current = []
+    audioRef.current = []
     setText('')
     setImages([])
     setImageError(null)
@@ -146,7 +188,15 @@ export function useComposerDraft({
 
   const submit = (e?: FormEvent): void => {
     e?.preventDefault()
-    if ((!hasComposerContent(text) && !hasAttachments) || disabled) return
+    if (
+      (!hasComposerContent(text) && !hasAttachments) ||
+      disabled ||
+      sendBlocked ||
+      submittingRef.current
+    ) return
+    submittingRef.current = true
+    onSubmitted?.()
+    const submissionId = ++submissionRef.current
 
     const slashChip = findSlashChipSubmit(text)
     if (slashChip && onSlashSubmit && resolveSlashSubmitCommand) {
@@ -163,9 +213,12 @@ export function useComposerDraft({
           if (!cmd) {
             // Do not fall through: resolveComposerMentions strips slash chips and
             // would send trailing text without the skill/MCP body.
+            onSlashResolveError?.(
+              'That command is no longer available. Remove the chip and choose it again.'
+            )
             return false
           }
-          const { draftImages, draftFiles, draftNative, draftAudio, restore } = clearDraft()
+          const { draftImages, draftFiles, draftNative, draftAudio, restore } = clearDraft(submissionId)
           const extras: ComposerSendExtras | undefined =
             draftNative.length || draftAudio.length
               ? {
@@ -186,6 +239,9 @@ export function useComposerDraft({
             restore()
           }
         })
+        .finally(() => {
+          submittingRef.current = false
+        })
       return
     }
 
@@ -199,7 +255,7 @@ export function useComposerDraft({
           if (!cmd) {
             // Unknown slash → fall through as normal chat message
             const { draftText, draftImages, draftFiles, draftNative, draftAudio, restore } =
-              clearDraft()
+              clearDraft(submissionId)
             const extras: ComposerSendExtras | undefined =
               draftNative.length || draftAudio.length
                 ? {
@@ -220,7 +276,7 @@ export function useComposerDraft({
             }
             return
           }
-          const { draftImages, draftFiles, draftNative, draftAudio, restore } = clearDraft()
+          const { draftImages, draftFiles, draftNative, draftAudio, restore } = clearDraft(submissionId)
           const extras: ComposerSendExtras | undefined =
             draftNative.length || draftAudio.length
               ? {
@@ -241,10 +297,13 @@ export function useComposerDraft({
             restore()
           }
         })
+        .finally(() => {
+          submittingRef.current = false
+        })
       return
     }
 
-    const { draftText, draftImages, draftFiles, draftNative, draftAudio, restore } = clearDraft()
+    const { draftText, draftImages, draftFiles, draftNative, draftAudio, restore } = clearDraft(submissionId)
     const extras: ComposerSendExtras | undefined =
       draftNative.length || draftAudio.length
         ? {
@@ -264,6 +323,9 @@ export function useComposerDraft({
       .then((ok) => {
         if (ok === false) restore()
       }, restore)
+      .finally(() => {
+        submittingRef.current = false
+      })
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement | HTMLDivElement>): void => {
@@ -283,7 +345,10 @@ export function useComposerDraft({
         onSlashDismiss?.()
         return
       }
-      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      if (
+        e.key === 'Tab' ||
+        (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)
+      ) {
         if (slashActiveCommand) {
           e.preventDefault()
           onSlashAccept?.(slashActiveCommand)
@@ -312,7 +377,10 @@ export function useComposerDraft({
         e.preventDefault()
         return
       }
-      if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+      if (
+        e.key === 'Tab' ||
+        (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing)
+      ) {
         if (mentionActiveItem) {
           e.preventDefault()
           onMentionAccept?.(mentionActiveItem)
@@ -323,6 +391,28 @@ export function useComposerDraft({
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       submit()
+      return
+    }
+    if (e.key === 'Escape' && onCancelEdit) {
+      e.preventDefault()
+      e.stopPropagation()
+      onCancelEdit()
+      return
+    }
+    if (
+      e.key === 'ArrowUp' &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.nativeEvent.isComposing &&
+      onEditLastUserMessage
+    ) {
+      const empty = !hasComposerContent(text)
+      const caret = getCaretStart?.() ?? 0
+      if (!empty && caret !== 0) return
+      if (!onEditLastUserMessage()) return
+      e.preventDefault()
     }
   }
 

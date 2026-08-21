@@ -3,12 +3,80 @@ import kill from 'tree-kill'
 import { assertInsideWorkspace } from '../../../shared/workspacePath'
 import type { TerminalShell } from '../../../shared/ipc'
 import { parseTerminalOutput } from '../../../shared/utils/terminalFormat'
+import { logger } from '../../../shared/logger'
+import { lowerProcessPriority } from '../processPriority'
 
-/** stdout/stderr cap returned to the model (each stream). */
-export const TERMINAL_MAX_OUTPUT = 64 * 1024
-/** Upper bound for model-requested command timeouts (5 minutes). */
-export const TERMINAL_MAX_TIMEOUT_MS = 300_000
-const MAX_OUTPUT = TERMINAL_MAX_OUTPUT
+const KILL_TREE_WAIT_MS = 5_000
+
+/** Kill a process tree; log when taskkill/tree-kill reports failure. */
+export function killProcessTree(pid: number, reason: string): void {
+  void killProcessTreeAndWait(pid, reason)
+}
+
+/** Await tree-kill (Windows taskkill) so worktree teardown does not rm while node still holds files. */
+export function killProcessTreeAndWait(
+  pid: number,
+  reason: string,
+  timeoutMs: number = KILL_TREE_WAIT_MS
+): Promise<void> {
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      resolve()
+    }
+    const timer = setTimeout(finish, timeoutMs)
+    kill(pid, (err) => {
+      clearTimeout(timer)
+      if (err) {
+        logger.warn('Failed to kill terminal process tree', {
+          scope: 'terminal',
+          pid,
+          reason,
+          err: err instanceof Error ? err.message : String(err)
+        })
+      }
+      finish()
+    })
+  })
+}
+
+/** @deprecated Former per-stream output cap; output is no longer truncated. */
+export const TERMINAL_MAX_OUTPUT = Number.POSITIVE_INFINITY
+/**
+ * Former upper bound for model-requested wait. Timeouts may exceed this;
+ * omitted waits still default to TERMINAL_DEFAULT_TIMEOUT_MS.
+ */
+export const TERMINAL_MAX_TIMEOUT_MS = 1_800_000
+/** Default wait for a new command when timeoutMs / block_until_ms are omitted. */
+export const TERMINAL_DEFAULT_TIMEOUT_MS = 60_000
+const SESSION_POLL_DEFAULT_MS = 30_000
+
+/** New-command wait: timeoutMs wins over block_until_ms unless background-now (0). */
+export function resolveNewCommandBlockUntilMs(args: {
+  block_until_ms?: unknown
+  timeoutMs?: unknown
+}): number {
+  const hasBlock =
+    typeof args.block_until_ms === 'number' && Number.isFinite(args.block_until_ms)
+  const block = hasBlock ? Math.max(0, args.block_until_ms as number) : undefined
+  if (block === 0) return 0
+  const hasTimeout = typeof args.timeoutMs === 'number' && Number.isFinite(args.timeoutMs)
+  const timeout = hasTimeout ? Math.max(1, args.timeoutMs as number) : undefined
+  if (timeout != null && block != null) return Math.max(block, timeout)
+  if (timeout != null) return timeout
+  if (block != null) return block
+  return TERMINAL_DEFAULT_TIMEOUT_MS
+}
+
+/** Session poll wait. timeoutMs is ignored; omitted block_until_ms defaults to 30s. */
+export function resolveSessionPollBlockUntilMs(args: { block_until_ms?: unknown }): number {
+  if (typeof args.block_until_ms === 'number' && Number.isFinite(args.block_until_ms)) {
+    return Math.max(0, args.block_until_ms)
+  }
+  return SESSION_POLL_DEFAULT_MS
+}
 
 /** Resolved shell used for spawn (never `auto`). */
 export type ResolvedTerminalShell = 'cmd' | 'powershell' | 'bash' | 'unix'
@@ -53,15 +121,30 @@ const UNIX_PRIMARY_ON_WINDOWS = new Set([
   'zsh'
 ])
 
+/** Shown when Unix file-inspect commands hit Windows cmd — steer to built-ins, not findstr/type. */
+const WORKSPACE_FILE_OPS_REDIRECT =
+  'For workspace file search or read, use the grep, read, glob, and list_dir tools — not findstr or type.'
+
+const FILE_OP_UNIX_TOKENS = new Set([
+  'ls',
+  'grep',
+  'egrep',
+  'fgrep',
+  'head',
+  'tail',
+  'find',
+  'cat'
+])
+
 const UNIX_CMD_HINTS: Record<string, string> = {
-  ls: 'dir',
-  grep: 'findstr',
-  egrep: 'findstr',
-  fgrep: 'findstr',
-  head: 'more (or PowerShell Get-Content -TotalCount)',
-  tail: 'PowerShell Get-Content -Tail',
-  find: 'dir /s /b',
-  cat: 'type',
+  ls: 'the list_dir tool',
+  grep: 'the grep tool',
+  egrep: 'the grep tool',
+  fgrep: 'the grep tool',
+  head: 'the read tool',
+  tail: 'the read tool',
+  find: 'the glob tool',
+  cat: 'the read tool',
   which: 'where',
   pwd: 'echo %CD%',
   rm: 'del',
@@ -74,14 +157,31 @@ const UNIX_CMD_HINTS: Record<string, string> = {
   zsh: 'cmd.exe builtins'
 }
 
+/** PATH lookups are stable for the process lifetime; each miss is a blocking spawn. */
+const commandOnPathCache = new Map<string, boolean>()
+
 export function commandOnPath(bin: string): boolean {
+  const cached = commandOnPathCache.get(bin)
+  if (cached !== undefined) return cached
   const finder = process.platform === 'win32' ? 'where' : 'which'
   const result = spawnSync(finder, [bin], {
     encoding: 'utf8',
     windowsHide: true,
     env: process.env
   })
-  return result.status === 0 && Boolean(result.stdout?.trim())
+  const found = result.status === 0 && Boolean(result.stdout?.trim())
+  commandOnPathCache.set(bin, found)
+  return found
+}
+
+/** Clear cached PATH lookups after installing a binary mid-session. */
+export function invalidateCommandOnPathCache(bin?: string): void {
+  if (bin) commandOnPathCache.delete(bin)
+  else commandOnPathCache.clear()
+}
+
+export function resetCommandOnPathCacheForTests(): void {
+  invalidateCommandOnPathCache()
 }
 
 function unixShellInvocation(command: string): { bin: string; args: string[] } {
@@ -183,11 +283,29 @@ export function unsupportedUnixOnWindowsMessage(command: string): string | null 
     unixStages.length > 1
       ? ` Also blocked in pipeline: ${unixStages.slice(1).join(', ')}.`
       : ''
+  const fileOpUnix = FILE_OP_UNIX_TOKENS
   return [
     `Unsupported Unix command on Windows: "${token}".`,
-    'The terminal tool is using cmd.exe (Settings → Agent → Terminal shell).',
-    `Prefer cmd-safe commands (dir, findstr, where, type, echo %CD%) — e.g. use "${equiv}" instead of "${token}".${stageNote}`,
-    'Switch the shell to PowerShell or bash, or use cmd-compatible commands.',
+    'The terminal tool is using cmd.exe (Settings → Tools → Terminal shell).',
+    `Use ${equiv} instead of "${token}".${stageNote}`,
+    fileOpUnix.has(token) ? WORKSPACE_FILE_OPS_REDIRECT : null,
+    'Switch the shell to PowerShell or bash for other shell-only commands.',
+    'exit_code: 1'
+  ]
+    .filter(Boolean)
+    .join('\n')
+}
+
+/**
+ * Bash `for … in …; do … done` is not valid PowerShell (T1: Missing opening '(' after 'for').
+ * Detect before spawn so the model gets a clear shell-mismatch hint.
+ */
+export function bashForLoopOnPowerShellMessage(command: string): string | null {
+  if (!/\bfor\s+\S+\s+in\s+[^;]+;\s*do\b/i.test(command)) return null
+  if (!/\bdone\b/i.test(command)) return null
+  return [
+    'This command uses bash for-loop syntax (for … in …; do … done), but the terminal shell is PowerShell.',
+    'Rewrite with PowerShell foreach, or set Terminal shell to bash (Git Bash).',
     'exit_code: 1'
   ].join('\n')
 }
@@ -207,11 +325,30 @@ function appendWindowsCompatHint(
     .filter((t): t is string => Boolean(t))
   const unixStages = stages.filter((t) => UNIX_PRIMARY_ON_WINDOWS.has(t))
   if (!unixStages.length) return content
+  const fileOpUnix = FILE_OP_UNIX_TOKENS
   const hints = unixStages.map((t) => {
     const equiv = UNIX_CMD_HINTS[t] ?? 'cmd.exe-compatible commands'
-    return `"${t}" → try ${equiv}`
+    return `"${t}" → use ${equiv}`
   })
-  return `${content}\n\n[Windows hint] cmd.exe does not support: ${hints.join('; ')}. Use dir, findstr, where, type, or switch Terminal shell to PowerShell.`
+  const redirect = unixStages.some((t) => fileOpUnix.has(t)) ? ` ${WORKSPACE_FILE_OPS_REDIRECT}` : ''
+  return `${content}\n\n[Windows hint] cmd.exe does not support: ${hints.join('; ')}.${redirect} Switch Terminal shell to PowerShell for other shell-only commands.`
+}
+
+/** Append PowerShell hints for common Windows footguns seen in agent runs. */
+export function appendPowerShellCompatHint(
+  content: string,
+  exitCode: number | null,
+  stderr: string,
+  resolved: ResolvedTerminalShell
+): string {
+  if (resolved !== 'powershell' || exitCode === 0 || exitCode === null) return content
+  if (/running scripts is disabled|npm\.ps1 cannot be loaded/i.test(stderr)) {
+    return `${content}\n\n[Windows hint] npm is blocked by PowerShell execution policy. Use npm.cmd instead of npm (e.g. npm.cmd test), or run Set-ExecutionPolicy -Scope CurrentUser RemoteSigned.`
+  }
+  if (/invalid statement separator.*&&|token '&&'/i.test(stderr)) {
+    return `${content}\n\n[Windows hint] && is not valid in Windows PowerShell 5.x. Use ; between statements, separate terminal calls, or pwsh 7+.`
+  }
+  return content
 }
 
 /**
@@ -287,7 +424,7 @@ export function isDirMissingPathContent(command: string, content: string): boole
 }
 
 function formatTerminalOutput(
-  workspaceRoot: string,
+  cwd: string,
   command: string,
   stdout: string,
   stderr: string,
@@ -298,24 +435,25 @@ function formatTerminalOutput(
   const cmdSoft = resolved === 'cmd'
   const dirMissing = cmdSoft && isDirMissingPath(command, code, stdout, stderr)
   let out = [
-    `cwd: ${workspaceRoot}`,
+    `cwd: ${cwd}`,
     `shell: ${resolved}`,
     '',
     ...annotations,
-    stdout.slice(0, MAX_OUTPUT),
+    stdout,
     dirMissing ? 'dir: path not found' : '',
-    stderr ? `stderr:\n${stderr.slice(0, MAX_OUTPUT)}` : '',
+    stderr ? `stderr:\n${stderr}` : '',
     `exit_code: ${code ?? -1}`
   ]
     .filter(Boolean)
     .join('\n')
   out = appendWindowsCompatHint(command, out, code, resolved)
+  out = appendPowerShellCompatHint(out, code, stderr, resolved)
   return out
 }
 
 /** Format background/poll terminal session output for the model + TerminalBody parser. */
 export function formatTerminalSessionOutput(input: {
-  workspaceRoot: string
+  cwd: string
   command: string
   shell: ResolvedTerminalShell
   stdout: string
@@ -325,7 +463,7 @@ export function formatTerminalSessionOutput(input: {
   status: string
 }): string {
   const base = formatTerminalOutput(
-    input.workspaceRoot,
+    input.cwd,
     input.command,
     input.stdout,
     input.stderr,
@@ -376,7 +514,11 @@ export function sanitizedTerminalEnv(
     'PWD',
     'OLDPWD',
     'HOMEBREW_PREFIX',
-    'HOMEBREW_CELLAR'
+    'HOMEBREW_CELLAR',
+    'APPDATA',
+    'LOCALAPPDATA',
+    'GH_CONFIG_DIR',
+    'XDG_CONFIG_HOME'
   ]
 
   const env: Record<string, string> = {}
@@ -405,13 +547,13 @@ export async function toolTerminal(
   workspaceRoot: string,
   command: string,
   signal: AbortSignal,
-  timeoutMsOrOpts: number | ToolTerminalOptions = 60_000
+  timeoutMsOrOpts: number | ToolTerminalOptions = TERMINAL_DEFAULT_TIMEOUT_MS
 ): Promise<string> {
   assertInsideWorkspace(workspaceRoot, '.')
 
   const opts: ToolTerminalOptions =
     typeof timeoutMsOrOpts === 'number' ? { timeoutMs: timeoutMsOrOpts } : timeoutMsOrOpts
-  const timeoutMs = Math.min(opts.timeoutMs ?? 60_000, TERMINAL_MAX_TIMEOUT_MS)
+  const timeoutMs = Math.max(1, opts.timeoutMs ?? TERMINAL_DEFAULT_TIMEOUT_MS)
   const cwd = opts.cwd ?? workspaceRoot
   const resolved = resolveTerminalShell(opts.shell ?? 'auto')
   const spec = terminalSpawnSpec(command, resolved)
@@ -422,18 +564,10 @@ export async function toolTerminal(
       return
     }
 
-    if (resolved === 'cmd') {
-      const unixHint = unsupportedUnixOnWindowsMessage(command)
-      if (unixHint) {
-        resolve(`cwd: ${workspaceRoot}\nshell: cmd\n\n${unixHint}`)
-        return
-      }
-    }
-
     if (resolved === 'bash' && !commandOnPath('bash')) {
       resolve(
         [
-          `cwd: ${workspaceRoot}`,
+          `cwd: ${cwd}`,
           'shell: bash',
           '',
           'bash was not found on PATH. Install Git Bash or set Terminal shell to auto/PowerShell/cmd.',
@@ -446,7 +580,7 @@ export async function toolTerminal(
     if (resolved === 'powershell' && !commandOnPath('pwsh') && !commandOnPath('powershell')) {
       resolve(
         [
-          `cwd: ${workspaceRoot}`,
+          `cwd: ${cwd}`,
           'shell: powershell',
           '',
           'PowerShell was not found on PATH. Set Terminal shell to cmd or install PowerShell.',
@@ -461,6 +595,7 @@ export async function toolTerminal(
       env: sanitizedTerminalEnv(),
       windowsHide: true
     })
+    if (child.pid) lowerProcessPriority(child.pid)
 
     let stdout = ''
     let stderr = ''
@@ -474,12 +609,12 @@ export async function toolTerminal(
     }
 
     const onAbort = (): void => {
-      if (child.pid) kill(child.pid)
+      if (child.pid) killProcessTree(child.pid, 'abort')
       finish(() => reject(new DOMException('Aborted', 'AbortError')))
     }
 
     const timer = setTimeout(() => {
-      if (child.pid) kill(child.pid)
+      if (child.pid) killProcessTree(child.pid, 'timeout')
       finish(() => reject(new Error(`Command timed out after ${timeoutMs}ms`)))
     }, timeoutMs)
 
@@ -491,20 +626,14 @@ export async function toolTerminal(
     signal.addEventListener('abort', onAbort)
 
     child.stdout.on('data', (buf: Buffer) => {
-      if (stdout.length >= MAX_OUTPUT) return
       const text = buf.toString('utf8')
-      const room = MAX_OUTPUT - stdout.length
-      const clipped = text.length > room ? text.slice(0, room) : text
-      stdout += clipped
-      if (clipped) opts.onOutput?.({ text: clipped, stream: 'stdout' })
+      stdout += text
+      if (text) opts.onOutput?.({ text, stream: 'stdout' })
     })
     child.stderr.on('data', (buf: Buffer) => {
-      if (stderr.length >= MAX_OUTPUT) return
       const text = buf.toString('utf8')
-      const room = MAX_OUTPUT - stderr.length
-      const clipped = text.length > room ? text.slice(0, room) : text
-      stderr += clipped
-      if (clipped) opts.onOutput?.({ text: clipped, stream: 'stderr' })
+      stderr += text
+      if (text) opts.onOutput?.({ text, stream: 'stderr' })
     })
 
     child.on('error', (err) => {
@@ -515,7 +644,7 @@ export async function toolTerminal(
       const findstrNoMatch =
         resolved === 'cmd' && isFindstrNoMatch(command, code, stdout, stderr)
       const out = formatTerminalOutput(
-        workspaceRoot,
+        cwd,
         command,
         stdout,
         stderr,

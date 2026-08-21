@@ -89,6 +89,7 @@ describe('openai compat thinking body', () => {
       'ollama'
     )
     expect(body.think).toBe(true)
+    expect(body.reasoning_effort).toBe('medium')
   })
 
   it('adds custom reasoning_effort when thinking enabled', () => {
@@ -586,6 +587,43 @@ describe('openai compat thinking body', () => {
       'ollama'
     )
     expect(body.think).toBe('high')
+    expect(body.reasoning_effort).toBe('high')
+  })
+
+  it('sends GPT-OSS reasoning_effort even without catalog modelInfo', () => {
+    const body = buildOpenAiCompatBody(
+      baseReq({
+        model: 'gpt-oss:120b',
+        thinking: { enabled: true, effort: 'high' }
+      }),
+      { defaultBaseUrl: 'https://ollama.com', ollamaVision: true },
+      'ollama'
+    )
+    expect(body.reasoning_effort).toBe('high')
+    expect(body.think).toBe('high')
+  })
+
+  it('replays Ollama assistant reasoning on the reasoning field', () => {
+    const body = buildOpenAiCompatBody(
+      baseReq({
+        model: 'glm-5.2',
+        messages: [
+          {
+            role: 'assistant',
+            content: 'ok',
+            thinking: 'plan',
+            reasoningState: { kind: 'openai_compat', reasoningContent: 'plan' }
+          }
+        ]
+      }),
+      { defaultBaseUrl: 'http://127.0.0.1:11434', ollamaVision: true },
+      'ollama'
+    )
+    const assistant = (body.messages as Array<Record<string, unknown>>).find(
+      (m) => m.role === 'assistant'
+    )
+    expect(assistant?.reasoning).toBe('plan')
+    expect(assistant?.reasoning_content).toBeUndefined()
   })
 
   it('normalizes DeepSeek effort values', () => {
@@ -625,6 +663,31 @@ describe('openai compat thinking body', () => {
       'ollama'
     )
     expect(body.think).toBe(false)
+    expect(body.reasoning_effort).toBe('none')
+  })
+
+  it('keeps GPT-OSS thinking on at low when the user turns Think off', () => {
+    const body = buildOpenAiCompatBody(
+      baseReq({
+        model: 'gpt-oss:120b-cloud',
+        thinking: { enabled: false },
+        modelInfo: {
+          id: 'gpt-oss:120b-cloud',
+          inputModalities: ['text'],
+          outputModalities: ['text'],
+          supportsTools: true,
+          supportsVision: false,
+          supportsThinking: true,
+          thinkingMode: 'effort',
+          thinkingCanDisable: false,
+          supportedThinkingEfforts: ['low', 'medium', 'high']
+        }
+      }),
+      { defaultBaseUrl: 'https://ollama.com', ollamaVision: true },
+      'ollama'
+    )
+    expect(body.reasoning_effort).toBe('low')
+    expect(body.think).toBe('low')
   })
 })
 

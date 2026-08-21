@@ -1,10 +1,13 @@
+import { PlugsConnectedIcon } from '@phosphor-icons/react'
 import { cn } from '@renderer/lib/ui/cn'
+import { useDocumentTheme } from '@renderer/lib/ui/useDocumentTheme'
 import type { ProviderId } from '@shared/ipc'
 import {
   PROVIDER_BRAND_DATA,
   resolveProviderBrandSlug,
   type ProviderBrandSlug
 } from './providerBrandPaths'
+import { resolveProviderBrandColor } from './providerBrandColor'
 
 export type ProviderLogoId = ProviderId | string
 
@@ -19,11 +22,13 @@ function BrandMark({
   size: number
   className?: string
 }) {
+  const theme = useDocumentTheme()
   const brand = PROVIDER_BRAND_DATA[slug]
+  const color = resolveProviderBrandColor(brand.colorPrimary, theme)
   return (
     <brand.Component
       size={size}
-      style={{ color: brand.colorPrimary }}
+      style={{ color }}
       className={cn('shrink-0', className)}
       aria-hidden="true"
     />
@@ -76,6 +81,16 @@ export function ProviderLogo({
   const subSlug = subProvider ? resolveProviderBrandSlug(subProvider) : undefined
   const providerSlug = resolveProviderBrandSlug(String(id))
   const slug = subSlug ?? providerSlug
+
+  if (!subProvider && id === 'custom') {
+    return (
+      <PlugsConnectedIcon
+        size={px}
+        className={cn('shrink-0 text-secondary', className)}
+        aria-hidden="true"
+      />
+    )
+  }
 
   if (slug) {
     return <BrandMark slug={slug} size={px} className={className} />

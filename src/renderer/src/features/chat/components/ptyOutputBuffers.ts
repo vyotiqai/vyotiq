@@ -16,10 +16,7 @@ export function ensurePtyOutputBufferListener(): Map<string, string> {
     window.vyotiq?.onPtyData?.(({ id, data }) => {
       appendPtyOutputBuffer(ptyOutputBuffers, id, data)
     })
-    window.vyotiq?.onPtyExit?.(({ id }) => {
-      // Dead sessions: drop scrollback even when TerminalPanel is unmounted.
-      ptyOutputBuffers.delete(id)
-    })
+    // Keep scrollback for exited-but-listed sessions; prune on kill/remove via prunePtyOutputBuffers.
   }
   return ptyOutputBuffers
 }

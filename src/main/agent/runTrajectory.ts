@@ -81,6 +81,42 @@ export function buildTrajectoryFromEvents(
         })
         break
       }
+      case 'compaction_started': {
+        rows.push({
+          at,
+          step: lastStep,
+          kind: 'compaction_started',
+          ...(typeof ev.mode === 'string' ? { mode: ev.mode } : {})
+        })
+        break
+      }
+      case 'compaction_verifying': {
+        rows.push({
+          at,
+          step: lastStep,
+          kind: 'compaction_verifying',
+          ...(typeof ev.summary === 'string' ? { summary: clip(ev.summary) } : {})
+        })
+        break
+      }
+      case 'compaction_verify_retry': {
+        rows.push({
+          at,
+          step: lastStep,
+          kind: 'compaction_verify_retry',
+          ...(typeof ev.summary === 'string' ? { summary: clip(ev.summary) } : {})
+        })
+        break
+      }
+      case 'compaction_verify_failed': {
+        rows.push({
+          at,
+          step: lastStep,
+          kind: 'compaction_verify_failed',
+          ...(typeof ev.summary === 'string' ? { summary: clip(ev.summary) } : {})
+        })
+        break
+      }
       case 'compaction': {
         rows.push({
           at,
@@ -188,7 +224,6 @@ export function buildPredictionManifest(
     RunReceipt,
     | 'unreadEditPaths'
     | 'failureClusters'
-    | 'consecutiveToolFailureSteps'
     | 'compactionCount'
     | 'toolStats'
   >,
@@ -207,10 +242,7 @@ export function buildPredictionManifest(
       reason: `${receipt.unreadEditPaths.length} unread-before-edit path(s)`
     })
   }
-  if (
-    receipt.failureClusters.length > 0 ||
-    (receipt.consecutiveToolFailureSteps ?? 0) >= 3
-  ) {
+  if (receipt.failureClusters.length > 0) {
     predictions.push({
       at: writtenAt,
       type: 'harness_section',

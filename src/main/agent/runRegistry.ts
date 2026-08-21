@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto'
 import { contentDisplayText, type AgentEvent, type AgentInteractionMode, type ChatMessage } from '../../shared/ipc'
 import { userMessageDisplayText } from '../../shared/slashCommands'
-import { cancelPendingQuestions } from './agentQuestion'
+import { cancelPendingQuestions, dismissPendingQuestions } from './agentQuestion'
 
 export type FollowUpEntry = {
   id: string
@@ -34,7 +34,47 @@ export type EnqueueFollowUpResult =
   | { ok: true; id: string; position: number; queueLength: number }
   | { ok: false; error: string }
 
+let rejectedRunStarts = 0
+
+export function activeRunCount(): number {
+  return active.size
+}
+
+export function getRejectedRunStarts(): number {
+  return rejectedRunStarts
+}
+
+export function resetRejectedRunStartsForTests(): void {
+  rejectedRunStarts = 0
+}
+
 const active = new Map<string, RunEntry>()
+/** Inline Agent V instance children keyed by parent run id (active abort map only). */
+const inlineChildrenByParent = new Map<string, Set<string>>()
+
+export function registerInlineChildRun(parentRunId: string, childRunId: string): void {
+  let children = inlineChildrenByParent.get(parentRunId)
+  if (!children) {
+    children = new Set()
+    inlineChildrenByParent.set(parentRunId, children)
+  }
+  children.add(childRunId)
+}
+
+export function unregisterInlineChildRun(childRunId: string): void {
+  for (const [parentRunId, children] of inlineChildrenByParent.entries()) {
+    if (!children.delete(childRunId)) continue
+    if (children.size === 0) inlineChildrenByParent.delete(parentRunId)
+    return
+  }
+}
+
+export function getActiveInlineChildRunIds(parentRunId: string): string[] {
+  const children = inlineChildrenByParent.get(parentRunId)
+  if (!children) return []
+  return [...children].filter((childId) => isActive(childId))
+}
+
 /** Composer mode queued for the next agent step (consumed by loop via takePendingMode). */
 const pendingModeByRun = new Map<string, AgentInteractionMode>()
 /** writes_checkpoint persisted in loop finally after the generator consumer ended. */
@@ -105,8 +145,9 @@ export function registerRunAbort(runId: string, workspacePath: string): RunAbort
 export function tryRegisterRunAbort(
   runId: string,
   workspacePath: string
-): { ok: true; controller: AbortController; invokeId: number } | { ok: false; error: string } {
+): { ok: true; controller: AbortController; invokeId: number } | { ok: false; error: string; code?: string } {
   if (active.has(runId)) {
+    rejectedRunStarts++
     return { ok: false, error: 'Run is already active' }
   }
   const handle = registerRunAbort(runId, workspacePath)
@@ -143,8 +184,7 @@ export function markRunTurnComplete(runId: string, invokeId: number): void {
 
 type CancelGateWaitersOpts = {
   invokeId?: number
-  /** Soft-steer: keep question prompts parked — they do not gate mutations, so the
-   *  user can finish answering while their follow-up waits in the queue. */
+  /** Soft-steer enqueue: keep question prompts parked while a follow-up waits. */
   skipQuestions?: boolean
 }
 
@@ -175,7 +215,12 @@ function disposeTerminalSessionsNow(runId: string, invokeId: number): void {
   }
 }
 
-function cancelRunCore(runId: string): boolean {
+function cancelRunCore(runId: string, cascadeChildren = true): boolean {
+  if (cascadeChildren) {
+    for (const childId of getActiveInlineChildRunIds(runId)) {
+      cancelRunCore(childId, false)
+    }
+  }
   const entry = active.get(runId)
   if (!entry) return false
   entry.followUps = []
@@ -224,6 +269,35 @@ export async function waitUntilRunInactive(
   return true
 }
 
+/** Default bound for cancel-and-wait during quit. */
+export const QUIT_RUN_QUIESCE_MS = 15_000
+
+export type CancelAndWaitActiveRunsResult = {
+  cancelled: number
+  timedOut: string[]
+}
+
+/**
+ * Abort every live run, then wait (bounded) until each slot is cleared.
+ * Used on quit so persistence can finish before browser/PTY/MCP dispose.
+ */
+export async function cancelAndWaitActiveRuns(
+  timeoutMs = QUIT_RUN_QUIESCE_MS
+): Promise<CancelAndWaitActiveRunsResult> {
+  const runs = listActiveRuns()
+  for (const run of runs) {
+    cancelRun(run.runId)
+  }
+  const timedOut: string[] = []
+  await Promise.all(
+    runs.map(async (run) => {
+      const cleared = await waitUntilRunInactive(run.runId, timeoutMs)
+      if (!cleared) timedOut.push(run.runId)
+    })
+  )
+  return { cancelled: runs.length, timedOut }
+}
+
 /** True when this invoke still owns the run slot (no newer follow-up registered). */
 export function isCurrentInvoke(runId: string, invokeId: number): boolean {
   const entry = active.get(runId)
@@ -270,17 +344,22 @@ export function clearRunAbort(runId: string, invokeId?: number): void {
   if (invokeId !== undefined && entry.invokeId !== invokeId) return
   active.delete(runId)
   pendingModeByRun.delete(runId)
-  lateWriteCheckpointByRun.delete(runId)
-  lateFollowUpDroppedByRun.delete(runId)
+  // Keep late checkpoint / follow_up_dropped buffers — IPC takeLate* owns cleanup
+  // after the generator ends (set in runAgent finally, taken after for-await).
 }
 
 /** Queue a user message for mid-run injection (passive — does not interrupt). */
 export function enqueueFollowUp(runId: string, message: ChatMessage): EnqueueFollowUpResult {
   const entry = active.get(runId)
-  // Reject once the turn closed or the run abort fired — otherwise IPC can ack
-  // follow_up_queued and clearRunAbort later drops the message unapplied.
-  if (!entry || entry.turnComplete || entry.controller.signal.aborted) {
+  // Reject once the run abort fired — otherwise IPC can ack follow_up_queued and
+  // clearRunAbort later drops the message unapplied. Also reject after turnComplete:
+  // the finally path may still hold the slot while persistence runs, and orphans
+  // would otherwise be ack'd then dropped without disk sync.
+  if (!entry || entry.controller.signal.aborted) {
     return { ok: false, error: 'Run is not active' }
+  }
+  if (entry.turnComplete) {
+    return { ok: false, error: 'Run is finishing' }
   }
   if (message.role !== 'user') {
     return { ok: false, error: 'Follow-up must be a user message' }
@@ -303,7 +382,7 @@ export function removeFollowUp(
   id: string
 ): { ok: true; removed: boolean; queueLength: number } | { ok: false; error: string } {
   const entry = active.get(runId)
-  if (!entry || entry.turnComplete || entry.controller.signal.aborted) {
+  if (!entry || entry.controller.signal.aborted) {
     return { ok: false, error: 'Run is not active' }
   }
   const before = entry.followUps.length
@@ -322,7 +401,7 @@ export function updateFollowUp(
   message: ChatMessage
 ): { ok: true; preview: string } | { ok: false; error: string } {
   const entry = active.get(runId)
-  if (!entry || entry.turnComplete || entry.controller.signal.aborted) {
+  if (!entry || entry.controller.signal.aborted) {
     return { ok: false, error: 'Run is not active' }
   }
   if (message.role !== 'user') {
@@ -340,7 +419,7 @@ export function promoteFollowUp(
   id: string
 ): { ok: true; queueLength: number } | { ok: false; error: string } {
   const entry = active.get(runId)
-  if (!entry || entry.turnComplete || entry.controller.signal.aborted) {
+  if (!entry || entry.controller.signal.aborted) {
     return { ok: false, error: 'Run is not active' }
   }
   const idx = entry.followUps.findIndex((item) => item.id === id)
@@ -349,6 +428,7 @@ export function promoteFollowUp(
   item.ready = true
   entry.followUps.unshift(item)
   entry.streamInterrupt?.abort()
+  dismissPendingQuestions(runId, entry.invokeId)
   cancelPendingGateWaiters(runId, {
     invokeId: entry.invokeId,
     skipQuestions: true
@@ -358,14 +438,14 @@ export function promoteFollowUp(
 
 export function hasPendingFollowUps(runId: string): boolean {
   const entry = active.get(runId)
-  if (!entry || entry.turnComplete) return false
+  if (!entry) return false
   return entry.followUps.length > 0
 }
 
 /** Follow-ups the user promoted with Send now — eligible for loop drain/steer. */
 export function hasReadyFollowUps(runId: string): boolean {
   const entry = active.get(runId)
-  if (!entry || entry.turnComplete) return false
+  if (!entry) return false
   return entry.followUps.some((item) => item.ready)
 }
 
@@ -373,6 +453,13 @@ export function peekFollowUps(runId: string): FollowUpEntry[] {
   const entry = active.get(runId)
   if (!entry) return []
   return entry.followUps.slice()
+}
+
+/** Replace the in-memory queue (e.g. after loading followups.json on resume). */
+export function seedFollowUps(runId: string, entries: FollowUpEntry[]): void {
+  const entry = active.get(runId)
+  if (!entry) return
+  entry.followUps = entries.map((item) => ({ ...item, message: { ...item.message } }))
 }
 
 /** Take the next queued follow-up (FIFO), regardless of ready state — turn-end auto-apply. */
@@ -459,8 +546,12 @@ export function resetActiveRunsForTests(): void {
     entry.controller.abort()
   }
   active.clear()
+  inlineChildrenByParent.clear()
   pendingModeByRun.clear()
+  lateWriteCheckpointByRun.clear()
+  lateFollowUpDroppedByRun.clear()
   nextInvokeId = 1
+  resetRejectedRunStartsForTests()
 }
 
 /** Pure cancel helper (no Electron) — used by IPC and tests. */

@@ -2,6 +2,7 @@ import js from '@eslint/js'
 import globals from 'globals'
 import react from 'eslint-plugin-react'
 import reactHooks from 'eslint-plugin-react-hooks'
+import jsxA11y from 'eslint-plugin-jsx-a11y'
 import babelParser from '@babel/eslint-parser'
 
 const sharedLanguageOptions = {
@@ -34,7 +35,7 @@ const sharedRules = {
 
 export default [
   {
-    ignores: ['out/**', 'dist/**', 'node_modules/**', 'release/**', '**/*.d.ts']
+    ignores: ['out/**', 'dist/**', 'node_modules/**', 'release/**', 'test-results/**', '**/*.d.ts', '.tmp/**', 'landing/dist/**', 'landing/.astro/**']
   },
   js.configs.recommended,
   {
@@ -62,7 +63,8 @@ export default [
     files: ['**/*.tsx'],
     plugins: {
       react,
-      'react-hooks': reactHooks
+      'react-hooks': reactHooks,
+      'jsx-a11y': jsxA11y
     },
     languageOptions: sharedLanguageOptions,
     settings: {
@@ -72,6 +74,55 @@ export default [
       ...sharedRules,
       ...react.configs.recommended.rules,
       ...reactHooks.configs.recommended.rules,
+      ...jsxA11y.configs.recommended.rules,
+      // Click/keyboard widgets must be real controls. Drag, image load, and
+      // title-bar double-click are not click-target patterns.
+      'jsx-a11y/click-events-have-key-events': 'warn',
+      'jsx-a11y/no-static-element-interactions': [
+        'warn',
+        {
+          handlers: [
+            'onClick',
+            'onMouseDown',
+            'onMouseUp',
+            'onKeyPress',
+            'onKeyDown',
+            'onKeyUp'
+          ],
+          allowExpressionValues: true
+        }
+      ],
+      'jsx-a11y/no-noninteractive-element-interactions': [
+        'warn',
+        {
+          handlers: [
+            'onClick',
+            'onMouseDown',
+            'onMouseUp',
+            'onKeyPress',
+            'onKeyDown',
+            'onKeyUp'
+          ]
+        }
+      ],
+      'jsx-a11y/interactive-supports-focus': 'warn',
+      // APG: tabpanel/region/application may take Tab so the surface can scroll.
+      'jsx-a11y/no-noninteractive-tabindex': [
+        'warn',
+        {
+          roles: ['tabpanel', 'region', 'application', 'log', 'document'],
+          allowExpressionValues: true
+        }
+      ],
+      'jsx-a11y/label-has-associated-control': [
+        'warn',
+        {
+          controlComponents: ['Input', 'Switch', 'Textarea'],
+          depth: 3
+        }
+      ],
+      'jsx-a11y/no-autofocus': 'warn',
+      'jsx-a11y/role-supports-aria-props': 'warn',
       'react/react-in-jsx-scope': 'off',
       'react/prop-types': 'off',
       'react/display-name': 'off',

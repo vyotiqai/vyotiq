@@ -30,7 +30,7 @@ export function ListDirBody({ tool, loading, loadFailed, inGroup }: ToolBodyProp
         {detail ? <span className="font-mono text-2xs text-tertiary">{detail}</span> : null}
       </div>
       {tool.contentTruncated ? <TruncatedBanner loading={loading} failed={loadFailed} /> : null}
-      <DirListing entries={data.entries} />
+      <DirListing entries={data.entries} basePath={data.path} />
     </div>
   )
 }

@@ -1,13 +1,5 @@
-import { existsSync, readFileSync } from 'fs'
-import { resolveInsideWorkspace } from '../../workspace/safePath'
-import { applyUnifiedDiff } from './edit'
-import { countOccurrences } from './strReplace'
-
-/** Max characters for a single text write via edit / multi_edit / str_replace. */
-export const LARGE_WRITE_MAX_CHARS = 50_000
-
-/** Max lines for a single text write via edit / multi_edit / str_replace. */
-export const LARGE_WRITE_MAX_LINES = 500
+import { loadStatus } from '../state'
+import { isSafeWorkspaceRelPath } from '../../../shared/utils/workspacePath'
 
 const BINARY_EXTENSIONS = [
   '.gguf',
@@ -22,137 +14,117 @@ const BINARY_EXTENSIONS = [
   '.ckpt'
 ] as const
 
-export function countLines(text: string): number {
-  if (!text) return 0
-  return text.split(/\r\n|\r|\n/).length
-}
-
 export function isBinaryWritePath(path: string): boolean {
   const lower = path.toLowerCase().replace(/\\/g, '/')
   return BINARY_EXTENSIONS.some((ext) => lower.endsWith(ext))
 }
 
-/**
- * Reject scrape dumps and binary-path text writes before they hit disk.
- * Diff-based patches are checked against the resulting file body.
- */
-export function assertWritableTextContent(path: string, contents: string): void {
+/** Enforced at tool execution — not a pre-dispatch gate. */
+export function assertWritablePath(path: string): void {
   if (isBinaryWritePath(path)) {
     throw new Error(
       `Refusing to write text contents to binary path ${path}. ` +
         'Use the terminal tool to download binaries (e.g. huggingface-cli download, curl -L -o).'
     )
   }
-
-  const chars = contents.length
-  const lines = countLines(contents)
-  if (chars > LARGE_WRITE_MAX_CHARS || lines > LARGE_WRITE_MAX_LINES) {
-    throw new Error(
-      `Write too large (${chars} chars, ${lines} lines). ` +
-        `Cap is ${LARGE_WRITE_MAX_CHARS} chars / ${LARGE_WRITE_MAX_LINES} lines. ` +
-        'Do not paste scraped web pages into files — extract only what you need, or use terminal download for large artifacts.'
-    )
-  }
 }
 
-function normalizeNewlines(text: string): string {
-  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+function normalizeScopePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
 }
 
-function readWorkspaceText(workspaceRoot: string, path: string): string | null {
-  try {
-    const resolved = resolveInsideWorkspace(workspaceRoot, path)
-    if (!existsSync(resolved)) return null
-    return readFileSync(resolved, 'utf8')
-  } catch {
-    return null
-  }
+/** True when a path_scope prefix is a safe workspace-relative path (after slash normalize). */
+export function isSafePathScopePrefix(path: string): boolean {
+  const scope = normalizeScopePath(path.trim())
+  return Boolean(scope) && isSafeWorkspaceRelPath(scope)
 }
 
-function previewStrReplaceNext(
-  original: string,
-  oldString: string,
-  newString: string,
-  replaceAll: boolean
-): string | null {
-  const normalizedOriginal = normalizeNewlines(original)
-  const normalizedOld = normalizeNewlines(oldString)
-  const normalizedNew = normalizeNewlines(newString)
-  const matches = countOccurrences(normalizedOriginal, normalizedOld)
-  if (matches === 0) return null
-  if (!replaceAll && matches > 1) return null
-  return replaceAll
-    ? normalizedOriginal.split(normalizedOld).join(normalizedNew)
-    : normalizedOriginal.replace(normalizedOld, normalizedNew)
+/** True when relPath equals a scope prefix or is nested under it (no `..` escapes). */
+export function isRelPathInPathScope(relPath: string, pathScope: string[]): boolean {
+  const norm = normalizeScopePath(relPath)
+  if (!norm || !isSafeWorkspaceRelPath(norm)) return false
+  return pathScope.some((raw) => {
+    if (!isSafePathScopePrefix(raw)) return false
+    const scope = normalizeScopePath(raw)
+    return norm === scope || norm.startsWith(`${scope}/`)
+  })
 }
 
-/** Fail fast before approval/execution when a write tool exceeds caps. */
-export function validateWriteToolCall(
-  toolName: string,
-  argsJson: string,
-  workspaceRoot?: string
+type InlineInstanceGuardOpts = {
+  /** When false, skip disk — caller already knows this is not an inline instance. */
+  inlineInstance?: boolean
+}
+
+function loadInlineInstanceStatus(
+  runDir: string | undefined,
+  opts?: InlineInstanceGuardOpts
+): ReturnType<typeof loadStatus> | undefined {
+  if (!runDir) return undefined
+  if (opts?.inlineInstance === false) return undefined
+  const status = loadStatus(runDir)
+  if (!status?.inlineInstance) return undefined
+  return status
+}
+
+/**
+ * Deny workspace writes outside an inline instance's path_scope when set.
+ * Call for product-file writers (edit / str_replace / multi_edit / delete) and git_commit paths.
+ */
+export function assertInlineInstancePathScope(
+  runDir: string | undefined,
+  relPaths: string[],
+  opts?: InlineInstanceGuardOpts
 ): void {
-  if (toolName !== 'edit' && toolName !== 'multi_edit' && toolName !== 'str_replace') return
-
-  let args: Record<string, unknown>
-  try {
-    args = JSON.parse(argsJson) as Record<string, unknown>
-  } catch {
-    return
-  }
-
-  if (toolName === 'edit') {
-    const path = typeof args.path === 'string' ? args.path.trim() : ''
-    const contents = typeof args.contents === 'string' ? args.contents : undefined
-    const diff = typeof args.diff === 'string' ? args.diff : undefined
-    if (path && contents !== undefined) {
-      assertWritableTextContent(path, contents)
-      return
-    }
-    if (path && diff?.trim() && workspaceRoot) {
-      const original = readWorkspaceText(workspaceRoot, path) ?? ''
-      const next = applyUnifiedDiff(original, diff)
-      assertWritableTextContent(path, next)
-    }
-    return
-  }
-
-  if (toolName === 'str_replace') {
-    const path = typeof args.path === 'string' ? args.path.trim() : ''
-    const oldString = typeof args.old_string === 'string' ? args.old_string : ''
-    const newString = typeof args.new_string === 'string' ? args.new_string : undefined
-    const replaceAll = args.replace_all === true
-    if (!path || newString === undefined) return
-    if (workspaceRoot && oldString) {
-      const original = readWorkspaceText(workspaceRoot, path)
-      if (original != null) {
-        const next = previewStrReplaceNext(original, oldString, newString, replaceAll)
-        if (next != null) {
-          assertWritableTextContent(path, next)
-          return
-        }
-      }
-    }
-    assertWritableTextContent(path, newString)
-    return
-  }
-
-  if (Array.isArray(args.edits)) {
-    for (const raw of args.edits) {
-      if (!raw || typeof raw !== 'object') continue
-      const edit = raw as Record<string, unknown>
-      const path = typeof edit.path === 'string' ? edit.path.trim() : ''
-      const contents = typeof edit.contents === 'string' ? edit.contents : undefined
-      const diff = typeof edit.diff === 'string' ? edit.diff : undefined
-      if (path && contents !== undefined) {
-        assertWritableTextContent(path, contents)
-        continue
-      }
-      if (path && diff?.trim() && workspaceRoot) {
-        const original = readWorkspaceText(workspaceRoot, path) ?? ''
-        const next = applyUnifiedDiff(original, diff)
-        assertWritableTextContent(path, next)
-      }
+  if (!runDir || relPaths.length === 0) return
+  const status = loadInlineInstanceStatus(runDir, opts)
+  if (!status) return
+  const scope = status.pathScope
+  if (!scope?.length) return
+  for (const rel of relPaths) {
+    const trimmed = rel.trim()
+    if (!trimmed) continue
+    if (!isRelPathInPathScope(trimmed, scope)) {
+      throw new Error(
+        `Path "${trimmed}" is outside this instance path_scope (${scope.join(', ')}).`
+      )
     }
   }
+}
+
+/**
+ * Shared path_scope instances (no worktree) cannot use tools that escape the
+ * parent tree (terminal, diagnostics, git_commit, MCP). Worktree instances keep them.
+ */
+export function assertInlineInstanceUnscopedToolAllowed(
+  runDir: string | undefined,
+  toolLabel: string,
+  opts?: InlineInstanceGuardOpts
+): void {
+  const status = loadInlineInstanceStatus(runDir, opts)
+  if (!status) return
+  if (!status.pathScope?.length) return
+  if (status.worktreePath) return
+  throw new Error(
+    `${toolLabel} is denied for path_scope-shared inline instances without a worktree. ` +
+      'Use edit/str_replace within path_scope, or run in a git repo so the instance gets an isolated worktree.'
+  )
+}
+
+export function assertInlineInstanceTerminalAllowed(
+  runDir: string | undefined,
+  opts?: InlineInstanceGuardOpts
+): void {
+  assertInlineInstanceUnscopedToolAllowed(runDir, 'terminal', opts)
+}
+
+/** Inline instances merge back via merge_agent_instance — never push the instance branch. */
+export function assertInlineInstancePushDenied(
+  runDir: string | undefined,
+  opts?: InlineInstanceGuardOpts
+): void {
+  const status = loadInlineInstanceStatus(runDir, opts)
+  if (!status) return
+  throw new Error(
+    'Inline instances cannot push. Pin merge_agent_instance on the parent after the instance finishes.'
+  )
 }

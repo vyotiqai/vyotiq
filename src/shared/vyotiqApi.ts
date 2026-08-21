@@ -14,6 +14,8 @@ import type {
   ChatQueueModeResult,
   ChatStartRequest,
   ChatStartResult,
+  ChatUiSubscribeRequest,
+  ChatUiSubscribeAddRequest,
   ChatRewindAndStartRequest,
   ChatRewindRequest,
   ChatRewindResult,
@@ -26,17 +28,25 @@ import type {
   HarnessPreviewApplyResult,
   HarnessApplyResult,
   GitCommitResult,
+  GitBlameResult,
+  GitGenerateCommitMessageResult,
   GitStatusResult,
   IpcResult,
   ListModelsResult,
   ListRunsResult,
+  LoadRunResult,
   PersistedEvent,
   ProviderId,
   RunSummary,
   SecretProvider,
   SecretsStatus,
   Settings,
+  CodeIndexSettings,
+  CodeIndexRuntimeStatus,
+  DictationRuntimeStatus,
+  DictationLocalModelId,
   TelemetryStatus,
+  AppInfo,
   CrashDiagnosticsSnapshot,
   CrashRecoveryPending,
   ToolApprovalDecision,
@@ -45,6 +55,8 @@ import type {
   AgentQuestionAnswer,
   ExtractAttachmentRequest,
   ExtractAttachmentResult,
+  DictationTranscribeRequest,
+  DictationTranscribeResult,
   McpStatusResult,
   MarketplaceIndex,
   MarketplaceCatalogEntry,
@@ -62,9 +74,41 @@ import type {
   WorkspaceSettingsOverride,
   WorkspacesState,
   WorkspaceUiState,
+  WorkspaceFileListRequest,
+  WorkspaceFileListResult,
+  WorkspaceFileReadRequest,
+  WorkspaceFileReadResult,
+  WorkspaceFileSaveRequest,
+  WorkspaceFileSaveResult,
+  WorkspaceFileCreateRequest,
+  WorkspaceFileCreateResult,
+  WorkspaceFileMoveRequest,
+  WorkspaceFileMoveResult,
+  WorkspaceFileDeleteRequest,
+  WorkspaceFileDeleteResult,
+  WorkspaceFileRevealRequest,
+  WorkspaceFormatterStatusRequest,
+  WorkspaceFormatterStatus,
+  WorkspaceFormatFileRequest,
+  WorkspaceFormatFileResult,
+  WorkspaceLspStatusRequest,
+  WorkspaceLspStatus,
+  WorkspaceLspRequest,
+  WorkspaceLspResponse,
+  WorkspaceEditorRecoverySaveRequest,
+  WorkspaceEditorRecoveryLoadRequest,
+  WorkspaceEditorRecoveryLoadResult,
+  WorkspaceEditorRecoveryClearRequest,
   SlashCommandDescriptor,
   SlashCommandResolveResult,
-  SlashCommandsCreateRuleResult
+  SlashCommandsCreateRuleResult,
+  SlashCommandsCreateSkillResult,
+  LocalSkillItem,
+  SkillsReadLocalResult,
+  SkillsWriteLocalResult,
+  NotificationList,
+  NotificationMutateRequest,
+  NotificationAction
 } from './ipc'
 
 /** Host OS from preload `process.platform`. */
@@ -97,8 +141,13 @@ export interface VyotiqApi {
     provider: ProviderId
     baseUrl?: string
     forceRefresh?: boolean
+    model?: string
   }) => Promise<IpcResult<ListModelsResult>>
   chatStart: (payload: ChatStartRequest) => Promise<IpcResult<ChatStartResult>>
+  /** Tell main which run transcripts are on screen so hidden instance streams stay off the UI thread. */
+  chatUiSubscribe: (payload: ChatUiSubscribeRequest) => Promise<IpcResult<true>>
+  /** Add one run to the subscribed set the moment it starts (no dropped live deltas). */
+  chatUiSubscribeAdd: (payload: ChatUiSubscribeAddRequest) => Promise<IpcResult<true>>
   chatRewindAndStart: (payload: ChatRewindAndStartRequest) => Promise<IpcResult<ChatStartResult>>
   chatRewind: (payload: ChatRewindRequest) => Promise<IpcResult<ChatRewindResult>>
   chatCancel: (runId: string) => Promise<IpcResult<true>>
@@ -113,7 +162,11 @@ export interface VyotiqApi {
     payload: ChatFollowUpPromoteRequest
   ) => Promise<IpcResult<ChatFollowUpPromoteResult>>
   chatQueueMode: (payload: ChatQueueModeRequest) => Promise<IpcResult<ChatQueueModeResult>>
-  chatCompact: (workspacePath: string, runId: string) => Promise<IpcResult<CompactRunResult>>
+  chatCompact: (
+    workspacePath: string,
+    runId: string,
+    focus?: string
+  ) => Promise<IpcResult<CompactRunResult>>
   undoWrites: (
     workspacePath: string,
     runId: string,
@@ -162,11 +215,24 @@ export interface VyotiqApi {
   extractAttachment: (
     payload: ExtractAttachmentRequest
   ) => Promise<IpcResult<ExtractAttachmentResult>>
+  transcribeDictation: (
+    payload: DictationTranscribeRequest
+  ) => Promise<IpcResult<DictationTranscribeResult>>
+  cancelDictation: (requestId: string) => Promise<IpcResult<boolean>>
+  dictationStatus: () => Promise<IpcResult<DictationRuntimeStatus>>
+  dictationInstall: (payload: {
+    modelId: DictationLocalModelId
+  }) => Promise<IpcResult<DictationRuntimeStatus>>
+  dictationUnload: () => Promise<IpcResult<DictationRuntimeStatus>>
+  dictationDeleteCache: (payload: {
+    modelId: DictationLocalModelId
+  }) => Promise<IpcResult<DictationRuntimeStatus>>
+  onDictationStatus: (handler: (status: DictationRuntimeStatus) => void) => () => void
   listRuns: (workspacePath: string) => Promise<IpcResult<ListRunsResult>>
   loadRun: (
     workspacePath: string,
     runId: string
-  ) => Promise<IpcResult<{ messages: ChatMessage[]; runId: string }>>
+  ) => Promise<IpcResult<LoadRunResult>>
   loadRunEvents: (
     workspacePath: string,
     runId: string
@@ -185,6 +251,10 @@ export interface VyotiqApi {
   listActiveRuns: () => Promise<IpcResult<ActiveRunsResult>>
   /** Discriminated: ok | not_repo | unavailable (git missing from PATH). */
   gitStatus: (workspacePath: string) => Promise<IpcResult<GitStatusResult>>
+  gitGenerateCommitMessage: (payload: {
+    workspacePath: string
+    mode?: 'all' | 'staged'
+  }) => Promise<IpcResult<GitGenerateCommitMessageResult>>
   gitCommit: (
     workspacePath: string,
     message: string,
@@ -221,26 +291,44 @@ export interface VyotiqApi {
     staged?: boolean
     ignoreWhitespace?: boolean
     sha?: string
+    vsHead?: boolean
   }) => Promise<IpcResult<{ content: string }>>
+  gitBlame: (workspacePath: string, path: string) => Promise<IpcResult<GitBlameResult>>
   prView: (workspacePath: string) => Promise<IpcResult<import('./ipc').PrView | null>>
+  prCreate: (
+    workspacePath: string,
+    options?: {
+      message?: string
+      mode?: 'all' | 'staged'
+      draft?: boolean
+    }
+  ) => Promise<IpcResult<import('./ipc').PrCreateResult>>
   prMerge: (
     workspacePath: string,
-    method: import('./ipc').PrMergeMethod
+    method: import('./ipc').PrMergeMethod,
+    number: number
   ) => Promise<IpcResult<{ detail: string }>>
   prDiff: (payload: {
     workspacePath: string
     path?: string
     ignoreWhitespace?: boolean
+    number: number
   }) => Promise<IpcResult<{ content: string }>>
-  prClose: (workspacePath: string) => Promise<IpcResult<{ detail: string }>>
+  prClose: (
+    workspacePath: string,
+    number: number
+  ) => Promise<IpcResult<{ detail: string }>>
   prEditTitle: (
     workspacePath: string,
-    title: string
+    title: string,
+    number: number
   ) => Promise<IpcResult<{ title: string }>>
   githubAuthStatus: () => Promise<IpcResult<import('./ipc').GithubAuthStatus>>
   githubAuthStart: () => Promise<IpcResult<import('./ipc').GithubAuthStatus>>
   githubAuthCancel: () => Promise<IpcResult<import('./ipc').GithubAuthStatus>>
   githubAuthLogout: () => Promise<IpcResult<import('./ipc').GithubAuthStatus>>
+  onGithubAuthStatus: (handler: (status: import('./ipc').GithubAuthStatus) => void) => () => void
+  githubCliInstall: () => Promise<IpcResult<import('./ipc').GithubCliInstallResult>>
   shellOpenExternal: (url: string) => Promise<IpcResult<true>>
   ptyCreate: (payload: {
     workspacePath: string
@@ -267,14 +355,21 @@ export interface VyotiqApi {
   browserGetState: () => Promise<IpcResult<import('./ipc').AgentBrowserState>>
   browserFocus: () => Promise<IpcResult<boolean>>
   browserClose: () => Promise<IpcResult<true>>
-  browserSelectTab: (tabId: string) => Promise<IpcResult<boolean>>
-  browserBack: () => Promise<IpcResult<boolean>>
-  browserForward: () => Promise<IpcResult<boolean>>
+  browserSelectTab: (tabId: string, workspacePath?: string) => Promise<IpcResult<boolean>>
+  browserOpenTab: (payload?: {
+    url?: string
+    workspacePath?: string
+  }) => Promise<IpcResult<boolean>>
+  browserCloseTab: (tabId?: string, workspacePath?: string) => Promise<IpcResult<boolean>>
+  browserTakeControl: () => Promise<IpcResult<boolean>>
+  browserReleaseControl: () => Promise<IpcResult<true>>
+  browserBack: (workspacePath?: string) => Promise<IpcResult<boolean>>
+  browserForward: (workspacePath?: string) => Promise<IpcResult<boolean>>
   browserSetBounds: (
     bounds: { x: number; y: number; width: number; height: number } | null
   ) => Promise<IpcResult<true>>
   browserNavigate: (url: string, workspacePath?: string) => Promise<IpcResult<boolean>>
-  browserReload: () => Promise<IpcResult<boolean>>
+  browserReload: (workspacePath?: string) => Promise<IpcResult<boolean>>
   browserTakeScreenshot: (payload: {
     workspacePath: string
     runId: string
@@ -282,12 +377,14 @@ export interface VyotiqApi {
   }) => Promise<IpcResult<{ path: string }>>
   browserClearBrowsingData: (payload: {
     kind: 'history' | 'cookies' | 'cache' | 'all'
+    workspacePath?: string
   }) => Promise<IpcResult<{ cleared: 'history' | 'cookies' | 'cache' | 'all' }>>
   openLogsDir: () => Promise<IpcResult<true>>
   getLogsPath: () => Promise<IpcResult<string>>
   getCrashDiagnostics: () => Promise<IpcResult<CrashDiagnosticsSnapshot>>
   consumeCrashRecovery: () => Promise<IpcResult<CrashRecoveryPending | null>>
   telemetryStatus: () => Promise<IpcResult<TelemetryStatus>>
+  getAppInfo: () => Promise<IpcResult<AppInfo>>
   mcpStatus: (payload?: { workspacePath?: string | null }) => Promise<IpcResult<McpStatusResult>>
   mcpRefresh: (payload?: { workspacePath?: string | null }) => Promise<IpcResult<McpStatusResult>>
   mcpSetAuthToken: (serverId: string, token: string) => Promise<IpcResult<true>>
@@ -335,9 +432,34 @@ export interface VyotiqApi {
     workspacePath: string
     title?: string
   }) => Promise<IpcResult<SlashCommandsCreateRuleResult>>
+  slashCommandsCreateSkill: (payload: {
+    workspacePath?: string | null
+    title?: string
+    scope?: 'project' | 'personal'
+  }) => Promise<IpcResult<SlashCommandsCreateSkillResult>>
   slashCommandsOpenFile: (payload: {
     workspacePath: string
     path: string
+  }) => Promise<IpcResult<true>>
+  skillsListLocal: (payload?: {
+    workspacePath?: string | null
+  }) => Promise<IpcResult<{ skills: LocalSkillItem[] }>>
+  skillsOpenLocal: (payload: {
+    workspacePath?: string | null
+    skillPath: string
+  }) => Promise<IpcResult<true>>
+  skillsReadLocal: (payload: {
+    workspacePath?: string | null
+    skillPath: string
+  }) => Promise<IpcResult<SkillsReadLocalResult>>
+  skillsWriteLocal: (payload: {
+    workspacePath?: string | null
+    skillPath: string
+    content: string
+  }) => Promise<IpcResult<SkillsWriteLocalResult>>
+  skillsDeleteLocal: (payload: {
+    workspacePath?: string | null
+    skillPath: string
   }) => Promise<IpcResult<true>>
   workspaceSuggestPaths: (payload: {
     workspacePath: string
@@ -348,12 +470,50 @@ export interface VyotiqApi {
     workspacePath: string
     path: string
   }) => Promise<IpcResult<{ name: string; mime: string; text: string; truncated: boolean }>>
-  workspaceReadImage: (payload: {
-    workspacePath: string
-    path: string
-  }) => Promise<
-    IpcResult<{ path: string; mime: string; dataUrl: string; byteLength: number }>
-  >
+  workspaceFileList: (
+    payload: WorkspaceFileListRequest
+  ) => Promise<IpcResult<WorkspaceFileListResult>>
+  workspaceFileRead: (
+    payload: WorkspaceFileReadRequest
+  ) => Promise<IpcResult<WorkspaceFileReadResult>>
+  workspaceFileSave: (
+    payload: WorkspaceFileSaveRequest
+  ) => Promise<IpcResult<WorkspaceFileSaveResult>>
+  workspaceFileCreate: (
+    payload: WorkspaceFileCreateRequest
+  ) => Promise<IpcResult<WorkspaceFileCreateResult>>
+  workspaceFileMove: (
+    payload: WorkspaceFileMoveRequest
+  ) => Promise<IpcResult<WorkspaceFileMoveResult>>
+  workspaceFileDelete: (
+    payload: WorkspaceFileDeleteRequest
+  ) => Promise<IpcResult<WorkspaceFileDeleteResult>>
+  workspaceFileReveal: (
+    payload: WorkspaceFileRevealRequest
+  ) => Promise<IpcResult<true>>
+  workspaceFormatterStatus: (
+    payload: WorkspaceFormatterStatusRequest
+  ) => Promise<IpcResult<WorkspaceFormatterStatus>>
+  workspaceFormatFile: (
+    payload: WorkspaceFormatFileRequest
+  ) => Promise<IpcResult<WorkspaceFormatFileResult>>
+  workspaceLspStatus: (
+    payload: WorkspaceLspStatusRequest
+  ) => Promise<IpcResult<WorkspaceLspStatus>>
+  workspaceLspRequest: (
+    payload: WorkspaceLspRequest
+  ) => Promise<IpcResult<WorkspaceLspResponse>>
+  workspaceEditorRecoverySave: (
+    payload: WorkspaceEditorRecoverySaveRequest
+  ) => Promise<IpcResult<true>>
+  workspaceEditorRecoveryLoad: (
+    payload: WorkspaceEditorRecoveryLoadRequest
+  ) => Promise<IpcResult<WorkspaceEditorRecoveryLoadResult>>
+  workspaceEditorRecoveryClear: (
+    payload: WorkspaceEditorRecoveryClearRequest
+  ) => Promise<IpcResult<true>>
+  onWorkspaceEditorFlushRequest: (handler: (requestId: string) => void) => () => void
+  respondWorkspaceEditorFlush: (requestId: string, ok: boolean) => void
   workspaceListDocs: (payload: {
     workspacePath: string
     query?: string
@@ -371,5 +531,23 @@ export interface VyotiqApi {
   getSystemTheme: () => Promise<IpcResult<boolean>>
   /** Main-process connectivity probe (1.1.1.1 HEAD) — matches agent retry logic. */
   probeNetwork: () => Promise<IpcResult<boolean>>
+  /** Local codebase index embedder / download status. */
+  codeIndexStatus: () => Promise<
+    IpcResult<CodeIndexRuntimeStatus & { settings: CodeIndexSettings }>
+  >
+  /** Force re-sync of the active workspace code index. */
+  codeIndexReindex: (payload?: { workspacePath?: string }) => Promise<
+    IpcResult<{ scanned: number; indexed: number; skipped: number; removed: number } | null>
+  >
+  /** Live code-index / embed progress pushed from main. */
+  onCodeIndexStatus: (handler: (status: CodeIndexRuntimeStatus) => void) => () => void
+  onSkillsChanged: (handler: (payload: { workspacePath: string | null }) => void) => () => void
+  listNotifications: () => Promise<IpcResult<NotificationList>>
+  markNotificationsRead: (payload: NotificationMutateRequest) => Promise<IpcResult<NotificationList>>
+  dismissNotifications: (payload: NotificationMutateRequest) => Promise<IpcResult<NotificationList>>
+  onNotificationsChanged: (handler: (payload: NotificationList) => void) => () => void
+  onNotificationActivate: (handler: (action: NotificationAction) => void) => () => void
   onSystemThemeChanged: (handler: (prefersDark: boolean) => void) => () => void
+  /** Native OS clipboard write (sandboxed preload). Write-only. */
+  writeClipboard: (text: string) => boolean
 }

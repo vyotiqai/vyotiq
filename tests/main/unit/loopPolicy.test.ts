@@ -1,39 +1,123 @@
 import { describe, expect, it } from 'vitest'
 import {
-  CONSECUTIVE_TOOL_FAILURE_SERIAL_THRESHOLD,
   applyToolCallToKnownPaths,
   combineLoopHints,
   deletePathFromToolCall,
   editPathsFromToolCall,
   isInspectToolName,
+  loopHintAfterCompaction,
   loopHintForCompactionFailure,
+  loopHintForCompactionVerifyFailed,
+  runNoticeForContextAboveSoftTrigger,
+  loopHintForIdenticalStepStreak,
+  loopHintForConsecutiveToolFailures,
   loopHintForOmittedMcpTools,
-  maxParallelReadToolsForFailureStreak,
+  isPlausibleWorkspaceFilePath,
   normalizeWorkspaceRelPath,
   readPathFromToolCall,
   seedKnownPathsFromMessages,
+  summarizeRecentToolFailure,
   toolArgsFromCall,
   unreadExistingEditPaths
 } from '@main/agent/loopPolicy'
 
 describe('loopPolicy', () => {
-  it('serializes parallel reads after consecutive failure threshold', () => {
+  it('hints ask_question schema after consecutive arg failures', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'ask_question',
+      summary: 'question or questions is required. Pass questions: [{ id, prompt, type...'
+    })
+    expect(hint).toBeTruthy()
+    expect(hint).toMatch(/ask_question requires questions/i)
+    expect(hint).toMatch(/Never call it with \{\}/i)
+
+    const typeHint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'ask_question',
+      summary: 'questions[0].type must be single, multi, boolean, or text'
+    })
+    expect(typeHint).toMatch(/ask_question requires questions/i)
+
+    const emptyHint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'ask_question',
+      summary: 'questions must contain at least 1 item'
+    })
+    expect(emptyHint).toMatch(/ask_question requires questions/i)
+
+    const malformedHint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'ask_question',
+      summary:
+        'Arguments for ask_question must be one complete JSON object — the payload arrived malformed, truncated, or non-object.'
+    })
+    expect(malformedHint).toMatch(/ask_question requires questions/i)
+
     expect(
-      maxParallelReadToolsForFailureStreak(CONSECUTIVE_TOOL_FAILURE_SERIAL_THRESHOLD - 1, 4)
-    ).toBe(4)
+      loopHintForConsecutiveToolFailures(1, {
+        tool: 'ask_question',
+        summary: 'question or questions is required'
+      })
+    ).toBeUndefined()
+  })
+
+  it('hints diff after an empty edit would truncate an existing file', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'edit',
+      summary: 'edit refuses to replace non-empty src/a.ts with empty contents'
+    })
+    expect(hint).toMatch(/non-empty contents/i)
+    expect(hint).toMatch(/use diff to remove contents explicitly/i)
+  })
+
+  it('hints the complete multi_edit entry shape after consecutive failures', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'multi_edit',
+      summary: 'edits.0: each edit requires contents or diff'
+    })
+    expect(hint).toContain(
+      'multi_edit requires edits: [{ path, contents }] or edits: [{ path, diff }]'
+    )
+    expect(hint).toMatch(/each complete edit object together/i)
+
+    const emptyHint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'multi_edit',
+      summary: 'refusing to replace a non-empty file with empty contents'
+    })
+    expect(emptyHint).toMatch(/multi_edit requires edits/i)
+    expect(emptyHint).toMatch(/use diff to remove contents explicitly/i)
+  })
+
+  it('hints read to drop offset/limit when mixed with startLine/endLine', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'read',
+      summary: 'offset: offset/limit cannot be combined with startLine/endLine'
+    })
+    expect(hint).toBeTruthy()
+    expect(hint).toMatch(/omit offset\/limit when using startLine\/endLine/i)
+    expect(hint).toMatch(/byte window, not a line range/i)
+
     expect(
-      maxParallelReadToolsForFailureStreak(CONSECUTIVE_TOOL_FAILURE_SERIAL_THRESHOLD, 4)
-    ).toBe(1)
+      loopHintForConsecutiveToolFailures(1, {
+        tool: 'read',
+        summary: 'offset: offset/limit cannot be combined with startLine/endLine'
+      })
+    ).toBeUndefined()
   })
 
   it('normalizes workspace-relative paths', () => {
     expect(normalizeWorkspaceRelPath('  src\\foo.ts  ')).toBe('src/foo.ts')
   })
 
+  it('rejects shell-operator junk in receipt paths', () => {
+    expect(isPlausibleWorkspaceFilePath('src/stores')).toBe(true)
+    expect(isPlausibleWorkspaceFilePath('src/stores;')).toBe(false)
+    expect(isPlausibleWorkspaceFilePath('src/a.ts')).toBe(true)
+  })
+
   it('extracts read and edit paths from tool calls', () => {
     expect(readPathFromToolCall('read', { path: 'a\\b.ts' })).toBe('a/b.ts')
+    expect(readPathFromToolCall('read', { file: 'alias.ts' })).toBe('alias.ts')
     expect(readPathFromToolCall('grep', { path: 'a.ts' })).toBeNull()
     expect(editPathsFromToolCall('str_replace', { path: 'x.ts' })).toEqual(['x.ts'])
+    expect(editPathsFromToolCall('edit', { filepath: 'y.ts' })).toEqual(['y.ts'])
     expect(
       editPathsFromToolCall('multi_edit', {
         edits: [{ path: 'a.ts' }, { path: 'b\\c.ts' }, { path: 1 }]
@@ -50,6 +134,26 @@ describe('loopPolicy', () => {
     applyToolCallToKnownPaths(known, 'glob', { pattern: 'src/**/*.ts' }, true)
     expect(known.has('src/**/*.ts')).toBe(false)
     applyToolCallToKnownPaths(known, 'glob', { pattern: 'src/b.ts' }, true)
+    expect(known.has('src/b.ts')).toBe(true)
+  })
+
+  it('treats list_dir path as inspect', () => {
+    const known = new Set<string>()
+    applyToolCallToKnownPaths(known, 'list_dir', { path: 'src/pkg' }, true)
+    expect(known.has('src/pkg')).toBe(true)
+  })
+
+  it('treats search hit paths as inspect', () => {
+    expect(isInspectToolName('search')).toBe(true)
+    const known = new Set<string>()
+    applyToolCallToKnownPaths(
+      known,
+      'search',
+      { query: 'foo' },
+      true,
+      'file: src/a.ts\nsrc/b.ts:3: foo bar\nindex=live'
+    )
+    expect(known.has('src/a.ts')).toBe(true)
     expect(known.has('src/b.ts')).toBe(true)
   })
 
@@ -110,18 +214,45 @@ describe('loopPolicy', () => {
 
   it('combines omitted-MCP hints without injecting failure recipes', () => {
     const omitted = loopHintForOmittedMcpTools(['mcp__a__t1', 'mcp__b__t2'])
-    expect(omitted).toMatch(/2 MCP tool/)
+    expect(omitted).toMatch(/2 pinned MCP tool/)
     expect(omitted).toMatch(/request_mcp_tools/)
     expect(omitted).not.toMatch(/Prefer built-in/i)
     expect(combineLoopHints(omitted, undefined)).toBe(omitted)
     expect(combineLoopHints(undefined, undefined)).toBeUndefined()
   })
 
-  it('surfaces a compact run notice when auto-compaction produces no summary', () => {
-    const hint = loopHintForCompactionFailure()
-    expect(hint).toMatch(/compaction produced no summary/i)
-    expect(hint).toMatch(/memory|\/compact/i)
-    expect(combineLoopHints('mcp omit', hint)).toContain(hint)
+  it('returns undefined without retained decisions after compaction', () => {
+    expect(loopHintAfterCompaction()).toBeUndefined()
+    expect(combineLoopHints('mcp omit', undefined)).toBe('mcp omit')
+  })
+
+  it('includes retained ask_question decisions in post-compaction hint', () => {
+    const hint = loopHintAfterCompaction(['Use PostgreSQL'])
+    expect(hint).toMatch(/do not re-ask/i)
+    expect(hint).toContain('Use PostgreSQL')
+  })
+
+  it('hints when compaction summary failed verification', () => {
+    const hint = loopHintForCompactionVerifyFailed()
+    expect(hint).toMatch(/failed verification/i)
+    expect(hint).toMatch(/was not applied/i)
+    expect(hint).toMatch(/memory_write/)
+    expect(hint).not.toMatch(/context meter/i)
+    expect(hint).not.toMatch(/(?<![a-zA-Z])\/compact(?![a-zA-Z])/)
+  })
+
+  it('does not coach user Compact UI in compaction loop hints', () => {
+    const hints = [
+      loopHintForCompactionFailure(),
+      loopHintForCompactionVerifyFailed(),
+      runNoticeForContextAboveSoftTrigger(),
+      loopHintForConsecutiveToolFailures(6)
+    ]
+    for (const hint of hints) {
+      expect(hint).toBeTruthy()
+      expect(hint).not.toMatch(/context meter/i)
+      expect(hint).not.toMatch(/(?<![a-zA-Z])\/compact(?![a-zA-Z])/)
+    }
   })
 
   it('seeds known paths only from successful matched tool results on resume', () => {
@@ -169,5 +300,43 @@ describe('loopPolicy', () => {
       }
     }
     expect(unread).toHaveLength(0)
+  })
+
+  it('treats codebase_search hit paths from result as inspect', () => {
+    expect(isInspectToolName('codebase_search')).toBe(true)
+    const known = new Set<string>()
+    const result = `index: 2 chunks / 1 files · model=local-hash-v1 · fallback=hash · hits=1
+
+1. src/auth.ts:1-8 [function validateAuthToken] score=0.5000
+export function validateAuthToken`
+    applyToolCallToKnownPaths(
+      known,
+      'codebase_search',
+      { query: 'where is auth validated' },
+      true,
+      result
+    )
+    expect(known.has('src/auth.ts')).toBe(true)
+    const unread = unreadExistingEditPaths(
+      known,
+      'edit',
+      { path: 'src/auth.ts', content: 'x' },
+      () => true
+    )
+    expect(unread).toHaveLength(0)
+  })
+
+  it('mentions identical-step shape at streak 2', () => {
+    const hint = loopHintForIdenticalStepStreak(2)
+    expect(hint).toMatch(/repeated the same tool call shape/i)
+  })
+
+  it('summarizes the latest failed tool message', () => {
+    expect(
+      summarizeRecentToolFailure([
+        { role: 'tool', toolName: 'read', content: 'ok', ok: true },
+        { role: 'tool', toolName: 'edit', content: 'path: Required', ok: false }
+      ])
+    ).toEqual({ tool: 'edit', summary: 'path: Required' })
   })
 })

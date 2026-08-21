@@ -26,6 +26,29 @@ describe('parseTerminalOutput', () => {
     expect(parsed.stdout).toContain('note exit_code: 9 in the log')
     expect(parsed.exitCode).toBe(0)
   })
+
+  it('strips session poll headers from stdout and surfaces status', () => {
+    const parsed = parseTerminalOutput(
+      [
+        'session_id: abc-123',
+        'status: timeout',
+        'command: sleep 10',
+        'cwd: /ws',
+        'shell: powershell',
+        '',
+        'partial out',
+        'exit_code: -1'
+      ].join('\n')
+    )
+    expect(parsed.sessionId).toBe('abc-123')
+    expect(parsed.sessionStatus).toBe('timeout')
+    expect(parsed.command).toBe('sleep 10')
+    expect(parsed.cwd).toBe('/ws')
+    expect(parsed.stdout).toBe('partial out')
+    expect(parsed.stdout).not.toContain('session_id')
+    expect(parsed.stdout).not.toContain('command: sleep')
+    expect(parsed.exitCode).toBe(-1)
+  })
 })
 
 describe('sanitizeTerminalDisplayText', () => {
@@ -38,6 +61,18 @@ describe('sanitizeTerminalDisplayText', () => {
   it('applies carriage-return overwrite per line', () => {
     const raw = 'Downloading 10%\rDownloading 50%\rDownloading 100%\nDone'
     expect(sanitizeTerminalDisplayText(raw)).toBe('Downloading 100%\nDone')
+  })
+
+  it('preserves Windows CRLF lines instead of wiping them empty', () => {
+    const raw = '=====API=====\r\n.panel { color: cyan; }\r\n=====CLASSES===\r\n'
+    expect(sanitizeTerminalDisplayText(raw)).toBe(
+      '=====API=====\n.panel { color: cyan; }\n=====CLASSES===\n'
+    )
+  })
+
+  it('applies CR overwrite across joined stream chunks', () => {
+    const joined = ['Downloading 10%\r', 'Downloading 50%\r', 'Downloading 100%\nDone'].join('')
+    expect(sanitizeTerminalDisplayText(joined)).toBe('Downloading 100%\nDone')
   })
 
   it('preserves Format-Table rows after stripping escapes', () => {

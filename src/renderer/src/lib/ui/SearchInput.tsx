@@ -33,17 +33,18 @@ export const SearchInput = forwardRef<
       className={cn(
         'flex items-center gap-2 px-2.5 focus-within:vy-focus-ring',
         tone === 'quiet'
-          ? 'min-h-9 rounded-md bg-surface/80 focus-within:bg-surface'
-          : 'min-h-8 rounded-md border border-border bg-surface focus-within:border-border-strong',
+          ? 'min-h-[calc(var(--vy-control-min-h)+0.25rem)] rounded-md bg-surface/80 focus-within:bg-surface'
+          : 'min-h-[var(--vy-control-min-h)] rounded-md border border-border bg-surface focus-within:border-border-strong',
         className
       )}
     >
       <Icon name="search" size={16} className="shrink-0 text-secondary" />
       <input
         ref={ref}
+        data-vy-text-entry
         className={cn(
-          'w-full border-none bg-transparent text-sm tracking-[var(--vy-tracking)] text-fg outline-none placeholder:text-muted',
-          tone === 'quiet' ? 'min-h-9 py-2' : 'min-h-8',
+          'w-full border-none bg-transparent text-sm text-fg outline-none placeholder:text-muted',
+          tone === 'quiet' ? 'min-h-[calc(var(--vy-control-min-h)+0.25rem)] py-2' : 'min-h-[var(--vy-control-min-h)]',
           inputClassName
         )}
         value={value}

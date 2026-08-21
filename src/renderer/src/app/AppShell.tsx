@@ -38,6 +38,8 @@ function AppShellInner({
   sessionQuery,
   onSessionQuery,
   onOpenSettings,
+  onOpenNotificationSettings,
+  focusedRunId = null,
   onOpenMarketplace,
   onOpenChat,
   onNewChat,
@@ -46,12 +48,14 @@ function AppShellInner({
   onDeleteRunInWorkspace,
   isRunOpenInPane,
   isRunFocusedInPane,
+  openInstanceRunId = null,
   onSwitchWorkspace,
   onCloseWorkspace,
   onAddWorkspace,
   workspaceHasBackgroundRun,
   running,
   onChatStop,
+  onCloseChat,
   children,
   loading
 }: {
@@ -64,6 +68,8 @@ function AppShellInner({
   sessionQuery: string
   onSessionQuery: (q: string) => void
   onOpenSettings: () => void
+  onOpenNotificationSettings?: () => void
+  focusedRunId?: string | null
   onOpenMarketplace: () => void
   onOpenChat: () => void
   onNewChat: () => void
@@ -72,6 +78,7 @@ function AppShellInner({
   onDeleteRunInWorkspace?: (path: string, runId: string) => void
   isRunOpenInPane?: (path: string, runId: string) => boolean
   isRunFocusedInPane?: (path: string, runId: string) => boolean
+  openInstanceRunId?: string | null
   onSwitchWorkspace?: (path: string) => void
   onCloseWorkspace?: (path: string) => void
   onAddWorkspace?: () => void
@@ -79,6 +86,8 @@ function AppShellInner({
   /** When true, Escape may stop the active run (after other Esc handlers). */
   running?: boolean
   onChatStop?: () => void
+  /** Close the focused chat tab (Ctrl/Cmd+W). */
+  onCloseChat?: () => void
   children: ReactNode
   loading?: boolean
 }) {
@@ -242,6 +251,7 @@ function AppShellInner({
     chatViewActive: view === 'chat',
     running,
     onStop: onChatStop,
+    onCloseChat,
     drawerOpen,
     hasSessionQuery
   })
@@ -262,6 +272,8 @@ function AppShellInner({
     workspaceHasBackgroundRun,
     onSessionQuery,
     onOpenSettings,
+    onOpenNotificationSettings,
+    focusedRunId,
     onOpenMarketplace,
     onOpenChat,
     onNewChat,
@@ -270,12 +282,16 @@ function AppShellInner({
     onDeleteRunInWorkspace,
     isRunOpenInPane,
     isRunFocusedInPane,
+    openInstanceRunId,
     onCloseDrawer: closeDrawer,
     onToggleSidebar
   }
 
   return (
     <div className="flex h-full overflow-hidden bg-bg text-fg">
+      <a href="#main-content" className="skip-link" tabIndex={0}>
+        Skip to main content
+      </a>
       {/* Mount only on desktop so searchRef is never bound to a hidden sibling. */}
       {isDesktop ? (
         <>
@@ -338,6 +354,7 @@ function AppShellInner({
         ) : null}
 
         <main
+          id="main-content"
           ref={mainRef}
           className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg outline-none"
           tabIndex={-1}

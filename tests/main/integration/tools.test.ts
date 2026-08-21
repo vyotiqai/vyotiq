@@ -6,6 +6,7 @@ import { applyUnifiedDiff, toolEdit } from '@main/agent/tools/edit'
 import { toolSearch } from '@main/agent/tools/search'
 import { toolRead } from '@main/agent/tools/read'
 import { executeTool } from '@main/agent/tools'
+import { toolTodoWrite } from '@main/agent/tools/todo'
 
 describe('tools', () => {
   it('applies unified diff and writes via toolEdit', () => {
@@ -20,19 +21,60 @@ describe('tools', () => {
     expect(applyUnifiedDiff(original, diff)).toBe('line1\nline2-changed\nline3\n')
 
     writeFileSync(join(dir, 'a.txt'), original, 'utf8')
-    toolEdit(dir, 'a.txt', undefined, diff)
+    expect(toolEdit(dir, 'a.txt', undefined, diff)).toBe('Applied diff to a.txt')
     expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toContain('line2-changed')
 
-    toolEdit(dir, 'b/new.txt', 'hello', undefined)
+    expect(toolEdit(dir, 'b/new.txt', 'hello', undefined)).toBe('Created b/new.txt (5 chars)')
     expect(readFileSync(join(dir, 'b', 'new.txt'), 'utf8')).toBe('hello')
+    expect(toolEdit(dir, 'b/new.txt', 'hello!', undefined)).toBe('Wrote b/new.txt (6 chars)')
+    expect(() => toolEdit(dir, 'a.txt', '', undefined)).toThrow(/refuses.*empty contents/i)
+    expect(readFileSync(join(dir, 'a.txt'), 'utf8')).toContain('line2-changed')
+    expect(toolEdit(dir, 'b/empty.txt', '', undefined)).toBe('Created b/empty.txt (0 chars)')
+  })
+
+  it('accepts bare @@ hunk headers (T1/E5)', () => {
+    const original = [
+      '  <script src="js/audio.js"></script>',
+      '  <script src="js/input.js"></script>',
+      '  <script src="js/particles.js"></script>',
+      '  <script src="js/game.js"></script>',
+      ''
+    ].join('\n')
+    const diff = [
+      '@@',
+      '-  <script src="js/audio.js"></script>',
+      '-  <script src="js/input.js"></script>',
+      '-  <script src="js/particles.js"></script>',
+      '-  <script src="js/game.js"></script>',
+      '+  <script src="js/setup.js"></script>',
+      '+  <script src="js/audio.js"></script>',
+      '+  <script src="js/input.js"></script>',
+      '+  <script src="js/particles.js"></script>',
+      '+  <script src="js/entities.js"></script>',
+      '+  <script src="js/flow.js"></script>',
+      '+  <script src="js/game.js"></script>',
+      ''
+    ].join('\n')
+    const next = applyUnifiedDiff(original, diff)
+    expect(next).toContain('js/setup.js')
+    expect(next).toContain('js/entities.js')
+    expect(next).toContain('js/flow.js')
   })
 
   it('rejects path escapes on edit', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'vyotiq-tools-'))
+    toolTodoWrite(dir, [{ id: '1', content: 'Write a workspace file', status: 'in_progress' }])
     const signal = new AbortController().signal
-    await expect(
-      executeTool('edit', JSON.stringify({ path: '../escape.txt', contents: 'x' }), dir, signal)
-    ).resolves.toMatchObject({ ok: false })
+    const result = await executeTool(
+      'edit',
+      JSON.stringify({ path: '../escape.txt', contents: 'x' }),
+      dir,
+      signal,
+      { runDir: dir, agentMode: 'agent' }
+    )
+    expect(result.ok).toBe(false)
+    expect(result.content).toMatch(/Path escapes workspace/i)
+    expect(result.content).not.toMatch(/Agent mode requires todo_write/)
   })
 
   it('rejects empty search query (would otherwise match everything)', async () => {

@@ -51,8 +51,21 @@ describe('builtin slash commands', () => {
   it('exposes core app commands', () => {
     const triggers = BUILTIN_COMMANDS.map((c) => c.trigger)
     expect(triggers).toEqual(
-      expect.arrayContaining(['clear', 'compact', 'marketplace', 'settings', 'create-rule', 'help'])
+      expect.arrayContaining([
+        'clear',
+        'compact',
+        'marketplace',
+        'settings',
+        'create-rule',
+        'create-skill',
+        'help'
+      ])
     )
+    const marketplace = BUILTIN_COMMANDS.find((c) => c.trigger === 'marketplace')
+    expect(marketplace?.description).toBe(
+      'Browse and manage skills, MCP servers, and packages'
+    )
+    expect(marketplace?.description).not.toMatch(/plugin/i)
   })
 
   it('resolves client actions', () => {
@@ -64,10 +77,20 @@ describe('builtin slash commands', () => {
       action: 'client',
       clientAction: 'compact'
     })
+    expect(resolveBuiltin('builtin:compact', 'keep auth rewrite', '')).toEqual({
+      action: 'client',
+      clientAction: 'compact',
+      trailingText: 'keep auth rewrite'
+    })
     expect(resolveBuiltin('builtin:create-rule', 'security', '')).toEqual({
       action: 'client',
       clientAction: 'create_rule',
       trailingText: 'security'
+    })
+    expect(resolveBuiltin('builtin:create-skill', 'personal review', '')).toEqual({
+      action: 'client',
+      clientAction: 'create_skill',
+      trailingText: 'personal review'
     })
   })
 

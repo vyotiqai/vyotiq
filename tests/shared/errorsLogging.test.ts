@@ -2,10 +2,14 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { z } from 'zod'
 import {
   AppError,
+  abortError,
   formatError,
   createCorrelationId,
+  isAbortError,
   isExpectedError,
   isExpectedToolError,
+  isRetryableTurnFailure,
+  observePromise,
   toAppError,
   toLogErr
 } from '@shared/errors'
@@ -69,10 +73,22 @@ describe('formatError + AppError', () => {
     expect(isExpectedToolError('Command timed out after 60000ms')).toBe(false)
   })
 
+  it('classifies abort-shaped errors including raw Error(Aborted)', () => {
+    expect(isAbortError(abortError())).toBe(true)
+    expect(isAbortError(new DOMException('Aborted', 'AbortError'))).toBe(true)
+    expect(isAbortError(Object.assign(new Error('Aborted'), { name: 'AbortError' }))).toBe(true)
+    expect(isAbortError(new Error('Aborted'))).toBe(true)
+    expect(isAbortError(new Error('boom'))).toBe(false)
+    expect(isAbortError(new Error('fetch failed'))).toBe(false)
+    expect(isAbortError(null)).toBe(false)
+  })
+
   it('treats AbortError, Zod, and validation as expected', () => {
     expect(isExpectedError(new DOMException('Aborted', 'AbortError'))).toBe(true)
+    expect(isExpectedError(new Error('Aborted'))).toBe(true)
     expect(isExpectedError(new AppError('bad', { code: 'IPC_VALIDATION' }))).toBe(true)
     expect(isExpectedError(new AppError('boom', { code: 'AGENT_LOOP' }))).toBe(false)
+    expect(isExpectedError(new AppError('paused', { code: 'CIRCUIT_OPEN' }))).toBe(true)
     try {
       z.string().min(1).parse('')
     } catch (err) {
@@ -94,6 +110,13 @@ describe('formatError + AppError', () => {
     expect(err).toBeInstanceOf(AppError)
     expect(isExpectedError(err)).toBe(true)
     expect(err.message).toBe('workspace not found')
+  })
+
+  it('flags retryable turn failures for Continue UX', () => {
+    expect(isRetryableTurnFailure({ errorCode: 'CIRCUIT_OPEN' })).toBe(true)
+    expect(isRetryableTurnFailure({ incompleteReason: 'circuit_open' })).toBe(true)
+    expect(isRetryableTurnFailure({ errorCode: 'PROVIDER_NETWORK' })).toBe(true)
+    expect(isRetryableTurnFailure({ errorCode: 'PROVIDER_AUTH' })).toBe(false)
   })
 })
 
@@ -209,6 +232,20 @@ describe('log policy (no user workspace data)', () => {
     expect(out.providerMessage).toBe('Invalid model id')
     expect(out.model).toBe('openai/gpt-5.6-luna-pro')
     expect(out.message).toBeUndefined()
+  })
+
+  it('keeps stopReason and argsKeys diag keys', () => {
+    const out = sanitizeLogFields({
+      scope: 'agent',
+      code: 'AGENT_LOOP',
+      tool: 'terminal',
+      stopReason: 'empty_response',
+      argsKeys: 'command,block_until_ms',
+      secretPath: '/Users/me/secret'
+    }) as Record<string, unknown>
+    expect(out.stopReason).toBe('empty_response')
+    expect(out.argsKeys).toBe('command,block_until_ms')
+    expect(out.secretPath).toBeUndefined()
   })
 
   it('sanitizes error objects to taxonomy only', () => {
@@ -374,5 +411,30 @@ describe('logger facade', () => {
       }
     })
     expect(() => logger.info('still safe')).not.toThrow()
+  })
+})
+
+describe('observePromise', () => {
+  it('keeps a parallel rejection awaitable without unhandledRejection', async () => {
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason)
+    }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      let rejectDone!: (err: Error) => void
+      const done = new Promise<void>((_, reject) => {
+        rejectDone = reject
+      })
+      observePromise(done)
+      const load = observePromise(Promise.reject(new Error('ERR_CONNECTION_REFUSED')))
+      queueMicrotask(() => rejectDone(new Error('ERR_CONNECTION_REFUSED')))
+      await expect(load).rejects.toThrow('ERR_CONNECTION_REFUSED')
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(unhandled).toEqual([])
+      await expect(done).rejects.toThrow('ERR_CONNECTION_REFUSED')
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 })

@@ -24,7 +24,14 @@ export function setRendererCaptureException(
 
 /** Wire shared logger to electron-log/renderer (IPC → main disk). */
 export async function initRendererLogging(): Promise<void> {
-  const mod = (await import('electron-log/renderer')) as { default: ElectronLogRenderer }
+  // electron-log/renderer can hang indefinitely when the main bridge is busy
+  // (seen with Network Service child crashes + DevTools). Fail open so UI boots.
+  const mod = (await Promise.race([
+    import('electron-log/renderer'),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('electron-log/renderer import timed out')), 2000)
+    )
+  ])) as { default: ElectronLogRenderer }
   const log = mod.default
   log.transports.console.level = import.meta.env.DEV ? 'debug' : 'warn'
 

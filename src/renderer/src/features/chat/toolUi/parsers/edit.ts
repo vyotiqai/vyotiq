@@ -1,14 +1,30 @@
 import type { UiToolRow } from '@shared/transcript'
-import { parseArgsRecord } from '@shared/toolSummary'
-import { countLines, splitLines } from './common'
+import { inferFileWriteAction } from '@shared/toolSummary'
+import { extractPartialEditArgs } from '@shared/utils/partialJson'
+import { countLines, splitLines, splitLinesTail } from './common'
 
 export { countLines, splitLines } from './common'
 
 export type EditCardData = {
+  /** Display path (may be joined for multi_edit). */
   path: string
+  /** Single real path for Material file icons; empty when unknown. */
+  iconPath: string
+  fileCount: number
   added: number
   removed: number
   changeLabel: string
+}
+
+/** Prefer a concrete file path for icons; reject placeholders / joined lists. */
+export function iconPathForFile(path: string | undefined | null): string {
+  const raw = (path ?? '').trim()
+  if (!raw || raw === 'file') return ''
+  if (raw.includes(', ')) {
+    const first = raw.split(', ')[0]?.trim() ?? ''
+    return first && first !== 'file' ? first : ''
+  }
+  return raw
 }
 
 export type DiffLineKind = 'add' | 'del' | 'context' | 'gap'
@@ -17,6 +33,8 @@ export type DiffLine = {
   kind: DiffLineKind
   text: string
   lineNumber: number | null
+  /** Stable React identity while a streaming peek slides (byte offset in source). */
+  rowKey?: string
 }
 
 export function countDiffLines(diff: string): { added: number; removed: number } {
@@ -38,7 +56,7 @@ function changeLabelFor(added: number, removed: number): string {
 }
 
 function parseMultiEditCardData(
-  args: Record<string, unknown> | null,
+  args: Record<string, unknown> | null | undefined,
   summary: string | undefined
 ): EditCardData | null {
   const edits = args?.edits
@@ -66,37 +84,53 @@ function parseMultiEditCardData(
     paths.length > 1
       ? summary?.trim() || paths.join(', ')
       : paths[0] ?? (summary?.trim() || 'file')
-  return { path, added, removed, changeLabel: changeLabelFor(added, removed) }
+  const iconPath = iconPathForFile(paths[0] ?? path)
+  return {
+    path,
+    iconPath,
+    fileCount: edits.length,
+    added,
+    removed,
+    changeLabel: changeLabelFor(added, removed)
+  }
 }
 
 export function parseEditCardData(tool: UiToolRow): EditCardData {
-  const args = parseArgsRecord(tool.argsPreview)
+  // Streaming argsPreview is often incomplete JSON — extract path/diff early.
+  const args = extractPartialEditArgs(tool.argsPreview)
   const fromEdits = parseMultiEditCardData(args, tool.summary)
   if (fromEdits) return fromEdits
 
-  const path = typeof args?.path === 'string' ? args.path : tool.summary?.trim() || 'file'
+  const rawPath = typeof args?.path === 'string' ? args.path : tool.summary?.trim() || ''
+  const path = rawPath
+  const iconPath = iconPathForFile(rawPath)
+  const fileCount = tool.name === 'multi_edit' ? 0 : path ? 1 : 0
 
-  if (tool.name === 'str_replace' || (typeof args?.old_string === 'string' && typeof args?.new_string === 'string')) {
+  if (
+    tool.name === 'str_replace' ||
+    typeof args?.old_string === 'string' ||
+    typeof args?.new_string === 'string'
+  ) {
     const oldString = typeof args?.old_string === 'string' ? args.old_string : ''
     const newString = typeof args?.new_string === 'string' ? args.new_string : ''
     if (oldString || newString) {
       const removed = countLines(oldString)
       const added = countLines(newString)
-      return { path, added, removed, changeLabel: changeLabelFor(added, removed) }
+      return { path, iconPath, fileCount, added, removed, changeLabel: changeLabelFor(added, removed) }
     }
   }
 
   if (typeof args?.contents === 'string') {
     const added = countLines(args.contents)
-    return { path, added, removed: 0, changeLabel: changeLabelFor(added, 0) }
+    return { path, iconPath, fileCount, added, removed: 0, changeLabel: changeLabelFor(added, 0) }
   }
 
   if (typeof args?.diff === 'string' && args.diff.trim()) {
     const { added, removed } = countDiffLines(args.diff)
-    return { path, added, removed, changeLabel: changeLabelFor(added, removed) }
+    return { path, iconPath, fileCount, added, removed, changeLabel: changeLabelFor(added, removed) }
   }
 
-  return { path, added: 0, removed: 0, changeLabel: '' }
+  return { path, iconPath, fileCount, added: 0, removed: 0, changeLabel: '' }
 }
 
 function diffLinesFromStrReplace(args: Record<string, unknown>): DiffLine[] {
@@ -104,11 +138,15 @@ function diffLinesFromStrReplace(args: Record<string, unknown>): DiffLine[] {
   const newString = typeof args.new_string === 'string' ? args.new_string : ''
   if (!oldString && !newString) return []
   const out: DiffLine[] = []
+  let start = 0
   for (const text of splitLines(oldString)) {
-    out.push({ kind: 'del', text, lineNumber: null })
+    out.push({ kind: 'del', text, lineNumber: null, rowKey: `del:${start}` })
+    start += text.length + 1
   }
+  start = 0
   for (const [index, text] of splitLines(newString).entries()) {
-    out.push({ kind: 'add', text, lineNumber: index + 1 })
+    out.push({ kind: 'add', text, lineNumber: index + 1, rowKey: `add:${start}` })
+    start += text.length + 1
   }
   return out
 }
@@ -130,69 +168,132 @@ function isUnifiedDiffMetadata(raw: string): boolean {
   )
 }
 
+export type DiffPreviewParseOpts = {
+  maxLines?: number
+  /** Prefer newest lines (live streaming peek). */
+  fromEnd?: boolean
+}
+
+function resolveDiffParseOpts(
+  maxLinesOrOpts?: number | DiffPreviewParseOpts
+): DiffPreviewParseOpts {
+  if (typeof maxLinesOrOpts === 'number') return { maxLines: maxLinesOrOpts }
+  return maxLinesOrOpts ?? {}
+}
+
+function diffSliceForParse(
+  diff: string,
+  maxLines: number | undefined,
+  fromEnd: boolean
+): { text: string; origin: number } {
+  if (typeof maxLines !== 'number' || maxLines <= 0) return { text: diff, origin: 0 }
+  const budget = Math.min(diff.length, Math.max(16_000, maxLines * 400))
+  if (budget >= diff.length) return { text: diff, origin: 0 }
+  if (!fromEnd) return { text: diff.slice(0, budget), origin: 0 }
+  const start = diff.length - budget
+  const slice = diff.slice(start)
+  const nl = slice.indexOf('\n')
+  const skip = nl > 0 ? nl + 1 : 0
+  return { text: slice.slice(skip), origin: start + skip }
+}
+
+function capParsedLines(lines: DiffLine[], maxLines: number | undefined, fromEnd: boolean): DiffLine[] {
+  if (typeof maxLines !== 'number' || maxLines <= 0 || lines.length <= maxLines) return lines
+  return fromEnd ? lines.slice(-maxLines) : lines.slice(0, maxLines)
+}
+
 function diffLinesFromEditArgs(
   args: Record<string, unknown>,
-  maxLines?: number
+  maxLinesOrOpts?: number | DiffPreviewParseOpts
 ): DiffLine[] {
+  const { maxLines, fromEnd = false } = resolveDiffParseOpts(maxLinesOrOpts)
+
   if (typeof args.old_string === 'string' || typeof args.new_string === 'string') {
-    const lines = diffLinesFromStrReplace(args)
-    return typeof maxLines === 'number' && lines.length > maxLines
-      ? lines.slice(0, maxLines)
-      : lines
+    return capParsedLines(diffLinesFromStrReplace(args), maxLines, fromEnd)
   }
 
   if (typeof args.contents === 'string') {
+    if (fromEnd && typeof maxLines === 'number' && maxLines > 0) {
+      const lines: DiffLine[] = splitLinesTail(args.contents, maxLines).map(({ text, start }) => ({
+        kind: 'add',
+        text,
+        lineNumber: null,
+        rowKey: `add:${start}`
+      }))
+      return capParsedLines(lines, maxLines, fromEnd)
+    }
     const lines = splitLines(args.contents).map((text, index) => ({
       kind: 'add' as const,
       text,
       lineNumber: index + 1
     }))
-    return typeof maxLines === 'number' && lines.length > maxLines
-      ? lines.slice(0, maxLines)
-      : lines
+    return capParsedLines(lines, maxLines, fromEnd)
   }
 
   const diff = typeof args.diff === 'string' ? args.diff : ''
   if (!diff.trim()) return []
 
   // Avoid allocating/scanning a full 100k-char diff when the UI only shows a preview.
-  const parseBudget =
-    typeof maxLines === 'number' && maxLines > 0
-      ? Math.min(diff.length, Math.max(16_000, maxLines * 400))
-      : diff.length
-  const text = parseBudget < diff.length ? diff.slice(0, parseBudget) : diff
+  const { text, origin } = diffSliceForParse(diff, maxLines, fromEnd)
 
   const out: DiffLine[] = []
   let lineNumber = 0
-  const limit = typeof maxLines === 'number' && maxLines > 0 ? maxLines : Number.POSITIVE_INFINITY
+  let pos = 0
+  const limit =
+    typeof maxLines === 'number' && maxLines > 0 && !fromEnd
+      ? maxLines
+      : Number.POSITIVE_INFINITY
 
   for (const raw of text.split('\n')) {
+    const lineStart = origin + pos
+    pos += raw.length + 1
     if (out.length >= limit) break
     if (raw.startsWith('+++') || raw.startsWith('---')) continue
     if (isUnifiedDiffMetadata(raw)) continue
 
     const hunk = raw.match(/^@@\s*-\d+(?:,\d+)?\s*\+(\d+)/)
     if (hunk) {
-      if (out.length > 0) out.push({ kind: 'gap', text: '', lineNumber: null })
+      if (out.length > 0) {
+        out.push({ kind: 'gap', text: '', lineNumber: null, rowKey: `gap:${lineStart}` })
+      }
       lineNumber = Number(hunk[1])
       continue
     }
 
+    // Bare `@@` (no -N,+M) — models emit this; apply accepts it, preview must too.
+    if (/^@@(?:\s.*)?$/.test(raw)) {
+      if (out.length > 0) {
+        out.push({ kind: 'gap', text: '', lineNumber: null, rowKey: `gap:${lineStart}` })
+      }
+      // No +N in header — start gutter at 1 when we have not seen a numbered hunk yet.
+      if (lineNumber === 0) lineNumber = 1
+      continue
+    }
+
+    // Streaming may emit a lone `@` before the second `@` arrives — never paint that
+    // as a context row (it would flicker in then vanish once `@@` completes).
+    if (raw.startsWith('@')) continue
+
     if (raw.startsWith('+')) {
-      out.push({ kind: 'add', text: raw.slice(1), lineNumber })
+      out.push({ kind: 'add', text: raw.slice(1), lineNumber, rowKey: `add:${lineStart}` })
       lineNumber += 1
     } else if (raw.startsWith('-')) {
-      out.push({ kind: 'del', text: raw.slice(1), lineNumber: null })
+      out.push({ kind: 'del', text: raw.slice(1), lineNumber: null, rowKey: `del:${lineStart}` })
     } else if (raw.startsWith('\\')) {
       continue
     } else {
-      out.push({ kind: 'context', text: raw.startsWith(' ') ? raw.slice(1) : raw, lineNumber })
+      out.push({
+        kind: 'context',
+        text: raw.startsWith(' ') ? raw.slice(1) : raw,
+        lineNumber,
+        rowKey: `ctx:${lineStart}`
+      })
       lineNumber += 1
     }
   }
 
   while (out.length > 0 && out[out.length - 1]!.kind === 'gap') out.pop()
-  return out
+  return capParsedLines(out, maxLines, fromEnd)
 }
 
 /** Parse a unified diff string into preview lines (shared by edit + git_diff). */
@@ -201,15 +302,18 @@ export function parseUnifiedDiff(diff: string, maxLines?: number): DiffLine[] {
   return diffLinesFromEditArgs({ diff }, maxLines)
 }
 
-export function parseDiffPreview(tool: UiToolRow): DiffLine[] {
-  const args = parseArgsRecord(tool.argsPreview)
+export function parseDiffPreview(
+  tool: UiToolRow,
+  opts?: DiffPreviewParseOpts
+): DiffLine[] {
+  const args = extractPartialEditArgs(tool.argsPreview)
   const edits = args?.edits
   if (Array.isArray(edits) && edits.length > 0) {
     const out: DiffLine[] = []
     for (const entry of edits) {
       if (!entry || typeof entry !== 'object') continue
       const edit = entry as Record<string, unknown>
-      const chunk = diffLinesFromEditArgs(edit)
+      const chunk = diffLinesFromEditArgs(edit, opts)
       if (!chunk.length) continue
       if (out.length > 0) out.push({ kind: 'gap', text: '', lineNumber: null })
       if (typeof edit.path === 'string' && edit.path.trim()) {
@@ -217,43 +321,83 @@ export function parseDiffPreview(tool: UiToolRow): DiffLine[] {
       }
       out.push(...chunk)
     }
-    return out
+    return capParsedLines(out, opts?.maxLines, Boolean(opts?.fromEnd))
   }
-  return diffLinesFromEditArgs(args ?? {})
+  return diffLinesFromEditArgs((args as Record<string, unknown> | null) ?? {}, opts)
 }
 
-export type FileChange = { path: string; added: number; removed: number }
+export type FileChange = {
+  path: string
+  added: number
+  removed: number
+  action?: 'created' | 'modified' | 'deleted'
+}
 
-function changeFromEditArgs(edit: Record<string, unknown>): FileChange | null {
+function normalizeWritePath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/^\.\//, '')
+}
+
+function multiEditPathAction(
+  content: string | undefined,
+  path: string
+): 'created' | 'modified' | undefined {
+  if (!content) return undefined
+  const needle = normalizeWritePath(path)
+  for (const raw of content.split('\n')) {
+    const line = raw.trim()
+    if (!line.startsWith('- ')) continue
+    const rest = line.slice(2)
+    const space = rest.indexOf(' ')
+    if (space < 0) continue
+    const verb = rest.slice(0, space).toLowerCase()
+    const linePath = normalizeWritePath(rest.slice(space + 1).trim())
+    if (linePath !== needle) continue
+    if (verb === 'created') return 'created'
+    if (verb === 'wrote' || verb === 'patched') return 'modified'
+  }
+  return inferFileWriteAction('multi_edit', content) ?? undefined
+}
+
+function changeFromEditArgs(
+  edit: Record<string, unknown>,
+  action?: 'created' | 'modified'
+): FileChange | null {
   const path = typeof edit.path === 'string' ? edit.path : ''
   if (!path) return null
   if (typeof edit.contents === 'string') {
     const added = countLines(edit.contents)
-    if (added > 0) return { path, added, removed: 0 }
+    if (added > 0 || action === 'created') {
+      return { path, added, removed: 0, ...(action ? { action } : {}) }
+    }
     return null
   }
   if (typeof edit.diff === 'string' && edit.diff.trim()) {
     const { added, removed } = countDiffLines(edit.diff)
-    if (added > 0 || removed > 0) return { path, added, removed }
+    if (added > 0 || removed > 0) {
+      return { path, added, removed, ...(action ? { action } : {}) }
+    }
   }
   return null
 }
 
 /** Per-file line deltas for turn change summaries. */
 export function collectWritingChanges(tool: UiToolRow): FileChange[] {
-  const args = parseArgsRecord(tool.argsPreview)
+  const args = extractPartialEditArgs(tool.argsPreview)
   if (tool.name === 'multi_edit') {
     const edits = args?.edits
     if (!Array.isArray(edits)) return []
     const out: FileChange[] = []
     for (const entry of edits) {
       if (!entry || typeof entry !== 'object') continue
-      const change = changeFromEditArgs(entry as Record<string, unknown>)
+      const record = entry as Record<string, unknown>
+      const path = typeof record.path === 'string' ? record.path : ''
+      const change = changeFromEditArgs(record, multiEditPathAction(tool.content, path))
       if (change) out.push(change)
     }
     return out
   }
   const { path, added, removed } = parseEditCardData(tool)
-  if (!path || (added === 0 && removed === 0)) return []
-  return [{ path, added, removed }]
+  const action = inferFileWriteAction(tool.name, tool.content)
+  if (!path || (added === 0 && removed === 0 && action !== 'created')) return []
+  return [{ path, added, removed, ...(action ? { action } : {}) }]
 }

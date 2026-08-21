@@ -7,6 +7,9 @@ export type RunActivityPhase =
   | { kind: 'planning' }
   | { kind: 'working' }
   | { kind: 'reconnecting'; attempt: number; maxAttempts: number }
+  | { kind: 'compacting' }
+  | { kind: 'verifying_compact' }
+  | { kind: 'retrying_compact' }
   | { kind: 'thinking' }
   | { kind: 'writing' }
   | { kind: 'awaiting_approval' }
@@ -76,6 +79,12 @@ export function formatRunActivityLabel(phase: RunActivityPhase): string {
       return 'Working'
     case 'reconnecting':
       return `Reconnecting (${phase.attempt}/${phase.maxAttempts})`
+    case 'compacting':
+      return 'Compacting…'
+    case 'verifying_compact':
+      return 'Verifying summary…'
+    case 'retrying_compact':
+      return 'Retrying summary…'
     case 'thinking':
       return 'Thinking'
     case 'writing':
@@ -106,14 +115,15 @@ function lastActiveRow(
 
 /**
  * Derive what the agent is doing right now within an active turn.
- * Priority: approval/question → prominent tool → compact tools → writing → thinking → planning/working.
+ * Priority: approval/question → prominent tool → compact tools → planning
+ * (running todo_write, detected before coalesce) → writing → thinking → working.
  * Gates beat running parents so nested Allow/Deny / Submit match the timeline label.
  * Within each tier, prefer the latest row so live work beats earlier steps.
  */
 export function deriveRunActivity(
   turnRows: TranscriptRow[],
   pendingRun?: boolean,
-  opts?: { hiddenThinkingStreaming?: boolean }
+  opts?: { hiddenThinkingStreaming?: boolean; todoWriteRunning?: boolean }
 ): RunActivityPhase {
   // Both gates may be pending at once (e.g. a parent question plus a nested
   // approval) — surface the most recent one so the label matches what the
@@ -142,6 +152,10 @@ export function deriveRunActivity(
   )
   if (runningActivity?.kind === 'activity') return toolPhaseFromActivity(runningActivity)
 
+  // Coalesce strips successful/running todo_write rows; this flag is the
+  // pre-coalesce substitute so Planning still tracks a live todo_write.
+  if (opts?.todoWriteRunning) return { kind: 'planning' }
+
   const streamingText = lastActiveRow(
     turnRows,
     (row) => row.kind === 'text' && row.item.streaming === true
@@ -155,9 +169,21 @@ export function deriveRunActivity(
   if (streamingThinking || opts?.hiddenThinkingStreaming) return { kind: 'thinking' }
 
   if (pendingRun) {
-    // Between agent steps the turn already has work rows; keep "Working", not "Planning".
-    return turnRows.length === 0 ? { kind: 'planning' } : { kind: 'working' }
+    // Empty live turn uses Working, same as between-steps. Planning is only
+    // while todo_write is actually running (opts.todoWriteRunning).
+    return { kind: 'working' }
   }
 
   return { kind: 'working' }
+}
+
+/** Turn-summary phase while a fold is in flight, derived from the live compact card. */
+export function compactActivityFromRows(turnRows: TranscriptRow[]): RunActivityPhase {
+  for (let i = turnRows.length - 1; i >= 0; i--) {
+    const row = turnRows[i]!
+    if (row.kind !== 'compaction') continue
+    if (row.verifyStatus === 'verifying') return { kind: 'verifying_compact' }
+    if (row.verifyStatus === 'retrying') return { kind: 'retrying_compact' }
+  }
+  return { kind: 'compacting' }
 }

@@ -191,7 +191,8 @@ export function MentionMenu({
     panelRef,
     placement: 'up',
     align: 'start',
-    disabled: !open
+    disabled: !open,
+    trapFocus: true
   })
 
   const rootSections = useMemo(
@@ -246,6 +247,7 @@ export function MentionMenu({
       role="listbox"
       aria-label="Mentions"
       aria-activedescendant={activeDescendant}
+      tabIndex={0}
       className="fixed z-dropdown flex overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-fade-in"
       style={{
         top: position.placement === 'up' ? undefined : position.top,

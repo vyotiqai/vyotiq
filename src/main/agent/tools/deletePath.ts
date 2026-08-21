@@ -1,11 +1,15 @@
 import { existsSync, readdirSync, rmSync, statSync } from 'fs'
 import { resolve } from 'path'
 import { resolveInsideWorkspace, assertResolvedInsideWorkspace } from '../../workspace/safePath'
+import {
+  withExclusiveWorkspaceMutation,
+  withWorkspaceMutation
+} from '@main/workspace/mutationQueue'
 import { missingPathHint } from './read'
 
 /** Delete a file, or a directory when the caller opts into recursion. */
 export function toolDelete(workspaceRoot: string, pathArg: string, recursive = false): string {
-  const target = pathArg.trim()
+  const target = (pathArg ?? '').trim()
   if (!target) throw new Error('delete requires a non-empty path')
 
   const resolved = resolveInsideWorkspace(workspaceRoot, target)
@@ -31,4 +35,21 @@ export function toolDelete(workspaceRoot: string, pathArg: string, recursive = f
 
   rmSync(resolved, { force: false })
   return `Deleted ${target}`
+}
+
+export async function toolDeleteAsync(
+  workspaceRoot: string,
+  pathArg: string,
+  recursive = false
+): Promise<string> {
+  const target = (pathArg ?? '').trim()
+  if (!target) throw new Error('delete requires a non-empty path')
+  if (recursive) {
+    return withExclusiveWorkspaceMutation(workspaceRoot, () =>
+      toolDelete(workspaceRoot, target, recursive)
+    )
+  }
+  return withWorkspaceMutation(workspaceRoot, target, () =>
+    toolDelete(workspaceRoot, target, recursive)
+  )
 }

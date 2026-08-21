@@ -5,7 +5,6 @@ import { tmpdir } from 'os'
 import type { StreamChunk } from '@main/agent/providers/types'
 import { resolveRunDir } from '@main/storage/paths'
 import {
-  MAX_CONSECUTIVE_TOOL_FAILURE_STEPS,
   MAX_IDENTICAL_STEP_STREAK
 } from '@main/agent/loopPolicy'
 
@@ -58,7 +57,6 @@ const { streamChat, executeTool, assembleContext } = vi.hoisted(() => ({
     system: 'system',
     estimatedTokens: 100,
     layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-    contextShrunk: false,
     overflow: false,
     anthropicNative: undefined,
     compaction: null
@@ -122,14 +120,10 @@ async function collect(
   return events
 }
 
-function expectLoopSafetyStop(
-  events: CapturedEvent[],
-  message: string
-): void {
-  const error = events.find((e) => e.type === 'error' && e.code === 'LOOP_SAFETY')
-  expect(error?.message).toBe(message)
-  expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
-  expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(false)
+function expectNoLoopSafetyStop(events: CapturedEvent[]): void {
+  expect(events.some((e) => e.type === 'error' && e.code === 'LOOP_SAFETY')).toBe(false)
+  expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(false)
+  expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
 }
 
 describe('runAgent LOOP_SAFETY integration', () => {
@@ -149,126 +143,13 @@ describe('runAgent LOOP_SAFETY integration', () => {
     if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true })
   })
 
-  it('stops with identical_step_streak after the same tool call repeats 6 steps', async () => {
-    // Same name+args every step: fingerprint repeats, so the streak climbs to
-    // MAX_IDENTICAL_STEP_STREAK on the 6th step — before that step's tools run.
-    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      yield {
-        type: 'tool_call',
-        toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
-      }
-      yield { type: 'done', stopReason: 'tool_calls' }
-    })
-    executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
-
-    const runId = 'safety-identical-streak'
-    const events = await collect(runId, workspace)
-
-    expect(streamChat).toHaveBeenCalledTimes(MAX_IDENTICAL_STEP_STREAK)
-    // The stopping step is detected right after streaming, before tool dispatch.
-    expect(executeTool).toHaveBeenCalledTimes(MAX_IDENTICAL_STEP_STREAK - 1)
-    expectLoopSafetyStop(
-      events,
-      `Stopped after the same tool call(s) repeated ${MAX_IDENTICAL_STEP_STREAK} consecutive tool steps in a row (likely a loop). Change approach, or start a new chat with fresh context.`
-    )
-
-    const persisted = readFileSync(join(resolveRunDir(workspace, runId), 'events.jsonl'), 'utf8')
-    expect(persisted).toContain('"code":"LOOP_SAFETY"')
-    expect(persisted).toContain('"status":"error"')
-  })
-
-  it('stops with tool_failure_streak after 8 consecutive failed tool steps', async () => {
-    // Vary args per step so the identical-step guard never engages; every tool
-    // fails, so the consecutive-failure counter climbs to the cap on step 8.
+  it('continues after the same tool call repeats beyond the former identical streak', async () => {
     let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       call += 1
-      yield {
-        type: 'tool_call',
-        toolCall: { id: `c${call}`, name: 'read', arguments: `{"path":"f${call}.ts"}` }
-      }
-      yield { type: 'done', stopReason: 'tool_calls' }
-    })
-    executeTool.mockResolvedValue({ ok: false, summary: 'file', content: 'boom: read failed' })
-
-    const runId = 'safety-failure-streak'
-    const events = await collect(runId, workspace)
-
-    expect(streamChat).toHaveBeenCalledTimes(MAX_CONSECUTIVE_TOOL_FAILURE_STEPS)
-    // The failure streak is evaluated after tool execution, so all 8 steps ran tools.
-    expect(executeTool).toHaveBeenCalledTimes(MAX_CONSECUTIVE_TOOL_FAILURE_STEPS)
-    expectLoopSafetyStop(
-      events,
-      `Stopped after ${MAX_CONSECUTIVE_TOOL_FAILURE_STEPS} consecutive steps with a failed tool call. Inspect the last tool errors, adjust, and retry.`
-    )
-
-    const persisted = readFileSync(join(resolveRunDir(workspace, runId), 'events.jsonl'), 'utf8')
-    expect(persisted).toContain('"code":"LOOP_SAFETY"')
-    expect(persisted).toContain('"status":"error"')
-  })
-
-  it('does not re-emit LOOP_SAFETY on a follow-up invoke after failure streak stop', async () => {
-    let call = 0
-    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      call += 1
-      yield {
-        type: 'tool_call',
-        toolCall: { id: `c${call}`, name: 'read', arguments: `{"path":"f${call}.ts"}` }
-      }
-      yield { type: 'done', stopReason: 'tool_calls' }
-    })
-    executeTool.mockResolvedValue({ ok: false, summary: 'file', content: 'boom: read failed' })
-
-    const runId = 'safety-follow-up-invoke'
-    await collect(runId, workspace)
-
-    streamChat.mockClear()
-    executeTool.mockClear()
-    executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
-    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      yield { type: 'text', text: 'recovered' }
-      yield { type: 'done', stopReason: 'stop' }
-    })
-
-    const followUpEvents: CapturedEvent[] = []
-    for await (const ev of runAgent({
-      runId,
-      incremental: true,
-      newMessages: [{ role: 'user', content: 'try again' }],
-      workspacePath: workspace,
-      resume: true
-    })) {
-      followUpEvents.push(ev as CapturedEvent)
-    }
-    expect(followUpEvents.some((e) => e.type === 'error' && e.code === 'LOOP_SAFETY')).toBe(false)
-
-    const persisted = readFileSync(join(resolveRunDir(workspace, runId), 'events.jsonl'), 'utf8')
-    const loopSafetyLines = persisted
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => JSON.parse(line).event)
-      .filter((event) => event?.code === 'LOOP_SAFETY')
-    expect(loopSafetyLines).toHaveLength(1)
-  })
-
-  it('resets identical-step streak after a text-only truncated continue', async () => {
-    let call = 0
-    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      call += 1
-      // After 3 identical tool steps, emit a truncated text step that auto-continues
-      // and must clear the streak so the next identical tools start from 1 again.
-      if (call === 4) {
-        yield { type: 'text', text: 'partial…' }
-        yield { type: 'done', stopReason: 'length' }
-        return
-      }
-      if (call === 4 + MAX_IDENTICAL_STEP_STREAK) {
-        // After reset: 6 more identical tool steps trip the guard.
-        yield {
-          type: 'tool_call',
-          toolCall: { id: `c${call}`, name: 'read', arguments: '{"path":"a.ts"}' }
-        }
-        yield { type: 'done', stopReason: 'tool_calls' }
+      if (call > MAX_IDENTICAL_STEP_STREAK + 2) {
+        yield { type: 'text', text: 'finished after repeating tools' }
+        yield { type: 'done', stopReason: 'stop' }
         return
       }
       yield {
@@ -279,47 +160,63 @@ describe('runAgent LOOP_SAFETY integration', () => {
     })
     executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
 
+    const runId = 'safety-identical-streak'
+    const events = await collect(runId, workspace)
+
+    expect(streamChat).toHaveBeenCalledTimes(MAX_IDENTICAL_STEP_STREAK + 3)
+    expect(executeTool).toHaveBeenCalledTimes(MAX_IDENTICAL_STEP_STREAK + 2)
+    expectNoLoopSafetyStop(events)
+
+    const persisted = readFileSync(join(resolveRunDir(workspace, runId), 'events.jsonl'), 'utf8')
+    expect(persisted).not.toContain('"code":"LOOP_SAFETY"')
+  })
+
+  it('auto-continues truncated text then finishes without LOOP_SAFETY', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call <= 3) {
+        yield { type: 'text', text: 'partial…' }
+        yield { type: 'done', stopReason: 'length' }
+        return
+      }
+      yield { type: 'text', text: 'complete' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+    executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
+
     const runId = 'safety-identical-reset'
     const events = await collect(runId, workspace)
 
-    // 3 tools + 1 truncate + 5 tools executed + stop on 6th post-reset tool stream.
-    expect(streamChat).toHaveBeenCalledTimes(3 + 1 + MAX_IDENTICAL_STEP_STREAK)
-    expect(executeTool).toHaveBeenCalledTimes(3 + (MAX_IDENTICAL_STEP_STREAK - 1))
-    expectLoopSafetyStop(
-      events,
-      `Stopped after the same tool call(s) repeated ${MAX_IDENTICAL_STEP_STREAK} consecutive tool steps in a row (likely a loop). Change approach, or start a new chat with fresh context.`
-    )
+    expect(streamChat).toHaveBeenCalledTimes(4)
+    expectNoLoopSafetyStop(events)
+    expect(events.some((e) => e.type === 'incomplete' && e.reason === 'truncated')).toBe(true)
   })
 
-  it('emits follow_up_dropped when LOOP_SAFETY stops with queued follow-ups', async () => {
+  it('does not drop queued follow-ups on a repeating tool streak', async () => {
     const runId = 'safety-follow-up-dropped'
     let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       call += 1
-      yield {
-        type: 'tool_call',
-        toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
-      }
-      // Enqueue after the tool_call chunk is delivered so fingerprint still updates,
-      // then soft-abort steers — identical streak stop must drop the queued follow-up.
       if (call === MAX_IDENTICAL_STEP_STREAK) {
         const queued = enqueueFollowUp(runId, { role: 'user', content: 'late steer' })
         expect(queued.ok).toBe(true)
+      }
+      if (call > MAX_IDENTICAL_STEP_STREAK + 2) {
+        yield { type: 'text', text: 'done' }
+        yield { type: 'done', stopReason: 'stop' }
+        return
+      }
+      yield {
+        type: 'tool_call',
+        toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
       }
       yield { type: 'done', stopReason: 'tool_calls' }
     })
     executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
 
     const events = await collect(runId, workspace)
-    const dropped = events.find((e) => e.type === 'follow_up_dropped')
-    expect(dropped?.ids?.length).toBe(1)
-    expect(dropped?.reason).toBe('identical_step_streak')
-    expectLoopSafetyStop(
-      events,
-      `Stopped after the same tool call(s) repeated ${MAX_IDENTICAL_STEP_STREAK} consecutive tool steps in a row (likely a loop). Change approach, or start a new chat with fresh context.`
-    )
-
-    const persisted = readFileSync(join(resolveRunDir(workspace, runId), 'events.jsonl'), 'utf8')
-    expect(persisted).toContain('"type":"follow_up_dropped"')
+    expect(events.some((e) => e.type === 'follow_up_dropped')).toBe(false)
+    expectNoLoopSafetyStop(events)
   })
 })

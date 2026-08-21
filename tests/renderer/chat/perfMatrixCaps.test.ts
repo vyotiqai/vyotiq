@@ -10,7 +10,6 @@ import { DEFAULT_SNAPSHOT_CHARS } from '@main/app/browserUrl'
 import type { UiItem } from '@shared/transcript'
 
 const VIRTUALIZE_MIN_ROWS = 160
-const MAX_BROWSER_TABS = 16
 const MAX_EXPANDED_LINES = 200
 const EXPAND_ALL_MAX = 12
 const TERMINAL_UI_MAX = 64 * 1024
@@ -18,7 +17,6 @@ const TERMINAL_UI_MAX = 64 * 1024
 describe('perf matrix caps (documented constants)', () => {
   it('exports browser and terminal bounds from main modules', () => {
     expect(DEFAULT_SNAPSHOT_CHARS).toBe(40_000)
-    expect(MAX_BROWSER_TABS).toBe(16)
     expect(VIRTUALIZE_MIN_ROWS).toBe(160)
     expect(MAX_EXPANDED_LINES).toBe(200)
     expect(EXPAND_ALL_MAX).toBe(12)

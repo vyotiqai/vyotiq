@@ -5,11 +5,14 @@ import {
   useImperativeHandle,
   useLayoutEffect,
   useRef,
+  useState,
   type FormEvent,
   type KeyboardEvent
 } from 'react'
 import { fileIconUrl } from '@renderer/lib/fileIcons'
 import { cn } from '@renderer/lib/ui/cn'
+import { COMPOSER_TEXTAREA_MAX_CLASS } from '@renderer/lib/utils/layout'
+import { filesFromDataTransfer } from './dataTransferFiles'
 import {
   MENTION_END,
   MENTION_START,
@@ -241,6 +244,7 @@ export const ComposerMentionInput = forwardRef<
     placeholder?: string
     disabled?: boolean
     className?: string
+    onPasteFiles?: (files: File[]) => void
     'aria-expanded'?: boolean
     'aria-controls'?: string
     'aria-autocomplete'?: 'list' | 'none' | 'inline' | 'both'
@@ -256,6 +260,7 @@ export const ComposerMentionInput = forwardRef<
     placeholder,
     disabled,
     className,
+    onPasteFiles,
     onFocus,
     'aria-expanded': ariaExpanded,
     'aria-controls': ariaControls,
@@ -267,6 +272,7 @@ export const ComposerMentionInput = forwardRef<
   const elRef = useRef<HTMLDivElement>(null)
   const lastValueRef = useRef(value)
   const composingRef = useRef(false)
+  const [composing, setComposing] = useState(false)
 
   useImperativeHandle(ref, () => ({
     focus: () => elRef.current?.focus(),
@@ -285,6 +291,13 @@ export const ComposerMentionInput = forwardRef<
     if (value === lastValueRef.current) {
       if (!el.childNodes.length && value) {
         renderSegmentsInto(el, value)
+      } else if (
+        !value &&
+        el.childNodes.length > 0 &&
+        !composingRef.current
+      ) {
+        // Controlled value is empty but DOM still has nodes (orphan after desync).
+        renderSegmentsInto(el, value)
       }
       return
     }
@@ -292,7 +305,11 @@ export const ComposerMentionInput = forwardRef<
     const caret = focused ? caretSerializedOffset(el) : value.length
     renderSegmentsInto(el, value)
     lastValueRef.current = value
-    if (focused) setCaretSerializedOffset(el, Math.min(caret, value.length))
+    if (focused) {
+      // replaceChildren can drop focus/caret even when activeElement still looks set.
+      el.focus()
+      setCaretSerializedOffset(el, Math.min(caret, value.length))
+    }
   }, [value])
 
   useEffect(() => {
@@ -325,15 +342,23 @@ export const ComposerMentionInput = forwardRef<
   }
 
   const empty =
-    !value ||
-    parseComposerDocument(value).every((s) => s.type === 'text' && !s.value.trim())
+    !composing &&
+    (!value ||
+      parseComposerDocument(value).every((s) => s.type === 'text' && !s.value.trim()))
 
   return (
-    <div className="relative min-w-0">
+    <div
+      className="relative min-w-0 w-full"
+      role="combobox"
+      aria-expanded={ariaExpanded ?? false}
+      aria-controls={ariaControls}
+      aria-haspopup="listbox"
+    >
       {empty && placeholder ? (
         <div
-          className="pointer-events-none absolute inset-0 text-md leading-relaxed text-secondary"
+          className="pointer-events-none absolute inset-0 flex items-center text-md leading-snug tracking-normal text-secondary"
           aria-hidden
+          style={{ letterSpacing: 0, textRendering: 'auto' }}
         >
           {placeholder}
         </div>
@@ -344,17 +369,17 @@ export const ComposerMentionInput = forwardRef<
         aria-multiline="true"
         aria-label="Message"
         aria-keyshortcuts="Meta+L Control+L"
-        aria-expanded={ariaExpanded}
-        aria-controls={ariaControls}
         aria-autocomplete={ariaAutocomplete}
         aria-activedescendant={ariaActivedescendant}
         aria-disabled={disabled || undefined}
+        tabIndex={disabled ? -1 : 0}
         contentEditable={disabled ? false : true}
         suppressContentEditableWarning
         className={cn(
-          'min-h-[32px] max-h-40 min-w-0 overflow-y-auto whitespace-pre-wrap break-words',
-          'border-0 bg-transparent p-0 text-md leading-relaxed text-fg outline-none',
-          'focus-visible:ring-0',
+          'min-h-7 min-w-0 w-full overflow-y-auto whitespace-pre-wrap break-words',
+          COMPOSER_TEXTAREA_MAX_CLASS,
+          'border-0 bg-transparent p-0 text-md leading-snug text-fg outline-none ring-0',
+          'focus:ring-0 focus-visible:ring-0',
           disabled && 'opacity-[var(--vy-disabled-opacity)]',
           className
         )}
@@ -372,15 +397,19 @@ export const ComposerMentionInput = forwardRef<
         onBlur={syncCaret}
         onCompositionStart={() => {
           composingRef.current = true
+          setComposing(true)
         }}
         onCompositionEnd={() => {
           composingRef.current = false
+          setComposing(false)
           emitFromDom()
         }}
         onPaste={(e) => {
           e.preventDefault()
+          const files = filesFromDataTransfer(e.clipboardData)
+          if (files.length) onPasteFiles?.(files)
           const text = e.clipboardData.getData('text/plain')
-          document.execCommand('insertText', false, text)
+          if (text) document.execCommand('insertText', false, text)
         }}
       />
     </div>

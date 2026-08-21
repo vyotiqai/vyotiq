@@ -27,14 +27,24 @@ export function useSidebarChats({
         runs: [],
         activeRunId: null
       }
-      const filteredRuns = q
-        ? workspaceRuns.runs.filter((r) => runSearchText(r).includes(q))
+      const instanceRuns = workspaceRuns.instanceRuns ?? []
+      const filteredInstances = q
+        ? instanceRuns.filter((r) => runSearchText(r).includes(q))
+        : instanceRuns
+      // Keep parents that match, or parents of matching instance children.
+      const parentIdsFromInstances = new Set(
+        filteredInstances.map((r) => r.parentRunId).filter((id): id is string => Boolean(id))
+      )
+      const parentsForList = q
+        ? workspaceRuns.runs.filter(
+            (r) => runSearchText(r).includes(q) || parentIdsFromInstances.has(r.runId)
+          )
         : workspaceRuns.runs
       const groupedRuns = q
-        ? filteredRuns.length
-          ? [{ id: 'today' as const, label: 'Results', runs: filteredRuns }]
+        ? parentsForList.length
+          ? [{ id: 'today' as const, label: 'Results', runs: parentsForList }]
           : []
-        : groupRunsByRecency(filteredRuns)
+        : groupRunsByRecency(parentsForList)
       const expanded = q
         ? true
         : expandedByPath[path] ??
@@ -44,7 +54,8 @@ export function useSidebarChats({
         label: formatWorkspaceName(path, path),
         isActiveWorkspace: activePath != null && workspacePathsEqual(path, activePath),
         expanded,
-        filteredRuns,
+        filteredRuns: parentsForList,
+        instanceRuns: filteredInstances,
         groupedRuns,
         runsCapped: workspaceRuns.runsCapped,
         runsError: workspaceRuns.runsError,

@@ -60,6 +60,19 @@ export const GitStatusResultSchema = z.discriminatedUnion('kind', [
 ])
 export type GitStatusResult = z.infer<typeof GitStatusResultSchema>
 
+export const GitGenerateCommitMessageRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  mode: z.enum(['all', 'staged']).optional().default('all')
+})
+
+export const GitGenerateCommitMessageResultSchema = z.object({
+  message: z.string().min(1).nullable(),
+  source: z.enum(['agent', 'fallback'])
+})
+export type GitGenerateCommitMessageResult = z.infer<
+  typeof GitGenerateCommitMessageResultSchema
+>
+
 export const GitCommitRequestSchema = z.object({
   workspacePath: z.string().min(1),
   message: z.string().min(1).max(2000),
@@ -117,15 +130,21 @@ export const GitBranchesRequestSchema = z.object({
 export const GitBranchesResultSchema = z.array(GitBranchEntrySchema)
 export type GitBranchesResult = z.infer<typeof GitBranchesResultSchema>
 
+/** Short or full git object id — never an option-like string such as `--output=`. */
+export const GitObjectIdSchema = z
+  .string()
+  .trim()
+  .regex(/^[0-9a-fA-F]{7,64}$/, 'Invalid git object id')
+
 export const GitCheckoutRequestSchema = z.object({
   workspacePath: z.string().min(1),
-  // Mirrors checkoutBranch runtime rules: no whitespace, backslash, or '..'.
+  // Existing local branch name: no option-like prefix, whitespace, backslash, or '..'.
   branch: z
     .string()
     .trim()
     .min(1)
     .max(255)
-    .refine((name) => !name.includes('..') && !/[\s\\]/.test(name), {
+    .refine((name) => !name.startsWith('-') && !name.includes('..') && !/[\s\\]/.test(name), {
       message: 'Invalid branch name'
     })
 })
@@ -142,7 +161,9 @@ export const GitDiffRequestSchema = z.object({
   /** Ignore whitespace when computing the diff (`git diff -w`). */
   ignoreWhitespace: z.boolean().optional(),
   /** When set, show the patch introduced by this commit (`git show`). */
-  sha: z.string().min(1).optional()
+  sha: GitObjectIdSchema.optional(),
+  /** Combined working-tree + index vs HEAD (`git diff HEAD`). Uncommitted scope. */
+  vsHead: z.boolean().optional()
 })
 export type GitDiffRequest = z.infer<typeof GitDiffRequestSchema>
 
@@ -150,6 +171,40 @@ export const GitDiffResultSchema = z.object({
   content: z.string()
 })
 export type GitDiffResult = z.infer<typeof GitDiffResultSchema>
+
+export const GitBlameRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  path: z.string().min(1)
+})
+export type GitBlameRequest = z.infer<typeof GitBlameRequestSchema>
+
+export const GitBlameLineSchema = z.object({
+  line: z.number().int().positive(),
+  sha: z.string().regex(/^[0-9a-f]{7,64}$/i).nullable(),
+  shortSha: z.string().regex(/^[0-9a-f]{7,64}$/i).nullable(),
+  author: z.string().max(512),
+  date: z.string().max(128),
+  text: z.string().max(32_768)
+})
+export type GitBlameLine = z.infer<typeof GitBlameLineSchema>
+
+export const GitBlameResultSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('ok'),
+    path: z.string().min(1),
+    lines: z.array(GitBlameLineSchema).max(20_000),
+    truncated: z.boolean()
+  }),
+  z.object({
+    kind: z.literal('unavailable'),
+    detail: z.string().min(1).max(512)
+  }),
+  z.object({
+    kind: z.literal('not_repo'),
+    detail: z.string().min(1).max(512)
+  })
+])
+export type GitBlameResult = z.infer<typeof GitBlameResultSchema>
 
 export const GitLogEntrySchema = z.object({
   sha: z.string().min(1),
@@ -170,7 +225,7 @@ export type GitLogResult = z.infer<typeof GitLogResultSchema>
 
 export const GitCommitFilesRequestSchema = z.object({
   workspacePath: z.string().min(1),
-  sha: z.string().min(1)
+  sha: GitObjectIdSchema
 })
 
 export const GitCommitFilesResultSchema = z.object({

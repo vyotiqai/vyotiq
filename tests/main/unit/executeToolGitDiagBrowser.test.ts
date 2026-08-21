@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { DEFAULT_SETTINGS } from '@shared/ipc'
+import { canGit } from '../../helpers/canGit'
 
 vi.mock('@main/settings/settings', () => ({
   getSettings: () => ({
@@ -12,17 +13,22 @@ vi.mock('@main/settings/settings', () => ({
   })
 }))
 
-const commitAll = vi.fn(async () => ({
+vi.mock('@main/app/window', () => ({
+  getMainWindow: () => null
+}))
+
+const commitPaths = vi.fn(async () => ({
   committed: true,
   pushed: false,
-  detail: 'Committed 1 file'
+  detail: 'Committed 1 file',
+  skipped: [] as string[]
 }))
 
 vi.mock('@main/git/git', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@main/git/git')>()
   return {
     ...actual,
-    commitAll: (...args: unknown[]) => commitAll(...args)
+    commitPaths: (...args: unknown[]) => commitPaths(...args)
   }
 })
 
@@ -81,7 +87,7 @@ describe('executeTool git / diagnostics / browser', () => {
     navigateUrl.mockClear()
     snapshotPage.mockClear()
     clickSelector.mockClear()
-    commitAll.mockClear()
+    commitPaths.mockClear()
     toolWebFetch.mockClear()
   })
 
@@ -91,7 +97,7 @@ describe('executeTool git / diagnostics / browser', () => {
     }
   })
 
-  it('git_status returns formatted status for a real repo', async () => {
+  it.skipIf(!canGit)('git_status returns formatted status for a real repo', async () => {
     git(workspace, 'init', '--initial-branch=main')
     git(workspace, 'config', 'user.email', 'test@example.com')
     git(workspace, 'config', 'user.name', 'Test')
@@ -112,7 +118,7 @@ describe('executeTool git / diagnostics / browser', () => {
     expect(result.content).toBe('Not a git repository')
   })
 
-  it('git_diff returns unified diff for a dirty tracked file', async () => {
+  it.skipIf(!canGit)('git_diff returns unified diff for a dirty tracked file', async () => {
     git(workspace, 'init', '--initial-branch=main')
     git(workspace, 'config', 'user.email', 'test@example.com')
     git(workspace, 'config', 'user.name', 'Test')
@@ -132,15 +138,27 @@ describe('executeTool git / diagnostics / browser', () => {
     expect(result.content).toMatch(/\+two|@@/)
   })
 
-  it('git_commit stages via commitAll', async () => {
+  it('git_commit refuses empty scope without paths or run mutations', async () => {
     const result = await executeTool(
       'git_commit',
       JSON.stringify({ message: 'feat: test commit' }),
       workspace,
       new AbortController().signal
     )
+    expect(result.ok).toBe(false)
+    expect(commitPaths).not.toHaveBeenCalled()
+    expect(result.content).toMatch(/No run-touched files/i)
+  })
+
+  it('git_commit stages via commitPaths when paths are explicit', async () => {
+    const result = await executeTool(
+      'git_commit',
+      JSON.stringify({ message: 'feat: test commit', paths: ['a.ts'] }),
+      workspace,
+      new AbortController().signal
+    )
     expect(result.ok).toBe(true)
-    expect(commitAll).toHaveBeenCalledWith(workspace, 'feat: test commit', false)
+    expect(commitPaths).toHaveBeenCalledWith(workspace, 'feat: test commit', false, ['a.ts'])
     expect(result.content).toContain('committed: true')
     expect(result.content).toContain('message: feat: test commit')
   })
@@ -153,7 +171,8 @@ describe('executeTool git / diagnostics / browser', () => {
       new AbortController().signal
     )
     expect(result.ok).toBe(false)
-    expect(commitAll).not.toHaveBeenCalled()
+    expect(commitPaths).not.toHaveBeenCalled()
+    expect(result.content).toMatch(/message/)
   })
 
   it('diagnostics formats parsed issues for the UI', async () => {
@@ -290,15 +309,15 @@ describe('executeTool git / diagnostics / browser', () => {
     expect(selectOption).toHaveBeenCalled()
   })
 
-  it('browser_select_option requires value or label', async () => {
+  it('browser_select_option dispatches without a schema gate', async () => {
     const result = await executeTool(
       'browser_select_option',
       JSON.stringify({ selector: '@e9' }),
       workspace,
       new AbortController().signal
     )
-    expect(result.ok).toBe(false)
-    expect(selectOption).not.toHaveBeenCalled()
+    expect(selectOption).toHaveBeenCalled()
+    expect(result.ok).toBe(true)
   })
 
   it('browser_search goes through executeTool', async () => {
@@ -461,20 +480,23 @@ describe('executeTool browser action handlers', () => {
 
     const back = await executeTool('browser_back', JSON.stringify({ tab_id: 'tab-7' }), workspace, signal)
     expect(back.ok).toBe(true)
-    expect(back.summary).toBe('back')
+    // Empty summary — toolLabel verb already says "Going back" / "Going forward".
+    expect(back.summary).toBe('')
     expect(goBack).toHaveBeenCalledWith({
       signal: expect.any(AbortSignal),
       tabId: 'tab-7',
-      workspacePath: workspace
+      workspacePath: workspace,
+      allowLocal: true
     })
 
     const forward = await executeTool('browser_forward', '{}', workspace, signal)
     expect(forward.ok).toBe(true)
-    expect(forward.summary).toBe('forward')
+    expect(forward.summary).toBe('')
     expect(goForward).toHaveBeenCalledWith({
       signal: expect.any(AbortSignal),
       tabId: undefined,
-      workspacePath: workspace
+      workspacePath: workspace,
+      allowLocal: true
     })
   })
 
@@ -545,6 +567,27 @@ describe('executeTool browser action handlers', () => {
     })
   })
 
+  it('browser_press_key includeSnapshot appends a snapshot like type/fill', async () => {
+    const result = await executeTool(
+      'browser_press_key',
+      JSON.stringify({ key: 'Enter', includeSnapshot: true }),
+      workspace,
+      new AbortController().signal,
+      { runDir: workspace }
+    )
+
+    expect(result.ok).toBe(true)
+    expect(pressKey).toHaveBeenCalled()
+    expect(snapshotPage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspacePath: workspace,
+        runDir: workspace
+      })
+    )
+    expect(result.content).toContain('pressed Enter')
+    expect(result.content).toContain('refs:')
+  })
+
   it('browser_select_option maps value or label', async () => {
     const byValue = await executeTool(
       'browser_select_option',
@@ -576,7 +619,7 @@ describe('executeTool browser action handlers', () => {
     )
   })
 
-  it('browser_select_option rejects when neither value nor label is provided', async () => {
+  it('browser_select_option dispatches without value or label', async () => {
     const result = await executeTool(
       'browser_select_option',
       JSON.stringify({ selector: '#sel' }),
@@ -584,9 +627,8 @@ describe('executeTool browser action handlers', () => {
       new AbortController().signal
     )
 
-    expect(result.ok).toBe(false)
-    expect(result.content).toMatch(/value or label/i)
-    expect(selectOption).not.toHaveBeenCalled()
+    expect(selectOption).toHaveBeenCalled()
+    expect(result.ok).toBe(true)
   })
 
   it('browser_click maps button and settleMs', async () => {
@@ -598,13 +640,17 @@ describe('executeTool browser action handlers', () => {
     )
 
     expect(result.ok).toBe(true)
-    expect(clickSelector).toHaveBeenCalledWith('@e1', {
-      signal: expect.any(AbortSignal),
-      button: 'right',
-      tabId: 'tab-1',
-      settleMs: 40,
-      workspacePath: workspace
-    })
+    expect(clickSelector).toHaveBeenCalledWith(
+      '@e1',
+      expect.objectContaining({
+        signal: expect.any(AbortSignal),
+        button: 'right',
+        tabId: 'tab-1',
+        settleMs: 40,
+        workspacePath: workspace,
+        includeSnapshot: false
+      })
+    )
   })
 
   it('browser_tabs rejects an invalid action without touching the browser', async () => {
@@ -632,7 +678,27 @@ describe('executeTool browser action handlers', () => {
       signal: expect.any(AbortSignal),
       tabId: undefined,
       url: 'https://example.com/new',
-      workspacePath: workspace
+      workspacePath: workspace,
+      allowLocal: true
+    })
+  })
+
+  it('browser_tabs open passes allowLocal=false in Ask mode', async () => {
+    const result = await executeTool(
+      'browser_tabs',
+      JSON.stringify({ action: 'open', url: 'http://localhost:3000' }),
+      workspace,
+      new AbortController().signal,
+      { agentMode: 'ask' }
+    )
+
+    expect(result.ok).toBe(true)
+    expect(manageTabs).toHaveBeenCalledWith('open', {
+      signal: expect.any(AbortSignal),
+      tabId: undefined,
+      url: 'http://localhost:3000',
+      workspacePath: workspace,
+      allowLocal: false
     })
   })
 

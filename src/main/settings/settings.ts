@@ -1,7 +1,11 @@
 import { app } from 'electron'
 import { readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
-import { DEFAULT_SETTINGS, SettingsSchema, type Settings } from '../../shared/ipc'
+import { DEFAULT_SETTINGS, SETTINGS_FORMAT_VERSION, SettingsSchema, type Settings } from '../../shared/ipc'
+import {
+  DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO,
+  LEGACY_AUTO_COMPACT_THRESHOLD_RATIO
+} from '../../shared/domain/contextBudget'
 import { defaultModelFor, normalizeCustomOpenAiBaseUrl, ollamaNativeHost } from '../../shared/providers'
 import { logger } from '../../shared/logger'
 import { atomicWriteJson } from '../storage/atomicWrite'
@@ -352,6 +356,45 @@ function stripLegacyFields(raw: Record<string, unknown>): Record<string, unknown
   return rest
 }
 
+function persistedSettingsVersion(raw: Record<string, unknown>): number {
+  return typeof raw.settingsVersion === 'number' && Number.isFinite(raw.settingsVersion)
+    ? raw.settingsVersion
+    : 0
+}
+
+/**
+ * Rewrite old product defaults that were already written into settings.json.
+ * Version is read from the raw file (not merged defaults) so a missing key
+ * still runs. Exact 0.2 is the previous auto-compact default — leave any
+ * other stored ratio, including a later intentional 20% after version stamp.
+ */
+function migratePersistedSettingsDefaults(raw: Record<string, unknown>): {
+  data: Record<string, unknown>
+  persist: boolean
+} {
+  const rawVersion = persistedSettingsVersion(raw)
+  if (rawVersion >= SETTINGS_FORMAT_VERSION) {
+    return { data: raw, persist: false }
+  }
+  const next: Record<string, unknown> = { ...raw, settingsVersion: SETTINGS_FORMAT_VERSION }
+  if (raw.autoCompactThresholdRatio === LEGACY_AUTO_COMPACT_THRESHOLD_RATIO) {
+    next.autoCompactThresholdRatio = DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO
+  }
+  return { data: next, persist: true }
+}
+
+function persistSettingsOnLoad(data: Settings, reason: string): void {
+  try {
+    writeSettings(data)
+  } catch (err) {
+    logger.warn(`Failed to persist ${reason}`, {
+      scope: 'settings',
+      code: 'SETTINGS',
+      err
+    })
+  }
+}
+
 /** Read legacy workspacePath from settings.json for one-time migration to workspaces.json. */
 export function readLegacyWorkspacePath(): string | null {
   const p = settingsPath()
@@ -399,9 +442,10 @@ export function getSettings(): Settings {
   }
   try {
     const raw = JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>
+    const migrated = migratePersistedSettingsDefaults(stripLegacyFields(raw))
     const parsed = SettingsSchema.safeParse({
       ...DEFAULT_SETTINGS,
-      ...stripLegacyFields(raw)
+      ...migrated.data
     })
     if (!parsed.success) {
       logger.warn('Settings schema mismatch; merging known fields', {
@@ -410,28 +454,20 @@ export function getSettings(): Settings {
       })
       const merged: Settings = { ...DEFAULT_SETTINGS }
       for (const key of Object.keys(DEFAULT_SETTINGS) as (keyof Settings)[]) {
-        const value = raw[key]
+        const value = migrated.data[key]
         const field = SettingsSchema.shape[key].safeParse(value)
         if (field.success) {
           ;(merged as Record<string, unknown>)[key] = field.data
         }
       }
       settingsCache = migrateLegacyMcpSecretsOnLoad(normalizeSettings(merged))
+      if (migrated.persist) persistSettingsOnLoad(settingsCache, 'migrated settings defaults')
       return restoreMcpSecrets(settingsCache)
     }
     const data = migrateLegacyMcpSecretsOnLoad(normalizeSettings(parsed.data))
-    if (data.ollamaBaseUrl !== parsed.data.ollamaBaseUrl) {
-      try {
-        writeSettings(data)
-      } catch (err) {
-        logger.warn('Failed to persist normalized Ollama URL', {
-          scope: 'settings',
-          code: 'SETTINGS',
-          err
-        })
-      }
-    }
-    if (
+    const shouldPersist =
+      migrated.persist ||
+      data.ollamaBaseUrl !== parsed.data.ollamaBaseUrl ||
       'workspacePath' in raw ||
       'maxSteps' in raw ||
       'maxAgentSteps' in raw ||
@@ -440,16 +476,15 @@ export function getSettings(): Settings {
       'contractDoneWhen' in raw ||
       'readBeforeEdit' in raw ||
       'memoryAutoPromote' in raw
-    ) {
-      try {
-        writeSettings(data)
-      } catch (err) {
-        logger.warn('Failed to strip legacy fields from settings', {
-          scope: 'settings',
-          code: 'SETTINGS',
-          err
-        })
-      }
+    if (shouldPersist) {
+      persistSettingsOnLoad(
+        data,
+        migrated.persist
+          ? 'migrated settings defaults'
+          : data.ollamaBaseUrl !== parsed.data.ollamaBaseUrl
+            ? 'normalized Ollama URL'
+            : 'stripped legacy fields from settings'
+      )
     }
     settingsCache = data
     return restoreMcpSecrets(settingsCache)
@@ -498,12 +533,12 @@ function assertMcpServersAcked(
     const prior = prevById.get(server.id)
     if (!prior) {
       throw new Error(
-        'Acknowledge marketplace / MCP installs in Settings → Registry before adding MCP servers.'
+        'Acknowledge marketplace / MCP installs in Marketplace → Manage (Package Registry) before adding MCP servers.'
       )
     }
     if (mcpServerIdentity(prior) !== mcpServerIdentity(server)) {
       throw new Error(
-        'Acknowledge marketplace / MCP installs in Settings → Registry before changing MCP server endpoints.'
+        'Acknowledge marketplace / MCP installs in Marketplace → Manage (Package Registry) before changing MCP server endpoints.'
       )
     }
   }
@@ -557,12 +592,19 @@ export function setSettings(
 ): Settings {
   const prev = getSettings()
   // Strip renderer-writable ack unless main explicitly allows it.
+  // Changing registryUrl clears ack so a new endpoint cannot reuse a prior consent.
   let marketplace = partial.marketplace
   if (marketplace !== undefined && !opts?.allowRemoteInstallAck) {
     const { remoteInstallAcked: _ignored, ...rest } = marketplace
+    const prevUrl = (prev.marketplace?.registryUrl ?? '').trim()
+    const nextUrl =
+      rest.registryUrl !== undefined ? rest.registryUrl.trim() : prevUrl
+    const urlChanged = rest.registryUrl !== undefined && nextUrl !== prevUrl
     marketplace = {
       ...rest,
-      remoteInstallAcked: prev.marketplace?.remoteInstallAcked ?? false
+      remoteInstallAcked: urlChanged
+        ? false
+        : (prev.marketplace?.remoteInstallAcked ?? false)
     }
   }
   let mcpServers = partial.mcpServers
@@ -572,11 +614,26 @@ export function setSettings(
       assertMcpServersAcked(prev, mcpServers)
     }
   }
+  let codeIndex = partial.codeIndex
+  if (codeIndex !== undefined) {
+    codeIndex = { ...prev.codeIndex, ...codeIndex }
+  }
+  let dictation = partial.dictation
+  if (dictation !== undefined) {
+    dictation = { ...prev.dictation, ...dictation }
+  }
+  let notifications = partial.notifications
+  if (notifications !== undefined) {
+    notifications = { ...prev.notifications, ...notifications }
+  }
   const merged = {
     ...prev,
     ...partial,
     ...(marketplace !== undefined ? { marketplace } : {}),
-    ...(mcpServers !== undefined ? { mcpServers } : {})
+    ...(mcpServers !== undefined ? { mcpServers } : {}),
+    ...(codeIndex !== undefined ? { codeIndex } : {}),
+    ...(dictation !== undefined ? { dictation } : {}),
+    ...(notifications !== undefined ? { notifications } : {})
   }
   if (typeof merged.ollamaBaseUrl === 'string') {
     merged.ollamaBaseUrl = ollamaNativeHost(merged.ollamaBaseUrl)
@@ -593,6 +650,21 @@ export function setSettings(
   } catch (err) {
     logger.error('Failed to write settings', { scope: 'settings', code: 'SETTINGS', err })
     throw err
+  }
+  const prevEmbedder = prev.codeIndex?.embedder ?? 'mdenseon'
+  const nextEmbedder = next.codeIndex?.embedder ?? 'mdenseon'
+  if (partial.codeIndex !== undefined && prevEmbedder !== nextEmbedder) {
+    try {
+      // Lazy require avoids circular import with codeindex → settings.
+      const { closeCodeIndex, clearMDenseOnSession } = require('../agent/codeindex') as {
+        closeCodeIndex: (workspaceRoot?: string) => void
+        clearMDenseOnSession: () => void
+      }
+      closeCodeIndex()
+      clearMDenseOnSession()
+    } catch {
+      // ignore if codeindex unavailable in early boot / tests without electron
+    }
   }
   if (partial.mcpServers !== undefined) {
     const nextIds = new Set((next.mcpServers ?? []).map((s) => s.id))

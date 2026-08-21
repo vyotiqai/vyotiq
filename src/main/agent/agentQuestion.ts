@@ -5,6 +5,8 @@ import type {
 } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
 import { sanitizeQuestionAnswers } from '../../shared/utils/agentQuestionForm'
+import { dismissLifecycleNotification } from '../notifications/bus'
+import { needsYouDedupeKey } from '../../shared/ipc'
 
 export type QuestionSender = (request: AgentQuestionRequest) => void
 
@@ -64,6 +66,7 @@ export function resolveAgentQuestion(response: AgentQuestionResponse): boolean {
   if (entry.runId !== response.runId) return false
   const answers = sanitizeQuestionAnswers(entry.request.questions, response.answers)
   entry.resolve(answers)
+  dismissLifecycleNotification(needsYouDedupeKey(response.runId))
   return true
 }
 
@@ -142,6 +145,16 @@ export function cancelPendingQuestions(runId: string, invokeId?: number): void {
     if (entry.runId !== runId) continue
     if (invokeId !== undefined && entry.invokeId !== invokeId) continue
     entry.cancel(abortQuestionError())
+  }
+  dismissLifecycleNotification(needsYouDedupeKey(runId))
+}
+
+/** Dismiss open question cards without aborting the run (empty answers, same as timeout). */
+export function dismissPendingQuestions(runId: string, invokeId?: number): void {
+  for (const [, entry] of pending) {
+    if (entry.runId !== runId) continue
+    if (invokeId !== undefined && entry.invokeId !== invokeId) continue
+    entry.resolve([])
   }
 }
 

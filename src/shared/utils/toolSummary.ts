@@ -1,11 +1,15 @@
 import {
+  formatAgentInstanceShortId,
+  parseAgentInstanceRunIdFromArgs
+} from './agentInstance'
+import {
   extractPathFromTerminalCommand,
   formatListDirPathLabel,
   formatPathLabel,
   sanitizeCommandForDisplay,
   sanitizeDisplayPath
 } from './displayPath'
-import { humanizeSnakeCase } from './mcpToolMeta'
+import { parseJsonish } from './jsonish'
 
 export const MCP_TOOL_PREFIX = 'mcp__'
 
@@ -14,12 +18,37 @@ export function isUnresolvedToolName(name: string | undefined | null): boolean {
   return !name || name === 'tool'
 }
 
+/**
+ * Per-call create vs modify from tool result text (edit / multi_edit).
+ * Null when the result does not describe a file write.
+ */
+export function inferFileWriteAction(
+  name: string,
+  content?: string | null
+): 'created' | 'modified' | null {
+  if (name !== 'edit' && name !== 'multi_edit') return null
+  const text = (content ?? '').trim()
+  if (!text) return null
+  if (name === 'edit') {
+    if (/^Created\b/i.test(text)) return 'created'
+    if (/^Wrote\b/i.test(text) || /^Applied diff\b/i.test(text)) return 'modified'
+    return null
+  }
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('- '))
+  if (lines.length === 0) return null
+  return lines.every((line) => /^- created\b/i.test(line)) ? 'created' : 'modified'
+}
+
 export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   read: { running: 'Reading', done: 'Read' },
   edit: { running: 'Editing', done: 'Edited' },
   search: { running: 'Searching', done: 'Searched' },
   glob: { running: 'Globbing', done: 'Globbed' },
   grep: { running: 'Grepping', done: 'Grepped' },
+  codebase_search: { running: 'Semantic search', done: 'Codebase search' },
   list_dir: { running: 'Listing', done: 'Listed' },
   multi_edit: { running: 'Editing', done: 'Edited' },
   str_replace: { running: 'Editing', done: 'Edited' },
@@ -28,7 +57,8 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   web_fetch: { running: 'Fetching', done: 'Fetched' },
   web_search: { running: 'Searching web', done: 'Web search' },
   browser_navigate: { running: 'Browsing', done: 'Browsed' },
-  browser_search: { running: 'Searching web', done: 'Web search' },
+  // Navigate + snapshot in agent browser (not a SERP hit list).
+  browser_search: { running: 'Searching', done: 'Searched' },
   browser_snapshot: { running: 'Snapshotting', done: 'Snapshot' },
   browser_click: { running: 'Clicking', done: 'Clicked' },
   browser_type: { running: 'Typing', done: 'Typed' },
@@ -39,6 +69,9 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   browser_forward: { running: 'Going forward', done: 'Forward' },
   browser_wait_for_selector: { running: 'Waiting', done: 'Waited' },
   browser_wait_for_url: { running: 'Waiting URL', done: 'URL ready' },
+  browser_wait_for_text: { running: 'Waiting text', done: 'Text found' },
+  browser_hover: { running: 'Hovering', done: 'Hovered' },
+  browser_handle_dialog: { running: 'Handling dialog', done: 'Dialog handled' },
   browser_press_key: { running: 'Pressing', done: 'Pressed' },
   browser_select_option: { running: 'Selecting', done: 'Selected' },
   mcp_list_tools: { running: 'Listing MCP', done: 'MCP tools' },
@@ -57,8 +90,10 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   git_diff: { running: 'Diffing', done: 'Git diff' },
   git_commit: { running: 'Committing', done: 'Git commit' },
   diagnostics: { running: 'Checking', done: 'Diagnostics' },
-  generate_image: { running: 'Generating image', done: 'Generated image' },
-  edit_image: { running: 'Editing image', done: 'Edited image' },
+  spawn_agent_instance: { running: 'Spawning instance', done: 'Spawned instance' },
+  await_agent_instance: { running: 'Awaiting instance', done: 'Instance finished' },
+  pull_agent_instance: { running: 'Pulling instance', done: 'Pulled instance' },
+  merge_agent_instance: { running: 'Merging instance', done: 'Merged instance' },
   ask_question: { running: 'Asking', done: 'Asked' },
   switch_mode: { running: 'Switching mode', done: 'Switched mode' }
 }
@@ -109,29 +144,12 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
     const path = args.path ?? args.file
     if (typeof path === 'string') return formatPathTarget(path)
   }
-  if (name === 'generate_image') {
-    const path = args.path
-    if (typeof path === 'string' && path.trim()) return formatPathTarget(path)
-    const prompt = args.prompt
-    if (typeof prompt === 'string' && prompt.trim()) return truncate(prompt, 80)
-  }
-  if (name === 'edit_image') {
-    const path = args.path
-    if (typeof path === 'string' && path.trim()) return formatPathTarget(path)
-    const refs = args.reference_paths
-    if (Array.isArray(refs) && refs.length > 0) {
-      const first = refs.find((r) => typeof r === 'string' && r.trim())
-      if (typeof first === 'string') return formatPathTarget(first)
-    }
-    const prompt = args.prompt
-    if (typeof prompt === 'string' && prompt.trim()) return truncate(prompt, 80)
-  }
   if (name === 'list_dir') {
     const path = args.path
     const raw = typeof path === 'string' && path.trim() ? path : '.'
     return truncate(formatListDirPathLabel(raw))
   }
-  if (name === 'search' || name === 'glob' || name === 'grep') {
+  if (name === 'search' || name === 'glob' || name === 'grep' || name === 'codebase_search') {
     const query = args.query ?? args.pattern
     if (typeof query === 'string') return truncate(query)
   }
@@ -148,7 +166,10 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
   }
   if (name === 'todo_write') {
     const todos = args.todos
-    if (Array.isArray(todos)) return `${todos.length} tasks`
+    if (Array.isArray(todos)) {
+      const n = todos.length
+      return n === 1 ? '1 task' : `${n} tasks`
+    }
   }
   if (name === 'web_fetch' || name === 'browser_navigate') {
     const url = args.url
@@ -158,7 +179,15 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
     const query = args.query
     if (typeof query === 'string') return truncate(query)
   }
-  if (name === 'browser_click' || name === 'browser_type' || name === 'browser_fill' || name === 'browser_scroll' || name === 'browser_wait_for_selector' || name === 'browser_select_option') {
+  if (
+    name === 'browser_click' ||
+    name === 'browser_type' ||
+    name === 'browser_fill' ||
+    name === 'browser_scroll' ||
+    name === 'browser_wait_for_selector' ||
+    name === 'browser_select_option' ||
+    name === 'browser_hover'
+  ) {
     const selector = args.selector
     if (typeof selector === 'string' && selector.trim()) return truncate(selector)
     if (name === 'browser_type') {
@@ -178,13 +207,17 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
   if (name === 'browser_snapshot') {
     return 'page'
   }
-  if (name === 'browser_tabs') {
+  if (name === 'browser_tabs' || name === 'browser_handle_dialog') {
     const action = args.action
     if (typeof action === 'string') return action
   }
   if (name === 'browser_wait_for_url') {
     const match = args.match
     if (typeof match === 'string') return truncate(match)
+  }
+  if (name === 'browser_wait_for_text') {
+    const text = args.text
+    if (typeof text === 'string') return truncate(text)
   }
   if (name === 'browser_press_key') {
     const key = args.key
@@ -233,16 +266,30 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
   if (name === 'ask_question') {
     const title = args.title
     if (typeof title === 'string' && title.trim()) return truncate(title)
-    const questions = args.questions
+    let questions = args.questions
+    // Mirror validate coerce: stringified / unclosed questions[] via parseJsonish.
+    if (typeof questions === 'string') {
+      const parsed = parseJsonish(questions)
+      if (Array.isArray(parsed)) questions = parsed
+      else if (parsed !== null && typeof parsed === 'object') questions = [parsed]
+    }
     if (Array.isArray(questions) && questions.length > 0) {
       if (questions.length === 1) {
-        const prompt = (questions[0] as { prompt?: unknown } | undefined)?.prompt
-        if (typeof prompt === 'string') return truncate(prompt)
+        const item = questions[0] as { prompt?: unknown; question?: unknown } | undefined
+        const prompt =
+          typeof item?.prompt === 'string' && item.prompt.trim()
+            ? item.prompt
+            : typeof item?.question === 'string' && item.question.trim()
+              ? item.question
+              : ''
+        if (prompt) return truncate(prompt)
       }
       return `${questions.length} questions`
     }
     const question = args.question
-    if (typeof question === 'string') return truncate(question)
+    if (typeof question === 'string' && question.trim()) return truncate(question)
+    const prompt = args.prompt
+    if (typeof prompt === 'string' && prompt.trim()) return truncate(prompt)
   }
   if (name === 'switch_mode') {
     const mode = args.mode
@@ -265,6 +312,26 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
     const path = typeof args.path === 'string' ? args.path.trim() : ''
     if (skillName && path) return truncate(`${skillName}:${path}`)
     if (skillName) return truncate(skillName)
+  }
+  if (name === 'spawn_agent_instance') {
+    const pathScope = args.path_scope ?? args.pathScope
+    if (Array.isArray(pathScope)) {
+      const paths = pathScope.filter(
+        (entry): entry is string => typeof entry === 'string' && entry.trim().length > 0
+      )
+      if (paths.length > 0) {
+        return truncate(paths.map((entry) => formatPathLabel(entry)).join(', '))
+      }
+    }
+    const goal = args.goal
+    if (typeof goal === 'string' && goal.trim()) return truncate(goal.trim())
+  }
+  if (name === 'await_agent_instance' || name === 'pull_agent_instance' || name === 'merge_agent_instance') {
+    const runId =
+      (typeof args.run_id === 'string' && args.run_id.trim()) ||
+      (typeof args.runId === 'string' && args.runId.trim()) ||
+      ''
+    if (runId) return formatAgentInstanceShortId(runId)
   }
 
   const mcp = parseMcpToolDisplay(name)
@@ -295,36 +362,65 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
   return ''
 }
 
-function genericFallbackLabel(name: string): string {
-  const labels = TOOL_LABELS[name]
-  if (labels) return labels.done.toLowerCase()
-  const mcp = parseMcpToolDisplay(name)
-  if (mcp) return mcp.toolName.replace(/_/g, ' ')
-  return humanizeSnakeCase(name)
-}
-
 export function summarizeToolArgsFromRecord(
   name: string,
   args: Record<string, unknown>
 ): string {
   const target = normalizeToolTarget(name, args)
   if (target) return target
-  if (Object.keys(args).length === 0) return ''
-  return truncate(genericFallbackLabel(name))
+  // No inventing past-tense done verbs as targets (avoids "Editing edited").
+  return ''
 }
 
 export function summarizeToolArgs(name: string, args: string | undefined): string {
   // Placeholder names must not invent a "Tool" subtitle from streaming JSON args —
   // that produces "Running Tool Tool" and expands a raw args dump in the timeline.
   if (isUnresolvedToolName(name)) return ''
+  if (name === 'await_agent_instance' || name === 'pull_agent_instance' || name === 'merge_agent_instance') {
+    const runId = parseAgentInstanceRunIdFromArgs(args)
+    if (runId) return formatAgentInstanceShortId(runId)
+  }
   const parsed = parseArgsRecord(args)
   if (parsed) {
     const fromRecord = summarizeToolArgsFromRecord(name, parsed)
     if (fromRecord) return fromRecord
   }
+  // Models sometimes emit a bare todos array; match toolArgWire wrap for streaming headers.
+  if (name === 'todo_write' && args?.trim().startsWith('[')) {
+    try {
+      const arr = JSON.parse(args) as unknown
+      if (Array.isArray(arr)) {
+        const n = arr.length
+        return n === 1 ? '1 task' : `${n} tasks`
+      }
+    } catch {
+      // Incomplete JSON while streaming — wait for a real target.
+    }
+  }
+  if (name === 'ask_question' && args?.trim().startsWith('[')) {
+    try {
+      const arr = JSON.parse(args) as unknown
+      if (Array.isArray(arr) && arr.length > 0) {
+        if (arr.length === 1) {
+          const item = arr[0] as { prompt?: unknown; question?: unknown } | undefined
+          const prompt =
+            typeof item?.prompt === 'string' && item.prompt.trim()
+              ? item.prompt
+              : typeof item?.question === 'string' && item.question.trim()
+                ? item.question
+                : ''
+          if (prompt) return truncate(prompt)
+        }
+        return `${arr.length} questions`
+      }
+    } catch {
+      // Incomplete JSON while streaming — wait for a real target.
+    }
+  }
   if (args?.trim()) {
     const trimmed = args.trim()
-    if (trimmed.startsWith('{') || trimmed.startsWith('[')) return truncate(genericFallbackLabel(name))
+    // Incomplete / unparseable JSON — wait for a real target, never done-verb fallback.
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) return ''
     return truncate(trimmed.replace(/\s+/g, ' '))
   }
   return ''

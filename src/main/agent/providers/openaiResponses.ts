@@ -3,15 +3,16 @@ import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import {
   normalizeEffortForOpenAiResponses,
-  trailingToolMessages,
+  statefulContinuationMessages,
   type ProviderReasoningState
 } from '../../../shared/reasoning'
 import { parseServiceTier, serviceTierForApiBody } from '../../../shared/domain/serviceTier'
 import type { ProviderChatRequest, StopReason, StreamChunk, ToolCall, TokenUsage } from './types'
+import { billedCostFromUsage, cacheWriteTokensFromDetails } from './usageFields'
 import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
-import { logProviderFailure } from './log'
-import { fetchWithRetry } from './fetchWithRetry'
+import { logProviderFailure, providerFetchFailureChunk } from './log'
+import { CHAT_FETCH_MAX_ATTEMPTS, fetchWithRetry } from './fetchWithRetry'
 import { formatProviderHttpError } from './httpErrors'
 import {
   resolveSystemZones,
@@ -20,17 +21,116 @@ import {
   markResponsesCacheBreakpoint,
   attachTrailingHistoryCacheBreakpoint
 } from './systemZones'
+import { mergeOpenAiCompatToolArgDelta, wireToolCallArguments } from '../toolArgWire'
 
 export { supportsExplicitPromptCache } from './systemZones'
 
-function toolOutputsFromMessages(messages: ChatMessage[]): Array<Record<string, unknown>> {
-  return messages
-    .filter((m) => m.role === 'tool' && m.toolCallId)
-    .map((m) => ({
-      type: 'function_call_output',
-      call_id: m.toolCallId,
-      output: typeof m.content === 'string' ? m.content : contentToText(m.content)
-    }))
+/** Exported for tests — parse Responses usage including cache write tokens. */
+export function parseOpenAiResponsesUsage(raw: unknown): TokenUsage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined
+  const usage = raw as Record<string, unknown>
+  const outputDetails = usage.output_tokens_details as Record<string, unknown> | undefined
+  const inputDetails = usage.input_tokens_details as Record<string, unknown> | undefined
+  const cachedInputTokens =
+    inputDetails && typeof inputDetails.cached_tokens === 'number'
+      ? inputDetails.cached_tokens
+      : typeof usage.prompt_cache_hit_tokens === 'number'
+        ? usage.prompt_cache_hit_tokens
+        : typeof usage.cached_tokens === 'number'
+          ? usage.cached_tokens
+          : inputDetails && typeof inputDetails.prompt_cache_hit_tokens === 'number'
+            ? inputDetails.prompt_cache_hit_tokens
+            : undefined
+  const cacheCreationInputTokens = cacheWriteTokensFromDetails(
+    inputDetails,
+    usage.cache_write_tokens
+  )
+  const billed = billedCostFromUsage(usage)
+  const inputTokens = typeof usage.input_tokens === 'number' ? usage.input_tokens : undefined
+  const outputTokens = typeof usage.output_tokens === 'number' ? usage.output_tokens : undefined
+  const totalTokens = typeof usage.total_tokens === 'number' ? usage.total_tokens : undefined
+  const reasoningTokens =
+    outputDetails && typeof outputDetails.reasoning_tokens === 'number'
+      ? outputDetails.reasoning_tokens
+      : undefined
+  if (
+    inputTokens === undefined &&
+    outputTokens === undefined &&
+    totalTokens === undefined &&
+    cachedInputTokens === undefined &&
+    cacheCreationInputTokens === undefined &&
+    reasoningTokens === undefined &&
+    billed.billedCost === undefined &&
+    billed.billedCostSaved === undefined
+  ) {
+    return undefined
+  }
+  return {
+    inputTokens,
+    inputTokensIncludesCache: true,
+    outputTokens,
+    totalTokens,
+    cachedInputTokens,
+    cacheCreationInputTokens,
+    reasoningTokens,
+    ...billed
+  }
+}
+
+function appendResponsesMessageItems(
+  out: Array<Record<string, unknown>>,
+  messages: ChatMessage[]
+): void {
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      // Orphan tool rows emit call_id: undefined and get an HTTP 400 — skip them.
+      if (!m.toolCallId) continue
+      out.push({
+        type: 'function_call_output',
+        call_id: m.toolCallId,
+        output: typeof m.content === 'string' ? m.content : contentToText(m.content)
+      })
+      continue
+    }
+    if (m.role === 'assistant' && m.toolCalls?.length) {
+      const state = m.reasoningState as ProviderReasoningState | undefined
+      if (state?.kind === 'openai_responses' && state.outputItems.length) {
+        for (const item of state.outputItems) {
+          if (!item || typeof item !== 'object') continue
+          const rec = item as Record<string, unknown>
+          if (rec.type === 'function_call' && typeof rec.name === 'string') {
+            out.push({
+              ...rec,
+              arguments: wireToolCallArguments(
+                rec.name,
+                typeof rec.arguments === 'string' ? rec.arguments : ''
+              )
+            })
+          } else {
+            out.push(rec)
+          }
+        }
+      } else {
+        for (const tc of m.toolCalls) {
+          out.push({
+            type: 'function_call',
+            call_id: tc.id,
+            name: tc.name,
+            arguments: wireToolCallArguments(tc.name, tc.arguments)
+          })
+        }
+      }
+      continue
+    }
+    if (m.role === 'assistant') {
+      const text = typeof m.content === 'string' ? m.content : contentToText(m.content)
+      if (text) out.push({ role: 'assistant', content: text })
+      continue
+    }
+    if (m.role === 'user') {
+      out.push({ role: 'user', content: toResponsesUserContent(m.content) })
+    }
+  }
 }
 
 export function toResponsesInput(
@@ -44,8 +144,12 @@ export function toResponsesInput(
   }
 ): Array<Record<string, unknown>> {
   // Stateful continuation: server retains prior turn via previous_response_id.
+  // Tool-only suffixes stay tool outputs; a newer user turn is the suffix after
+  // the last reasoning assistant — not an empty trailing-tool list.
   if (priorState?.kind === 'openai_responses' && priorState.responseId) {
-    return toolOutputsFromMessages(trailingToolMessages(messages))
+    const out: Array<Record<string, unknown>> = []
+    appendResponsesMessageItems(out, statefulContinuationMessages(messages))
+    return out
   }
 
   const zones = resolveSystemZones({
@@ -71,44 +175,7 @@ export function toResponsesInput(
     }
   }
 
-  for (const m of messages) {
-    if (m.role === 'tool') {
-      // Orphan tool rows emit call_id: undefined and get an HTTP 400 — skip them.
-      if (!m.toolCallId) continue
-      out.push({
-        type: 'function_call_output',
-        call_id: m.toolCallId,
-        output: typeof m.content === 'string' ? m.content : contentToText(m.content)
-      })
-      continue
-    }
-    if (m.role === 'assistant' && m.toolCalls?.length) {
-      const state = m.reasoningState as ProviderReasoningState | undefined
-      if (state?.kind === 'openai_responses' && state.outputItems.length) {
-        for (const item of state.outputItems) {
-          if (item && typeof item === 'object') out.push(item as Record<string, unknown>)
-        }
-      } else {
-        for (const tc of m.toolCalls) {
-          out.push({
-            type: 'function_call',
-            call_id: tc.id,
-            name: tc.name,
-            arguments: tc.arguments
-          })
-        }
-      }
-      continue
-    }
-    if (m.role === 'assistant') {
-      const text = typeof m.content === 'string' ? m.content : contentToText(m.content)
-      if (text) out.push({ role: 'assistant', content: text })
-      continue
-    }
-    if (m.role === 'user') {
-      out.push({ role: 'user', content: toResponsesUserContent(m.content) })
-    }
-  }
+  appendResponsesMessageItems(out, messages)
   if (opts?.explicitPromptCache) {
     // Second breakpoint after history so volatile session context stays outside the cache prefix.
     // Avoid function_call_output breakpoints (accepted but do not write cache).
@@ -157,15 +224,13 @@ export function toResponsesUserContent(
 }
 
 function toResponsesTools(
-  tools: ProviderChatRequest['tools'],
-  strictTools: boolean
+  tools: ProviderChatRequest['tools']
 ): Array<Record<string, unknown>> {
   return tools.map((t) => ({
     type: 'function',
     name: t.name,
     description: t.description,
-    parameters: t.parameters,
-    ...(strictTools ? { strict: true } : {})
+    parameters: t.parameters
   }))
 }
 
@@ -198,7 +263,7 @@ export async function* streamOpenAiResponses(
     store: true,
     ...(req.tools.length
       ? {
-          tools: toResponsesTools(req.tools, req.strictTools !== false),
+          tools: toResponsesTools(req.tools),
           tool_choice: req.toolChoice ?? 'auto',
           parallel_tool_calls: req.parallelToolCalls ?? true
         }
@@ -237,26 +302,29 @@ export async function* streamOpenAiResponses(
 
   let res: Response
   try {
-    res = await fetchWithRetry('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${req.apiKey}`
+    res = await fetchWithRetry(
+      'https://api.openai.com/v1/responses',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${req.apiKey}`
+        },
+        signal: req.signal,
+        body: JSON.stringify(body)
       },
-      signal: req.signal,
-      body: JSON.stringify(body)
-    })
+      { maxAttempts: CHAT_FETCH_MAX_ATTEMPTS }
+    )
   } catch (err) {
     if (req.signal.aborted) throw err
-    logProviderFailure('openai', 'network', {})
-    yield { type: 'error', error: formatError(err) }
+    yield providerFetchFailureChunk('openai', err)
     return
   }
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     logProviderFailure('openai', 'http', { status: res.status })
-    yield { type: 'error', error: formatProviderHttpError(res.status, text, 'openai') }
+    yield { type: 'error', error: formatProviderHttpError(res.status, text, 'openai'), errorCode: 'PROVIDER_HTTP' }
     return
   }
 
@@ -375,11 +443,12 @@ export async function* streamOpenAiResponses(
       if (callId && delta) {
         yield* emitThinkingDoneIfNeeded()
         const existing = pending.get(callId) ?? { id: callId, name: '', arguments: '' }
-        existing.arguments += delta
+        const merged = mergeOpenAiCompatToolArgDelta(existing.arguments, delta)
+        existing.arguments = merged.arguments
         pending.set(callId, existing)
         yield {
           type: 'tool_call_delta',
-          toolCallDelta: { index: indexForCall(callId), id: callId, arguments: delta }
+          toolCallDelta: { index: indexForCall(callId), id: callId, arguments: merged.yieldDelta }
         }
       }
     }
@@ -391,7 +460,7 @@ export async function* streamOpenAiResponses(
         const errObj = response?.error as { message?: string } | undefined
         const message = errObj?.message ?? 'OpenAI response failed'
         logProviderFailure('openai', 'stream', {})
-        yield { type: 'error', error: message }
+        yield { type: 'error', error: message, errorCode: 'PROVIDER_STREAM' }
         return
       }
     }
@@ -401,33 +470,8 @@ export async function* streamOpenAiResponses(
       // `incomplete_details` is present even on a terminal `completed` frame when the
       // response was cut short, so prefer it over the event name.
       stopReason = normalizeStopReason(details?.reason) ?? stopReason ?? 'stop'
-      const usage = response?.usage as Record<string, unknown> | undefined
-      if (usage) {
-        const outputDetails = usage.output_tokens_details as Record<string, unknown> | undefined
-        const inputDetails = usage.input_tokens_details as Record<string, unknown> | undefined
-        const cachedInputTokens =
-          inputDetails && typeof inputDetails.cached_tokens === 'number'
-            ? inputDetails.cached_tokens
-            : typeof usage.prompt_cache_hit_tokens === 'number'
-              ? usage.prompt_cache_hit_tokens
-              : typeof usage.cached_tokens === 'number'
-                ? usage.cached_tokens
-                : inputDetails && typeof inputDetails.prompt_cache_hit_tokens === 'number'
-                  ? inputDetails.prompt_cache_hit_tokens
-                  : undefined
-        lastUsage = {
-          inputTokens:
-            typeof usage.input_tokens === 'number' ? usage.input_tokens : undefined,
-          outputTokens:
-            typeof usage.output_tokens === 'number' ? usage.output_tokens : undefined,
-          totalTokens: typeof usage.total_tokens === 'number' ? usage.total_tokens : undefined,
-          cachedInputTokens,
-          reasoningTokens:
-            outputDetails && typeof outputDetails.reasoning_tokens === 'number'
-              ? outputDetails.reasoning_tokens
-              : undefined
-        }
-      }
+      const parsed = parseOpenAiResponsesUsage(response?.usage)
+      if (parsed) lastUsage = parsed
     }
   }
 
@@ -443,7 +487,6 @@ export async function* streamOpenAiResponses(
     type: 'done',
     usage: lastUsage,
     stopReason,
-    malformedChunks: drops.dropped || undefined,
     reasoningState:
       outputItems.length || responseId
         ? {

@@ -19,40 +19,6 @@ export const BUDGET_SHARES: BudgetLayerShares = {
 }
 
 export const DEFAULT_CONTEXT_WINDOW = 128_000
-export const DEFAULT_COMPACTION_TRIGGER_RATIO = 0.7
-
-/**
- * Soft ceiling so huge context windows (e.g. 1M) still compact long tool-heavy
- * runs before the ratio-based trigger (hundreds of thousands of tokens).
- */
-export const COMPACTION_SOFT_CAP_TOKENS = 64_000
-
-/**
- * Soft ceiling for tool-*definition* tokens sent every step. Without this, the
- * 18% tools share on a 1M window (~180k) never sheds MCP schemas — AppData
- * showed a steady ~13.5k tools tax. Cap aligns with Claude Code deferral
- * practice: keep a lean catalog; pin via request_mcp_tools.
- */
-export const TOOLS_SOFT_CAP_TOKENS = 8_000
-
-/**
- * After this many agent steps without a pin refresh or MCP invoke, a pinned MCP
- * tool may be evicted from the sticky step catalog (re-pin anytime).
- *
- * Tuned from AppData `80bd4074` (155 steps; 101× read + 96× terminal vs sparse MCP
- * invokes): TTL 8 caused premature unload during read/terminal bursts → re-pin →
- * catalog fingerprint churn. 16 covers typical tool bursts without immortal pins.
- */
-export const MCP_PIN_IDLE_TTL_STEPS = 16
-
-/**
- * Soft ceiling on how many pinned MCP tool schemas stay in the step catalog.
- * Excess are LRU-evicted (required builtins are never touched).
- *
- * AppData omit previews showed ~27–30 connected MCP names; successful unique MCP
- * tools in the case study were ≪ 12. Cap stays 12 so schema tax stays under tools soft cap.
- */
-export const MCP_PINNED_SOFT_MAX = 12
 
 export function allocateBudgetShares(window: number): Record<keyof BudgetLayerShares, number> {
   const system = Math.floor(window * BUDGET_SHARES.system)
@@ -75,39 +41,42 @@ export function contentWindowFromRaw(window: number): number {
   return b.system + b.tools + b.memoryWorkspace + b.history
 }
 
-export function compactionTriggerFromRaw(
-  window: number,
-  triggerRatio = DEFAULT_COMPACTION_TRIGGER_RATIO,
-  softCap = COMPACTION_SOFT_CAP_TOKENS
-): number {
-  const ratioTrigger = Math.floor(contentWindowFromRaw(window) * triggerRatio)
-  if (softCap <= 0) return ratioTrigger
-  return Math.min(ratioTrigger, softCap)
+/** Tools-layer budget = full window share (no soft ceiling). */
+export function toolsBudgetFromRaw(window: number): number {
+  return allocateBudgetShares(window).tools
 }
 
-/**
- * Local BPE undercounts provider wire size (AppData aa84/a2c9: est ~62k vs
- * provider ~76k on a 64k soft trigger). Fire when estimate reaches this
- * fraction of the trigger so we compact before the oversized request.
- */
-export const COMPACTION_ESTIMATE_TRIGGER_RATIO = 0.9
-
-/** True when blended used tokens or local estimate cross the soft trigger (with headroom). */
-export function crossesCompactionTrigger(
-  used: number,
-  estimated: number,
-  trigger: number
-): boolean {
-  const estimateFloor = Math.floor(trigger * COMPACTION_ESTIMATE_TRIGGER_RATIO)
-  return used >= trigger || estimated >= trigger || estimated >= estimateFloor
+/** Meter / event field: hard content window (no soft auto-summarize trigger). */
+export function compactionTriggerFromRaw(window: number): number {
+  return contentWindowFromRaw(window)
 }
 
-/** Tools-layer budget after applying the soft schema-tax ceiling. */
-export function toolsBudgetFromRaw(
-  window: number,
-  softCap = TOOLS_SOFT_CAP_TOKENS
+/** Default fraction of content window that triggers proactive LLM compaction. */
+export const DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO = 0.55
+
+/** Previous product default, once written into settings.json. */
+export const LEGACY_AUTO_COMPACT_THRESHOLD_RATIO = 0.2
+
+/** Clamp and convert a content-window ratio into a proactive compact token threshold. */
+export function proactiveCompactThresholdTokens(
+  contentWindow: number,
+  ratio: number = DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO
 ): number {
-  const share = allocateBudgetShares(window).tools
-  if (softCap <= 0) return share
-  return Math.min(share, softCap)
+  if (!Number.isFinite(contentWindow) || contentWindow <= 0) return 0
+  const clamped = Math.min(0.95, Math.max(0.05, ratio))
+  return Math.floor(contentWindow * clamped)
+}
+
+/** Remaining tokens on the raw provider window after measured layer usage. */
+export function remainingWindowTokens(rawWindow: number, usedTokens: number): number {
+  if (!Number.isFinite(rawWindow) || rawWindow <= 0) return 0
+  const used = Number.isFinite(usedTokens) && usedTokens > 0 ? usedTokens : 0
+  return Math.max(0, rawWindow - used)
+}
+
+/** Remaining tokens in the content budget after measured usage (meter headroom). */
+export function remainingContentTokens(contentWindow: number, usedTokens: number): number {
+  if (!Number.isFinite(contentWindow) || contentWindow <= 0) return 0
+  const used = Number.isFinite(usedTokens) && usedTokens > 0 ? usedTokens : 0
+  return Math.max(0, contentWindow - used)
 }

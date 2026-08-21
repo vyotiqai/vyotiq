@@ -1,4 +1,6 @@
 import { cn, NavItem } from '@renderer/lib/ui'
+import { shortcutLabel } from '@renderer/lib/shortcuts'
+import { useDockImmersive } from '@renderer/lib/hooks/dockImmersiveStore'
 import { useWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
 import { useEffect, useState } from 'react'
 import {
@@ -14,6 +16,8 @@ import { ChatList } from './ChatList'
 import { SidebarCollapsedHeader, SidebarTopBar } from './SidebarTopBar'
 import type { SidebarProps } from './types'
 import { useSidebarChats } from './useSidebarChats'
+import { NotificationsInbox } from './NotificationsInbox'
+import { useNotifications } from '@renderer/lib/hooks/useNotifications'
 
 export function Sidebar({
   view,
@@ -31,6 +35,8 @@ export function Sidebar({
   workspaceHasBackgroundRun,
   onSessionQuery,
   onOpenSettings,
+  onOpenNotificationSettings,
+  focusedRunId = null,
   onOpenMarketplace,
   onOpenChat,
   onNewChat,
@@ -39,6 +45,7 @@ export function Sidebar({
   onDeleteRunInWorkspace,
   isRunOpenInPane,
   isRunFocusedInPane,
+  openInstanceRunId = null,
   onCloseDrawer,
   onToggleSidebar,
   collapsed = false,
@@ -50,6 +57,7 @@ export function Sidebar({
   const isDarwin = window.vyotiq?.platform === 'darwin'
   const isDrawer = variant === 'drawer'
   const isCollapsed = collapsed && !isDrawer
+  const dockImmersive = useDockImmersive()
   const hotUi = useWorkspaceHotUi(activePath)
   const sessionQuery = activePath ? hotUi.sessionQuery : sessionQueryProp
   const [expandedByPath, setExpandedByPath] = useState<Record<string, boolean>>({})
@@ -96,6 +104,16 @@ export function Sidebar({
     afterNav()
   }
 
+  const openNotificationSettings = (): void => {
+    clearSearch()
+    ;(onOpenNotificationSettings ?? onOpenSettings)()
+    afterNav()
+  }
+
+  const { items: notificationItems, unreadCount, markRead, dismiss } = useNotifications({
+    focusedRunId
+  })
+
   const openMarketplace = (): void => {
     clearSearch()
     onOpenMarketplace()
@@ -119,7 +137,14 @@ export function Sidebar({
           isDrawer={isDrawer}
           isCollapsed={isCollapsed}
           isDarwin={isDarwin}
+          workspaceReady={workspaceReady}
+          disabledTitle={needsWorkspaceLabel}
           onToggleSidebar={onToggleSidebar}
+          onNewChat={() => {
+            clearSearch()
+            onNewChat()
+            afterNav()
+          }}
         />
       ) : (
         <SidebarTopBar
@@ -140,7 +165,7 @@ export function Sidebar({
       )}
 
       {isCollapsed ? (
-        <div className="min-h-0 flex-1" />
+        <div className="min-h-0 flex-1" aria-hidden />
       ) : (
         <div
           className="app-region-no-drag sidebar-scroll min-h-0 flex-1 overflow-x-hidden"
@@ -177,6 +202,8 @@ export function Sidebar({
             }}
             isRunOpenInPane={isRunOpenInPane}
             isRunFocusedInPane={isRunFocusedInPane}
+            openInstanceRunId={openInstanceRunId}
+            hideSessionRuns={dockImmersive && !sessionQuery.trim()}
           />
         </div>
       )}
@@ -189,12 +216,43 @@ export function Sidebar({
           isCollapsed ? 'items-center' : ''
         )}
       >
+        <NotificationsInbox
+          items={notificationItems}
+          unreadCount={unreadCount}
+          collapsed={isCollapsed}
+          onMarkRead={(req) => {
+            void markRead(req)
+          }}
+          onDismiss={(req) => {
+            void dismiss(req)
+          }}
+          onOpenItem={(item) => {
+            const action = item.action
+            if (!action) return
+            switch (action.type) {
+              case 'open_run':
+                onSelectRunInWorkspace?.(action.workspacePath, action.runId)
+                onOpenChat()
+                afterNav()
+                return
+              case 'open_settings':
+                openNotificationSettings()
+                return
+              default: {
+                const _exhaustive: never = action
+                return _exhaustive
+              }
+            }
+          }}
+          onOpenSettings={openNotificationSettings}
+        />
         <NavItem
           label="Settings"
           icon="gear"
           variant={isCollapsed ? 'icon' : 'sidebar'}
           current={view === 'settings'}
           className={isCollapsed ? undefined : 'w-full'}
+          title={`Settings (${shortcutLabel('settings')})`}
           onClick={openSettings}
         />
         <NavItem

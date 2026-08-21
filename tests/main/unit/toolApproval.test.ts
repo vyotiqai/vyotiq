@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest'
 import {
   cancelPendingApprovals,
   createApprovalGate,
+  isAutonomousHighRiskTool,
   isToolGated,
   listPendingToolApprovals,
   registerApprovalSender,
@@ -281,5 +282,86 @@ describe('createApprovalGate', () => {
       vi.useRealTimers()
       resetToolApprovalForTests()
     }
+  })
+
+  it('auto-approves gated tools in autonomous mode except high-risk', async () => {
+    let asked = 0
+    const gate = createApprovalGate({
+      runId: 'run-auto',
+      mode: 'all',
+      workspaceAllowlist: [],
+      autonomousMode: true,
+      signal: new AbortController().signal,
+      ask: async () => {
+        asked += 1
+        return 'once'
+      }
+    })
+    expect(await gate.authorize(READ)).toEqual({ allowed: true })
+    expect(asked).toBe(0)
+    const deleteCall = { id: 'c-del', name: 'delete', arguments: '{"path":"a.ts"}' }
+    const pending = gate.authorize(deleteCall)
+    await Promise.resolve()
+    expect(asked).toBe(1)
+    expect(await pending).toEqual({ allowed: true })
+  })
+
+  it('flags high-risk tools for autonomous gating', () => {
+    expect(isAutonomousHighRiskTool('delete')).toBe(true)
+    expect(isAutonomousHighRiskTool('Delete')).toBe(true)
+    expect(isAutonomousHighRiskTool('terminal')).toBe(true)
+    expect(isAutonomousHighRiskTool('bash')).toBe(true)
+    expect(isAutonomousHighRiskTool('Write')).toBe(true)
+    expect(isAutonomousHighRiskTool('git_commit')).toBe(true)
+    expect(isAutonomousHighRiskTool('merge_agent_instance')).toBe(true)
+    expect(isAutonomousHighRiskTool('read')).toBe(false)
+    expect(isAutonomousHighRiskTool('mcp__server__run_command')).toBe(true)
+  })
+
+  it('does not auto-approve aliased high-risk tools in autonomous mode', async () => {
+    let asked = 0
+    const gate = createApprovalGate({
+      runId: 'run-auto-alias',
+      mode: 'mutating',
+      workspaceAllowlist: [],
+      autonomousMode: true,
+      signal: new AbortController().signal,
+      ask: async () => {
+        asked += 1
+        return 'once'
+      }
+    })
+    const pending = gate.authorize({
+      id: 'c-write',
+      name: 'Write',
+      arguments: '{"path":"a.ts","contents":"x"}'
+    })
+    await Promise.resolve()
+    expect(asked).toBe(1)
+    expect(await pending).toEqual({ allowed: true })
+  })
+
+  it('does not auto-approve gated MCP tools in autonomous mode', async () => {
+    let asked = 0
+    const gate = createApprovalGate({
+      runId: 'run-auto-mcp',
+      mode: 'all',
+      workspaceAllowlist: [],
+      autonomousMode: true,
+      signal: new AbortController().signal,
+      ask: async () => {
+        asked += 1
+        return 'once'
+      }
+    })
+    const mcpCall = {
+      id: 'c-mcp',
+      name: 'mcp__server__mutate',
+      arguments: '{"path":"a.ts"}'
+    }
+    const pending = gate.authorize(mcpCall)
+    await Promise.resolve()
+    expect(asked).toBe(1)
+    expect(await pending).toEqual({ allowed: true })
   })
 })

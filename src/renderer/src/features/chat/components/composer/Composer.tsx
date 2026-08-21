@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type DragEvent,
+  type FormEvent
+} from 'react'
 import type {
   AgentInteractionMode,
   AttachedAudio,
@@ -6,6 +14,7 @@ import type {
   AttachedNativeFile,
   ComposerSendExtras,
   ProviderId,
+  SecretProvider,
   ServiceTier,
   SlashCommandDescriptor
 } from '@shared/ipc'
@@ -13,7 +22,9 @@ import { buildUserContent } from '@shared/ipc'
 import { modelSelectionKey } from '@shared/domain/modelSelection'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { resolveSlashCommandForSubmit } from '@shared/slashCommands'
+import { isRetryableTurnFailure } from '@shared/errors'
 import { Alert, cn } from '@renderer/lib/ui'
+import { isSessionDragEvent } from '@renderer/lib/chat/chatPaneLayout'
 import {
   CHAT_COLUMN,
   CHAT_GUTTER,
@@ -23,16 +34,28 @@ import {
 } from '@renderer/lib/utils/layout'
 import { ComposerMentionInput, type ComposerMentionInputHandle } from './ComposerMentionInput'
 import { ComposerToolbar, type ComposerVariant } from './ComposerToolbar'
+import { ComposerPlusButton } from './ComposerPlusButton'
 import { ComposerAttachments } from './ComposerAttachments'
-import { ComposerStatus } from './ComposerStatus'
-import { PlanHandoff } from './PlanHandoff'
+import {
+  DictationErrorBanner,
+  type DictationSettingsSection,
+  type DictationStripState
+} from './DictationSessionStrip'
 import { useComposerDraft } from './useComposerDraft'
+import { hasComposerContent } from './mentionModel'
 import { useComposerImages, MAX_IMAGES } from './useComposerImages'
 import { useComposerFiles, ATTACHMENT_ACCEPT, MAX_FILES, isImageFile } from './useComposerFiles'
 import { useComposerAudio, isAudioFile } from './useComposerAudio'
+import { useComposerDictation, type DictationPhase } from './useComposerDictation'
 import { useComposerModels } from './useComposerModels'
 import { pickAudioFallback, pickVisionFallback } from './composerModelUtils'
-import { useWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
+import {
+  getWorkspaceHotUi,
+  resolveHotComposerDraft,
+  setWorkspaceHotComposerDraft,
+  useWorkspaceHotComposerDraft
+} from '@renderer/lib/hooks/workspaceHotUiStore'
+import { composerAttachmentKey } from '@renderer/lib/hooks/composerAttachmentStore'
 import { SlashCommandMenu } from './SlashCommandMenu'
 import { useSlashCommands } from './useSlashCommands'
 import { MentionMenu } from './MentionMenu'
@@ -44,6 +67,48 @@ import {
   type SlashClientHandlers
 } from './slashCommandExecute'
 import { resolveComposerPlaceholder } from './composerPlaceholder'
+import { filesFromDataTransfer } from './dataTransferFiles'
+import { focusComposerMessage, isMainComposerTarget } from '@renderer/lib/shortcuts'
+
+const COMPOSER_FORM_LAYOUT = '@container relative grid gap-1 px-2.5 py-1'
+
+function composerLayoutKind(variant: ComposerVariant): ComposerVariant {
+  switch (variant) {
+    case 'hero':
+    case 'dock':
+    case 'inline':
+      return variant
+    default: {
+      const _exhaustive: never = variant
+      return _exhaustive
+    }
+  }
+}
+
+function resolveDictationStripState(d: {
+  phase: DictationPhase
+  error: string | null
+  errorAction: DictationSettingsSection | null
+  elapsedMs: number
+  waveform: readonly number[]
+}): DictationStripState | null {
+  switch (d.phase) {
+    case 'checking':
+      return { kind: 'checking', elapsedMs: d.elapsedMs, waveform: d.waveform }
+    case 'recording':
+      return { kind: 'listening', elapsedMs: d.elapsedMs, waveform: d.waveform }
+    case 'transcribing':
+      return { kind: 'transcribing', elapsedMs: d.elapsedMs, waveform: d.waveform }
+    case 'idle':
+      return d.error
+        ? { kind: 'error', message: d.error, settingsSection: d.errorAction }
+        : null
+    default: {
+      const _exhaustive: never = d.phase
+      return _exhaustive
+    }
+  }
+}
 
 function notifyMcpUnavailable(
   command: SlashCommandDescriptor,
@@ -68,6 +133,7 @@ export function Composer({
   ollamaBaseUrl,
   customOpenAiBaseUrl,
   modelsRefreshKey,
+  secrets,
   draft,
   onDraftChange,
   workspacePath,
@@ -92,22 +158,15 @@ export function Composer({
   secondaryBannerError,
   errorCode,
   onRetryNetwork,
-  offlineHint,
-  onClearOfflineQueue,
-  networkWait,
-  runNotice,
   incomplete,
-  onContinue,
-  onContinueInAgent,
   activeRunId,
   contextUsage,
   metaStore,
   onCompactContext,
   onDismissError,
-  leading,
   trailing,
   variant = 'dock',
-  sideRailPad = true,
+  sideRailPad = false,
   className,
   slashHandlers,
   seedImages,
@@ -115,8 +174,8 @@ export function Composer({
   seedAudio,
   seedNativeFiles,
   onCancelEdit,
-  imageReadyHint = null,
-  onFocus
+  onFocus,
+  onEditLastUserMessage
 }: {
   provider: ProviderId
   model: string
@@ -127,6 +186,7 @@ export function Composer({
   ollamaBaseUrl?: string
   customOpenAiBaseUrl?: string
   modelsRefreshKey?: string | number
+  secrets: Record<SecretProvider, boolean>
   draft?: string
   onDraftChange?: (draft: string) => void
   /** When set, draft is read from the hot UI store (avoids App re-renders on keystrokes). */
@@ -157,27 +217,16 @@ export function Composer({
   secondaryBannerError?: string | null
   errorCode?: string | null
   onRetryNetwork?: () => void
-  offlineHint?: string | null
-  onClearOfflineQueue?: () => void
-  networkWait?: {
-    attempt: number
-    maxAttempts: number
-    retryInMs?: number
-    code?: string
-  } | null
-  runNotice?: string | null
   incomplete?: import('@renderer/lib/hooks/createChatStreamController').IncompleteTurnState | null
-  onContinue?: () => void
-  onContinueInAgent?: () => void
   activeRunId?: string | null
   contextUsage?: import('./ContextMeter').ContextUsageState | null
   /** Prefer over contextUsage prop so meter patches do not re-render Composer. */
   metaStore?: import('../../chatStores').ChatMetaStore
-  onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
+  onCompactContext?: (
+    focus?: string
+  ) => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   onDismissError?: () => void
-  /** Docked git row inside the composer shell header (Changes + branch). */
-  leading?: React.ReactNode
-  /** Optional docked chrome below status; git strip moved to leading. */
+  /** Optional docked chrome below the shell. */
   trailing?: React.ReactNode
   variant?: ComposerVariant
   /** When false, use symmetric gutter (immersive Agent — no floating side rail). */
@@ -191,9 +240,9 @@ export function Composer({
   seedNativeFiles?: AttachedNativeFile[]
   /** Escape / cancel while editing a prompt bubble. */
   onCancelEdit?: () => void
-  /** Shown in toolbar when image generation keys are configured. */
-  imageReadyHint?: string | null
   onFocus?: () => void
+  /** Dock only: ArrowUp on empty draft or caret at start edits the last user prompt. */
+  onEditLastUserMessage?: () => boolean
 }) {
   const taRef = useRef<ComposerMentionInputHandle>(null)
   const focusInput = useCallback(() => taRef.current?.focus(), [])
@@ -203,15 +252,34 @@ export function Composer({
   workspacePathRef.current = workspacePath
   const inputLocked = Boolean(disabled)
   const settingsLocked = Boolean(disabled || running)
-  const hotUi = useWorkspaceHotUi(workspacePath)
-  // Inline edit must keep its own draft; dock uses hot UI when a workspace is bound.
-  const resolvedDraft =
-    variant === 'inline'
-      ? (draft ?? '')
-      : workspacePath
-        ? hotUi.composerDraft
-        : (draft ?? '')
+  const runIdForDraft = activeRunId ?? null
+  const hotDraft = useWorkspaceHotComposerDraft(workspacePath, runIdForDraft)
+  // Inline edit keeps its own draft. Dock uses per-run hot UI when a workspace is bound.
+  const useHotComposerDraft =
+    variant !== 'inline' && Boolean(workspacePath)
+  const resolvedDraft = useHotComposerDraft ? hotDraft : (draft ?? '')
+
+  // On workspace/run switch, seed hot draft from the controlled prop so remounts and
+  // pane focus never show a stale sibling-run draft (or empty hot while prop has text).
+  const seedKeyRef = useRef<string | null>(null)
+  useLayoutEffect(() => {
+    if (variant === 'inline' || !workspacePath || draft === undefined) {
+      return
+    }
+    const seedKey = `${workspacePath}::${runIdForDraft ?? ''}`
+    if (seedKeyRef.current === seedKey) return
+    seedKeyRef.current = seedKey
+    const hot = getWorkspaceHotUi(workspacePath)
+    const current = resolveHotComposerDraft(hot, runIdForDraft)
+    if (current === draft) return
+    // Prop may lag setContexts; never wipe a newer non-empty hot draft with ''.
+    if (draft === '' && current !== '') return
+    setWorkspaceHotComposerDraft(workspacePath, runIdForDraft, draft)
+  }, [variant, workspacePath, runIdForDraft, draft])
+
   const [cursor, setCursor] = useState(0)
+  const cursorRef = useRef(0)
+  cursorRef.current = cursor
   const [editingFollowUpId, setEditingFollowUpId] = useState<string | null>(null)
   const [editingFollowUpText, setEditingFollowUpText] = useState('')
 
@@ -220,8 +288,9 @@ export function Composer({
     if (handle) setCursor(handle.getSelectionStart())
   }, [])
 
-  // Dock attachments survive run-tab remounts; inline edit keeps its own per-edit set.
-  const attachmentKey = variant === 'inline' ? null : (workspacePath ?? null)
+  // Dock attachments survive remounts per workspace+run (same keying as hot drafts).
+  const attachmentKey =
+    variant === 'inline' ? null : composerAttachmentKey(workspacePath, runIdForDraft)
 
   const {
     images,
@@ -318,7 +387,10 @@ export function Composer({
         if (resolved.stale || workspacePathRef.current !== boundWorkspace) {
           return false
         }
-        if (resolved.error) setFileError(resolved.error)
+        if (resolved.error) {
+          setFileError(resolved.error)
+          return false
+        }
         const hasExtras = Boolean(extras?.audio?.length || extras?.nativeFiles?.length)
         if (
           !resolved.text.trim() &&
@@ -391,7 +463,10 @@ export function Composer({
       if (resolvedTrailing.stale || workspacePathRef.current !== boundWorkspace) {
         return false
       }
-      if (resolvedTrailing.error) setFileError(resolvedTrailing.error)
+      if (resolvedTrailing.error) {
+        setFileError(resolvedTrailing.error)
+        return false
+      }
 
       const res = await window.vyotiq.slashCommandsResolve({
         id: command.id,
@@ -405,16 +480,16 @@ export function Composer({
 
       const outcome = await executeSlashResolveResult(res.data, {
         ...slashHandlers,
-        onCompact: async () => {
+        onCompact: async (focus?: string) => {
           if (slashHandlers?.onCompact) {
-            const r = await slashHandlers.onCompact()
+            const r = await slashHandlers.onCompact(focus)
             return r !== false
           }
           if (onCompactContext) {
-            const r = await onCompactContext()
+            const r = await onCompactContext(focus)
             return typeof r === 'object' && r && 'ok' in r ? r.ok !== false : r !== false
           }
-          return true
+          return false
         }
       })
 
@@ -504,6 +579,23 @@ export function Composer({
     [resolveAndExecute]
   )
 
+  // Restore composer focus after a send. Runs for every submit path (Enter,
+  // send button, slash) because the contentEditable never fires form submit.
+  // The double rAF recovers focus after a hero → dock remount.
+  const keepComposerFocus = useCallback((): void => {
+    const active = document.activeElement
+    const hadComposerFocus =
+      (taRef.current?.el != null && active === taRef.current.el) ||
+      isMainComposerTarget(active)
+    if (!hadComposerFocus) return
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (focusComposerMessage()) return
+        taRef.current?.focus()
+      })
+    })
+  }, [])
+
   const { text, setText, canSend, submit, onKeyDown } = useComposerDraft({
     draft: resolvedDraft,
     onDraftChange,
@@ -519,6 +611,7 @@ export function Composer({
     setFileError,
     running,
     disabled,
+    sendBlocked: extracting,
     onSend: sendWithMentions,
     slashMenuOpen: slash.open,
     slashActiveCommand: slash.activeCommand,
@@ -527,6 +620,7 @@ export function Composer({
     onSlashAccept,
     onSlashSubmit,
     resolveSlashSubmitCommand,
+    onSlashResolveError: setFileError,
     mentionMenuOpen: mentions.open,
     mentionActiveItem: mentions.activeItem,
     onMentionMove: (delta: number) => {
@@ -536,7 +630,46 @@ export function Composer({
     },
     onMentionDismiss: mentions.dismiss,
     onMentionAccept,
-    onMentionBack: mentions.goBack
+    onMentionBack: mentions.goBack,
+    onEditLastUserMessage: variant === 'dock' ? onEditLastUserMessage : undefined,
+    onCancelEdit: variant === 'inline' ? onCancelEdit : undefined,
+    getCaretStart: () => taRef.current?.getSelectionStart() ?? 0,
+    onSubmitted: keepComposerFocus
+  })
+
+  const getDictationCaret = useCallback((): number => {
+    const handle = taRef.current
+    if (!handle) return cursorRef.current
+    if (document.activeElement === handle.el) return handle.getSelectionStart()
+    return cursorRef.current
+  }, [])
+
+  const setDictationCaret = useCallback((offset: number): void => {
+    setCursor(offset)
+    // Listening unmounts the editor; wait until it remounts after transcribe.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        taRef.current?.setSelectionStart(offset)
+        taRef.current?.focus()
+      })
+    })
+  }, [])
+
+  const dictation = useComposerDictation({
+    text,
+    setText,
+    secrets,
+    disabled: Boolean(disabled),
+    shortcutActive: true,
+    isShortcutTarget: () => {
+      const el = taRef.current?.el ?? null
+      if (!el) return false
+      const active = document.activeElement
+      return active === el || el.contains(active)
+    },
+    focusComposer: () => taRef.current?.focus(),
+    getCaret: getDictationCaret,
+    setCaret: setDictationCaret
   })
 
   const [refreshingCatalog, setRefreshingCatalog] = useState(false)
@@ -551,7 +684,7 @@ export function Composer({
     optionsByProvider,
     seedsByProvider,
     modelMetaByValue,
-    modelsWarning,
+    warningsByProvider,
     catalog,
     filterOpts,
     refreshCatalog,
@@ -565,7 +698,8 @@ export function Composer({
     hasWorkspace,
     hasImages: images.length > 0,
     hasAudio: audio.length > 0,
-    browsedProvider
+    browsedProvider,
+    secrets
   })
 
   preferNativePdfRef.current = Boolean(
@@ -607,7 +741,7 @@ export function Composer({
     if (audio.length > 0) ensureAudioModel()
   }, [audio.length, ensureAudioModel])
 
-  const onPickAttachments = async (list: FileList | null): Promise<void> => {
+  const onPickAttachments = async (list: FileList | File[] | null): Promise<void> => {
     if (!list?.length) return
     const picked = Array.from(list)
     const imageFiles = picked.filter(isImageFile)
@@ -618,10 +752,85 @@ export function Composer({
     if (documents.length) await addFiles(documents)
   }
 
-  const isDock = variant === 'dock'
-  const isInline = variant === 'inline'
+  const onAttachmentDragOver = (e: DragEvent<HTMLElement>): void => {
+    if (inputLocked || !e.dataTransfer) return
+    if (isSessionDragEvent(e.dataTransfer)) return
+    if (!Array.from(e.dataTransfer.types).includes('Files')) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+
+  const onAttachmentDrop = (e: DragEvent<HTMLElement>): void => {
+    if (inputLocked || !e.dataTransfer) return
+    if (isSessionDragEvent(e.dataTransfer)) return
+    const dropped = filesFromDataTransfer(e.dataTransfer)
+    if (!dropped.length) return
+    e.preventDefault()
+    void onPickAttachments(dropped)
+  }
+
+  const layout = composerLayoutKind(variant)
+  const isDock = layout === 'dock'
+  const isInline = layout === 'inline'
+
+  useLayoutEffect(() => {
+    if (isInline) taRef.current?.focus()
+  }, [isInline])
+
+  const sendDisabledReason = !canSend
+    ? disabled
+      ? hasWorkspace
+        ? 'Sending is unavailable right now.'
+        : 'Open a workspace to send a message.'
+      : extracting
+        ? 'Finish processing the attachment before sending.'
+        : fileError || imageError || audioError
+          ? 'Resolve the attachment issue before sending.'
+          : isInline
+            ? 'Enter a replacement message to resend.'
+            : 'Type a message or attach a file to send.'
+    : null
+
+  const hasContent =
+    hasComposerContent(text) ||
+    images.length > 0 ||
+    files.length > 0 ||
+    nativeFiles.length > 0 ||
+    audio.length > 0
+
   const slashListId = `slash-command-menu-${variant}`
   const mentionListId = `composer-mention-menu-${variant}`
+
+  const dictationStripState = resolveDictationStripState({
+    phase: dictation.phase,
+    error: dictation.error,
+    errorAction: dictation.errorAction,
+    elapsedMs: dictation.elapsedMs,
+    waveform: dictation.waveform
+  })
+
+  const dictationActive =
+    dictationStripState?.kind === 'checking' ||
+    dictationStripState?.kind === 'listening' ||
+    dictationStripState?.kind === 'transcribing'
+
+  const openAttach = (): void => {
+    slash.dismiss()
+    mentions.dismiss()
+    if (images.length >= MAX_IMAGES && files.length >= MAX_FILES) {
+      setImageError(`You can attach up to ${MAX_IMAGES} images and ${MAX_FILES} files.`)
+      return
+    }
+    fileRef.current?.click()
+  }
+
+  const plusButton = (
+    <ComposerPlusButton
+      disabled={inputLocked}
+      attachFull={images.length >= MAX_IMAGES && files.length >= MAX_FILES}
+      onAttach={openAttach}
+    />
+  )
 
   const composerShellChrome = cn(
     FLOATING_CHROME,
@@ -631,9 +840,7 @@ export function Composer({
 
   const showRetry =
     Boolean(onRetryNetwork) &&
-    (errorCode === 'PROVIDER_NETWORK' ||
-      errorCode === 'PROVIDER_STREAM' ||
-      incomplete?.reason === 'network_interrupted')
+    isRetryableTurnFailure({ errorCode, incompleteReason: incomplete?.reason })
 
   const composerFields = (
     <>
@@ -764,89 +971,66 @@ export function Composer({
         onRemoveAudio={removeAudio}
       />
 
-      <div ref={mentionAnchorRef} className="col-span-full min-w-0">
-        <ComposerMentionInput
-          ref={taRef}
-          className="min-h-[32px] max-h-40 min-w-0 border-0 bg-transparent p-0 text-md leading-relaxed shadow-none focus-visible:ring-0"
-          value={text}
-          onChange={(next) => {
-            setText(next)
-            requestAnimationFrame(syncCursor)
-          }}
-          onKeyDown={(e) => {
-            onKeyDown(e)
-            requestAnimationFrame(syncCursor)
-          }}
-          onCaretChange={(offset) => setCursor(offset)}
-          placeholder={resolveComposerPlaceholder({
-            hasWorkspace: Boolean(hasWorkspace),
-            running,
-            agentMode,
-            hasTranscript: Boolean(hasTranscript),
-            override: composerPlaceholder
-          })}
-          disabled={inputLocked}
-          onFocus={onFocus}
-          aria-expanded={slash.open || mentions.open}
-          aria-controls={
-            slash.open
-              ? slashListId
-              : mentions.open
-                ? mentionListId
-                : undefined
-          }
-          aria-autocomplete={slash.open || mentions.open ? 'list' : undefined}
-          aria-activedescendant={
-            slash.open && slash.activeCommand
-              ? `${slashListId}-opt-${slash.activeCommand.id}`
-              : mentions.open && mentions.activeItem
-                ? `${mentionListId}-opt-${mentions.activeItem.id}`
-                : undefined
-          }
+      {dictationStripState?.kind === 'error' ? (
+        <DictationErrorBanner
+          message={dictationStripState.message}
+          settingsSection={dictationStripState.settingsSection}
+          onDismiss={() => dictation.setError(null)}
+          onOpenSettings={slashHandlers?.onOpenSettings}
         />
-      </div>
+      ) : null}
 
-      <SlashCommandMenu
-        open={slash.open}
-        commands={slash.filtered}
-        activeIndex={slash.activeIndex}
-        onActiveIndexChange={slash.setActiveIndex}
-        onPick={onSlashAccept}
-        onDismiss={slash.dismiss}
-        anchorRef={mentionAnchorRef}
-        listId={slashListId}
-        loading={slash.loading}
-        listError={slash.listError}
-      />
-
-      <MentionMenu
-        open={mentions.open}
-        view={mentions.view}
-        items={mentions.items}
-        activeIndex={mentions.activeIndex}
-        onActiveIndexChange={mentions.setActiveIndex}
-        onPick={onMentionAccept}
-        onDismiss={mentions.dismiss}
-        onBack={mentions.goBack}
-        anchorRef={mentionAnchorRef}
-        listId={mentionListId}
-        loading={mentions.loading}
-      />
-
+      {!dictationActive && (
+        <div ref={mentionAnchorRef} className="col-span-full min-w-0 w-full">
+          <ComposerMentionInput
+            ref={taRef}
+            className="min-h-7 w-full min-w-0 border-0 bg-transparent p-0 text-md leading-snug shadow-none focus-visible:ring-0"
+            value={text}
+            onChange={(next) => {
+              setText(next)
+              requestAnimationFrame(syncCursor)
+            }}
+            onKeyDown={(e) => {
+              onKeyDown(e)
+              requestAnimationFrame(syncCursor)
+            }}
+            onCaretChange={(offset) => setCursor(offset)}
+            onPasteFiles={(files) => {
+              void onPickAttachments(files)
+            }}
+            placeholder={resolveComposerPlaceholder({
+              hasWorkspace: Boolean(hasWorkspace),
+              running,
+              agentMode,
+              hasTranscript: Boolean(hasTranscript),
+              override: composerPlaceholder
+            })}
+            disabled={inputLocked}
+            onFocus={onFocus}
+            aria-expanded={slash.open || mentions.open}
+            aria-controls={
+              slash.open
+                ? slashListId
+                : mentions.open
+                  ? mentionListId
+                  : undefined
+            }
+            aria-autocomplete={slash.open || mentions.open ? 'list' : undefined}
+            aria-activedescendant={
+              slash.open && slash.activeCommand
+                ? `${slashListId}-opt-${slash.activeCommand.id}`
+                : mentions.open && mentions.activeItem
+                  ? `${mentionListId}-opt-${mentions.activeItem.id}`
+                  : undefined
+            }
+          />
+        </div>
+      )}
       <ComposerToolbar
         variant={variant}
         disabled={disabled}
         locked={settingsLocked}
-        attachDisabled={inputLocked}
-        imageCount={images.length}
-        fileCount={files.length}
-        onAttachClick={() => {
-          if (images.length >= MAX_IMAGES && files.length >= MAX_FILES) {
-            setImageError(`You can attach up to ${MAX_IMAGES} images and ${MAX_FILES} files.`)
-            return
-          }
-          fileRef.current?.click()
-        }}
+        plus={plusButton}
         providers={providers}
         optionsByProvider={optionsByProvider}
         seedsByProvider={seedsByProvider}
@@ -855,7 +1039,7 @@ export function Composer({
         model={model}
         favoriteModels={favoriteModels}
         recentModels={recentModels}
-        modelsWarning={modelsWarning}
+        warningsByProvider={warningsByProvider}
         serviceTier={serviceTier}
         onModelChange={onProviderModel}
         onToggleFavorite={onToggleFavorite}
@@ -874,14 +1058,53 @@ export function Composer({
         onAgentModeChange={onAgentModeChange}
         running={running}
         canSend={canSend}
+        hasContent={hasContent}
+        sendDisabledReason={sendDisabledReason}
         onStop={onStop}
         contextUsage={contextUsage}
         metaStore={metaStore}
         onCompactContext={onCompactContext}
         onCancelEdit={isInline ? onCancelEdit : undefined}
-        imageReadyHint={imageReadyHint}
         focusInput={focusInput}
+        dictationPhase={dictation.phase}
+        dictationEngineHint={dictation.engineHint}
+        onDictationToggle={dictation.toggle}
+        dictationWaveform={dictation.waveform}
+        dictationElapsedMs={dictation.elapsedMs}
+        dictationWaveformStyle={dictation.waveformStyle}
+        onDictationCancel={dictation.cancel}
       />
+
+          {!dictationActive ? (
+            <>
+              <SlashCommandMenu
+                open={slash.open}
+                commands={slash.filtered}
+                activeIndex={slash.activeIndex}
+                onActiveIndexChange={slash.setActiveIndex}
+                onPick={onSlashAccept}
+                onDismiss={slash.dismiss}
+                anchorRef={mentionAnchorRef}
+                listId={slashListId}
+                loading={slash.loading}
+                listError={slash.listError}
+              />
+
+              <MentionMenu
+                open={mentions.open}
+                view={mentions.view}
+                items={mentions.items}
+                activeIndex={mentions.activeIndex}
+                onActiveIndexChange={mentions.setActiveIndex}
+                onPick={onMentionAccept}
+                onDismiss={mentions.dismiss}
+                onBack={mentions.goBack}
+                anchorRef={mentionAnchorRef}
+                listId={mentionListId}
+                loading={mentions.loading}
+              />
+            </>
+          ) : null}
     </>
   )
 
@@ -900,17 +1123,6 @@ export function Composer({
       data-composer-side-rail-pad={isDock && sideRailPad ? '1' : '0'}
       data-composer-hero={variant === 'hero' ? true : undefined}
       data-composer-inline={isInline ? true : undefined}
-      onKeyDown={
-        isInline && onCancelEdit
-          ? (e) => {
-              if (e.key === 'Escape') {
-                e.preventDefault()
-                e.stopPropagation()
-                onCancelEdit()
-              }
-            }
-          : undefined
-      }
     >
       <div
         className={cn(isDock && CHAT_COLUMN, 'flex flex-col gap-2')}
@@ -941,56 +1153,33 @@ export function Composer({
         ) : null}
 
         {isDock ? (
-          <div className={composerShellChrome} data-composer-shell>
-            {leading ? (
-              <div className="pointer-events-auto px-2.5 pt-2" data-composer-git-leading-wrap>
-                {leading}
-              </div>
-            ) : null}
-            <form
-              onSubmit={submit}
-              className={cn(
-                '@container relative grid gap-1 px-2.5 pb-2 pt-2',
-                leading ? 'pt-1.5' : undefined
-              )}
+          <div className="flex min-w-0 flex-col">
+            <div
+              className={composerShellChrome}
+              data-composer-shell
+              onDragOver={onAttachmentDragOver}
+              onDrop={onAttachmentDrop}
             >
-              {composerFields}
-            </form>
+              <form
+                onSubmit={submit}
+                className={COMPOSER_FORM_LAYOUT}
+              >
+                {composerFields}
+              </form>
+            </div>
+            {trailing}
           </div>
         ) : (
           <form
             onSubmit={submit}
-            className={cn('@container relative grid gap-1 px-2.5 pb-2 pt-2', composerShellChrome)}
+            className={cn(COMPOSER_FORM_LAYOUT, composerShellChrome)}
             data-composer-shell
+            onDragOver={onAttachmentDragOver}
+            onDrop={onAttachmentDrop}
           >
             {composerFields}
           </form>
         )}
-
-        <ComposerStatus
-          className={isDock ? 'pointer-events-auto' : undefined}
-          modelsWarning={modelsWarning}
-          runNotice={runNotice}
-          incomplete={incomplete}
-          onContinue={onContinue}
-          running={running}
-          offlineHint={offlineHint}
-          onClearOfflineQueue={onClearOfflineQueue}
-          networkWait={networkWait}
-        />
-
-        {onContinueInAgent ? (
-          <PlanHandoff
-            className={isDock ? 'pointer-events-auto mt-1' : 'mt-1'}
-            workspacePath={workspacePath}
-            runId={activeRunId}
-            agentMode={agentMode}
-            running={running}
-            onContinueInAgent={onContinueInAgent}
-          />
-        ) : null}
-
-        {isDock ? trailing : null}
       </div>
     </div>
   )

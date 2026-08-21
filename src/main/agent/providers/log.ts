@@ -1,10 +1,12 @@
 import { logger } from '../../../shared/logger'
-import type { ErrorCode } from '../../../shared/errors'
+import { formatError, type ErrorCode } from '../../../shared/errors'
+import { isCircuitOpenError } from '../circuitBreaker'
+import type { StreamChunk } from './types'
 
 /** Log provider failures without request bodies, API keys, or full response text. */
 export function logProviderFailure(
   provider: string,
-  kind: 'http' | 'timeout' | 'stream' | 'network' | 'parse',
+  kind: 'http' | 'timeout' | 'stream' | 'network' | 'parse' | 'circuit',
   detail: { status?: number; bytes?: number; message?: string; model?: string },
   opts?: {
     /**
@@ -22,11 +24,13 @@ export function logProviderFailure(
     ? 'CATALOG_PROBE'
     : isAuth
       ? 'PROVIDER_AUTH'
-      : kind === 'timeout'
-        ? 'PROVIDER_TIMEOUT'
-        : kind === 'stream' || kind === 'parse'
-          ? 'PROVIDER_STREAM'
-          : 'PROVIDER_HTTP'
+      : kind === 'circuit'
+        ? 'CIRCUIT_OPEN'
+        : kind === 'timeout'
+          ? 'PROVIDER_TIMEOUT'
+          : kind === 'stream' || kind === 'parse'
+            ? 'PROVIDER_STREAM'
+            : 'PROVIDER_HTTP'
 
   const fields = {
     scope: 'provider' as const,
@@ -44,7 +48,7 @@ export function logProviderFailure(
     logger.warn(`Provider ${kind} failure`, fields)
     return
   }
-  if (isAuth || isBilling) {
+  if (kind === 'circuit' || isAuth || isBilling) {
     logger.warn(`Provider ${kind} failure`, fields)
     return
   }
@@ -59,4 +63,15 @@ export function logProviderFailure(
     return
   }
   logger.error(`Provider ${kind} failure`, fields)
+}
+
+/** Shared catch path for fetchWithRetry failures (network vs open circuit). */
+export function providerFetchFailureChunk(provider: string, err: unknown): StreamChunk {
+  const circuit = isCircuitOpenError(err)
+  logProviderFailure(provider, circuit ? 'circuit' : 'network', {})
+  return {
+    type: 'error',
+    error: formatError(err),
+    errorCode: circuit ? 'CIRCUIT_OPEN' : 'PROVIDER_NETWORK'
+  }
 }

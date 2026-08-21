@@ -143,6 +143,15 @@ describe('terminalSessions', () => {
         signal: new AbortController().signal
       })
     ).rejects.toThrow(/Unknown terminal session_id/i)
+    await expect(
+      pollTerminalSession({
+        runId: 'run-1',
+        invokeId: 1,
+        sessionId: '550e8400-e29b-41d4-a716-446655440000',
+        blockUntilMs: 0,
+        signal: new AbortController().signal
+      })
+    ).rejects.toThrow(/app restart/i)
   })
 
   it.runIf(process.platform === 'win32')(

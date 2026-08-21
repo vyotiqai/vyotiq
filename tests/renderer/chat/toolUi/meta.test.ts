@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isInterruptedToolContent,
   toolCategory,
   toolIconName,
   toolLabel,
@@ -14,6 +15,7 @@ describe('toolUi meta', () => {
     expect(toolPresentation('multi_edit')).toBe('prominent')
     expect(toolPresentation('str_replace')).toBe('prominent')
     expect(toolPresentation('todo_write')).toBe('compact')
+    expect(toolCategory('todo_write')).toBe('search')
     expect(toolPresentation('delete')).toBe('compact')
     expect(toolPresentation('read')).toBe('compact')
   })
@@ -58,8 +60,26 @@ describe('toolUi meta', () => {
     expect(toolLabel('ask_question', 'fail', 'Interrupted')).toBe('Asking')
     expect(toolLabel('ask_question', 'done', 'Stopped')).toBe('Asking')
     expect(toolLabel('read', 'fail', 'Cancelled')).toBe('Reading')
-    // Non-interrupt fail still uses the done form.
-    expect(toolLabel('ask_question', 'fail', 'Error: boom')).toBe('Asked')
+    expect(toolLabel('edit', 'fail', 'Connection lost')).toBe('Editing')
+    expect(isInterruptedToolContent('Connection lost')).toBe(true)
+    // Non-interrupt fail uses Failed (not the done verb).
+    expect(toolLabel('ask_question', 'fail', 'Error: boom')).toBe('Failed')
+    expect(toolLabel('edit', 'fail', 'No unified-diff hunks found')).toBe('Failed')
+  })
+
+  it('labels new-file edit results as Created and existing-file writes as Edited', () => {
+    expect(toolLabel('edit', 'done', 'Created foo.ts (3 chars)')).toBe('Created')
+    expect(toolLabel('edit', 'done', 'Wrote foo.ts (3 chars)')).toBe('Edited')
+    expect(toolLabel('edit', 'done', 'Applied diff to foo.ts')).toBe('Edited')
+    expect(toolLabel('edit', 'running', 'Created foo.ts (3 chars)')).toBe('Editing')
+    expect(toolLabel('edit', 'done')).toBe('Edited')
+    expect(toolLabel('str_replace', 'done', 'Replaced 1 occurrence in foo.ts')).toBe('Edited')
+    expect(
+      toolLabel('multi_edit', 'done', 'Applied 2 edits:\n- created src/a.ts\n- created src/b.ts')
+    ).toBe('Created')
+    expect(
+      toolLabel('multi_edit', 'done', 'Applied 2 edits:\n- created src/a.ts\n- wrote src/b.ts')
+    ).toBe('Edited')
   })
 
   it('labels Skill from TOOL_LABELS', () => {
@@ -70,11 +90,25 @@ describe('toolUi meta', () => {
   it('humanizes unknown built-in tool names', () => {
     expect(toolLabel('future_unknown_tool', 'running')).toBe('Running Future Unknown Tool')
     expect(toolLabel('future_unknown_tool', 'done')).toBe('Future Unknown Tool')
+    expect(toolLabel('write_file_check', 'fail')).toBe('Write File Check')
   })
 
   it('labels unresolved streaming tool names as Preparing', () => {
     expect(toolLabel('tool', 'running')).toBe('Preparing…')
     expect(toolLabel('', 'running')).toBe('Preparing…')
+  })
+
+  it('labels browser_search as Searched (not Web search)', () => {
+    expect(toolLabel('browser_search', 'running')).toBe('Searching')
+    expect(toolLabel('browser_search', 'done')).toBe('Searched')
+    expect(toolLabel('web_search', 'done')).toBe('Web search')
+  })
+
+  it('keeps every registered browser action in the browser category', () => {
+    for (const name of ['browser_wait_for_text', 'browser_hover', 'browser_handle_dialog']) {
+      expect(toolCategory(name)).toBe('browser')
+      expect(toolIconName(name)).toBe('globe')
+    }
   })
 
   it('does not claim a body for unresolved running tool rows', () => {

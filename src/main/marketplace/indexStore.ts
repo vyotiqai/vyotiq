@@ -9,7 +9,7 @@ import {
   type MarketplaceInstalledItem
 } from '../../shared/ipc'
 import { clearMcpAuthToken, clearMcpOAuthState, clearMcpServerSecrets } from '../settings/secrets'
-import { invalidateSlashCommandsCache } from '../agent/slashCommands/listCache'
+import { notifySkillsChanged } from '../agent/skills/notify'
 import { marketplaceIndexPath, marketplacePackageDir, marketplaceRoot, resolveInstalledPackageRoot } from './paths'
 import { resolveInsidePackageRoot } from './safePath'
 import { logger } from '../../shared/logger'
@@ -56,6 +56,10 @@ export function writeMarketplaceIndex(index: MarketplaceIndex): void {
 export function upsertInstalledItem(item: MarketplaceInstalledItem): MarketplaceIndex {
   const index = readMarketplaceIndex()
   const prior = index.items.find((i) => i.id === item.id)
+  const nextItems = index.items.filter((i) => i.id !== item.id)
+  nextItems.push(item)
+  const next = { schemaVersion: 1 as const, items: nextItems }
+  writeMarketplaceIndex(next)
   if (prior && prior.version !== item.version) {
     const oldDir = marketplacePackageDir(prior.id, prior.version)
     if (existsSync(oldDir)) {
@@ -71,12 +75,7 @@ export function upsertInstalledItem(item: MarketplaceInstalledItem): Marketplace
       }
     }
   }
-  const nextItems = index.items.filter((i) => i.id !== item.id)
-  nextItems.push(item)
-  const next = { schemaVersion: 1 as const, items: nextItems }
-  writeMarketplaceIndex(next)
-  // Installed skills/plugins/MCP feed slash-command availability — bust the list cache.
-  invalidateSlashCommandsCache()
+  notifySkillsChanged()
   return next
 }
 
@@ -85,7 +84,7 @@ export function setInstalledEnabled(id: string, enabled: boolean): MarketplaceIn
   const items = index.items.map((i) => (i.id === id ? { ...i, enabled } : i))
   const next = { schemaVersion: 1 as const, items }
   writeMarketplaceIndex(next)
-  invalidateSlashCommandsCache()
+  notifySkillsChanged()
   return next
 }
 
@@ -147,6 +146,11 @@ export function clearNestedPluginMcpSecrets(item: MarketplaceInstalledItem): voi
 export function removeInstalledItem(id: string): MarketplaceIndex {
   const index = readMarketplaceIndex()
   const item = index.items.find((i) => i.id === id)
+  const next = {
+    schemaVersion: 1 as const,
+    items: index.items.filter((i) => i.id !== id)
+  }
+  writeMarketplaceIndex(next)
   if (item) {
     clearNestedPluginMcpSecrets(item)
     clearMcpSecrets(item.id)
@@ -173,12 +177,7 @@ export function removeInstalledItem(id: string): MarketplaceIndex {
       }
     }
   }
-  const next = {
-    schemaVersion: 1 as const,
-    items: index.items.filter((i) => i.id !== id)
-  }
-  writeMarketplaceIndex(next)
-  invalidateSlashCommandsCache()
+  notifySkillsChanged()
   return next
 }
 

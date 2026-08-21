@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ToolGroup } from '@renderer/features/chat/components/ToolGroup'
+import { RunSessionProvider } from '@renderer/features/chat/RunSessionContext'
 import type { UiItem } from '@shared/transcript'
 
 beforeEach(() => {
@@ -55,14 +56,13 @@ describe('ToolGroup', () => {
     ]
     render(<ToolGroup tools={tools} />)
 
-    const toggle = screen.getByRole('button', { name: /Reading 2 files/i })
+    const toggle = screen.getByRole('button', { name: /Reading: 2 files/i })
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByText('a.ts')).toBeTruthy()
     expect(screen.getByText('b.ts')).toBeTruthy()
     expect(document.querySelectorAll('.vy-text-shimmer--active').length).toBeGreaterThan(1)
     const list = screen.getByTestId('tool-group-list')
-    expect(list.className).toMatch(/max-h-/)
-    expect(list.className).toMatch(/overflow-y-auto/)
+    expect(list.className).not.toMatch(/overflow-y-auto/)
   })
 
   it('shows completed label and summary when group is closed', () => {
@@ -78,7 +78,20 @@ describe('ToolGroup', () => {
     expect(screen.queryByTestId('tool-group-list')).toBeNull()
   })
 
-  it('stays open after tools finish while the chat run is still live', () => {
+  it('keeps nested rows visible when a grouped tool failed', () => {
+    const tools = [
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
+      toolItem('t2', 'write_file_check', 'placeholder', 'fail')
+    ]
+    tools[1]!.tool.content =
+      'Unknown tool "write_file_check". Use edit, str_replace, or multi_edit to change files.'
+    render(<ToolGroup tools={tools} />)
+    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
+    expect(screen.getAllByText(/Write file check/i).length).toBeGreaterThan(0)
+    expect(screen.queryByRole('button', { name: /^placeholder$/i })).toBeNull()
+  })
+
+  it('folds after tools finish even while the chat run is still live', () => {
     const tools = [
       toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
       toolItem('t2', 'read', 'b.ts', 'done')
@@ -87,53 +100,56 @@ describe('ToolGroup', () => {
     tools[1]!.tool.content = 'beta output'
     render(<ToolGroup tools={tools} live />)
 
-    expect(screen.getByRole('button', { name: /Read 2 files/i }).getAttribute('aria-expanded')).toBe(
-      'true'
+    expect(screen.getByRole('button', { name: /Read: 2 files/i }).getAttribute('aria-expanded')).toBe(
+      'false'
     )
-    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
-    // File reads stay compact even while the turn is live — no source dump.
+    expect(screen.queryByTestId('tool-group-list')).toBeNull()
     expect(screen.queryByText('alpha output')).toBeNull()
     expect(screen.queryByText('beta output')).toBeNull()
-    expect(screen.getByText(/a\.ts/)).toBeTruthy()
-    expect(screen.getByText(/b\.ts/)).toBeTruthy()
   })
 
-  it('keeps the nested list open when the live run ends with keepOpen', async () => {
+  it('stays folded after settle when live clears', () => {
     const tools = [
       toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
       toolItem('t2', 'read', 'b.ts', 'done')
     ]
     const { rerender } = render(<ToolGroup tools={tools} live />)
-    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
-
-    rerender(<ToolGroup tools={tools} live={false} keepOpen />)
-    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
-  })
-
-  it('folds when settle keepOpen is off and the run is not live', async () => {
-    const tools = [
-      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
-      toolItem('t2', 'read', 'b.ts', 'done')
-    ]
-    const { rerender } = render(<ToolGroup tools={tools} live />)
-    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
+    expect(screen.queryByTestId('tool-group-list')).toBeNull()
 
     rerender(<ToolGroup tools={tools} live={false} />)
+    expect(screen.queryByTestId('tool-group-list')).toBeNull()
+  })
+
+  it('folds when the last pending tool finishes', async () => {
+    const pending = [
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000 }),
+      toolItem('t2', 'read', 'b.ts', 'running')
+    ]
+    const settled = [
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
+      toolItem('t2', 'read', 'b.ts', 'done')
+    ]
+    const { rerender } = render(<ToolGroup tools={pending} live />)
+    expect(screen.getByTestId('tool-group-list')).toBeTruthy()
+
+    rerender(<ToolGroup tools={settled} live={false} />)
     await waitFor(() => {
       expect(screen.queryByTestId('tool-group-list')).toBeNull()
     })
   })
 
-  it('caps the nested list viewport only while live', () => {
+  it('keeps the nested list in the transcript flow while pending', () => {
     const tools = [
-      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000, endedAt: 2_000 }),
-      toolItem('t2', 'read', 'b.ts', 'done')
+      toolItem('t1', 'read', 'a.ts', 'done', { startedAt: 1_000 }),
+      toolItem('t2', 'read', 'b.ts', 'running')
     ]
     const { rerender } = render(<ToolGroup tools={tools} live />)
-    expect(screen.getByTestId('tool-group-list').getAttribute('data-viewport-capped')).toBe('true')
+    const liveList = screen.getByTestId('tool-group-list')
+    expect(liveList.className).not.toMatch(/overflow-y-auto/)
+    expect(liveList.getAttribute('data-viewport-capped')).toBeNull()
 
     rerender(<ToolGroup tools={tools} live={false} groupExpanded />)
-    expect(screen.getByTestId('tool-group-list').getAttribute('data-viewport-capped')).toBeNull()
+    expect(screen.getByTestId('tool-group-list').className).not.toMatch(/overflow-y-auto/)
   })
 
   it('unmounts the nested list after collapse when motion is reduced', () => {
@@ -157,7 +173,7 @@ describe('ToolGroup', () => {
     expect(screen.getByTestId('tool-group-list')).toBeTruthy()
     expect(screen.getByText('a.ts')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: /Read 2 files/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Read: 2 files/i }))
     expect(onGroupToggle).toHaveBeenCalledWith(false)
 
     rerender(<ToolGroup tools={tools} groupExpanded={false} onGroupToggle={onGroupToggle} />)
@@ -176,7 +192,7 @@ describe('ToolGroup', () => {
     )
     expect(screen.getByTestId('tool-group-list')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: /Read 2 files/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Read: 2 files/i }))
     rerender(<ToolGroup tools={tools} groupExpanded={false} onGroupToggle={onGroupToggle} />)
 
     const panel = document.querySelector('.tool-expand')
@@ -198,7 +214,7 @@ describe('ToolGroup', () => {
     const { rerender } = render(
       <ToolGroup tools={tools} groupExpanded onGroupToggle={onGroupToggle} />
     )
-    fireEvent.click(screen.getByRole('button', { name: /Read 2 files/i }))
+    fireEvent.click(screen.getByRole('button', { name: /Read: 2 files/i }))
     rerender(<ToolGroup tools={tools} groupExpanded={false} onGroupToggle={onGroupToggle} />)
 
     const panel = document.querySelector('.tool-expand')
@@ -386,7 +402,7 @@ describe('ToolGroup', () => {
 
     render(<ToolGroup tools={tools} />)
 
-    expect(screen.getByRole('button', { name: /Reading 2 files/i }).getAttribute('aria-expanded')).toBe(
+    expect(screen.getByRole('button', { name: /Reading: 2 files/i }).getAttribute('aria-expanded')).toBe(
       'true'
     )
     expect(screen.getByText(/a\.ts/)).toBeTruthy()
@@ -452,5 +468,47 @@ describe('ToolGroup', () => {
     render(<ToolGroup tools={tools} />)
     expect(screen.getByText('Read')).toBeTruthy()
     expect(screen.getByText('file body')).toBeTruthy()
+  })
+
+  it('opens a nested file from a sibling control instead of a nested button', () => {
+    const openFile = vi.fn()
+    const tools = [
+      toolItem(
+        't1',
+        'read',
+        'src/renderer/src/features/chat/SessionChatColumn.tsx',
+        'running',
+        { startedAt: Date.now() }
+      ),
+      toolItem(
+        't2',
+        'read',
+        'src/renderer/src/features/chat/ChatView.tsx',
+        'running'
+      )
+    ]
+    tools[0]!.tool.argsPreview = JSON.stringify({
+      path: 'src/renderer/src/features/chat/SessionChatColumn.tsx'
+    })
+    render(
+      <RunSessionProvider
+        value={{
+          workspacePath: '/ws/demo',
+          runId: 'run-1',
+          onOpenWorkspaceFile: openFile
+        }}
+      >
+        <ToolGroup tools={tools} />
+      </RunSessionProvider>
+    )
+
+    const openBtn = screen.getByRole('button', {
+      name: 'Open src/renderer/src/features/chat/SessionChatColumn.tsx'
+    })
+    expect(openBtn.parentElement?.tagName).not.toBe('BUTTON')
+    fireEvent.click(openBtn)
+    expect(openFile).toHaveBeenCalledWith(
+      'src/renderer/src/features/chat/SessionChatColumn.tsx'
+    )
   })
 })

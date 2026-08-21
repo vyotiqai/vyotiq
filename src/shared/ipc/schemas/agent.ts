@@ -1,13 +1,4 @@
 import { z } from 'zod'
-import {
-  AGENT_QUESTION_MAX_ANSWER_CHARS,
-  AGENT_QUESTION_MAX_ANSWER_VALUES,
-  AGENT_QUESTION_MAX_ITEMS,
-  AGENT_QUESTION_MAX_OPTION_CHARS,
-  AGENT_QUESTION_MAX_OPTIONS,
-  AGENT_QUESTION_MAX_PROMPT_CHARS,
-  AGENT_QUESTION_MAX_TITLE_CHARS
-} from '../../utils/agentQuestionForm'
 import { AgentInteractionModeSchema } from './settings'
 
 export const MAX_IMAGE_BYTES = 12 * 1024 * 1024
@@ -90,7 +81,9 @@ export const ChatMessageSchema = z.object({
   /** Display/summary thinking text for UI replay (not injected into compaction). */
   thinking: z.string().optional(),
   /** Opaque provider reasoning replay state for multi-turn tool loops. */
-  reasoningState: z.unknown().optional()
+  reasoningState: z.unknown().optional(),
+  /** ISO timestamp when the user sent this message (turn-duration start). */
+  at: z.string().datetime().optional()
 })
 export type ChatMessage = z.infer<typeof ChatMessageSchema>
 
@@ -105,8 +98,20 @@ export const RunStatusSchema = z.object({
   invokeId: z.number().int().min(1).optional(),
   /** Last Ask / Plan / Agent mode for this run (survives resume). */
   mode: AgentInteractionModeSchema.optional(),
-  /** Consecutive all-failure tool steps within the current invoke (reset on each chatStart). */
-  consecutiveToolFailureSteps: z.number().int().min(0).optional()
+  /** ISO timestamp when an orphan interrupt marked this run resumable. */
+  interruptedAt: z.string().optional(),
+  /** Present when status is cancelled but the run can resume from disk. */
+  resumable: z.literal(true).optional(),
+  /** Parent run that spawned this inline Agent V instance. */
+  parentRunId: z.string().min(1).optional(),
+  /** Hide from default sidebar list; shown nested under the parent turn. */
+  inlineInstance: z.literal(true).optional(),
+  /** Write path prefixes for inline instances (enforced on writers; shared-workspace fallback). */
+  pathScope: z.array(z.string().min(1)).optional(),
+  /** Git worktree checkout for write-capable inline instances. */
+  worktreePath: z.string().min(1).optional(),
+  /** Branch checked out in the instance worktree; used for sequential merge-back. */
+  worktreeBranch: z.string().min(1).optional()
 })
 export type RunStatus = z.infer<typeof RunStatusSchema>
 
@@ -134,7 +139,9 @@ export const IncompleteReasonSchema = z.enum([
   'empty_response',
   'filtered',
   'context_overflow',
-  'network_interrupted'
+  'network_interrupted',
+  'circuit_open',
+  'provider_error'
 ])
 export type IncompleteReason = z.infer<typeof IncompleteReasonSchema>
 
@@ -200,6 +207,17 @@ const AgentEventUnionSchema = z.discriminatedUnion('type', [
     text: z.string()
   }),
   z.object({
+    /** Parent-facing lifecycle for a spawned inline Agent V instance. */
+    type: z.literal('agent_instance_update'),
+    ...eventBase,
+    parentRunId: z.string().min(1),
+    instanceRunId: z.string().min(1),
+    phase: z.enum(['started', 'done', 'error', 'cancelled']),
+    goal: z.string().optional(),
+    summary: z.string().optional(),
+    pathScope: z.array(z.string().min(1)).optional()
+  }),
+  z.object({
     /** Incremental stdout/stderr from a running terminal tool call (not persisted). */
     type: z.literal('terminal_output_delta'),
     ...eventBase,
@@ -234,19 +252,55 @@ const AgentEventUnionSchema = z.discriminatedUnion('type', [
       .optional()
   }),
   z.object({
+    /** In-progress LLM summarization of older history (auto or manual). */
+    type: z.literal('compaction_started'),
+    ...eventBase,
+    mode: z.enum(['auto', 'manual']).optional()
+  }),
+  z.object({
+    /** Extractive verifier is scoring the draft summary against folded facts. */
+    type: z.literal('compaction_verifying'),
+    ...eventBase,
+    summary: z.string().optional(),
+    tokenEstimate: z.number().int().min(0).optional()
+  }),
+  z.object({
+    /** First summary failed verification; summarizer is retrying with missing facts. */
+    type: z.literal('compaction_verify_retry'),
+    ...eventBase,
+    summary: z.string().optional(),
+    failures: z.array(z.string()).min(1).max(16)
+  }),
+  z.object({
+    /** Summary failed verification after retry — watermark was not advanced. */
+    type: z.literal('compaction_verify_failed'),
+    ...eventBase,
+    summary: z.string().optional(),
+    tokenEstimate: z.number().int().min(0).optional(),
+    failures: z.array(z.string()).min(1).max(16)
+  }),
+  z.object({
     type: z.literal('compaction'),
     ...eventBase,
     summary: z.string(),
     tokenEstimate: z.number().int().min(0).optional(),
-    /** Distinguish emergency trim watermarks from LLM summary compactions. */
-    kind: z.enum(['trim', 'summary']).optional()
+    /** LLM summary compaction (sole compaction kind). */
+    kind: z.enum(['summary']).optional(),
+    verified: z.boolean().optional(),
+    verifyCoverage: z.number().min(0).max(1).optional(),
+    verifyFailures: z.array(z.string()).max(16).optional()
   }),
   z.object({
-    /** MCP tools shed from the step catalog to fit the tools token budget. */
+    /** MCP tools absent from the step catalog (budget shed or unpinned policy). */
     type: z.literal('mcp_tools_omitted'),
     ...eventBase,
     omittedCount: z.number().int().min(1),
-    omittedPreview: z.string().optional()
+    omittedPreview: z.string().optional(),
+    /**
+     * Why tools are absent. Default/omit = budget (pinned shed).
+     * `unpinned` = connected but deferred until request_mcp_tools.
+     */
+    reason: z.enum(['budget', 'unpinned']).optional()
   }),
   z.object({
     /** User-facing cost guidance (never changes settings; surface + recommend only). */
@@ -298,9 +352,17 @@ const AgentEventUnionSchema = z.discriminatedUnion('type', [
     cachedInputTokens: z.number().int().min(0).optional(),
     cacheCreationInputTokens: z.number().int().min(0).optional(),
     reasoningTokens: z.number().int().min(0).optional(),
+    /** Provider-reported account charge in USD when the stream included a cost field. */
+    billedCost: z.number().finite().optional(),
+    /** Provider-reported cache cost effect (may be negative on a write turn). */
+    billedCostSaved: z.number().finite().optional(),
+    /** Wall-clock ms of this provider stream (start → done usage chunk). */
+    generationMs: z.number().int().min(0).optional(),
     /** Running sum of per-step inputTokens after this step (true billed shape). */
     billedInputTokens: z.number().int().min(0).optional(),
     peakInputTokens: z.number().int().min(0).optional(),
+    /** Whether inputTokens already includes cached input tokens. */
+    inputTokensIncludesCache: z.boolean().optional(),
     /** Provider reported any cache usage field this step. */
     cacheReported: z.boolean().optional(),
     hotspot: z.enum(['history', 'tools', 'system', 'balanced']).optional(),
@@ -357,7 +419,11 @@ const AgentEventUnionSchema = z.discriminatedUnion('type', [
         path: z.string().min(1),
         action: z.enum(['created', 'modified', 'deleted']),
         undoable: z.boolean(),
-        resolved: z.enum(['kept', 'discarded']).optional()
+        resolved: z.enum(['kept', 'discarded']).optional(),
+        hash: z
+          .string()
+          .regex(/^[a-f0-9]{64}$/)
+          .optional()
       })
     )
   }),
@@ -409,16 +475,76 @@ export const ChatStartResultSchema = z.object({
 })
 export type ChatStartResult = z.infer<typeof ChatStartResultSchema>
 
+/** Visible transcript run ids — main drops token streams for runs not in this set. */
+export const ChatUiSubscribeRequestSchema = z.object({
+  runIds: z.array(RunIdSchema)
+})
+export type ChatUiSubscribeRequest = z.infer<typeof ChatUiSubscribeRequestSchema>
+
+/** Add a single run to the subscribed set without clearing the others (run start). */
+export const ChatUiSubscribeAddRequestSchema = z.object({
+  runId: RunIdSchema
+})
+export type ChatUiSubscribeAddRequest = z.infer<typeof ChatUiSubscribeAddRequestSchema>
+
+const LIVE_DELTA_TYPES = new Set([
+  'text_delta',
+  'thinking_delta',
+  'tool_call_delta',
+  'terminal_output_delta'
+])
+
+/**
+ * Fast-path live deltas (main already built them). Other types still use Zod.
+ * Returns null when the payload is not a chat event.
+ */
+export function parseRendererChatEvent(raw: unknown): AgentEvent | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const rec = raw as Record<string, unknown>
+  const type = rec.type
+  const runId = rec.runId
+  if (typeof type !== 'string' || typeof runId !== 'string' || !runId) return null
+  if (LIVE_DELTA_TYPES.has(type)) {
+    if (type === 'text_delta') {
+      if (typeof rec.text !== 'string') return null
+      return rec as AgentEvent
+    }
+    if (type === 'thinking_delta') {
+      if (typeof rec.text !== 'string') return null
+      return rec as AgentEvent
+    }
+    if (type === 'tool_call_delta') {
+      if (typeof rec.toolCallId !== 'string' || typeof rec.argumentsDelta !== 'string') return null
+      return rec as AgentEvent
+    }
+    if (typeof rec.toolCallId !== 'string' || typeof rec.text !== 'string') return null
+    return rec as AgentEvent
+  }
+  const parsed = AgentEventSchema.safeParse(raw)
+  return parsed.success ? parsed.data : null
+}
+
 export const RunSummarySchema = z.object({
   runId: z.string(),
   status: z.enum(['running', 'cancelled', 'error', 'done']),
   updatedAt: z.string(),
-  goal: z.string().optional()
+  goal: z.string().optional(),
+  resumable: z.literal(true).optional(),
+  error: z.string().optional(),
+  /** Present when this run is an inline agent instance nested under a parent chat. */
+  parentRunId: z.string().min(1).optional(),
+  inlineInstance: z.literal(true).optional(),
+  /** Write path prefixes for inline instances — used for compact sidebar labels. */
+  pathScope: z.array(z.string().min(1)).optional(),
+  worktreePath: z.string().min(1).optional(),
+  worktreeBranch: z.string().min(1).optional()
 })
 export type RunSummary = z.infer<typeof RunSummarySchema>
 
 export const ListRunsResultSchema = z.object({
   runs: z.array(RunSummarySchema),
+  /** Inline agent instances (also excluded from top-level `runs`). */
+  instanceRuns: z.array(RunSummarySchema).default([]),
   capped: z.boolean()
 })
 export type ListRunsResult = z.infer<typeof ListRunsResultSchema>
@@ -470,7 +596,7 @@ export const ChatStartRequestSchema = z
         path: ['messages']
       })
     }
-    if (!val.messages?.length) {
+    if (!val.runId && !val.messages?.length) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         message: 'messages required when not incremental',
@@ -580,7 +706,9 @@ export type ChatFollowUpPromoteResult = z.infer<typeof ChatFollowUpPromoteResult
 
 export const CompactRunRequestSchema = z.object({
   workspacePath: z.string().min(1),
-  runId: RunIdSchema
+  runId: RunIdSchema,
+  /** Optional operator focus for the summarizer (manual Compact / IPC). */
+  focus: z.string().max(2000).optional()
 })
 export type CompactRunRequest = z.infer<typeof CompactRunRequestSchema>
 
@@ -593,7 +721,12 @@ export const CompactRunResultSchema = z.object({
   /** Post-compact estimate for the live context meter. */
   estimatedTokens: z.number().int().min(0).optional(),
   contextWindow: z.number().int().min(1).optional(),
-  contentWindow: z.number().int().min(1).optional()
+  contentWindow: z.number().int().min(1).optional(),
+  /** ask_question answers preserved from the folded prefix. */
+  retainedDecisions: z.array(z.string()).max(8).optional(),
+  verified: z.boolean().optional(),
+  verifyCoverage: z.number().min(0).max(1).optional(),
+  verifyFailures: z.array(z.string()).max(16).optional()
 })
 export type CompactRunResult = z.infer<typeof CompactRunResultSchema>
 
@@ -630,14 +763,25 @@ export const ResolveWritesResultSchema = z.object({
 })
 export type ResolveWritesResult = z.infer<typeof ResolveWritesResultSchema>
 
-/** Run-dir artifacts readable via `runs:readArtifact`. */
-export const RunArtifactNameSchema = z.enum([
+/** Fixed run-dir artifact names (non-screenshot). */
+export const RunArtifactFixedNameSchema = z.enum([
   'plan.md',
   'contract.md',
   'receipt.json',
-  'browser/snapshot.jpg',
+  'todos.json',
   'trajectory.jsonl',
   'prediction.json'
+])
+
+/** Screenshot artifacts: latest alias or unique `browser/snapshot-<id>.jpg`. */
+export const RunArtifactBrowserSnapshotSchema = z
+  .string()
+  .regex(/^browser\/snapshot(?:-[\w.-]+)?\.jpg$/)
+
+/** Run-dir artifacts readable via `runs:readArtifact`. */
+export const RunArtifactNameSchema = z.union([
+  RunArtifactFixedNameSchema,
+  RunArtifactBrowserSnapshotSchema
 ])
 export type RunArtifactName = z.infer<typeof RunArtifactNameSchema>
 
@@ -691,6 +835,19 @@ export const PredictionManifestSchema = z.object({
 })
 export type PredictionManifest = z.infer<typeof PredictionManifestSchema>
 
+/** Per-run loop checkpoint for survive-restart (step-boundary loop invariants). */
+export const LOOP_CHECKPOINT_VERSION = 1 as const
+
+export const LoopCheckpointSchema = z.object({
+  version: z.literal(LOOP_CHECKPOINT_VERSION),
+  step: z.number().int().min(0),
+  invokeId: z.number().int().min(1),
+  updatedAt: z.string().min(1),
+  truncationContinues: z.number().int().min(0).default(0),
+  overflowRetryUsed: z.boolean().default(false)
+})
+export type LoopCheckpoint = z.infer<typeof LoopCheckpointSchema>
+
 /** Per-run receipt.json written at agent loop teardown. */
 export const RUN_RECEIPT_VERSION = 5 as const
 
@@ -710,7 +867,6 @@ export const RunReceiptSchema = z.object({
   invokeId: z.number().int().min(1).optional(),
   goal: z.string().optional(),
   mode: z.string().optional(),
-  consecutiveToolFailureSteps: z.number().int().min(0).optional(),
   statusError: z.string().optional(),
   incomplete: z
     .object({
@@ -857,12 +1013,9 @@ export const AgentQuestionTypeSchema = z.enum(['single', 'multi', 'boolean', 'te
 export const AgentQuestionItemSchema = z
   .object({
     id: z.string().min(1),
-    prompt: z.string().min(1).max(AGENT_QUESTION_MAX_PROMPT_CHARS),
+    prompt: z.string().min(1),
     type: AgentQuestionTypeSchema,
-    options: z
-      .array(z.string().min(1).max(AGENT_QUESTION_MAX_OPTION_CHARS))
-      .max(AGENT_QUESTION_MAX_OPTIONS)
-      .optional(),
+    options: z.array(z.string().min(1)).optional(),
     allowCustom: z.boolean().optional()
   })
   .superRefine((item, ctx) => {
@@ -885,15 +1038,15 @@ export const AgentQuestionRequestSchema = z.object({
   requestId: z.string().min(1),
   runId: z.string().min(1),
   toolCallId: z.string().min(1),
-  title: z.string().min(1).max(AGENT_QUESTION_MAX_TITLE_CHARS).optional(),
-  questions: z.array(AgentQuestionItemSchema).min(1).max(AGENT_QUESTION_MAX_ITEMS)
+  title: z.string().min(1).optional(),
+  questions: z.array(AgentQuestionItemSchema).min(1)
 })
 export type AgentQuestionRequest = z.infer<typeof AgentQuestionRequestSchema>
 export type AgentQuestionItem = z.infer<typeof AgentQuestionItemSchema>
 
 export const AgentQuestionAnswerSchema = z.object({
   questionId: z.string().min(1),
-  values: z.array(z.string().max(AGENT_QUESTION_MAX_ANSWER_CHARS)).max(AGENT_QUESTION_MAX_ANSWER_VALUES)
+  values: z.array(z.string())
 })
 export type AgentQuestionAnswer = z.infer<typeof AgentQuestionAnswerSchema>
 
@@ -931,6 +1084,22 @@ export const LoadRunRequestSchema = z.object({
   workspacePath: z.string().min(1),
   runId: RunIdSchema
 })
+
+export const LoadRunPendingFollowUpSchema = z.object({
+  id: z.string().min(1),
+  preview: z.string(),
+  ready: z.boolean().optional()
+})
+
+export const LoadRunResultSchema = z.object({
+  runId: RunIdSchema,
+  messages: z.array(ChatMessageSchema),
+  pendingFollowUps: z.array(LoadRunPendingFollowUpSchema).default([]),
+  status: z.enum(['running', 'cancelled', 'error', 'done']).optional(),
+  resumable: z.literal(true).optional(),
+  error: z.string().optional()
+})
+export type LoadRunResult = z.infer<typeof LoadRunResultSchema>
 
 export const LoadToolResultRequestSchema = z.object({
   workspacePath: z.string().min(1),
@@ -1029,6 +1198,38 @@ export const ExtractAttachmentResultSchema = z.object({
 })
 export type ExtractAttachmentResult = z.infer<typeof ExtractAttachmentResultSchema>
 
+/** OpenAI Transcriptions API hard limit (25 MiB). */
+export const MAX_DICTATION_BYTES = 25 * 1024 * 1024
+/** Base64 of `MAX_DICTATION_BYTES`, rejected before main allocates the buffer. */
+export const MAX_DICTATION_DATA_CHARS = Math.ceil(MAX_DICTATION_BYTES * (4 / 3)) + 128
+/** UX auto-stop: OpenAI ~1500s duration limit. */
+export const MAX_DICTATION_MS = 25 * 60 * 1000
+export const MAX_LOCAL_DICTATION_MS =
+  Math.floor((MAX_DICTATION_BYTES / (16_000 * 2)) * 1000) - 1000
+
+export const DictationTranscribeRequestSchema = z.object({
+  requestId: z.string().min(1).max(100).optional(),
+  mime: z.string().max(200).default('audio/webm'),
+  /** Base64 of the recording bytes, capped at `MAX_DICTATION_BYTES` once decoded. */
+  data: z.string().min(1).max(MAX_DICTATION_DATA_CHARS),
+  /**
+   * Optional 16 kHz mono little-endian Int16 PCM (base64). Required when
+   * `settings.dictation.engine === 'local'`. Cloud callers omit it.
+   */
+  pcm16k: z.string().min(1).max(MAX_DICTATION_DATA_CHARS).optional()
+})
+export type DictationTranscribeRequest = z.infer<typeof DictationTranscribeRequestSchema>
+
+export const DictationCancelRequestSchema = z.object({
+  requestId: z.string().min(1).max(100)
+})
+export type DictationCancelRequest = z.infer<typeof DictationCancelRequestSchema>
+
+export const DictationTranscribeResultSchema = z.object({
+  text: z.string()
+})
+export type DictationTranscribeResult = z.infer<typeof DictationTranscribeResultSchema>
+
 export const WorkspaceSuggestPathsRequestSchema = z.object({
   workspacePath: z.string().min(1),
   query: z.string().optional(),
@@ -1056,21 +1257,6 @@ export const WorkspaceReadTextResultSchema = z.object({
   truncated: z.boolean()
 })
 export type WorkspaceReadTextResult = z.infer<typeof WorkspaceReadTextResultSchema>
-
-/** Read a workspace image as a data URL for tool-card / UI preview (not model context). */
-export const WorkspaceReadImageRequestSchema = z.object({
-  workspacePath: z.string().min(1),
-  path: z.string().min(1)
-})
-export type WorkspaceReadImageRequest = z.infer<typeof WorkspaceReadImageRequestSchema>
-
-export const WorkspaceReadImageResultSchema = z.object({
-  path: z.string(),
-  mime: z.string(),
-  dataUrl: z.string().max(MAX_IMAGE_DATA_URL_CHARS),
-  byteLength: z.number().int().min(0)
-})
-export type WorkspaceReadImageResult = z.infer<typeof WorkspaceReadImageResultSchema>
 
 export const WorkspaceListDocsRequestSchema = z.object({
   workspacePath: z.string().min(1),

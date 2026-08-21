@@ -7,6 +7,7 @@ import {
   ChangeSummary,
   COMPACT_PREVIEW_COUNT
 } from '@renderer/features/chat/components/ChangeSummary'
+import { RunSessionProvider } from '@renderer/features/chat/RunSessionContext'
 import type { ChangedFile } from '@renderer/features/chat/utils/transcriptRows'
 
 function files(count: number): ChangedFile[] {
@@ -52,6 +53,49 @@ describe('ChangeSummary compact receipt', () => {
   it('hides Review when onOpenChanges is missing', () => {
     render(<ChangeSummary files={files(1)} compact />)
     expect(screen.queryByRole('button', { name: 'Review changes' })).toBeNull()
+  })
+
+  it('stays text without a workspace', () => {
+    render(<ChangeSummary files={files(1)} compact />)
+    expect(screen.queryByRole('button', { name: 'file-00.ts' })).toBeNull()
+    expect(screen.getByText('file-00.ts')).toBeTruthy()
+  })
+
+  it('opens a workspace file from the basename when a session is set', () => {
+    const openFile = vi.fn()
+    render(
+      <RunSessionProvider
+        value={{ workspacePath: '/ws/demo', runId: 'run-1', onOpenWorkspaceFile: openFile }}
+      >
+        <ChangeSummary files={files(1)} compact />
+      </RunSessionProvider>
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'file-00.ts' }))
+    expect(openFile).toHaveBeenCalledWith('src/file-00.ts')
+  })
+
+  it('titles all-created receipts as Files Created', () => {
+    render(
+      <ChangeSummary
+        files={[{ path: 'src/new.ts', added: 3, removed: 0, action: 'created' }]}
+        compact
+      />
+    )
+    expect(screen.getByText('1 File Created')).toBeTruthy()
+    expect(screen.getByText('New')).toBeTruthy()
+    expect(screen.queryByText('1 File Changed')).toBeNull()
+  })
+
+  it('titles all-deleted receipts as Files Deleted', () => {
+    render(
+      <ChangeSummary
+        files={[{ path: 'src/gone.ts', added: 0, removed: 1, action: 'deleted' }]}
+        compact
+      />
+    )
+    expect(screen.getByText('1 File Deleted')).toBeTruthy()
+    expect(screen.getByText('Deleted')).toBeTruthy()
+    expect(screen.queryByText('1 File Changed')).toBeNull()
   })
 })
 

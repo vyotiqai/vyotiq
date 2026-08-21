@@ -4,6 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ChatView } from '@renderer/features/chat/ChatView'
+import { emptySecretStatus } from '@shared/ipc'
 import type { ChatItemsStore } from '@renderer/features/chat/chatStores'
 import type { UiItem } from '@shared/transcript'
 
@@ -18,7 +19,8 @@ beforeEach(() => {
         ok: true,
         data: { open: false, url: '', title: '' }
       }),
-      onBrowserState: vi.fn().mockReturnValue(() => undefined)
+      onBrowserState: vi.fn().mockReturnValue(() => undefined),
+      readRunArtifact: vi.fn().mockResolvedValue({ ok: true, data: '' })
     }
   })
 })
@@ -40,7 +42,6 @@ const baseProps = {
   chatSettings: {
     provider: 'ollama' as const,
     model: 'qwen2.5',
-    compactionTriggerRatio: 0.7,
     keepRecentTurns: 12,
     thinkingEnabled: true,
     thinkingEffort: 'medium' as const,
@@ -49,7 +50,8 @@ const baseProps = {
   onChatSettingsChange: vi.fn(),
   onProviderModel: vi.fn(),
   onSend: vi.fn(),
-  onStop: vi.fn()
+  onStop: vi.fn(),
+  secrets: emptySecretStatus()
 }
 
 describe('ChatView operational errors', () => {

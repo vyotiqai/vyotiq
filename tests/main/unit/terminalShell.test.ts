@@ -1,4 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+vi.mock('@main/app/window', () => ({
+  getMainWindow: () => null
+}))
+
 import {
   isFindstrNoMatch,
   isFindstrNoMatchContent,
@@ -10,7 +15,9 @@ import {
   sanitizedTerminalEnv,
   terminalSpawnSpec,
   unixShellInvocation,
-  unsupportedUnixOnWindowsMessage
+  unsupportedUnixOnWindowsMessage,
+  bashForLoopOnPowerShellMessage,
+  appendPowerShellCompatHint
 } from '@main/agent/tools/terminal'
 import { executeTool } from '@main/agent/tools'
 import { toolTerminal } from '@main/agent/tools/terminal'
@@ -55,9 +62,26 @@ describe('sanitizedTerminalEnv', () => {
     })
     expect(env.PATH).toBe('/usr/bin')
     expect(env.HOME).toBe('/home/dev')
+    expect(env.APPDATA).toBeUndefined()
     expect(env.OPENAI_API_KEY).toBeUndefined()
     expect(env.ANTHROPIC_API_KEY).toBeUndefined()
     expect(env.VYOTIQ_SECRET).toBeUndefined()
+  })
+
+  it('keeps Windows gh/git config directories', () => {
+    const env = sanitizedTerminalEnv({
+      PATH: 'C:\\Windows\\system32',
+      APPDATA: 'C:\\Users\\dev\\AppData\\Roaming',
+      LOCALAPPDATA: 'C:\\Users\\dev\\AppData\\Local',
+      GH_CONFIG_DIR: 'C:\\Users\\dev\\gh',
+      XDG_CONFIG_HOME: 'C:\\Users\\dev\\.config',
+      OPENAI_API_KEY: 'sk-secret'
+    })
+    expect(env.APPDATA).toBe('C:\\Users\\dev\\AppData\\Roaming')
+    expect(env.LOCALAPPDATA).toBe('C:\\Users\\dev\\AppData\\Local')
+    expect(env.GH_CONFIG_DIR).toBe('C:\\Users\\dev\\gh')
+    expect(env.XDG_CONFIG_HOME).toBe('C:\\Users\\dev\\.config')
+    expect(env.OPENAI_API_KEY).toBeUndefined()
   })
 })
 
@@ -94,6 +118,15 @@ describe('unsupportedUnixOnWindowsMessage', () => {
       expect(msg).toMatch(/cmd\.exe/)
       expect(msg).toMatch(/exit_code: 1/)
     }
+  })
+
+  it('steers file inspect commands to built-in tools', () => {
+    const msg = unsupportedUnixOnWindowsMessage('grep foo')
+    expect(msg).toMatch(/grep tool/)
+    expect(msg).toMatch(/grep, read, glob, and list_dir tools/)
+    const catMsg = unsupportedUnixOnWindowsMessage('cat a.txt')
+    expect(catMsg).toMatch(/read tool/)
+    expect(catMsg).toMatch(/grep, read, glob, and list_dir tools/)
   })
 
   it('does not flag cmd-safe commands', () => {
@@ -206,14 +239,25 @@ describe('resolveTerminalShell / terminalSpawnSpec', () => {
 })
 
 describe('Windows terminal executeTool behavior', () => {
-  it('intercepts Unix primaries before spawn on win32 when shell is cmd', async () => {
+  it('spawns Unix primaries on win32 instead of pre-failing', async () => {
     if (process.platform !== 'win32') return
     const dir = mkdtempSync(join(tmpdir(), 'vyotiq-term-unix-'))
     const signal = new AbortController().signal
     const content = await toolTerminal(dir, 'ls -la', signal, { shell: 'cmd' })
-    expect(content).toMatch(/Unsupported Unix command/)
-    expect(content).toMatch(/dir/)
-    expect(content).toMatch(/exit_code: 1/)
+    expect(content).not.toMatch(/Unsupported Unix command/)
+    expect(content).toMatch(/exit_code:/)
+  })
+
+  it('spawns bash for-loops on PowerShell instead of pre-failing', async () => {
+    const cmd =
+      'node --version 2>&1; for f in js/setup.js js/audio.js js/input.js js/particles.js js/entities.js js/flow.js js/game.js; do node --check "$f" && echo "OK $f"; done'
+    expect(bashForLoopOnPowerShellMessage(cmd)).toMatch(/bash for-loop/i)
+    if (process.platform !== 'win32') return
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-term-bashfor-'))
+    const signal = new AbortController().signal
+    const content = await toolTerminal(dir, cmd, signal, { shell: 'powershell' })
+    expect(content).not.toMatch(/bash for-loop/i)
+    expect(content).toMatch(/exit_code:/)
   })
 
   it('treats findstr no-match as soft success on win32 with cmd', async () => {
@@ -227,6 +271,27 @@ describe('Windows terminal executeTool behavior', () => {
     expect(content).toMatch(/findstr: no matches/)
     expect(content).toMatch(/shell: cmd/)
     expect(content).toMatch(/exit_code: 1/)
+  })
+})
+
+describe('appendPowerShellCompatHint', () => {
+  it('hints npm execution policy failures', () => {
+    const base = 'cwd: /ws\nshell: powershell\nstderr:\nnpm.ps1 cannot be loaded\nexit_code: 1'
+    const out = appendPowerShellCompatHint(base, 1, 'npm.ps1 cannot be loaded', 'powershell')
+    expect(out).toContain('npm.cmd')
+    expect(out).toContain('execution policy')
+  })
+
+  it('hints invalid && chaining in PowerShell 5', () => {
+    const stderr = "The token '&&' is not a valid statement separator in this version."
+    const base = `cwd: /ws\nshell: powershell\nstderr:\n${stderr}\nexit_code: 1`
+    const out = appendPowerShellCompatHint(base, 1, stderr, 'powershell')
+    expect(out).toContain('&& is not valid')
+  })
+
+  it('skips hints on success', () => {
+    const base = 'cwd: /ws\nshell: powershell\nexit_code: 0'
+    expect(appendPowerShellCompatHint(base, 0, '', 'powershell')).toBe(base)
   })
 })
 

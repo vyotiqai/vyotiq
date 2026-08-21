@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
@@ -68,5 +68,18 @@ describe('workspace run migration', () => {
     expect(migrateWorkspaceRunsAtPath(workspace)).toBe(1)
     expect(readWorkspaceMeta(workspace)?.runsMigrated).toBe(true)
     expect(existsSync(join(workspaceSessionsRoot(workspace), 'run-a', 'status.json'))).toBe(true)
+  })
+
+  it('skips symlinked legacy run directories', () => {
+    workspace = mkdtempSync(join(tmpdir(), 'vyotiq-migrate-symlink-'))
+    const real = join(workspace, 'real-run')
+    mkdirSync(real, { recursive: true })
+    writeFileSync(join(real, 'status.json'), '{}', 'utf8')
+    const legacy = join(workspace, '.vyotiq', 'runs')
+    mkdirSync(legacy, { recursive: true })
+    symlinkSync(real, join(legacy, 'run-link'), process.platform === 'win32' ? 'junction' : 'dir')
+
+    expect(migrateWorkspaceRunsAtPath(workspace)).toBe(0)
+    expect(existsSync(join(workspaceSessionsRoot(workspace), 'run-link'))).toBe(false)
   })
 })

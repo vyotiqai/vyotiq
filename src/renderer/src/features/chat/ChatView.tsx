@@ -3,35 +3,52 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { createPortal } from 'react-dom'
 import { MessageList } from './components/MessageList'
 import { AgentBrowserPanel } from './components/AgentBrowserPanel'
+import { FilesPanel, type WorkspaceFileOpenRequest } from './components/FilesPanel'
 import { ChangesPanel } from './components/ChangesPanel'
 import { PlanPanel } from './components/PlanPanel'
 import { PrPanel } from './components/PrPanel'
 import { ChatSideRail } from './components/ChatSideRail'
 import { DockTabBar, AGENT_DOCK_TAB, defaultDockTab } from './components/DockTabBar'
+import { AgentSessionBar, type AgentSessionTab } from './components/AgentSessionBar'
 import { TerminalPanel } from './components/TerminalPanel'
-import { isPlanDraftReady } from './components/composer/PlanHandoff'
+import { isPlanDraftReady } from './utils/planDraft'
 import { Composer } from './components/composer'
 import { RunSessionProvider } from './RunSessionContext'
+import { AgentInstancePane } from './components/AgentInstancePane'
+import { ChatHeroStage } from './components/ChatHeroStage'
+import { ChatStartWork } from './components/ChatStartWork'
+import { ChatTranscriptStage } from './components/ChatTranscriptStage'
+import { formatStartWorkDraft, formatStartWorkLabel } from './utils/chatStartWork'
+import { useInlineInstanceUi } from './hooks/useInlineInstanceUi'
 import {
-  ChatGitLeading,
+  type AgentInstanceUiState
+} from '@shared/utils/agentInstance'
+import {
   useChatLiveItems,
   useGitRevision,
   useHasChatItems
 } from './components/ChatStreamLeaves'
 import { useGitChrome } from './components/GitChrome'
 import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
-import type { AgentInteractionMode, ChatMessage, ProviderId, PtySessionInfo, ToolApprovalDecision } from '@shared/ipc'
+import type {
+  AgentInteractionMode,
+  ChatMessage,
+  ProviderId,
+  PtySessionInfo,
+  RunSummary,
+  ToolApprovalDecision,
+  WorkspaceEditorRecoveryLoadResult
+} from '@shared/ipc'
+import { isRetryableTurnFailure } from '@shared/errors'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import { Alert, PanelResizeHandle } from '@renderer/lib/ui'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
 import { usePersistedNumber } from '@renderer/lib/hooks/usePersistedNumber'
+import { setDockImmersive } from '@renderer/lib/hooks/dockImmersiveStore'
 import { useTitleBarAccessory } from '@renderer/lib/context/TitleBarAccessory'
 import {
   BROWSER_PANEL_OPEN_KEY,
-  CHAT_COLUMN,
-  CHAT_GUTTER,
   CHAT_RIGHT_PANEL,
-  CHAT_STAGE_INSET,
   DOCK_EXPANDED_KEY,
   DOCK_WIDTH_DEFAULT_PX,
   DOCK_WIDTH_KEY,
@@ -48,10 +65,13 @@ import {
   type DockImmersiveTabId
 } from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui/cn'
+import { matchShortcut, shouldBlockPanelShortcut } from '@renderer/lib/shortcuts'
 import type { ChatItemsStore, ChatMetaStore } from './chatStores'
+import type { StepUsageTotals } from '@shared/utils/runTelemetry'
 import { ChatPaneHost, type PaneRenderOptions } from './ChatPaneHost'
 import {
   buildComposerSendProps,
+  lastUserMessageIndex,
   useComposerEditState,
   useSuppressedChatError
 } from './hooks/composerShared'
@@ -85,15 +105,22 @@ function TranscriptPane({
   activeRunId,
   agentMode,
   onOpenChanges,
-  sideRailPad = true,
+  sideRailPad = false,
   editingUserMessageIndex = null,
   editComposer,
   onBeginEditUserMessage,
   onRevertUserMessage,
   messageCount = 0,
   networkWait = null,
+  compacting = false,
   turnFailed = false,
-  turnFailureLabel = null
+  turnFailureLabel = null,
+  turnStatus = null,
+  agentInstances,
+  onOpenAgentInstance,
+  onOpenWorkspaceFile,
+  turnUsage,
+  metaStore
 }: {
   items: UiItem[]
   pendingRun?: boolean
@@ -129,16 +156,26 @@ function TranscriptPane({
     retryInMs: number
     code?: string
   } | null
+  compacting?: boolean
   turnFailed?: boolean
   turnFailureLabel?: string | null
+  turnStatus?: import('@shared/transcript').TurnOutcome | null
+  agentInstances?: Record<string, AgentInstanceUiState>
+  onOpenAgentInstance?: (instanceRunId: string) => void
+  onOpenWorkspaceFile?: (path: string, options?: import('./components/FilesPanel').WorkspaceFileOpenOptions) => void
+  turnUsage?: readonly StepUsageTotals[]
+  metaStore?: ChatMetaStore
 }) {
   const runSession = useMemo(
     () => ({
       workspacePath: workspacePath ?? null,
       runId: activeRunId ?? null,
-      agentMode
+      agentMode,
+      agentInstances,
+      onOpenAgentInstance,
+      onOpenWorkspaceFile
     }),
-    [workspacePath, activeRunId, agentMode]
+    [workspacePath, activeRunId, agentMode, agentInstances, onOpenAgentInstance, onOpenWorkspaceFile]
   )
   return (
     <RunSessionProvider value={runSession}>
@@ -148,8 +185,10 @@ function TranscriptPane({
         pendingRun={pendingRun}
         running={running}
         networkWait={networkWait}
+        compacting={compacting}
         turnFailed={turnFailed}
         turnFailureLabel={turnFailureLabel}
+        turnStatus={turnStatus}
         transcriptLoading={transcriptLoading}
         restoreScrollTop={restoreScrollTop}
         scrollRestoreToken={scrollRestoreToken}
@@ -171,6 +210,8 @@ function TranscriptPane({
         onBeginEditUserMessage={onBeginEditUserMessage}
         onRevertUserMessage={onRevertUserMessage}
         messageCount={messageCount}
+        turnUsage={turnUsage}
+        metaStore={metaStore}
       />
     </RunSessionProvider>
   )
@@ -186,10 +227,12 @@ export function ChatView({
   error,
   errorCode = null,
   networkWait = null,
-  runNotice,
+  compacting = false,
   incomplete,
+  turnStatus = null,
   onContinue,
   contextUsage,
+  turnUsage,
   onCompactContext,
   operationalError,
   hasWorkspace,
@@ -199,6 +242,7 @@ export function ChatView({
   ollamaBaseUrl,
   customOpenAiBaseUrl,
   modelsRefreshKey,
+  secrets,
   activeRunId,
   transcriptLoading,
   headingRef,
@@ -214,8 +258,6 @@ export function ChatView({
   onAgentModeChange = () => {},
   onContinueInAgent,
   onSend,
-  offlineHint = null,
-  onClearOfflineQueue,
   onStop,
   onEditAndResend,
   onRevertToUserMessage,
@@ -247,14 +289,22 @@ export function ChatView({
   onUndoWrites,
   writeFileResolutions,
   writeResolvablePaths,
+  writeCheckpointFiles,
   onKeepWriteFile,
   onDiscardWriteFile,
   onKeepAllWrites,
   resolveBlockedReason = null,
-  imageReadyHint = null,
   multiPane = null,
   paneCount: paneCountProp = 1,
-  onPaneCapacityChange
+  onPaneCapacityChange,
+  openRunIds = [],
+  runs = [],
+  onOpenRunTab,
+  onCloseRunTab,
+  agentInstances,
+  openInstanceRunId: openInstanceRunIdProp = null,
+  onOpenInstanceRunIdChange,
+  getInstanceController
 }: {
   items: UiItem[]
   /** When set, transcript leaves subscribe so ChatView/Composer skip token patches. */
@@ -273,11 +323,15 @@ export function ChatView({
     retryInMs: number
     code?: string
   } | null
-  runNotice?: string | null
+  compacting?: boolean
   incomplete?: import('@renderer/lib/hooks/createChatStreamController').IncompleteTurnState | null
+  turnStatus?: import('@shared/transcript').TurnOutcome | null
   onContinue?: () => void
   contextUsage?: import('./components/composer/ContextMeter').ContextUsageState | null
-  onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
+  turnUsage?: readonly StepUsageTotals[]
+  onCompactContext?: (
+    focus?: string
+  ) => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   operationalError?: string | null
   hasWorkspace: boolean
   workspacePath: string | null
@@ -286,6 +340,7 @@ export function ChatView({
   ollamaBaseUrl?: string
   customOpenAiBaseUrl?: string
   modelsRefreshKey?: string | number
+  secrets: Record<import('@shared/ipc').SecretProvider, boolean>
   activeRunId: string | null
   transcriptLoading?: boolean
   headingRef?: Ref<HTMLHeadingElement>
@@ -306,9 +361,6 @@ export function ChatView({
     files?: import('@shared/ipc').AttachedFile[],
     extras?: import('@shared/ipc').ComposerSendExtras
   ) => boolean | void | Promise<boolean | void>
-  /** Owned by App (single flush per workspace). */
-  offlineHint?: string | null
-  onClearOfflineQueue?: () => void
   onEditAndResend?: (
     editMessageIndex: number,
     text: string,
@@ -351,12 +403,14 @@ export function ChatView({
   onUndoWrites?: () => void | Promise<unknown>
   writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
   writeResolvablePaths?: ReadonlySet<string>
+  writeCheckpointFiles?: ReadonlyArray<{
+    path: string
+    action: 'created' | 'modified' | 'deleted'
+  }>
   onKeepWriteFile?: (path: string) => void | Promise<unknown>
   onDiscardWriteFile?: (path: string) => void | Promise<unknown>
   onKeepAllWrites?: () => void | Promise<unknown>
   resolveBlockedReason?: string | null
-  /** Composer hint when an image-capable API key is configured. */
-  imageReadyHint?: string | null
   multiPane?: {
     panes: ChatPane[]
     focusedPaneId: string
@@ -374,14 +428,47 @@ export function ChatView({
   } | null
   paneCount?: number
   onPaneCapacityChange?: (ctx: PaneCapacityContext) => void
+  /** Open agent session tabs (immersive AgentSessionBar). */
+  openRunIds?: string[]
+  runs?: RunSummary[]
+  onOpenRunTab?: (runId: string | null) => void
+  onCloseRunTab?: (runId: string) => void
+  agentInstances?: Record<string, AgentInstanceUiState>
+  /** Controlled open instance sub-session (sidebar / parent shared). */
+  openInstanceRunId?: string | null
+  onOpenInstanceRunIdChange?: (runId: string | null) => void
+  getInstanceController?: (
+    runId: string,
+    workspacePath: string
+  ) => import('@renderer/lib/hooks/createChatStreamController').ChatStreamController | null
 }) {
   const paneCount = paneCountProp ?? multiPane?.panes.length ?? 1
+  const instanceOpenControlled =
+    onOpenInstanceRunIdChange != null
+      ? {
+          openInstanceRunId: openInstanceRunIdProp,
+          setOpenInstanceRunId: onOpenInstanceRunIdChange
+        }
+      : undefined
+  const {
+    openInstanceRunId: viewingInstanceRunId,
+    openInstancePane,
+    closeInstancePane,
+    pendingGates
+  } = useInlineInstanceUi(agentInstances, activeRunId, instanceOpenControlled)
+  const onOpenAgentInstance = useMemo(
+    () =>
+      workspacePath != null
+        ? (instanceRunId: string) => openInstancePane(instanceRunId)
+        : undefined,
+    [openInstancePane, workspacePath]
+  )
   const [activeRightPanel, setActiveRightPanel] = useState<ChatRightPanelId | null>(() => {
     try {
       const raw = localStorage.getItem(RIGHT_PANEL_KEY)
+      // Preserve the legacy value as the real workspace Files panel.
+      if (raw === 'files') return 'files'
       if (isChatRightPanelId(raw)) return raw
-      // Legacy Files rail → Changes (list + Keep/Discard in one panel).
-      if (raw === 'files') return 'changes'
       // Migrate legacy browser-open preference.
       const legacy = localStorage.getItem(BROWSER_PANEL_OPEN_KEY)
       if (legacy === '1' || legacy === 'true') return 'browser'
@@ -390,6 +477,22 @@ export function ChatView({
     }
     return null
   })
+  const [requestedFilePath, setRequestedFilePath] =
+    useState<WorkspaceFileOpenRequest | null>(null)
+  const [pendingFilesRecovery, setPendingFilesRecovery] = useState<{
+    workspacePath: string
+    data: WorkspaceEditorRecoveryLoadResult
+  } | null>(null)
+  const handleFilesRecoveryConsumed = useCallback((consumedWorkspacePath: string): void => {
+    setPendingFilesRecovery((pending) =>
+      pending?.workspacePath === consumedWorkspacePath ? null : pending
+    )
+  }, [])
+  useEffect(() => {
+    setPendingFilesRecovery((pending) =>
+      pending && pending.workspacePath !== workspacePath ? null : pending
+    )
+  }, [workspacePath])
   const clampDock = useCallback(
     (width: number) =>
       clampDockWidthPx(width, undefined, {
@@ -405,14 +508,17 @@ export function ChatView({
   const liveItems = useChatLiveItems(itemsStore, items)
   const chatBannerError = useSuppressedChatError(liveItems, error)
   const operationalBannerError = operationalError ?? null
-  const turnFailed =
-    incomplete?.reason === 'network_interrupted' ||
-    errorCode === 'PROVIDER_NETWORK' ||
-    errorCode === 'PROVIDER_STREAM'
+  const turnFailed = isRetryableTurnFailure({
+    errorCode,
+    incompleteReason: incomplete?.reason
+  })
   const turnFailureLabel =
-    incomplete?.message ??
-    (turnFailed ? error ?? 'Connection lost' : null)
-  const showHero = !hasItems && !activeRunId && !transcriptLoading
+    turnFailed
+      ? incomplete?.message ?? (error ?? 'Connection lost')
+      : turnStatus === 'error'
+        ? 'Run failed'
+        : null
+  const showHero = !hasItems && !transcriptLoading
   const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
   const [prNumber, setPrNumber] = useState<number | null>(null)
   /** Accumulated dock title tabs (multi-panel strip). */
@@ -454,6 +560,12 @@ export function ChatView({
   const dockImmersive = dockExpanded && dockTabs.length > 0
   const { host: titleBarHost, setOccupied: setTitleBarOccupied } = useTitleBarAccessory()
   const dockSideTitleBar = activeRightPanel != null && !dockImmersive && titleBarHost != null
+
+  useEffect(() => {
+    setDockImmersive(dockImmersive)
+    return () => setDockImmersive(false)
+  }, [dockImmersive])
+
   const sideDockTitleBarWidthPx = Math.max(
     DOCK_WIDTH_MIN_PX - WINDOW_CONTROLS_WIDTH_PX,
     dockWidthPx - (showsWindowControls() ? WINDOW_CONTROLS_WIDTH_PX : 0)
@@ -467,7 +579,47 @@ export function ChatView({
   /** Session-scoped: skip auto-open after the user closes a panel until they open it again. */
   const dismissedPanelsRef = useRef<Set<ChatRightPanelId>>(new Set())
   const [gitRevision, bumpGitRevision] = useGitRevision(workspacePath, running, liveItems)
-  const gitChrome = useGitChrome(workspacePath, gitRevision, Boolean(workspacePath))
+  const filesFlushRef = useRef<(() => Promise<boolean>) | null>(null)
+  const registerFilesFlush = useCallback(
+    (flush: (() => Promise<boolean>) | null): void => {
+      filesFlushRef.current = flush
+    },
+    []
+  )
+  const flushDirtyFiles = useCallback(async (): Promise<boolean> => {
+    return filesFlushRef.current ? filesFlushRef.current() : true
+  }, [])
+  useEffect(() => {
+    const onFlushRequest = window.vyotiq?.onWorkspaceEditorFlushRequest
+    const respond = window.vyotiq?.respondWorkspaceEditorFlush
+    if (!onFlushRequest || !respond) return undefined
+    return onFlushRequest((requestId) => {
+      void flushDirtyFiles()
+        .then((ok) => respond(requestId, ok))
+        .catch(() => respond(requestId, false))
+    })
+  }, [flushDirtyFiles])
+  const gitChrome = useGitChrome(
+    workspacePath,
+    gitRevision,
+    Boolean(workspacePath),
+    undefined,
+    flushDirtyFiles
+  )
+  const startWork = useMemo(() => {
+    if (!onComposerDraftChange || !gitChrome.ready) return null
+    const status = gitChrome.status
+    if (status == null || status.fileCount <= 0) return null
+    const label = formatStartWorkLabel(status.files, status.fileCount)
+    const draft = formatStartWorkDraft(status.files, status.fileCount)
+    if (!label || !draft) return null
+    return { label, draft }
+  }, [gitChrome.ready, gitChrome.status, onComposerDraftChange])
+  const fillStartWorkDraft = useCallback(() => {
+    if (!startWork) return
+    onComposerDraftChange?.(startWork.draft)
+  }, [onComposerDraftChange, startWork])
+  const showStartWork = startWork != null && !hasItems && !transcriptLoading
   const notifyGitMutated = useCallback(() => {
     gitChrome.refresh()
     bumpGitRevision()
@@ -523,7 +675,7 @@ export function ChatView({
     // Keep mountedPanels/dockTabs so PTY/browser/plan state survives hide; clear
     // only when the last tab is closed via closeDockTab.
     persistRightPanel(null)
-  }, [persistRightPanel, setDockExpanded])
+  }, [persistRightPanel, setDockExpanded, setImmersiveTab])
 
   const setRightPanel = useCallback(
     (next: ChatRightPanelId | null) => {
@@ -538,7 +690,56 @@ export function ChatView({
       setImmersiveTab(next)
       persistRightPanel(next)
     },
-    [closeDock, persistRightPanel]
+    [closeDock, persistRightPanel, setImmersiveTab]
+  )
+
+  const openWorkspaceFile = useCallback(
+    (
+      path: string,
+      options?: Pick<WorkspaceFileOpenRequest, 'line' | 'column' | 'mode'>
+    ): void => {
+      if (!workspacePath) return
+      setRequestedFilePath({ workspacePath, path, ...options })
+      setRightPanel('files')
+    },
+    [setRightPanel, workspacePath]
+  )
+  const composerRunSession = useMemo(
+    () => ({
+      workspacePath: workspacePath ?? null,
+      runId: activeRunId ?? null,
+      agentMode,
+      agentInstances,
+      onOpenAgentInstance,
+      onOpenWorkspaceFile: openWorkspaceFile
+    }),
+    [
+      workspacePath,
+      activeRunId,
+      agentMode,
+      agentInstances,
+      onOpenAgentInstance,
+      openWorkspaceFile
+    ]
+  )
+  const handleWorkspaceFileOpened = useCallback((request: WorkspaceFileOpenRequest): void => {
+    setRequestedFilePath((current) =>
+      current &&
+      current.workspacePath === request.workspacePath &&
+      current.path === request.path
+        ? null
+        : current
+    )
+  }, [])
+
+  const mergedSlashHandlers = useMemo(
+    () => ({
+      ...slashHandlers,
+      onOpenFile: (path: string) => {
+        openWorkspaceFile(path)
+      }
+    }),
+    [openWorkspaceFile, slashHandlers]
   )
 
   const openChangesPanel = useCallback(
@@ -551,10 +752,6 @@ export function ChatView({
   )
 
   const onOpenAgentChanges = useCallback(() => openChangesPanel('agent'), [openChangesPanel])
-  const onOpenUncommittedChanges = useCallback(
-    () => openChangesPanel('uncommitted'),
-    [openChangesPanel]
-  )
 
   const activeRightPanelRef = useRef(activeRightPanel)
   activeRightPanelRef.current = activeRightPanel
@@ -578,6 +775,9 @@ export function ChatView({
 
   const closeDockTab = useCallback(
     (id: ChatRightPanelId) => {
+      if (id === 'browser') {
+        void window.vyotiq.browserClose?.()
+      }
       dismissedPanelsRef.current.add(id)
       setDockTabs((prev) => {
         const next = prev.filter((t) => t !== id)
@@ -602,7 +802,7 @@ export function ChatView({
         return next
       })
     },
-    [persistRightPanel, setDockExpanded]
+    [persistRightPanel, setDockExpanded, setImmersiveTab]
   )
 
   const toggleRightPanel = useCallback(
@@ -615,6 +815,28 @@ export function ChatView({
     },
     [activeRightPanel, closeDockTab, setRightPanel]
   )
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (shouldBlockPanelShortcut(e.target)) return
+      if (matchShortcut(e, 'panelTerminal')) {
+        e.preventDefault()
+        toggleRightPanel('terminal')
+        return
+      }
+      if (matchShortcut(e, 'panelChanges')) {
+        e.preventDefault()
+        toggleRightPanel('changes')
+        return
+      }
+      if (matchShortcut(e, 'panelBrowser')) {
+        e.preventDefault()
+        toggleRightPanel('browser')
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [toggleRightPanel])
 
   const toggleDockExpanded = useCallback(() => {
     if (dockExpanded) {
@@ -689,28 +911,62 @@ export function ChatView({
     setPrNumber(meta?.number ?? null)
   }, [])
 
-  // Auto-open plan panel when plan.md is ready in plan mode (single check;
-  // PlanPanel owns polling while the tab is mounted). Terminal / Browser / Changes
-  // open only via side rail, dock tabs, ChangeSummary, or GitChrome — never on
-  // agent activity (agent terminal output stays in the transcript).
+  // Auto-open plan panel when plan.md is ready in plan mode — including mid-run
+  // writes (poll) and when `running` flips. Terminal / Browser / Changes open
+  // only via side rail, dock tabs, ChangeSummary, or GitChrome — never on agent
+  // activity (agent terminal output stays in the transcript).
   useEffect(() => {
     if (!workspacePath || !activeRunId || agentMode !== 'plan') {
       return
     }
     let cancelled = false
-    void window.vyotiq.readRunArtifact?.({ workspacePath, runId: activeRunId, name: 'plan.md' }).then(
-      (res) => {
-        if (cancelled) return
-        const ready = Boolean(res.ok && isPlanDraftReady(res.data?.content))
-        if (ready) {
-          tryAutoOpenPanel('plan')
+    const check = (): void => {
+      void window.vyotiq.readRunArtifact?.({ workspacePath, runId: activeRunId, name: 'plan.md' }).then(
+        (res) => {
+          if (cancelled) return
+          const ready = Boolean(res.ok && isPlanDraftReady(res.data?.content))
+          if (ready) {
+            tryAutoOpenPanel('plan')
+          }
         }
-      }
-    )
+      )
+    }
+    check()
+    const id = window.setInterval(check, 2000)
     return () => {
       cancelled = true
+      window.clearInterval(id)
     }
-  }, [workspacePath, activeRunId, agentMode, tryAutoOpenPanel])
+  }, [workspacePath, activeRunId, agentMode, running, tryAutoOpenPanel])
+
+  // Prefetch recovery once so FilesPanel can hydrate from the same result when
+  // it auto-opens, without issuing a second recovery load.
+  useEffect(() => {
+    if (
+      !workspacePath ||
+      mountedPanels.includes('files') ||
+      !window.vyotiq?.workspaceEditorRecoveryLoad
+    ) {
+      return undefined
+    }
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void window.vyotiq?.workspaceEditorRecoveryLoad({ workspacePath }).then((result) => {
+        if (cancelled || !result.ok) return
+        setPendingFilesRecovery({ workspacePath, data: result.data })
+        if (result.data.snapshot?.tabs.length) tryAutoOpenPanel('files')
+      })
+    }, 900)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [mountedPanels, workspacePath, tryAutoOpenPanel])
+
+  const filesRecoveryData =
+    pendingFilesRecovery?.workspacePath === workspacePath
+      ? pendingFilesRecovery.data
+      : undefined
 
   const visiblePanelId: ChatRightPanelId | null = dockImmersive
     ? immersiveTab === 'agent'
@@ -719,9 +975,55 @@ export function ChatView({
     : activeRightPanel
 
   const terminalSessionBarHostRef = useRef<HTMLDivElement>(null)
+  const agentSessionBarHostRef = useRef<HTMLDivElement>(null)
+  const [agentSessionBarHost, setAgentSessionBarHost] = useState<HTMLDivElement | null>(null)
   const [terminalSessions, setTerminalSessions] = useState<PtySessionInfo[]>([])
+  const showAgentSessionChrome = dockImmersive && immersiveTab === 'agent' && onOpenRunTab != null
   const showTerminalSessionChrome =
     mountedPanels.includes('terminal') && visiblePanelId === 'terminal'
+
+  useLayoutEffect(() => {
+    if (!showAgentSessionChrome) {
+      setAgentSessionBarHost(null)
+      return
+    }
+    let cancelled = false
+    const attach = (): void => {
+      if (cancelled) return
+      const host = agentSessionBarHostRef.current
+      if (host) {
+        setAgentSessionBarHost(host)
+        return
+      }
+      requestAnimationFrame(attach)
+    }
+    attach()
+    return () => {
+      cancelled = true
+    }
+  }, [showAgentSessionChrome, titleBarHost])
+
+  const agentSessionTabs = useMemo((): AgentSessionTab[] => {
+    const byId = new Map(runs.map((r) => [r.runId, r]))
+    const tabs: AgentSessionTab[] = openRunIds.map((id) => {
+      const run = byId.get(id)
+      const goal = run?.goal?.trim()
+      return { id, title: goal || 'Chat', closable: true, running: run?.status === 'running' }
+    })
+    if (activeRunId == null) {
+      tabs.push({ id: null, title: 'New chat', closable: false })
+    } else if (!openRunIds.includes(activeRunId)) {
+      const run = byId.get(activeRunId)
+      const goal = run?.goal?.trim()
+      tabs.push({
+        id: activeRunId,
+        title: goal || 'Chat',
+        closable: true,
+        running: run?.status === 'running'
+      })
+    }
+    return tabs
+  }, [openRunIds, runs, activeRunId])
 
   const tabItems = useMemo(() => {
     const items = dockTabs.map((id) => defaultDockTab(id, id === 'pr' ? prNumber : null))
@@ -730,7 +1032,10 @@ export function ChatView({
     }
     return items
   }, [dockTabs, prNumber, visiblePanelId, terminalSessions.length])
-  const immersiveTabItems = useMemo(() => [AGENT_DOCK_TAB, ...tabItems], [tabItems])
+  const immersiveTabItems = useMemo(
+    () => (showAgentSessionChrome ? tabItems : [AGENT_DOCK_TAB, ...tabItems]),
+    [showAgentSessionChrome, tabItems]
+  )
   // Pad only while the floating side rail is mounted (hidden when a side dock
   // is open or in immersive unified-tabs mode).
   const agentSideRailPad = !dockImmersive && activeRightPanel == null
@@ -755,6 +1060,14 @@ export function ChatView({
     onAfterRevert: notifyGitMutated
   })
 
+  const onEditLastUserMessage = useCallback((): boolean => {
+    if (!onEditAndResend) return false
+    const index = lastUserMessageIndex(messages)
+    if (index == null) return false
+    beginPromptEdit(index)
+    return true
+  }, [onEditAndResend, messages, beginPromptEdit])
+
   const editComposer =
     editing && onEditAndResend ? (
       <MemoComposer
@@ -769,6 +1082,7 @@ export function ChatView({
         ollamaBaseUrl={ollamaBaseUrl}
         customOpenAiBaseUrl={customOpenAiBaseUrl}
         modelsRefreshKey={modelsRefreshKey}
+        secrets={secrets}
         draft={editDraft}
         onDraftChange={setEditDraft}
         onProviderModel={onProviderModel}
@@ -787,14 +1101,12 @@ export function ChatView({
         contextUsage={metaStore ? undefined : contextUsage}
         metaStore={metaStore}
         onCompactContext={onCompactContext}
-        slashHandlers={slashHandlers}
+        slashHandlers={mergedSlashHandlers}
         variant="inline"
         bannerError={chatBannerError}
         secondaryBannerError={operationalBannerError}
         errorCode={errorCode}
         onRetryNetwork={onContinue}
-        offlineHint={offlineHint}
-        onClearOfflineQueue={onClearOfflineQueue}
         onDismissError={onDismissError}
         className="w-full"
         seedImages={editSeeds.images}
@@ -816,6 +1128,7 @@ export function ChatView({
     ollamaBaseUrl,
     customOpenAiBaseUrl,
     modelsRefreshKey,
+    secrets,
     draft: composerDraft,
     onDraftChange: onComposerDraftChange,
     onProviderModel,
@@ -834,24 +1147,19 @@ export function ChatView({
     onRemoveFollowUp,
     onEditFollowUp,
     onSendFollowUpNow,
-    runNotice,
     incomplete,
     onContinue,
-    onContinueInAgent,
     errorCode,
     bannerError: chatBannerError,
     secondaryBannerError: operationalBannerError,
-    offlineHint,
-    onClearOfflineQueue,
-    networkWait,
     activeRunId,
     onDismissError,
     contextUsage,
     metaStore,
     onCompactContext,
-    slashHandlers,
+    slashHandlers: mergedSlashHandlers,
     sideRailPad: agentSideRailPad,
-    imageReadyHint
+    onEditLastUserMessage
   })
 
   const renderMultiPane = useCallback(
@@ -859,16 +1167,16 @@ export function ChatView({
       multiPane!.renderPane(pane, {
         ...options,
         onOpenChanges: onOpenAgentChanges,
-        onOpenUncommittedChanges
+        onOpenWorkspaceFile: openWorkspaceFile
       }),
-    [multiPane, onOpenAgentChanges, onOpenUncommittedChanges]
+    [multiPane, onOpenAgentChanges, openWorkspaceFile]
   )
 
   const agentColumn =
     multiPane && multiPane.panes.length >= 1 ? (
       <>
         <h1 ref={headingRef} tabIndex={-1} className="sr-only">
-          Vyotiq chat
+          Agent V chat
         </h1>
         <ChatPaneHost
           panes={multiPane.panes}
@@ -886,95 +1194,138 @@ export function ChatView({
     ) : (
     <>
       <h1 ref={headingRef} tabIndex={-1} className="sr-only">
-        Vyotiq chat
+        Agent V chat
       </h1>
 
-      {showHero ? (
-        <div
-          className={cn(
-            'flex min-h-0 flex-1 flex-col items-center justify-center',
-            CHAT_GUTTER
-          )}
-          role="status"
-        >
-          {(chatBannerError || operationalBannerError) ? (
-            <div className={cn('mb-4 flex w-full flex-col gap-2', CHAT_COLUMN)}>
-              {operationalBannerError ? (
-                <Alert className="w-full">{operationalBannerError}</Alert>
-              ) : null}
-              {chatBannerError ? (
-                <Alert className="w-full" onDismiss={onDismissError}>
-                  {chatBannerError}
-                </Alert>
-              ) : null}
-            </div>
-          ) : null}
-          <div
-            className={cn('w-full animate-fade-in', CHAT_COLUMN)}
-            data-composer-hero
-          >
-            <MemoComposer
-              key={`composer:${surfaceKey}`}
-              {...composerProps}
-              variant="hero"
-              className="w-full"
-            />
-          </div>
-        </div>
+      {viewingInstanceRunId && workspacePath ? (
+        <AgentInstancePane
+          workspacePath={workspacePath}
+          instanceRunId={viewingInstanceRunId}
+          instanceMeta={agentInstances?.[viewingInstanceRunId]}
+          getController={getInstanceController}
+          sideRailPad={agentSideRailPad}
+          pendingGates={pendingGates}
+          onOpenInstance={openInstancePane}
+          onClose={closeInstancePane}
+          showThinking={showThinking}
+          onOpenWorkspaceFile={openWorkspaceFile}
+        />
+      ) : showHero ? (
+        <ChatHeroStage
+          chatBannerError={chatBannerError}
+          operationalBannerError={operationalBannerError}
+          onDismissError={onDismissError}
+          composer={
+            <RunSessionProvider value={composerRunSession}>
+              <MemoComposer
+                key={`composer:${surfaceKey}`}
+                {...composerProps}
+                variant="hero"
+                className="w-full"
+              />
+            </RunSessionProvider>
+          }
+          belowComposer={
+            showStartWork && startWork ? (
+              <ChatStartWork label={startWork.label} onFill={fillStartWorkDraft} />
+            ) : null
+          }
+        />
       ) : (
-        <div className="relative flex min-h-0 flex-1 flex-col" data-chat-stage>
-          <TranscriptPane
-            items={liveItems}
-            pendingRun={pendingRun}
-            running={running}
-            transcriptLoading={transcriptLoading}
-            restoreScrollTop={restoreScrollTop}
-            scrollRestoreToken={scrollRestoreToken}
-            onScrollTopChange={onScrollTopChange}
-            onLoadToolContent={onLoadToolContent}
-            onThinkingToggle={onThinkingToggle}
-            onToolToggle={onToolToggle}
-            onGroupToggle={onGroupToggle}
-            onTurnToggle={onTurnToggle}
-            onApprovalDecision={onApprovalDecision}
-            onQuestionSubmit={onQuestionSubmit}
-            collapsedTurns={collapsedTurns}
-            showThinking={showThinking}
-            mcpServerNames={mcpServerNames}
-            surfaceKey={surfaceKey}
-            workspacePath={workspacePath}
-            activeRunId={activeRunId}
-            agentMode={agentMode}
-            onOpenChanges={onOpenAgentChanges}
-            sideRailPad={agentSideRailPad}
-            editingUserMessageIndex={editingUserMessageIndex}
-            editComposer={editComposer}
-            onBeginEditUserMessage={onEditAndResend ? beginPromptEdit : undefined}
-            onRevertUserMessage={onRevertToUserMessage ? beginPromptRevert : undefined}
-            messageCount={messages.length}
-            networkWait={networkWait}
-            turnFailed={turnFailed}
-            turnFailureLabel={turnFailureLabel}
-          />
-
-          {!editing ? (
-            <MemoComposer
-              key={`composer:${surfaceKey}`}
-              {...composerProps}
-              variant="dock"
-              onDismissError={onDismissError}
-              leading={
-                <ChatGitLeading chrome={gitChrome} onOpenChanges={onOpenUncommittedChanges} />
-              }
+        <ChatTranscriptStage
+          sideRailPad={agentSideRailPad}
+          pendingGates={pendingGates}
+          onOpenInstance={openInstancePane}
+          transcript={
+            <TranscriptPane
+              items={liveItems}
+              pendingRun={pendingRun}
+              running={running}
+              transcriptLoading={transcriptLoading}
+              restoreScrollTop={restoreScrollTop}
+              scrollRestoreToken={scrollRestoreToken}
+              onScrollTopChange={onScrollTopChange}
+              onLoadToolContent={onLoadToolContent}
+              onThinkingToggle={onThinkingToggle}
+              onToolToggle={onToolToggle}
+              onGroupToggle={onGroupToggle}
+              onTurnToggle={onTurnToggle}
+              onApprovalDecision={onApprovalDecision}
+              onQuestionSubmit={onQuestionSubmit}
+              collapsedTurns={collapsedTurns}
+              showThinking={showThinking}
+              mcpServerNames={mcpServerNames}
+              surfaceKey={surfaceKey}
+              workspacePath={workspacePath}
+              activeRunId={activeRunId}
+              agentMode={agentMode}
+              onOpenChanges={onOpenAgentChanges}
+              sideRailPad={agentSideRailPad}
+              editingUserMessageIndex={editingUserMessageIndex}
+              editComposer={editComposer}
+              onBeginEditUserMessage={onEditAndResend ? beginPromptEdit : undefined}
+              onRevertUserMessage={onRevertToUserMessage ? beginPromptRevert : undefined}
+              messageCount={messages.length}
+              networkWait={networkWait}
+              compacting={compacting}
+              turnFailed={turnFailed}
+              turnFailureLabel={turnFailureLabel}
+              turnStatus={turnStatus}
+              agentInstances={agentInstances}
+              onOpenAgentInstance={onOpenAgentInstance}
+              onOpenWorkspaceFile={openWorkspaceFile}
+              turnUsage={turnUsage}
+              metaStore={metaStore}
             />
-          ) : null}
-        </div>
+          }
+          composer={
+            <RunSessionProvider value={composerRunSession}>
+              <div
+                className={editing ? 'hidden' : undefined}
+                inert={editing ? true : undefined}
+                aria-hidden={editing || undefined}
+              >
+                <MemoComposer
+                  key={`composer:${surfaceKey}`}
+                  {...composerProps}
+                  variant="dock"
+                  onDismissError={onDismissError}
+                />
+              </div>
+            </RunSessionProvider>
+          }
+        />
       )}
     </>
     )
 
   const panelBodies = (
     <>
+      {mountedPanels.includes('files') ? (
+        <div
+          id="dock-panel-files"
+          role="tabpanel"
+          aria-label="Files"
+          className={cn(
+            'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+            visiblePanelId === 'files' ? 'flex' : 'hidden'
+          )}
+          aria-hidden={visiblePanelId !== 'files'}
+          inert={visiblePanelId !== 'files' ? true : undefined}
+        >
+          <FilesPanel
+            workspacePath={workspacePath}
+            active={visiblePanelId === 'files'}
+            gitRevision={gitRevision}
+            onGitMutated={notifyGitMutated}
+            onFlushReady={registerFilesFlush}
+            openPath={requestedFilePath}
+            onOpenPathHandled={handleWorkspaceFileOpened}
+            recoveryData={filesRecoveryData}
+            onRecoveryDataConsumed={handleFilesRecoveryConsumed}
+          />
+        </div>
+      ) : null}
       {mountedPanels.includes('browser') ? (
         <div
           id="dock-panel-browser"
@@ -1033,9 +1384,11 @@ export function ChatView({
             gitRevision={gitRevision}
             chrome={gitChrome}
             onGitMutated={notifyGitMutated}
+            onOpenFile={openWorkspaceFile}
             onViewPr={() => setRightPanel('pr')}
             writeFileResolutions={writeFileResolutions}
             resolvablePaths={writeResolvablePaths}
+            writeCheckpointFiles={writeCheckpointFiles}
             canResolve={canUndoWrites}
             resolveBusy={undoBusy}
             resolveBlockedReason={resolveBlockedReason}
@@ -1064,6 +1417,7 @@ export function ChatView({
           <PrPanel
             workspacePath={workspacePath}
             gitRevision={gitRevision}
+            onOpenFile={openWorkspaceFile}
             onPrMeta={handlePrMeta}
             onUnlink={() => closeDockTab('pr')}
             active={visiblePanelId === 'pr'}
@@ -1088,6 +1442,9 @@ export function ChatView({
             running={running}
             invokeId={invokeId}
             active={visiblePanelId === 'plan'}
+            agentMode={agentMode}
+            onContinueInAgent={onContinueInAgent}
+            onOpenFile={openWorkspaceFile}
           />
         </div>
       ) : null}
@@ -1107,11 +1464,35 @@ export function ChatView({
               onOpenPanel={(id) => setRightPanel(id)}
               expanded
               onToggleExpanded={toggleDockExpanded}
+              agentSessionBarHostRef={
+                showAgentSessionChrome ? agentSessionBarHostRef : undefined
+              }
               terminalSessionBarHostRef={
                 showTerminalSessionChrome ? terminalSessionBarHostRef : undefined
               }
             />,
             titleBarHost
+          )
+        : null}
+      {showAgentSessionChrome && agentSessionBarHost && onOpenRunTab
+        ? createPortal(
+            <AgentSessionBar
+              sessions={agentSessionTabs}
+              activeId={activeRunId}
+              onSelect={(runId) => {
+                closeInstancePane()
+                onOpenRunTab(runId)
+              }}
+              onClose={(id) => {
+                closeInstancePane()
+                onCloseRunTab?.(id)
+              }}
+              onCreate={() => {
+                closeInstancePane()
+                onOpenRunTab(null)
+              }}
+            />,
+            agentSessionBarHost
           )
         : null}
       {dockSideTitleBar && titleBarHost
@@ -1169,6 +1550,9 @@ export function ChatView({
                 onOpenPanel={(id) => setRightPanel(id)}
                 expanded
                 onToggleExpanded={toggleDockExpanded}
+                agentSessionBarHostRef={
+                  showAgentSessionChrome ? agentSessionBarHostRef : undefined
+                }
                 terminalSessionBarHostRef={
                   showTerminalSessionChrome ? terminalSessionBarHostRef : undefined
                 }
@@ -1239,6 +1623,9 @@ export function ChatView({
                 onExpandPanels={
                   dockTabs.length > 0 ? () => toggleDockExpanded() : undefined
                 }
+                workspacePath={workspacePath}
+                runId={activeRunId}
+                running={running}
               />
             ) : null}
           </>

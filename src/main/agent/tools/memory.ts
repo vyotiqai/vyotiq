@@ -38,8 +38,8 @@ export function toolMemoryRead(workspace: string, pathArg: string): string {
   return readMemoryFile(workspace, cleaned)
 }
 
-/** Max characters accepted by memory_write. */
-export const MEMORY_WRITE_CAP = 64 * 1024
+/** @deprecated Kept for callers that still import the former write cap. */
+export const MEMORY_WRITE_CAP = Number.POSITIVE_INFINITY
 
 export function toolMemoryWrite(
   workspace: string,
@@ -61,9 +61,6 @@ export function toolMemoryWrite(
     if (!noteName || !/^[a-zA-Z0-9._-]+\.md$/.test(noteName)) {
       throw new Error('note files must be notes/<name>.md with safe characters')
     }
-  }
-  if (contents.length > MEMORY_WRITE_CAP) {
-    throw new Error(`Memory write too large (${contents.length} chars). Cap is ${MEMORY_WRITE_CAP}.`)
   }
   const written = writeMemoryFile(workspace, cleaned, contents)
   return `Wrote memory/${written}`

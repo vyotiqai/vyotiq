@@ -1,9 +1,29 @@
 import { PROVIDER_DEFAULTS } from '@shared/providers'
+import type { SettingsSection } from './types'
 
 export const THEME_OPTIONS = [
   { value: 'system', label: 'System' },
   { value: 'dark', label: 'Dark' },
   { value: 'light', label: 'Light' }
+]
+
+export const FONT_SCALE_OPTIONS = [
+  { value: 'small', label: 'Small' },
+  { value: 'default', label: 'Default' },
+  { value: 'large', label: 'Large' }
+]
+
+export const DENSITY_OPTIONS = [
+  { value: 'compact', label: 'Compact' },
+  { value: 'default', label: 'Default' },
+  { value: 'comfortable', label: 'Comfortable' }
+]
+
+export const ACCENT_OPTIONS = [
+  { value: 'neutral', label: 'Neutral' },
+  { value: 'blue', label: 'Blue' },
+  { value: 'violet', label: 'Violet' },
+  { value: 'green', label: 'Green' }
 ]
 
 export const TOOL_APPROVAL_OPTIONS = [
@@ -24,24 +44,34 @@ export const ACTIVE_PROVIDER_OPTIONS = PROVIDER_DEFAULTS.map((p) => ({
   label: p.label
 }))
 
-export const SECTION_LABELS: Record<
-  'general' | 'providers' | 'agent' | 'marketplace',
-  { title: string; description?: string }
-> = {
-  general: {
-    title: 'General',
-    description: 'Model display, workspaces, appearance, and diagnostics.'
-  },
-  providers: {
-    title: 'Providers',
-    description: 'Active provider, API keys, and model catalog refresh.'
-  },
-  agent: {
-    title: 'Agent',
-    description: 'Compaction, memory, and approval settings.'
-  },
-  marketplace: {
-    title: 'Marketplace',
-    description: 'Optional package registry URL and remote-install acknowledgement.'
-  }
+export const CODEINDEX_EMBEDDER_OPTIONS = [
+  { value: 'mdenseon', label: 'LightOn dense (mDenseOn / ONNX)' },
+  { value: 'ollama', label: 'Ollama' },
+  { value: 'hash', label: 'Local hash' }
+]
+
+export const DICTATION_ENGINE_OPTIONS = [
+  { value: 'openai', label: 'OpenAI' },
+  { value: 'openrouter', label: 'OpenRouter' },
+  { value: 'local', label: 'Local' }
+]
+
+export const DICTATION_WAVEFORM_STYLE_OPTIONS = [
+  { value: 'bars', label: 'Bars' },
+  { value: 'dots', label: 'Dots' },
+  { value: 'line', label: 'Line' },
+  { value: 'mirror', label: 'Mirror' }
+]
+
+export const SECTION_LABELS: Record<SettingsSection, { title: string }> = {
+  general: { title: 'General' },
+  appearance: { title: 'Appearance' },
+  providers: { title: 'Providers' },
+  agent: { title: 'Agent' },
+  indexing: { title: 'Indexing' },
+  voice: { title: 'Voice' },
+  tools: { title: 'Tools' },
+  integrations: { title: 'Integrations' },
+  shortcuts: { title: 'Shortcuts' },
+  about: { title: 'About' }
 }

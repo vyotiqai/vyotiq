@@ -13,8 +13,11 @@ type CacheEntry = {
   diskSavedAt: number
 }
 
+/** Bump when catalog semantics change (e.g. Ollama thinking unknown ≠ false). */
+const DISK_CACHE_VERSION = 2 as const
+
 type DiskFile = {
-  version: 1
+  version: typeof DISK_CACHE_VERSION
   entries: Record<string, { models: ModelInfo[]; savedAt: number }>
 }
 
@@ -98,7 +101,7 @@ function ensureDiskLoaded(): void {
   if (!path || !existsSync(path)) return
   try {
     const raw = JSON.parse(readFileSync(path, 'utf8')) as DiskFile
-    if (raw?.version !== 1 || !raw.entries) return
+    if (raw?.version !== DISK_CACHE_VERSION || !raw.entries) return
     const now = Date.now()
     const seenCanonical = new Set<string>()
     let needsCompaction = false
@@ -141,7 +144,7 @@ function persistDisk(): void {
     entries[key] = { models: entry.models, savedAt: entry.diskSavedAt || now }
   }
   try {
-    atomicWriteJson(path, { version: 1, entries } satisfies DiskFile)
+    atomicWriteJson(path, { version: DISK_CACHE_VERSION, entries } satisfies DiskFile)
   } catch {
     /* best-effort */
   }
@@ -180,7 +183,7 @@ export function clearModelCache(): void {
   const path = resolveDiskPath()
   if (path && existsSync(path)) {
     try {
-      atomicWriteJson(path, { version: 1, entries: {} } satisfies DiskFile)
+      atomicWriteJson(path, { version: DISK_CACHE_VERSION, entries: {} } satisfies DiskFile)
     } catch {
       /* ignore */
     }

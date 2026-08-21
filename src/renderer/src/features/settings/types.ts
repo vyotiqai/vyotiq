@@ -1,20 +1,30 @@
+import type { AppearanceSettings } from '@shared/appearance'
 import type { Ref } from 'react'
 import type { EffectiveChatSettings } from '@shared/effectiveSettings'
 import type {
   SecretProvider,
   Settings,
-  ThemeId,
   WorkspaceSettingsOverride
 } from '@shared/ipc'
 
-export type SettingsSection = 'general' | 'providers' | 'agent' | 'marketplace'
+export type SettingsSection =
+  | 'general'
+  | 'appearance'
+  | 'providers'
+  | 'agent'
+  | 'indexing'
+  | 'voice'
+  | 'tools'
+  | 'integrations'
+  | 'shortcuts'
+  | 'about'
 
 export type SettingsErrorField =
   | 'ollama'
   | 'customUrl'
   | 'apikey'
-  | 'compaction'
   | 'keepTurns'
+  | 'autoCompactThreshold'
   | null
 
 export type SettingsViewProps = {
@@ -37,7 +47,7 @@ export type SettingsViewProps = {
   onClearSecret: (
     provider: SecretProvider
   ) => Promise<{ ok: true } | { ok: false; error: string }>
-  onSetTheme?: (theme: ThemeId) => void
+  onAppearanceChange?: (partial: Partial<AppearanceSettings>) => void
   onPickWorkspace?: () => Promise<unknown>
   onModelsRefreshed?: () => void
   activeWorkspacePath?: string | null
@@ -51,4 +61,6 @@ export type SettingsViewProps = {
   ) => Promise<{ ok: true } | { ok: false; error: string }>
   section?: SettingsSection
   onSectionChange?: (section: SettingsSection) => void
+  /** Close Settings and focus the composer model picker. */
+  onOpenComposerModel?: () => void
 }

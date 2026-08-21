@@ -4,7 +4,8 @@ import { Terminal, type ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
-import { cn, IconButton, Tooltip } from '@renderer/lib/ui'
+import { cn } from '@renderer/lib/ui'
+import { copyText } from '@renderer/lib/markdown/copyText'
 import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
 import type { PtySessionInfo } from '@shared/ipc'
 import { prunePtyOutputBuffers } from '@shared/utils/ptyOutputBuffer'
@@ -35,18 +36,23 @@ function readTerminalTheme(): ITheme {
 function PtySessionView({
   sessionId,
   workspacePath,
-  visible
+  visible,
+  focused = true
 }: {
   sessionId: string
   workspacePath: string
   /** When false (CSS-hidden dock tab), do not steal composer focus. */
   visible: boolean
+  /** In split mode, only the focused pane should call term.focus(). */
+  focused?: boolean
 }) {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
   const fitRef = useRef<FitAddon | null>(null)
   const visibleRef = useRef(visible)
   visibleRef.current = visible
+  const focusedRef = useRef(focused)
+  focusedRef.current = focused
 
   useEffect(() => {
     const el = hostRef.current
@@ -56,20 +62,48 @@ function PtySessionView({
       convertEol: true,
       fontFamily: '"JetBrains Mono", ui-monospace, monospace',
       fontSize: 12,
-      theme: readTerminalTheme()
+      theme: readTerminalTheme(),
+      screenReaderMode: true
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.loadAddon(new WebLinksAddon())
+    // xterm ships no copy keybinding (paste only) — Ctrl/Cmd+C with a selection
+    // copies instead of sending ^C, like VS Code / Windows Terminal.
+    term.attachCustomKeyEventHandler((event) => {
+      if (
+        event.type === 'keydown' &&
+        (event.ctrlKey || event.metaKey) &&
+        !event.shiftKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === 'c' &&
+        term.hasSelection()
+      ) {
+        void copyText(term.getSelection())
+        return false
+      }
+      return true
+    })
     term.open(el)
     termRef.current = term
     fitRef.current = fit
+
+    // Subscribe before replaying buffer so mid-gap chunks land in the buffer
+    // (global listener) and are included in the replay — not dropped.
+    let replayDone = false
+    const unsubData = window.vyotiq?.onPtyData?.(({ id, data }) => {
+      if (id !== sessionId) return
+      if (!replayDone) return
+      term.write(data)
+    })
     const buffers = getPtyOutputBuffers()
     const buffered = buffers.get(sessionId)
     if (buffered) term.write(buffered)
-    // Only focus when this dock tab is the visible one — mounting while
+    replayDone = true
+
+    // Only focus when this dock tab is the visible focused pane — mounting while
     // CSS-hidden (auto-open + another panel active) must not steal composer focus.
-    if (visibleRef.current) term.focus()
+    if (visibleRef.current && focusedRef.current) term.focus()
 
     const applyFit = (): void => {
       if (!visibleRef.current) return
@@ -88,10 +122,6 @@ function PtySessionView({
       void window.vyotiq?.ptyWrite?.(sessionId, data, workspacePath)
     })
 
-    const unsubData = window.vyotiq?.onPtyData?.(({ id, data }) => {
-      if (id !== sessionId) return
-      term.write(data)
-    })
     const unsubExit = window.vyotiq?.onPtyExit?.(({ id }) => {
       if (id !== sessionId) return
       term.writeln('\r\n[process exited]')
@@ -141,7 +171,7 @@ function PtySessionView({
               void window.vyotiq?.ptyResize?.(sessionId, term.cols, term.rows, workspacePath)
             }
           }
-          term.focus()
+          if (focusedRef.current) term.focus()
         } catch {
           /* ignore */
         }
@@ -151,9 +181,19 @@ function PtySessionView({
       cancelled = true
       cancelAnimationFrame(frame1)
     }
-  }, [visible, sessionId, workspacePath])
+  }, [visible, focused, sessionId, workspacePath])
 
-  return <div ref={hostRef} className="h-full w-full bg-bg" data-pty-host />
+  return (
+    <div
+      ref={hostRef}
+      className="h-full w-full bg-bg"
+      data-pty-host
+      role="application"
+      aria-label="Terminal session"
+      aria-describedby="terminal-screen-reader-hint"
+      tabIndex={0}
+    />
+  )
 }
 
 /**
@@ -261,10 +301,10 @@ export function TerminalPanel({
 
   const killSession = useCallback(
     async (id: string) => {
+      if (!workspacePath) return
       if (sessions.length <= 1) {
         suppressAutoCreateRef.current = true
       }
-      if (!workspacePath) return
       const res = await window.vyotiq?.ptyKill?.(id, workspacePath)
       if (res && !res.ok) setError(res.error)
       getPtyOutputBuffers().delete(id)
@@ -372,7 +412,15 @@ export function TerminalPanel({
       sessions={sessions}
       activeId={activeId}
       splitId={splitId}
-      onSelect={setActiveId}
+      onSelect={(id) => {
+        // Selecting the secondary split pane: swap roles so split stays open.
+        if (splitId && id === splitId && activeId && id !== activeId) {
+          setSplitId(activeId)
+          setActiveId(id)
+          return
+        }
+        setActiveId(id)
+      }}
       onKill={(id) => void killSession(id)}
       onCreate={() => void createSession()}
       onToggleSplit={() => void toggleSplit()}
@@ -385,7 +433,12 @@ export function TerminalPanel({
       data-terminal-panel
       role="region"
       aria-label="Terminal panel"
+      aria-describedby="terminal-screen-reader-hint"
     >
+      <p id="terminal-screen-reader-hint" className="sr-only">
+        Interactive terminal. Screen reader users can press Control plus backtick to review terminal
+        output in a text buffer.
+      </p>
       {showExternalSessionBar
         ? createPortal(sessionBar, sessionBarHost)
         : null}
@@ -418,6 +471,7 @@ export function TerminalPanel({
                     sessionId={activeId}
                     workspacePath={workspacePath}
                     visible={visible}
+                    focused={visible}
                   />
                 </div>
                 <div className="w-px shrink-0 bg-border/50" />
@@ -426,6 +480,7 @@ export function TerminalPanel({
                     sessionId={splitId}
                     workspacePath={workspacePath}
                     visible={visible}
+                    focused={false}
                   />
                 </div>
               </div>
@@ -434,6 +489,7 @@ export function TerminalPanel({
                 sessionId={activeId}
                 workspacePath={workspacePath}
                 visible={visible}
+                focused={visible}
               />
             )
           ) : (

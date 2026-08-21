@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, realpathSync } from 'fs'
-import { join } from 'path'
+import { basename, extname, join } from 'path'
 import { gitignoreMatcherForDir } from './gitignore'
 import {
   canonicalizeWorkspacePath,
@@ -24,7 +24,44 @@ export const IGNORED_DIRS = new Set([
   '.cache',
   '.mypy_cache',
   '.ruff_cache',
-  'vendor'
+  'vendor',
+  'dist-package',
+  'dist-package-alt',
+  'playwright-report',
+  'test-results',
+  '.output',
+  '__snapshots__',
+  '.nyc_output',
+  '.parcel-cache',
+  '.vite',
+  '.nuxt',
+  '.svelte-kit',
+  '.yarn',
+  '.pnpm-store',
+  'bower_components',
+  'jspm_packages',
+  '.sass-cache',
+  '.terraform',
+  'Pods',
+  'DerivedData',
+  '.gradle',
+  '.tox',
+  '.eggs',
+  'htmlcov',
+  '.ipynb_checkpoints',
+  'storybook-static',
+  '.expo',
+  '.angular',
+  '.vercel',
+  '.netlify',
+  '.idea',
+  '.vs',
+  'target',
+  'obj',
+  'third_party',
+  'deps',
+  'extern',
+  '.husky'
 ])
 
 export const TEXT_EXTS = new Set([
@@ -34,33 +71,311 @@ export const TEXT_EXTS = new Set([
   '.jsx',
   '.mjs',
   '.cjs',
+  '.mts',
+  '.cts',
   '.json',
+  '.jsonc',
   '.md',
   '.mdc',
+  '.mdx',
   '.txt',
+  '.rst',
+  '.adoc',
   '.css',
   '.scss',
+  '.sass',
+  '.less',
   '.html',
+  '.htm',
   '.yml',
   '.yaml',
   '.toml',
+  '.ini',
+  '.cfg',
+  '.xml',
   '.rs',
   '.go',
   '.py',
+  '.pyi',
   '.java',
   '.kt',
+  '.kts',
   '.swift',
   '.c',
+  '.cc',
   '.cpp',
+  '.cxx',
   '.h',
   '.hpp',
+  '.hh',
   '.cs',
   '.sh',
+  '.bash',
+  '.zsh',
   '.ps1',
+  '.bat',
+  '.cmd',
   '.sql',
   '.vue',
-  '.svelte'
+  '.svelte',
+  '.rb',
+  '.php',
+  '.dart',
+  '.lua',
+  '.r',
+  '.m',
+  '.mm',
+  '.zig',
+  '.nim',
+  '.ex',
+  '.exs',
+  '.erl',
+  '.hs',
+  '.clj',
+  '.cljs',
+  '.cljc',
+  '.fs',
+  '.fsx',
+  '.ml',
+  '.mli',
+  '.jl',
+  '.pl',
+  '.pm',
+  '.sol',
+  '.scala',
+  '.groovy',
+  '.proto',
+  '.graphql',
+  '.gql',
+  '.prisma',
+  '.tf',
+  '.tfvars',
+  '.ipynb'
 ])
+
+/**
+ * Docs, configs, styles, scripts, schemas, notebooks, and data dumps.
+ * Live grep/glob may still list these; neither index stores them.
+ */
+const INDEX_EXCLUDE_EXTS = new Set([
+  '.json',
+  '.jsonc',
+  '.txt',
+  '.rst',
+  '.adoc',
+  '.css',
+  '.scss',
+  '.sass',
+  '.less',
+  '.html',
+  '.htm',
+  '.yml',
+  '.yaml',
+  '.toml',
+  '.ini',
+  '.cfg',
+  '.xml',
+  '.md',
+  '.mdc',
+  '.mdx',
+  '.sh',
+  '.bash',
+  '.zsh',
+  '.ps1',
+  '.bat',
+  '.cmd',
+  '.sql',
+  '.pyi',
+  '.kts',
+  '.exs',
+  '.fsx',
+  '.proto',
+  '.graphql',
+  '.gql',
+  '.prisma',
+  '.tf',
+  '.tfvars',
+  '.ipynb'
+])
+
+/** Production source languages — shared by dense embed and sparsegrep. */
+export const CODE_INDEX_EXTS = new Set(
+  [...TEXT_EXTS].filter((ext) => !INDEX_EXCLUDE_EXTS.has(ext))
+)
+
+const INDEX_CLUTTER_BASENAMES = new Set([
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'yarn.lock',
+  'bun.lock',
+  'bun.lockb',
+  'cargo.lock',
+  'composer.lock',
+  'gemfile.lock',
+  'poetry.lock',
+  'pdm.lock',
+  'uv.lock',
+  'pipfile.lock',
+  'npm-shrinkwrap.json',
+  'go.sum',
+  'flake.lock',
+  'pnpm-workspace.yaml',
+  'makefile',
+  'gnumakefile',
+  'dockerfile',
+  'cmakelists.txt',
+  'gemfile',
+  'podfile',
+  'pipfile',
+  'procfile',
+  'justfile',
+  'rakefile',
+  'gruntfile.js',
+  'gulpfile.js',
+  'gulpfile.ts',
+  'setup.py',
+  'setup.cfg',
+  'conftest.py',
+  'manage.py'
+])
+
+/**
+ * Generic indexer skip folders: tests, docs, configs, scripts, data/DB,
+ * generated trees, CI, and temp — not production source.
+ */
+export const INDEX_SKIP_DIR_SEGMENTS = new Set([
+  '__tests__',
+  '__mocks__',
+  '__fixtures__',
+  '__snapshots__',
+  'tests',
+  'test',
+  'testing',
+  'spec',
+  'specs',
+  'e2e',
+  'cypress',
+  'playwright',
+  'fixtures',
+  'testdata',
+  'test-data',
+  'mocks',
+  'snapshots',
+  'golden',
+  'goldens',
+  'docs',
+  'doc',
+  'documentation',
+  'wiki',
+  'manuals',
+  'config',
+  'configs',
+  'configuration',
+  '.config',
+  '.github',
+  '.circleci',
+  '.gitlab',
+  '.azure-pipelines',
+  '.buildkite',
+  '.devcontainer',
+  'scripts',
+  'script',
+  'data',
+  'database',
+  'databases',
+  'db',
+  'dbs',
+  'dumps',
+  'dump',
+  'seeds',
+  'migrations',
+  'migrate',
+  'alembic',
+  'prisma',
+  'generated',
+  'codegen',
+  '.storybook',
+  'storybook',
+  'stories',
+  'examples',
+  'example',
+  'samples',
+  'sample',
+  'demo',
+  'demos',
+  'benchmarks',
+  'bench',
+  'assets',
+  'static',
+  'public',
+  'media',
+  'uploads',
+  'tmp',
+  'temp',
+  'logs',
+  'ci'
+])
+
+const MINIFIED_OR_GENERATED_NAME_RE =
+  /\.(?:min\.(?:js|mjs|cjs|css)|map|snap|generated\.[^.]+|gen\.(?:ts|tsx|js|jsx|mjs|cjs)|pb\.(?:go|ts|js)|bundle\.(?:js|mjs|cjs))$/i
+const PROTO_PY_RE = /_pb2(?:_grpc)?\.py$/i
+const TEST_OR_STORY_NAME_RE =
+  /\.(?:test|tests|spec|specs|stories|story|e2e|int-test|integration-test|setup|setuptests)\./i
+const LANGUAGE_TEST_NAME_RE =
+  /(?:^test_.*|_test\.(?:go|py|rs|rb|php|exs|dart|lua)$|_spec\.(?:rb|php|dart|ts|js|jsx)$|^conftest\.py$|^test\.php$)/i
+const PHP_TEST_NAME_RE = /Test\.php$/
+const JVM_STYLE_TEST_NAME_RE = /(?:Test|Tests|TestCase)\.(?:java|kt|cs|swift|groovy|scala)$/
+const INDEX_SKIP_CONFIG_NAME_RE = /\.(?:config|configs|conf)\.[^.]+$/i
+const INDEX_SKIP_STUB_NAME_RE = /\.(?:d\.ts|pyi)$/i
+
+function fileBaseName(relOrName: string): string {
+  return basename(relOrName.replace(/\\/g, '/'))
+}
+
+/** Lockfiles, minified bundles, source maps, snapshots, codegen, and build entry files. */
+export function isIndexClutterFileName(relOrName: string): boolean {
+  const base = fileBaseName(relOrName)
+  if (INDEX_CLUTTER_BASENAMES.has(base.toLowerCase())) return true
+  if (MINIFIED_OR_GENERATED_NAME_RE.test(base)) return true
+  if (PROTO_PY_RE.test(base)) return true
+  return false
+}
+
+function hasIndexSkipDirSegment(rel: string): boolean {
+  const parts = rel.replace(/\\/g, '/').split('/')
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (INDEX_SKIP_DIR_SEGMENTS.has(parts[i]!.toLowerCase())) return true
+  }
+  return false
+}
+
+function isIndexSkipFileName(base: string): boolean {
+  if (base.startsWith('.')) return true
+  if (INDEX_SKIP_STUB_NAME_RE.test(base)) return true
+  if (TEST_OR_STORY_NAME_RE.test(base)) return true
+  if (LANGUAGE_TEST_NAME_RE.test(base)) return true
+  if (PHP_TEST_NAME_RE.test(base)) return true
+  if (JVM_STYLE_TEST_NAME_RE.test(base)) return true
+  if (INDEX_SKIP_CONFIG_NAME_RE.test(base)) return true
+  return false
+}
+
+/**
+ * True when a generic indexer should store this path (dense embed and sparsegrep).
+ * Production source only — tests, docs, configs, scripts, databases, and clutter stay out.
+ */
+export function isIndexableSourcePath(rel: string, full?: string): boolean {
+  const ext = extname(full ?? rel.replace(/\\/g, '/')).toLowerCase()
+  if (!CODE_INDEX_EXTS.has(ext)) return false
+  if (isIndexClutterFileName(rel)) return false
+  if (hasIndexSkipDirSegment(rel)) return false
+  if (isIndexSkipFileName(fileBaseName(rel))) return false
+  return true
+}
+
+export function isDenseIndexPath(rel: string, full?: string): boolean {
+  return isIndexableSourcePath(rel, full)
+}
 
 /** Yield the event loop so long scans stay responsive to abort/cancel. */
 const YIELD_EVERY_DIRS = 64
@@ -103,24 +418,51 @@ function isContainedInWorkspace(full: string, realRoot: string): boolean {
   }
 }
 
+export type WorkspaceFilesPage = {
+  files: WalkedFile[]
+  /** Workspace-relative path of the last collected file, or null when empty. */
+  lastRel: string | null
+  /** True when the walk finished before hitting cap. */
+  exhausted: boolean
+  /** True when `startAfter` was set but that path was never seen (deleted / skipped). */
+  cursorMissing: boolean
+}
+
+function walkHitCap(count: number, cap: number | undefined): boolean {
+  return cap != null && Number.isFinite(cap) && count >= cap
+}
+
 /**
  * Breadth-first workspace walk that honours .gitignore. Shared by search, glob
  * and grep so all three agree on what counts as part of the project.
  * Symlinks are skipped so walks cannot escape via links (same rule as safePath).
+ *
+ * When `startAfter` is set, files before that path in walk order are skipped
+ * (identity resume). Lexicographic `rel <= startAfter` is not used — BFS order
+ * is not sorted by path.
  */
-export async function collectWorkspaceFiles(
+export async function collectWorkspaceFilesPage(
   workspaceRoot: string,
-  cap: number,
-  signal?: AbortSignal
-): Promise<WalkedFile[]> {
+  cap?: number,
+  startAfter?: string,
+  signal?: AbortSignal,
+  exts?: ReadonlySet<string>,
+  skipDirNames?: ReadonlySet<string>
+): Promise<WorkspaceFilesPage> {
   const files: WalkedFile[] = []
+  let lastRel: string | null = null
   const realRoot = realpathSync(canonicalizeWorkspacePath(workspaceRoot))
   const queue: Array<{ dir: string; relDir: string }> = [{ dir: realRoot, relDir: '' }]
   let scanned = 0
+  const cursor = startAfter?.trim() ? startAfter.replace(/\\/g, '/') : undefined
+  let pastCursor = cursor == null
+  let sawCursor = cursor == null
 
   while (queue.length > 0) {
     throwIfAborted(signal)
-    if (files.length >= cap) break
+    if (walkHitCap(files.length, cap)) {
+      return { files, lastRel, exhausted: false, cursorMissing: Boolean(cursor) && !sawCursor }
+    }
 
     const next = queue.shift()!
     scanned += 1
@@ -138,7 +480,9 @@ export async function collectWorkspaceFiles(
     }
     for (const entry of entries) {
       throwIfAborted(signal)
-      if (files.length >= cap) break
+      if (walkHitCap(files.length, cap)) {
+        return { files, lastRel, exhausted: false, cursorMissing: Boolean(cursor) && !sawCursor }
+      }
       if (IGNORED_DIRS.has(entry.name)) continue
       // Never follow symlinks — a link inside the tree can point outside.
       if (entry.isSymbolicLink()) continue
@@ -150,14 +494,44 @@ export async function collectWorkspaceFiles(
       )
       if (!isContainedInWorkspace(full, realRoot)) continue
       if (entry.isDirectory()) {
+        if (skipDirNames?.has(entry.name.toLowerCase())) continue
         queue.push({ dir: full, relDir: childRel })
       } else if (entry.isFile()) {
+        if (exts && !exts.has(extname(entry.name).toLowerCase())) continue
+        if (isIndexClutterFileName(entry.name)) continue
+        if (!pastCursor) {
+          if (childRel === cursor) {
+            sawCursor = true
+            pastCursor = true
+            continue
+          }
+          continue
+        }
         files.push({ full, rel: childRel })
+        lastRel = childRel
       }
     }
   }
 
-  return files
+  return { files, lastRel, exhausted: true, cursorMissing: Boolean(cursor) && !sawCursor }
+}
+
+export async function collectWorkspaceFiles(
+  workspaceRoot: string,
+  cap?: number,
+  signal?: AbortSignal,
+  exts?: ReadonlySet<string>,
+  skipDirNames?: ReadonlySet<string>
+): Promise<WalkedFile[]> {
+  const page = await collectWorkspaceFilesPage(
+    workspaceRoot,
+    cap,
+    undefined,
+    signal,
+    exts,
+    skipDirNames
+  )
+  return page.files
 }
 
 /**

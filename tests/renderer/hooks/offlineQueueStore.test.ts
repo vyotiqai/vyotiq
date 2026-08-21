@@ -7,7 +7,9 @@ import {
   dequeueOfflineMessage,
   enqueueOfflineMessage,
   offlineQueueLength,
-  peekOfflineQueue
+  peekOfflineQueue,
+  removeOfflineQueueEntriesForRun,
+  resolveOfflineFlushTarget
 } from '@renderer/lib/hooks/offlineQueueStore'
 
 const WORKSPACE = '/tmp/vyotiq-offline-ws'
@@ -74,5 +76,63 @@ describe('offlineQueueStore', () => {
     clearOfflineQueue(WORKSPACE)
     expect(offlineQueueLength(WORKSPACE)).toBe(0)
     expect(peekOfflineQueue(WORKSPACE)).toBeNull()
+  })
+
+  it('removeOfflineQueueEntriesForRun drops only matching run ids', () => {
+    enqueueOfflineMessage(WORKSPACE, { text: 'keep-draft', runId: null })
+    enqueueOfflineMessage(WORKSPACE, { text: 'drop-me', runId: 'run-a' })
+    enqueueOfflineMessage(WORKSPACE, { text: 'keep-other', runId: 'run-b' })
+    removeOfflineQueueEntriesForRun(WORKSPACE, 'run-a')
+    expect(offlineQueueLength(WORKSPACE)).toBe(2)
+    expect(peekOfflineQueue(WORKSPACE)?.text).toBe('keep-draft')
+    dequeueOfflineMessage(WORKSPACE)
+    expect(peekOfflineQueue(WORKSPACE)?.text).toBe('keep-other')
+  })
+})
+
+describe('resolveOfflineFlushTarget', () => {
+  const panes = [
+    { paneId: 'pane-a', workspacePath: '/ws-a', runId: 'run-a' },
+    { paneId: 'pane-draft', workspacePath: '/ws-a', runId: null }
+  ]
+
+  it('uses the stored pane even after the pane runId is promoted', () => {
+    const target = resolveOfflineFlushTarget(
+      { id: '1', text: 'draft', runId: null, paneId: 'pane-draft', queuedAt: '' },
+      [{ paneId: 'pane-draft', workspacePath: '/ws-a', runId: 'run-new' }]
+    )
+    expect(target).toEqual({ workspacePath: '/ws-a', runId: 'run-new' })
+  })
+
+  it('does not resolve runId null from a focused sibling pane', () => {
+    const target = resolveOfflineFlushTarget(
+      { id: '1', text: 'draft', runId: null, queuedAt: '' },
+      panes
+    )
+    expect(target).toBeNull()
+  })
+
+  it('binds a concrete runId to the stored workspace, not the focused pane', () => {
+    const target = resolveOfflineFlushTarget(
+      {
+        id: '1',
+        text: 'bound',
+        runId: 'run-b',
+        workspacePath: '/ws-b',
+        queuedAt: ''
+      },
+      panes,
+      '/ws-a'
+    )
+    expect(target).toEqual({ workspacePath: '/ws-b', runId: 'run-b' })
+  })
+
+  it('falls back to the queue workspace for legacy entries that only stored runId', () => {
+    const target = resolveOfflineFlushTarget(
+      { id: '1', text: 'legacy', runId: 'run-a', queuedAt: '' },
+      panes,
+      '/ws-a'
+    )
+    expect(target).toEqual({ workspacePath: '/ws-a', runId: 'run-a' })
   })
 })

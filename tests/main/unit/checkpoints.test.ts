@@ -9,6 +9,11 @@ import {
 } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+
+vi.mock('@main/app/window', () => ({
+  getMainWindow: () => null
+}))
+
 import {
   beginWriteCheckpoint,
   discardWriteCheckpoint,
@@ -21,6 +26,7 @@ import {
   rewindWritesFrom
 } from '@main/agent/checkpoints'
 import { executeTool } from '@main/agent/tools'
+import { toolTodoWrite } from '@main/agent/tools/todo'
 
 let workspace: string
 let runDir: string
@@ -30,6 +36,7 @@ beforeEach(() => {
   workspace = mkdtempSync(join(tmpdir(), 'vyotiq-cp-ws-'))
   runDir = mkdtempSync(join(tmpdir(), 'vyotiq-cp-run-'))
   writeFileSync(join(workspace, 'a.txt'), 'hello\n', 'utf8')
+  toolTodoWrite(runDir, [{ id: '1', content: 'Apply the workspace write', status: 'in_progress' }])
 })
 
 afterEach(() => {
@@ -55,7 +62,12 @@ describe('write checkpoints', () => {
     const meta = finalizeWriteCheckpoint(runDir)
     expect(meta).toBeTruthy()
     expect(meta!.files).toEqual([
-      { path: 'a.txt', action: 'modified', undoable: true }
+      expect.objectContaining({
+        path: 'a.txt',
+        action: 'modified',
+        undoable: true,
+        hash: expect.stringMatching(/^[a-f0-9]{64}$/)
+      })
     ])
 
     const undone = undoWrites(runDir, workspace, meta!.id)
@@ -107,6 +119,27 @@ describe('write checkpoints', () => {
     })
   })
 
+  it('resolving undoable files also marks leftover non-undoable on disk', () => {
+    mkdirSync(join(workspace, 'dir'), { recursive: true })
+    writeFileSync(join(workspace, 'dir', 'x.txt'), 'x', 'utf8')
+    const cp = beginWriteCheckpoint(runDir, workspace)
+    cp.recordPrior('a.txt', 'write')
+    cp.recordPrior('dir', 'delete', { recursiveDir: true })
+    writeFileSync(join(workspace, 'a.txt'), 'changed\n', 'utf8')
+    const meta = finalizeWriteCheckpoint(runDir)
+    expect(meta!.files).toHaveLength(2)
+
+    const result = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'keep',
+      paths: ['a.txt']
+    })
+    expect(result.fullyResolved).toBe(true)
+    const disk = getWriteCheckpointMeta(runDir, meta!.id)
+    expect(disk?.resolved).toBe(true)
+    expect(disk?.files.find((f) => f.path === 'dir')?.resolved).toBe('kept')
+  })
+
   it('getWriteCheckpoint is empty without begin', () => {
     expect(getWriteCheckpoint(runDir)).toBeUndefined()
   })
@@ -138,6 +171,20 @@ describe('write checkpoints', () => {
     expect(kept.kept).toEqual(['b.txt'])
     expect(kept.fullyResolved).toBe(true)
     expect(readFileSync(join(workspace, 'b.txt'), 'utf8')).toBe('B\n')
+  })
+
+  it('matches Keep/Discard when given an absolute workspace path', () => {
+    const cp = beginWriteCheckpoint(runDir, workspace)
+    cp.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'A\n', 'utf8')
+    const meta = finalizeWriteCheckpoint(runDir)
+    const kept = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'keep',
+      paths: [join(workspace, 'a.txt')]
+    })
+    expect(kept.kept).toEqual(['a.txt'])
+    expect(kept.fullyResolved).toBe(true)
   })
 
   it('keep all resolves without touching disk', () => {
@@ -214,6 +261,31 @@ describe('write checkpoints', () => {
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('hello\n')
   })
 
+  it('rewindWritesFrom skips legacy unanchored checkpoints on mid-history rewind', () => {
+    writeFileSync(join(workspace, 'b.txt'), 'b0\n', 'utf8')
+
+    const legacy = beginWriteCheckpoint(runDir, workspace)
+    legacy.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'legacy\n', 'utf8')
+    const metaLegacy = finalizeWriteCheckpoint(runDir)
+    expect(metaLegacy?.anchorUserMessageIndex).toBeUndefined()
+
+    const later = beginWriteCheckpoint(runDir, workspace, 2)
+    later.recordPrior('b.txt', 'write')
+    writeFileSync(join(workspace, 'b.txt'), 'b2\n', 'utf8')
+    const metaLater = finalizeWriteCheckpoint(runDir)
+    expect(metaLater?.anchorUserMessageIndex).toBe(2)
+
+    const mid = rewindWritesFrom(runDir, workspace, 2)
+    expect(mid.checkpointIds).toEqual([metaLater!.id])
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('legacy\n')
+    expect(readFileSync(join(workspace, 'b.txt'), 'utf8')).toBe('b0\n')
+
+    const full = rewindWritesFrom(runDir, workspace, 0)
+    expect(full.checkpointIds).toContain(metaLegacy!.id)
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('hello\n')
+  })
+
   it('rewind restores concurrent tool writes recorded on the same runDir checkpoint', async () => {
     // Multiple edits in one invoke share the parent's active InvokeWriteCheckpoint session.
     beginWriteCheckpoint(runDir, workspace, 0)
@@ -280,5 +352,40 @@ describe('write checkpoints', () => {
     expect(result.checkpointId).toBe('')
     expect(result.fullyResolved).toBe(true)
     expect(getWriteCheckpointMeta(runDir, result.checkpointId)).toBeNull()
+  })
+
+  it('stores a post-write hash and skips undo when current content differs', () => {
+    const cp = beginWriteCheckpoint(runDir, workspace)
+    cp.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'agent\n', 'utf8')
+    const meta = finalizeWriteCheckpoint(runDir)
+    expect(meta!.files[0]?.hash).toMatch(/^[a-f0-9]{64}$/)
+
+    writeFileSync(join(workspace, 'a.txt'), 'user-edit\n', 'utf8')
+    const result = undoWrites(runDir, workspace, meta!.id)
+    expect(result.restored).toEqual([])
+    expect(result.skipped).toEqual(['a.txt'])
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('user-edit\n')
+
+    const persisted = getWriteCheckpointMeta(runDir, meta!.id)
+    expect(persisted?.resolved).not.toBe(true)
+    expect(persisted?.undone).not.toBe(true)
+  })
+
+  it('rewindWritesFrom leaves the checkpoint unresolved on an undoable restore failure', () => {
+    const cp = beginWriteCheckpoint(runDir, workspace, 0)
+    cp.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'agent\n', 'utf8')
+    const meta = finalizeWriteCheckpoint(runDir)
+
+    writeFileSync(join(workspace, 'a.txt'), 'user-edit\n', 'utf8')
+    const result = rewindWritesFrom(runDir, workspace, 0)
+    expect(result.undoableRestoreFailed).toBe(true)
+    expect(result.skipped).toContain('a.txt')
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('user-edit\n')
+
+    const persisted = getWriteCheckpointMeta(runDir, meta!.id)
+    expect(persisted?.resolved).not.toBe(true)
+    expect(persisted?.undone).not.toBe(true)
   })
 })

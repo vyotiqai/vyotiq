@@ -136,7 +136,7 @@ describe('useChatStream', () => {
     expect(chatStart).not.toHaveBeenCalled()
     expect(chatFollowUp).toHaveBeenCalledWith({
       runId: 'run-1',
-      message: { role: 'user', content: 'steer now' }
+      message: expect.objectContaining({ role: 'user', content: 'steer now' })
     })
     expect(result.current.pendingFollowUps.some((e) => e.preview === 'steer now')).toBe(true)
     expect(
@@ -2260,7 +2260,34 @@ describe('useChatStream', () => {
     controller.dispose()
   })
 
-  it('uses contentRunId for lazy tool loads after syncFromDisk clears runId', async () => {
+  it('syncs composer mode from successful switch_mode tool_result', () => {
+    const onAgentModeChange = vi.fn()
+    const controller = createChatStreamController({
+      workspacePath: '/ws',
+      runId: 'run-1',
+      onAgentModeChange
+    })
+    controller.handleEvent({
+      type: 'tool_start',
+      runId: 'run-1',
+      toolCallId: 'tc-mode',
+      name: 'switch_mode',
+      summary: 'agent'
+    })
+    controller.handleEvent({
+      type: 'tool_result',
+      runId: 'run-1',
+      toolCallId: 'tc-mode',
+      name: 'switch_mode',
+      summary: 'agent',
+      ok: true,
+      content: 'Mode switched from plan to agent.'
+    })
+    expect(onAgentModeChange).toHaveBeenCalledWith('agent')
+    controller.dispose()
+  })
+
+  it('keeps runId after syncFromDisk so tool loads and later sends stay on the same session', async () => {
     const loadToolResult = vi.fn().mockResolvedValue({
       ok: true,
       data: { content: 'full body' }
@@ -2293,7 +2320,7 @@ describe('useChatStream', () => {
       await result.current.syncFromDisk('run-disk')
     })
 
-    expect(result.current.runId).toBeNull()
+    expect(result.current.runId).toBe('run-disk')
 
     let content: string | null = null
     await act(async () => {
@@ -2329,13 +2356,13 @@ describe('useChatStream', () => {
     expect(chatFollowUpUpdate).toHaveBeenCalledWith({
       runId: 'run-1',
       id: followUpId,
-      message: {
+      message: expect.objectContaining({
         role: 'user',
         content: [
           { type: 'text', text: 'see that' },
           { type: 'image_url', url: 'data:image/png;base64,abc' }
         ]
-      }
+      })
     })
   })
 

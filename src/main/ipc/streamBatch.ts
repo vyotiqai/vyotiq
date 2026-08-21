@@ -34,6 +34,8 @@ type RunSlot = {
   pendingUsageByStep: Map<number, AgentEvent>
   /** Number of ChatEventBatcher owners; detach only when this hits 0. */
   attachCount: number
+  /** Earliest time this run's pending segments may flush; 0 = none scheduled. */
+  dueMs: number
 }
 
 /** Dev/test counters for IPC send rate (Electron: measure before optimizing). */
@@ -52,6 +54,8 @@ export type ChatEventBatchStats = {
   /** Peak pending segment+usage depth since last reset. */
   maxPendingDepth: number
   attachedRuns: number
+  /** Deltas dropped because the renderer is not subscribed to that run. */
+  uiGated: number
 }
 
 let stats: ChatEventBatchStats = {
@@ -63,7 +67,8 @@ let stats: ChatEventBatchStats = {
   backgroundFlushes: 0,
   usageCoalesced: 0,
   maxPendingDepth: 0,
-  attachedRuns: 0
+  attachedRuns: 0,
+  uiGated: 0
 }
 
 export function getChatEventBatchStats(): ChatEventBatchStats {
@@ -76,7 +81,8 @@ export function getChatEventBatchStats(): ChatEventBatchStats {
     backgroundFlushes: stats.backgroundFlushes,
     usageCoalesced: stats.usageCoalesced,
     maxPendingDepth: stats.maxPendingDepth,
-    attachedRuns: stats.attachedRuns
+    attachedRuns: stats.attachedRuns,
+    uiGated: stats.uiGated
   }
 }
 
@@ -90,7 +96,8 @@ export function resetChatEventBatchStats(): void {
     backgroundFlushes: 0,
     usageCoalesced: 0,
     maxPendingDepth: 0,
-    attachedRuns: 0
+    attachedRuns: 0,
+    uiGated: 0
   }
 }
 
@@ -134,6 +141,74 @@ function isActiveWorkspace(workspacePath: string): boolean {
   return workspacePathsEqual(active, workspacePath)
 }
 
+function batchDelayMs(workspacePath: string): number {
+  if (!isActiveWorkspace(workspacePath)) return BACKGROUND_BATCH_MS
+  return ACTIVE_BATCH_MS
+}
+
+/** High-frequency / reconstructable events — skipped when the renderer is not watching. */
+const UI_GATED_STREAM_TYPES = new Set<AgentEvent['type']>([
+  'text_delta',
+  'thinking_delta',
+  'thinking_done',
+  'tool_call_delta',
+  'tool_start',
+  'tool_result',
+  'tool_progress',
+  'terminal_output_delta',
+  'assistant_message',
+  'step_usage',
+  'context_usage',
+  'token_cost_hint',
+  'mcp_tools_omitted'
+])
+
+let uiSubscribeExplicit = false
+const uiSubscribedRuns = new Set<string>()
+const uiExcludedRuns = new Set<string>()
+
+function resetChatEventUiSubscriptions(): void {
+  uiSubscribeExplicit = false
+  uiSubscribedRuns.clear()
+  uiExcludedRuns.clear()
+}
+
+/** Replace the set of run ids that should receive token streams. */
+export function setChatEventUiSubscriptions(runIds: readonly string[]): void {
+  uiSubscribeExplicit = true
+  uiSubscribedRuns.clear()
+  for (const id of runIds) {
+    const trimmed = id.trim()
+    if (!trimmed) continue
+    uiSubscribedRuns.add(trimmed)
+    uiExcludedRuns.delete(trimmed)
+  }
+}
+
+/** Child instance starts hidden — do not stream tokens until the pane opens. */
+export function excludeChatEventUiSubscription(runId: string): void {
+  const trimmed = runId.trim()
+  if (!trimmed) return
+  uiExcludedRuns.add(trimmed)
+  uiSubscribedRuns.delete(trimmed)
+}
+
+/** Add one run to the subscribed set (called as soon as a run id is assigned on the
+ * renderer, so its live deltas are never dropped before the bulk subscription sync). */
+export function addChatEventUiSubscription(runId: string): void {
+  const trimmed = runId.trim()
+  if (!trimmed) return
+  uiSubscribeExplicit = true
+  uiExcludedRuns.delete(trimmed)
+  uiSubscribedRuns.add(trimmed)
+}
+
+export function isChatEventUiSubscribed(runId: string): boolean {
+  if (uiExcludedRuns.has(runId)) return false
+  if (!uiSubscribeExplicit) return true
+  return uiSubscribedRuns.has(runId)
+}
+
 function totalPendingDepth(slots: Map<string, RunSlot>): number {
   let n = 0
   for (const slot of slots.values()) {
@@ -171,7 +246,8 @@ export class ChatEventDispatcher {
       send,
       pendingSegments: [],
       pendingUsageByStep: new Map(),
-      attachCount: 1
+      attachCount: 1,
+      dueMs: 0
     })
     stats.attachedRuns = this.slots.size
   }
@@ -208,9 +284,14 @@ export class ChatEventDispatcher {
     }
     recordPush(ev.type)
 
+    if (UI_GATED_STREAM_TYPES.has(ev.type) && !isChatEventUiSubscribed(runId)) {
+      stats.uiGated += 1
+      return
+    }
+
     if (ev.type === 'text_delta') {
       this.appendSegment(slot, { kind: 'text', text: ev.text, invokeId: ev.invokeId })
-      this.schedule(slot.workspacePath)
+      this.schedule(slot)
       return
     }
 
@@ -221,7 +302,7 @@ export class ChatEventDispatcher {
         step: ev.step,
         invokeId: ev.invokeId
       })
-      this.schedule(slot.workspacePath)
+      this.schedule(slot)
       return
     }
 
@@ -233,7 +314,7 @@ export class ChatEventDispatcher {
         argumentsDelta: ev.argumentsDelta,
         invokeId: ev.invokeId
       })
-      this.schedule(slot.workspacePath)
+      this.schedule(slot)
       return
     }
 
@@ -245,7 +326,7 @@ export class ChatEventDispatcher {
         stream: ev.stream,
         invokeId: ev.invokeId
       })
-      this.schedule(slot.workspacePath)
+      this.schedule(slot)
       return
     }
 
@@ -256,15 +337,15 @@ export class ChatEventDispatcher {
         if (prev) stats.usageCoalesced += 1
         slot.pendingUsageByStep.set(ev.step, ev)
         this.notePendingDepth()
-        this.schedule(slot.workspacePath)
+        this.schedule(slot)
         return
       }
-      this.flushAllDeltas()
+      this.flushRun(runId)
       this.emit(slot, ev)
       return
     }
 
-    this.flushAllDeltas()
+    this.flushRun(runId)
     this.emit(slot, ev)
   }
 
@@ -302,6 +383,7 @@ export class ChatEventDispatcher {
     this.emitSegments(slot, runId, slot.pendingSegments)
     slot.pendingSegments = []
     this.flushPendingUsageEvents(slot)
+    slot.dueMs = 0
   }
 
   private flushAllDeltas(): void {
@@ -322,7 +404,10 @@ export class ChatEventDispatcher {
     for (const [runId, slot] of ordered) {
       const had =
         slot.pendingSegments.length > 0 || slot.pendingUsageByStep.size > 0
-      if (!had) continue
+      if (!had) {
+        slot.dueMs = 0
+        continue
+      }
       if (isActiveWorkspace(slot.workspacePath)) flushedActive = true
       else flushedBackground = true
       if (slot.pendingSegments.length) {
@@ -330,6 +415,7 @@ export class ChatEventDispatcher {
         slot.pendingSegments = []
       }
       this.flushPendingUsageEvents(slot)
+      slot.dueMs = 0
     }
     if (flushedActive) stats.activeFlushes += 1
     else if (flushedBackground) stats.backgroundFlushes += 1
@@ -340,18 +426,63 @@ export class ChatEventDispatcher {
     if (depth > stats.maxPendingDepth) stats.maxPendingDepth = depth
   }
 
-  private schedule(workspacePath: string): void {
+  private schedule(slot: RunSlot): void {
     this.notePendingDepth()
-    const delay = isActiveWorkspace(workspacePath) ? ACTIVE_BATCH_MS : BACKGROUND_BATCH_MS
-    const due = Date.now() + delay
-    if (this.timer && this.nextDueMs > 0 && this.nextDueMs <= due) return
+    if (slot.dueMs === 0) {
+      slot.dueMs = Date.now() + batchDelayMs(slot.workspacePath)
+    }
+    this.ensureTimer(slot.dueMs)
+  }
+
+  private ensureTimer(dueMs: number): void {
+    if (this.timer && this.nextDueMs > 0 && this.nextDueMs <= dueMs) return
     if (this.timer) clearTimeout(this.timer)
-    this.nextDueMs = due
+    this.nextDueMs = dueMs
+    const delay = Math.max(0, dueMs - Date.now())
     this.timer = setTimeout(() => {
       this.timer = null
       this.nextDueMs = 0
-      this.flushAllDeltas()
+      this.flushDueDeltas()
     }, delay)
+  }
+
+  /** Flush runs whose cadence has elapsed; leave later siblings queued. */
+  private flushDueDeltas(): void {
+    const now = Date.now()
+    const ordered = [...this.slots.entries()].sort(([, a], [, b]) => {
+      const aActive = isActiveWorkspace(a.workspacePath) ? 0 : 1
+      const bActive = isActiveWorkspace(b.workspacePath) ? 0 : 1
+      return aActive - bActive
+    })
+
+    let flushedActive = false
+    let flushedBackground = false
+    let nextDue = 0
+    for (const [runId, slot] of ordered) {
+      const had =
+        slot.pendingSegments.length > 0 || slot.pendingUsageByStep.size > 0
+      if (!had) {
+        slot.dueMs = 0
+        continue
+      }
+      if (slot.dueMs === 0 || slot.dueMs > now) {
+        const due = slot.dueMs === 0 ? now + batchDelayMs(slot.workspacePath) : slot.dueMs
+        slot.dueMs = due
+        if (nextDue === 0 || due < nextDue) nextDue = due
+        continue
+      }
+      if (isActiveWorkspace(slot.workspacePath)) flushedActive = true
+      else flushedBackground = true
+      if (slot.pendingSegments.length) {
+        this.emitSegments(slot, runId, slot.pendingSegments)
+        slot.pendingSegments = []
+      }
+      this.flushPendingUsageEvents(slot)
+      slot.dueMs = 0
+    }
+    if (flushedActive) stats.activeFlushes += 1
+    else if (flushedBackground) stats.backgroundFlushes += 1
+    if (nextDue > 0) this.ensureTimer(nextDue)
   }
 
   private emit(slot: RunSlot, ev: AgentEvent): void {
@@ -478,6 +609,7 @@ export function resetChatEventDispatcher(): void {
   }
   sharedDispatcher = null
   resetChatEventBatchStats()
+  resetChatEventUiSubscriptions()
 }
 
 export type ChatEventBatcherOptions = {

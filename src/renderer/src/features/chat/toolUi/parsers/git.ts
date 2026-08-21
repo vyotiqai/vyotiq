@@ -155,12 +155,31 @@ export function parseGitCommitData(tool: UiToolRow): GitCommitParsed {
   }
 }
 
+/** Prefer args.path; else recover from unified / git headers for Material icons. */
+export function pathFromUnifiedDiffContent(content: string): string {
+  if (!content.trim()) return ''
+  const plusPlus = /^\+\+\+\s+(?:b\/)?(.+)$/m.exec(content)
+  if (plusPlus?.[1]) {
+    const p = plusPlus[1].split('\t')[0]!.trim()
+    if (p && p !== '/dev/null') return p.replace(/^\.\//, '')
+  }
+  const gitLine = /^diff --git a\/.+ b\/(.+)$/m.exec(content)
+  if (gitLine?.[1]) return gitLine[1].trim()
+  const minusMinus = /^---\s+(?:a\/)?(.+)$/m.exec(content)
+  if (minusMinus?.[1]) {
+    const p = minusMinus[1].split('\t')[0]!.trim()
+    if (p && p !== '/dev/null') return p.replace(/^\.\//, '')
+  }
+  return ''
+}
+
 /** Parse git_diff tool row: unified diff in content + path/staged from args. */
 export function parseGitDiffData(tool: UiToolRow): GitDiffParsed {
   const args = parseArgsRecord(tool.argsPreview)
-  const path = typeof args?.path === 'string' ? args.path : ''
-  const staged = args?.staged === true
+  const fromArgs = typeof args?.path === 'string' ? args.path.trim() : ''
   const content = tool.content ?? ''
+  const path = fromArgs || pathFromUnifiedDiffContent(content)
+  const staged = args?.staged === true
   const summary = tool.summary?.trim() || (path ? `git diff ${path}` : staged ? 'git diff --staged' : 'git diff')
 
   if (!content.trim() || content === 'Not a git repository') {
@@ -175,7 +194,8 @@ export function parseGitDiffData(tool: UiToolRow): GitDiffParsed {
     }
   }
 
-  const lines = parseUnifiedDiff(content)
+  // Match ChangedFilesBrowser / DiffPreview caps — avoid allocating full 100k-char patches.
+  const lines = parseUnifiedDiff(content, 201)
   const { added, removed } = countDiffLines(content)
   return {
     path,

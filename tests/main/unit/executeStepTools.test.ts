@@ -7,7 +7,7 @@ vi.mock('@main/agent/tools', () => ({
   executeTool: (...args: unknown[]) => executeTool(...args)
 }))
 
-import { executeStepToolCalls } from '@main/agent/executeStepTools'
+import { executeStepToolCalls, groupStepToolCalls } from '@main/agent/executeStepTools'
 
 type TestCtx = Parameters<typeof executeStepToolCalls>[1]
 
@@ -72,7 +72,7 @@ describe('executeStepToolCalls', () => {
     const { ctx } = makeCtx(new AbortController().signal)
     const outcome = await executeStepToolCalls(
       [
-        { id: '', name: 'web_fetch', arguments: '{"url":"https://example.com"}' },
+        { id: '', name: 'grep', arguments: '{"pattern":"foo"}' },
         { id: '  ', name: 'read', arguments: '{"path":"a.ts"}' }
       ],
       ctx
@@ -83,7 +83,7 @@ describe('executeStepToolCalls', () => {
     expect(outcome.messages[0]?.toolCallId?.trim()).toBeTruthy()
     expect(outcome.messages[1]?.toolCallId?.trim()).toBeTruthy()
     expect(outcome.messages[0]?.toolCallId).not.toBe(outcome.messages[1]?.toolCallId)
-    expect(outcome.messages.map((m) => m.content)).toEqual(['ok:web_fetch', 'ok:read'])
+    expect(outcome.messages.map((m) => m.content)).toEqual(['ok:grep', 'ok:read'])
     expect(executeTool).toHaveBeenCalledTimes(2)
   })
 
@@ -105,6 +105,24 @@ describe('executeStepToolCalls', () => {
     )
 
     expect(order).toEqual(['read', 'edit', 'read'])
+  })
+
+  it('remaps invented Write onto edit before dispatch', async () => {
+    executeTool.mockImplementation(async (name: string) => {
+      return { ok: true, summary: name, content: `ok:${name}` }
+    })
+
+    const { ctx, events } = makeCtx(new AbortController().signal)
+    const outcome = await executeStepToolCalls(
+      [{ id: 'w1', name: 'Write', arguments: '{"path":"a.ts","contents":"x"}' }],
+      ctx
+    )
+
+    expect(executeTool).toHaveBeenCalledTimes(1)
+    expect(executeTool.mock.calls[0]?.[0]).toBe('edit')
+    expect(outcome.messages[0]?.toolName).toBe('edit')
+    const start = events.find((ev) => ev.type === 'tool_start')
+    expect(start && start.type === 'tool_start' ? start.name : undefined).toBe('edit')
   })
 
   it('marks soft-aborted in-flight tools Interrupted while run cancel stays Cancelled', async () => {
@@ -219,7 +237,7 @@ describe('executeStepToolCalls', () => {
     expect(startIds.length).toBe(new Set(startIds).size)
   })
 
-  it('does not re-emit tool_start when synthesizing abort for never-started parallel tools', async () => {
+  it('does not re-emit tool_start when synthesizing abort for in-flight parallel tools', async () => {
     const ac = new AbortController()
     let releaseFirst!: () => void
     const firstStarted = new Promise<void>((resolve) => {
@@ -234,28 +252,24 @@ describe('executeStepToolCalls', () => {
     })
 
     const { ctx, events } = makeCtx(ac.signal)
-    // Two workers for three tools → one call never starts after abort.
-    ctx.maxParallelReadTools = 2
-    const work = executeStepToolCalls(
-      [
-        { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' },
-        { id: 'c2', name: 'read', arguments: '{"path":"b.ts"}' },
-        { id: 'c3', name: 'read', arguments: '{"path":"c.ts"}' }
-      ],
-      ctx
-    )
+    const calls = Array.from({ length: 3 }, (_, i) => ({
+      id: `c${i + 1}`,
+      name: 'read',
+      arguments: `{"path":"${i}.ts"}`
+    }))
+    const work = executeStepToolCalls(calls, ctx)
     await firstStarted
     ac.abort()
     const outcome = await work
 
-    expect(outcome.messages.map((m) => m.toolCallId)).toEqual(['c1', 'c2', 'c3'])
+    expect(outcome.messages.map((m) => m.toolCallId)).toEqual(calls.map((c) => c.id))
     expect(outcome.messages.some((m) => m.content === 'Cancelled')).toBe(true)
     const startsById = new Map<string, number>()
     for (const ev of events) {
       if (ev.type !== 'tool_start') continue
       startsById.set(ev.toolCallId, (startsById.get(ev.toolCallId) ?? 0) + 1)
     }
-    expect(startsById.size).toBe(3)
+    expect(startsById.size).toBe(calls.length)
     for (const count of startsById.values()) {
       expect(count).toBe(1)
     }
@@ -282,7 +296,7 @@ describe('executeStepToolCalls', () => {
   it('feeds a denied approval back as a tool failure without running the tool', async () => {
     executeTool.mockResolvedValue({ ok: true, summary: 'edit', content: 'wrote' })
 
-    const { ctx } = makeCtx(new AbortController().signal)
+    const { ctx, events } = makeCtx(new AbortController().signal)
     ctx.approval = {
       authorize: async () => ({ allowed: false, reason: 'The user denied permission to run edit.' })
     }
@@ -295,6 +309,8 @@ describe('executeStepToolCalls', () => {
     expect(outcome.stepToolsOk).toBe(false)
     expect(outcome.messages[0]?.content).toMatch(/denied permission/)
     expect(outcome.messages[0]?.ok).toBe(false)
+    const result = events.find((ev) => ev.type === 'tool_result')
+    expect(result).toMatchObject({ type: 'tool_result', summary: 'a.ts', ok: false })
   })
 
   it('emits tool_start live and persists ok on tool messages', async () => {
@@ -351,7 +367,7 @@ describe('executeStepToolCalls', () => {
       executeStepToolCalls(
         [
           { id: 'c1', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' },
-          { id: 'c2', name: 'edit', arguments: '{"path":"b.ts","contents":"y"}' }
+          { id: 'c2', name: 'edit', arguments: '{"path":"a.ts","contents":"y"}' }
         ],
         ctx
       )
@@ -365,17 +381,16 @@ describe('executeStepToolCalls', () => {
 
 
 
-  it('runs read-only tools serially when maxParallelReadTools is 1', async () => {
-    const order: string[] = []
-    executeTool.mockImplementation(async (name: string) => {
-      order.push(name)
-      await new Promise((r) => setTimeout(r, 5))
-      return { ok: true, summary: name, content: name }
+  it('persists parallel read results in call order, not settle order', async () => {
+    executeTool.mockImplementation(async (_name: string, args: string) => {
+      const path = String((JSON.parse(args) as { path: string }).path)
+      // b.ts settles first; the transcript must still list a.ts first.
+      await new Promise((r) => setTimeout(r, path === 'a.ts' ? 25 : 1))
+      return { ok: true, summary: path, content: path }
     })
 
     const { ctx } = makeCtx(new AbortController().signal)
-    ctx.maxParallelReadTools = 1
-    await executeStepToolCalls(
+    const outcome = await executeStepToolCalls(
       [
         { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' },
         { id: 'c2', name: 'read', arguments: '{"path":"b.ts"}' }
@@ -383,7 +398,8 @@ describe('executeStepToolCalls', () => {
       ctx
     )
 
-    expect(order).toEqual(['read', 'read'])
+    expect(outcome.messages.map((m) => m.toolCallId)).toEqual(['c1', 'c2'])
+    expect(outcome.messages.map((m) => m.content)).toEqual(['a.ts', 'b.ts'])
   })
 
   it('keeps parallel reads when an approval gate is present', async () => {
@@ -509,7 +525,7 @@ describe('executeStepToolCalls', () => {
     )
 
     expect(outcome.messages[0]?.content).toContain(
-      'Soft warning: edited existing file(s) without a prior read/grep/glob inspect: src/a.ts'
+      'Soft warning: edited existing file(s) without a prior read/grep/glob/codebase_search inspect: src/a.ts'
     )
     expect(outcome.messages[0]?.content).toContain('mutated file(s) without calling diagnostics')
   })
@@ -519,7 +535,7 @@ describe('executeStepToolCalls', () => {
     const { ctx } = makeCtx(new AbortController().signal)
     ctx.diagnosticsCommand = 'echo diagnostics'
     const outcome = await executeStepToolCalls(
-      [{ id: 'c1', name: 'str_replace', arguments: '{"path":"new.ts","old":"a","new":"b"}' }],
+      [{ id: 'c1', name: 'str_replace', arguments: '{"path":"new.ts","old_string":"a","new_string":"b"}' }],
       ctx
     )
     expect(outcome.messages[0]?.content).toContain('mutated file(s) without calling diagnostics')
@@ -571,7 +587,7 @@ describe('executeStepToolCalls', () => {
       ctx
     )
     expect(outcome.messages[0]?.content).toContain(
-      'Soft warning: edited existing file(s) without a prior read/grep/glob inspect: src/a.ts'
+      'Soft warning: edited existing file(s) without a prior read/grep/glob/codebase_search inspect: src/a.ts'
     )
   })
 
@@ -587,5 +603,339 @@ describe('executeStepToolCalls', () => {
     )
     const editMsg = outcome.messages.find((m) => m.toolCallId === 'c1')
     expect(editMsg?.content).not.toContain('mutated file(s) without calling diagnostics')
+  })
+
+  it('passes JSON array tool args through to executeTool', async () => {
+    executeTool.mockResolvedValue({ ok: false, summary: 'edit', content: 'path required' })
+    const raw = '[{"path":"a.ts","contents":"x"}]'
+    const { ctx } = makeCtx(new AbortController().signal)
+    await executeStepToolCalls([{ id: 'c1', name: 'edit', arguments: raw }], ctx)
+    expect(executeTool).toHaveBeenCalledWith(
+      'edit',
+      raw,
+      expect.anything(),
+      expect.anything(),
+      expect.anything()
+    )
+  })
+
+  it('passes ask_question array args through without wrapping', async () => {
+    executeTool.mockResolvedValue({ ok: true, summary: 'asked', content: 'ok' })
+    const raw =
+      '[{"id":"q1","prompt":"Pick?","type":"single","options":["A","B"]}]'
+    const { ctx } = makeCtx(new AbortController().signal)
+    await executeStepToolCalls(
+      [{ id: 'c1', name: 'ask_question', arguments: raw }],
+      ctx
+    )
+    expect(executeTool).toHaveBeenCalledWith(
+      'ask_question',
+      raw,
+      expect.anything(),
+      expect.anything(),
+      expect.anything()
+    )
+  })
+
+  it('overlaps edit on different files', async () => {
+    let concurrent = 0
+    let maxConcurrent = 0
+    executeTool.mockImplementation(async (name: string) => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 20))
+      concurrent -= 1
+      return { ok: true, summary: name, content: name }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    const outcome = await executeStepToolCalls(
+      [
+        { id: 'e1', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' },
+        { id: 'e2', name: 'edit', arguments: '{"path":"b.ts","contents":"y"}' }
+      ],
+      ctx
+    )
+
+    expect(maxConcurrent).toBeGreaterThan(1)
+    expect(outcome.messages.map((m) => m.toolCallId)).toEqual(['e1', 'e2'])
+  })
+
+  it('overlaps str_replace on different files', async () => {
+    let concurrent = 0
+    let maxConcurrent = 0
+    executeTool.mockImplementation(async (name: string) => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 20))
+      concurrent -= 1
+      return { ok: true, summary: name, content: name }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    await executeStepToolCalls(
+      [
+        { id: 's1', name: 'str_replace', arguments: '{"path":"a.ts","old_string":"a","new_string":"b"}' },
+        { id: 's2', name: 'str_replace', arguments: '{"path":"b.ts","old_string":"c","new_string":"d"}' }
+      ],
+      ctx
+    )
+
+    expect(maxConcurrent).toBeGreaterThan(1)
+  })
+
+  it('serializes edit on the same file', async () => {
+    let concurrent = 0
+    let maxConcurrent = 0
+    executeTool.mockImplementation(async (name: string) => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 20))
+      concurrent -= 1
+      return { ok: true, summary: name, content: name }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    await executeStepToolCalls(
+      [
+        { id: 'e1', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' },
+        { id: 'e2', name: 'edit', arguments: '{"path":"a.ts","contents":"y"}' }
+      ],
+      ctx
+    )
+
+    expect(maxConcurrent).toBe(1)
+  })
+
+  it('keeps multi_edit serial', async () => {
+    let concurrent = 0
+    let maxConcurrent = 0
+    executeTool.mockImplementation(async (name: string) => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 20))
+      concurrent -= 1
+      return { ok: true, summary: name, content: name }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    await executeStepToolCalls(
+      [
+        {
+          id: 'm1',
+          name: 'multi_edit',
+          arguments: '{"edits":[{"path":"a.ts","old_string":"x","new_string":"y"}]}'
+        },
+        {
+          id: 'm2',
+          name: 'multi_edit',
+          arguments: '{"edits":[{"path":"b.ts","old_string":"a","new_string":"b"}]}'
+        }
+      ],
+      ctx
+    )
+
+    expect(maxConcurrent).toBe(1)
+  })
+
+  it('overlaps spawn_agent_instance in one step without starting child LLMs', async () => {
+    let concurrent = 0
+    let maxConcurrent = 0
+    executeTool.mockImplementation(async (name: string) => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 20))
+      concurrent -= 1
+      return { ok: true, summary: name, content: `spawned:${name}` }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    const outcome = await executeStepToolCalls(
+      [
+        { id: 'sp1', name: 'spawn_agent_instance', arguments: '{"goal":"workstream a"}' },
+        { id: 'sp2', name: 'spawn_agent_instance', arguments: '{"goal":"workstream b"}' }
+      ],
+      ctx
+    )
+
+    expect(maxConcurrent).toBeGreaterThan(1)
+    expect(executeTool).toHaveBeenCalledTimes(2)
+    expect(outcome.messages.map((m) => m.toolCallId)).toEqual(['sp1', 'sp2'])
+  })
+
+  it('overlaps await_agent_instance in one step', async () => {
+    let concurrent = 0
+    let maxConcurrent = 0
+    executeTool.mockImplementation(async (name: string) => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 20))
+      concurrent -= 1
+      return { ok: true, summary: name, content: name }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    const outcome = await executeStepToolCalls(
+      [
+        { id: 'a1', name: 'await_agent_instance', arguments: '{"run_id":"child-a"}' },
+        { id: 'a2', name: 'await_agent_instance', arguments: '{"run_id":"child-b"}' }
+      ],
+      ctx
+    )
+
+    expect(maxConcurrent).toBeGreaterThan(1)
+    expect(outcome.messages.map((m) => m.toolCallId)).toEqual(['a1', 'a2'])
+  })
+
+  it('returns an abort result per id for a parallel mutation batch', async () => {
+    const ac = new AbortController()
+    let releaseFirst!: () => void
+    const firstStarted = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    executeTool.mockImplementation(async (_name, _args, _ws, toolSignal: AbortSignal) => {
+      releaseFirst()
+      while (!toolSignal.aborted) {
+        await new Promise((r) => setTimeout(r, 5))
+      }
+      throw new DOMException('Aborted', 'AbortError')
+    })
+
+    const { ctx } = makeCtx(ac.signal)
+    const calls = [
+      { id: 'e1', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' },
+      { id: 'e2', name: 'edit', arguments: '{"path":"b.ts","contents":"y"}' }
+    ]
+    const work = executeStepToolCalls(calls, ctx)
+    await firstStarted
+    ac.abort()
+    const outcome = await work
+
+    expect(outcome.messages.map((m) => m.toolCallId)).toEqual(['e1', 'e2'])
+    expect(outcome.messages).toHaveLength(2)
+    expect(outcome.messages.every((m) => m.content === 'Cancelled' || m.content === 'Interrupted')).toBe(
+      true
+    )
+  })
+
+  it('hoists todo_write ahead of the rest of the step in Agent mode', async () => {
+    const order: string[] = []
+    executeTool.mockImplementation(async (name: string) => {
+      order.push(name)
+      return { ok: true, summary: name, content: name }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    ctx.agentMode = 'agent'
+    await executeStepToolCalls(
+      [
+        { id: 'e1', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' },
+        { id: 'r1', name: 'read', arguments: '{"path":"a.ts"}' },
+        {
+          id: 't1',
+          name: 'todo_write',
+          arguments: '{"todos":[{"id":"1","content":"Edit a.ts","status":"in_progress"}]}'
+        }
+      ],
+      ctx
+    )
+
+    expect(order).toEqual(['todo_write', 'edit', 'read'])
+  })
+
+  it('does not hoist todo_write in Plan mode', async () => {
+    const order: string[] = []
+    executeTool.mockImplementation(async (name: string) => {
+      order.push(name)
+      return { ok: true, summary: name, content: name }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    ctx.agentMode = 'plan'
+    await executeStepToolCalls(
+      [
+        { id: 'e1', name: 'edit', arguments: '{"path":"plan.md","contents":"# Plan\\n"}' },
+        { id: 'r1', name: 'read', arguments: '{"path":"plan.md"}' },
+        {
+          id: 't1',
+          name: 'todo_write',
+          arguments: '{"todos":[{"id":"1","content":"Draft plan.md","status":"in_progress"}]}'
+        }
+      ],
+      ctx
+    )
+
+    expect(order).toEqual(['edit', 'read', 'todo_write'])
+  })
+})
+
+describe('groupStepToolCalls', () => {
+  it('batches disjoint edits and splits the same path', () => {
+    const disjoint = groupStepToolCalls([
+      { id: 'e1', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' },
+      { id: 'e2', name: 'edit', arguments: '{"path":"b.ts","contents":"y"}' }
+    ])
+    expect(disjoint.map((g) => g.map((c) => c.id))).toEqual([['e1', 'e2']])
+
+    const samePath = groupStepToolCalls([
+      { id: 'e1', name: 'edit', arguments: '{"path":"a.ts","contents":"x"}' },
+      { id: 'e2', name: 'edit', arguments: '{"path":"a.ts","contents":"y"}' }
+    ])
+    expect(samePath.map((g) => g.map((c) => c.id))).toEqual([['e1'], ['e2']])
+  })
+
+  it('keeps multi_edit in singleton groups', () => {
+    const groups = groupStepToolCalls([
+      {
+        id: 'm1',
+        name: 'multi_edit',
+        arguments: '{"edits":[{"path":"a.ts","old_string":"x","new_string":"y"}]}'
+      },
+      {
+        id: 'm2',
+        name: 'multi_edit',
+        arguments: '{"edits":[{"path":"b.ts","old_string":"a","new_string":"b"}]}'
+      }
+    ])
+    expect(groups.map((g) => g.map((c) => c.id))).toEqual([['m1'], ['m2']])
+  })
+
+  it('batches consecutive spawns then consecutive awaits without reordering', () => {
+    const batched = groupStepToolCalls([
+      { id: 'sp1', name: 'spawn_agent_instance', arguments: '{"goal":"a"}' },
+      { id: 'sp2', name: 'spawn_agent_instance', arguments: '{"goal":"b"}' },
+      { id: 'a1', name: 'await_agent_instance', arguments: '{"run_id":"child-a"}' },
+      { id: 'a2', name: 'await_agent_instance', arguments: '{"run_id":"child-b"}' }
+    ])
+    expect(batched.map((g) => g.map((c) => c.id))).toEqual([
+      ['sp1', 'sp2'],
+      ['a1', 'a2']
+    ])
+
+    const interleaved = groupStepToolCalls([
+      { id: 'sp1', name: 'spawn_agent_instance', arguments: '{"goal":"a"}' },
+      { id: 'a1', name: 'await_agent_instance', arguments: '{"run_id":"child-a"}' },
+      { id: 'sp2', name: 'spawn_agent_instance', arguments: '{"goal":"b"}' },
+      { id: 'a2', name: 'await_agent_instance', arguments: '{"run_id":"child-b"}' }
+    ])
+    expect(interleaved.map((g) => g.map((c) => c.id))).toEqual([['sp1'], ['a1'], ['sp2'], ['a2']])
+  })
+
+  it('yields to the event loop between serial tools and after parallel batches', async () => {
+    const walk = await import('@main/agent/tools/walk')
+    const spy = vi.spyOn(walk, 'yieldToEventLoop')
+    executeTool.mockResolvedValue({ ok: true, summary: 'ok', content: 'ok' })
+    const { ctx } = makeCtx(new AbortController().signal)
+    await executeStepToolCalls(
+      [
+        { id: 't1', name: 'todo_write', arguments: '{"todos":[]}' },
+        { id: 't2', name: 'todo_write', arguments: '{"todos":[]}' },
+        { id: 'r1', name: 'read', arguments: '{"path":"a.ts"}' },
+        { id: 'r2', name: 'read', arguments: '{"path":"b.ts"}' }
+      ],
+      ctx
+    )
+    expect(spy.mock.calls.length).toBeGreaterThanOrEqual(3)
+    spy.mockRestore()
   })
 })

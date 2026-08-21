@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { toolGlob } from '@main/agent/tools/glob'
@@ -11,8 +11,12 @@ import { toolStrReplace } from '@main/agent/tools/strReplace'
 import { readTodos, toolTodoWrite } from '@main/agent/tools/todo'
 import { htmlToMarkdown, spaShellWarning, extractMainHtml } from '@main/agent/tools/webFetch'
 import { globToRegExp } from '@main/agent/tools/walk'
+
+vi.mock('@main/app/window', () => ({
+  getMainWindow: () => null
+}))
+
 import { executeTool } from '@main/agent/tools'
-import { validateToolArgs } from '@main/agent/schemas/tools'
 
 let root: string
 
@@ -115,8 +119,20 @@ describe('toolMultiEdit', () => {
     ])
 
     expect(out).toContain('Applied 2 edits')
+    expect(out).toContain('- wrote src/a.ts')
+    expect(out).toContain('- created src/new.ts')
     expect(readFileSync(join(root, 'src', 'a.ts'), 'utf8')).toBe('updated a\n')
     expect(readFileSync(join(root, 'src', 'new.ts'), 'utf8')).toBe('brand new\n')
+  })
+
+  it('labels every new file as created', () => {
+    const out = toolMultiEdit(root, [
+      { path: 'src/one.ts', contents: 'one\n' },
+      { path: 'src/two.ts', contents: 'two\n' }
+    ])
+    expect(out).toContain('- created src/one.ts')
+    expect(out).toContain('- created src/two.ts')
+    expect(out).not.toContain('- wrote')
   })
 
   it('writes nothing when one edit fails to apply', () => {
@@ -128,6 +144,18 @@ describe('toolMultiEdit', () => {
     ).toThrow(/no files changed/)
 
     expect(readFileSync(join(root, 'src', 'a.ts'), 'utf8')).toContain('export const alpha')
+  })
+
+  it('rejects empty contents for existing non-empty files without changing the batch', () => {
+    expect(() =>
+      toolMultiEdit(root, [
+        { path: 'src/new-empty.ts', contents: 'would otherwise land\n' },
+        { path: 'src/a.ts', contents: '' }
+      ])
+    ).toThrow(/no files changed.*empty contents/i)
+
+    expect(readFileSync(join(root, 'src', 'a.ts'), 'utf8')).toContain('export const alpha')
+    expect(existsSync(join(root, 'src', 'new-empty.ts'))).toBe(false)
   })
 
   it('rejects a duplicated path rather than silently keeping the last write', () => {
@@ -151,35 +179,45 @@ describe('toolMultiEdit', () => {
     ).toThrow(/str_replace/)
     expect(readFileSync(join(root, 'src', 'a.ts'), 'utf8')).toContain('export const alpha')
   })
-})
 
-describe('multi_edit schema', () => {
-  it('rejects edits that omit both contents and diff', () => {
-    const result = validateToolArgs(
-      'multi_edit',
-      JSON.stringify({ edits: [{ path: 'a.ts' }] })
-    )
-    expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.error).toMatch(/contents or diff/)
+  it('does not clobber an existing target.tmp sibling', () => {
+    const preserved = 'user temp contents\n'
+    writeFileSync(join(root, 'src', 'a.ts.tmp'), preserved, 'utf8')
+    toolMultiEdit(root, [{ path: 'src/a.ts', contents: 'updated a\n' }])
+    expect(readFileSync(join(root, 'src', 'a.ts'), 'utf8')).toBe('updated a\n')
+    expect(readFileSync(join(root, 'src', 'a.ts.tmp'), 'utf8')).toBe(preserved)
   })
 
-  it('rejects duplicate paths in edits', () => {
-    const result = validateToolArgs(
-      'multi_edit',
-      JSON.stringify({
-        edits: [
-          { path: 'a.ts', contents: 'one' },
-          { path: 'a.ts', contents: 'two' }
-        ]
-      })
-    )
-    expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.error).toMatch(/duplicate path/i)
+  it('rolls back completed renames when a later commit fails', () => {
+    const originalA = readFileSync(join(root, 'src', 'a.ts'), 'utf8')
+    const originalReadme = readFileSync(join(root, 'README.md'), 'utf8')
+    const readme = join(root, 'README.md')
+    expect(() =>
+      toolMultiEdit(
+        root,
+        [
+          { path: 'src/a.ts', contents: 'should roll back\n' },
+          { path: 'README.md', contents: 'should not land\n' }
+        ],
+        undefined,
+        {
+          renameSyncFn: (from, to) => {
+            if (to === readme && from.endsWith('.tmp')) {
+              throw new Error('simulated mid-commit failure')
+            }
+            renameSync(from, to)
+          }
+        }
+      )
+    ).toThrow(/simulated mid-commit failure/)
+    expect(readFileSync(join(root, 'src', 'a.ts'), 'utf8')).toBe(originalA)
+    expect(readFileSync(join(root, 'README.md'), 'utf8')).toBe(originalReadme)
   })
 })
 
 describe('multi_edit summary', () => {
   it('counts unique slash-normalized paths in the N files summary', async () => {
+    toolTodoWrite(root, [{ id: '1', content: 'Update nested TypeScript files', status: 'in_progress' }])
     const result = await executeTool(
       'multi_edit',
       JSON.stringify({
@@ -189,193 +227,35 @@ describe('multi_edit summary', () => {
         ]
       }),
       root,
-      new AbortController().signal
+      new AbortController().signal,
+      { runDir: root, agentMode: 'agent' }
     )
     expect(result.ok).toBe(true)
     expect(result.summary).toBe('2 files')
     expect(readFileSync(join(root, 'src', 'nested', 'b.ts'), 'utf8')).toBe('updated b\n')
   })
-})
 
-describe('browser_select_option schema', () => {
-  it('requires value or label', () => {
-    const missing = validateToolArgs(
-      'browser_select_option',
-      JSON.stringify({ selector: '#sel' })
-    )
-    expect(missing.ok).toBe(false)
-    if (!missing.ok) expect(missing.error).toMatch(/value or label/i)
-
-    expect(
-      validateToolArgs(
-        'browser_select_option',
-        JSON.stringify({ selector: '#sel', value: 'a' })
-      ).ok
-    ).toBe(true)
-  })
-})
-
-describe('terminal / grep pattern bounds', () => {
-  it('rejects oversized terminal patterns', () => {
-    const result = validateToolArgs(
-      'terminal',
-      JSON.stringify({ command: 'echo hi', pattern: 'a'.repeat(201) })
+  it('rejects an edit that passes both contents and diff', async () => {
+    const result = await executeTool(
+      'multi_edit',
+      JSON.stringify({
+        edits: [
+          {
+            path: 'src/a.ts',
+            contents: 'updated\n',
+            diff: '@@ -1 +1 @@\n-export const alpha = 1\n+updated\n'
+          }
+        ]
+      }),
+      root,
+      new AbortController().signal
     )
     expect(result.ok).toBe(false)
-  })
-
-  it('rejects invented terminal session_id labels', () => {
-    const result = validateToolArgs(
-      'terminal',
-      JSON.stringify({ session_id: 'inspect2', block_until_ms: 1000 })
-    )
-    expect(result.ok).toBe(false)
-  })
-
-  it('accepts a UUID session_id for polling', () => {
-    const result = validateToolArgs(
-      'terminal',
-      JSON.stringify({
-        session_id: '550e8400-e29b-41d4-a716-446655440000',
-        block_until_ms: 1000
-      })
-    )
-    expect(result.ok).toBe(true)
-  })
-
-  it('strips invented session_id when command is also present', () => {
-    const result = validateToolArgs(
-      'terminal',
-      JSON.stringify({ command: 'echo hi', session_id: 'run1' })
-    )
-    expect(result.ok).toBe(true)
-    if (result.ok) {
-      expect(result.data.session_id).toBeUndefined()
-      expect(result.data.command).toBe('echo hi')
-    }
-  })
-
-  it('strips invented UUID session_id when command is also present', () => {
-    const result = validateToolArgs(
-      'terminal',
-      JSON.stringify({
-        command: 'echo hi',
-        session_id: '98d4409e-3951-4807-85b5-df6f57708d08',
-        block_until_ms: 10000
-      })
-    )
-    expect(result.ok).toBe(true)
-    if (result.ok) {
-      expect(result.data.session_id).toBeUndefined()
-      expect(result.data.command).toBe('echo hi')
-    }
+    expect(result.content).toMatch(/contents or diff, not both/)
+    expect(readFileSync(join(root, 'src', 'a.ts'), 'utf8')).toContain('export const alpha')
   })
 })
 
-describe('tool arg bounds', () => {
-  it('strips unknown read keys and applies path/limit aliases', () => {
-    const result = validateToolArgs(
-      'read',
-      JSON.stringify({
-        name: 'src/a.ts',
-        maxChars: 500,
-        expected_params: { path: 'ignored' },
-        junk: true
-      })
-    )
-    expect(result.ok).toBe(true)
-    if (result.ok) {
-      expect(result.data.path).toBe('src/a.ts')
-      expect(result.data.limit).toBe(500)
-      expect(result.data).not.toHaveProperty('name')
-      expect(result.data).not.toHaveProperty('maxChars')
-      expect(result.data).not.toHaveProperty('expected_params')
-      expect(result.data).not.toHaveProperty('junk')
-    }
-  })
-
-  it('keeps canonical read path over name alias', () => {
-    const result = validateToolArgs(
-      'read',
-      JSON.stringify({ path: 'canonical.ts', name: 'alias.ts' })
-    )
-    expect(result.ok).toBe(true)
-    if (result.ok) expect(result.data.path).toBe('canonical.ts')
-  })
-
-  it('aliases grep path to include and strips junk keys', () => {
-    const result = validateToolArgs(
-      'grep',
-      JSON.stringify({
-        pattern: 'agent',
-        path: 'src/context_engine/cli.py',
-        caseSensitive: false,
-        expected_params: true
-      })
-    )
-    expect(result.ok).toBe(true)
-    if (result.ok) {
-      expect(result.data.pattern).toBe('agent')
-      expect(result.data.include).toBe('src/context_engine/cli.py')
-      expect(result.data).not.toHaveProperty('path')
-      expect(result.data).not.toHaveProperty('expected_params')
-    }
-  })
-
-  it('keeps canonical grep include over path alias', () => {
-    const result = validateToolArgs(
-      'grep',
-      JSON.stringify({ pattern: 'x', include: 'src/a.ts', path: 'src/b.ts' })
-    )
-    expect(result.ok).toBe(true)
-    if (result.ok) expect(result.data.include).toBe('src/a.ts')
-  })
-
-  it('clarifies ask_question type errors', () => {
-    const result = validateToolArgs(
-      'ask_question',
-      JSON.stringify({
-        questions: [{ id: 'q1', prompt: 'Ready?', options: ['yes', 'no'] }]
-      })
-    )
-    expect(result.ok).toBe(false)
-    if (!result.ok) {
-      expect(result.error).toMatch(/type/i)
-      expect(result.error).toMatch(/single, multi, boolean, text/)
-    }
-  })
-
-  it('rejects search maxResults of 0', () => {
-    const result = validateToolArgs('search', JSON.stringify({ query: 'x', maxResults: 0 }))
-    expect(result.ok).toBe(false)
-  })
-
-  it('rejects empty todo ids and wipe-all empty replace lists', () => {
-    expect(
-      validateToolArgs(
-        'todo_write',
-        JSON.stringify({ todos: [{ id: '', content: 'x', status: 'pending' }] })
-      ).ok
-    ).toBe(false)
-    expect(validateToolArgs('todo_write', JSON.stringify({ todos: [] })).ok).toBe(false)
-    expect(
-      validateToolArgs('todo_write', JSON.stringify({ todos: [], merge: true })).ok
-    ).toBe(true)
-  })
-
-  it('rejects negative terminal timeoutMs', () => {
-    expect(
-      validateToolArgs('terminal', JSON.stringify({ command: 'echo hi', timeoutMs: -1 })).ok
-    ).toBe(false)
-  })
-
-  it('rejects terminal timeoutMs above the configured maximum', () => {
-    expect(
-      validateToolArgs('terminal', JSON.stringify({ command: 'echo hi', timeoutMs: 999_999_999 }))
-        .ok
-    ).toBe(false)
-  })
-})
 
 describe('toolDelete', () => {
   it('deletes a file', () => {
@@ -429,8 +309,8 @@ describe('toolTodoWrite', () => {
     ])
 
     expect(content).toContain('1/2 complete')
-    expect(content).toContain('[x] First')
-    expect(content).toContain('[~] Second')
+    expect(content).toContain('[x] (1) First')
+    expect(content).toContain('[~] (2) Second')
     expect(readTodos(root)).toHaveLength(2)
   })
 
@@ -447,15 +327,45 @@ describe('toolTodoWrite', () => {
   })
 
   it('auto-demotes earlier in-progress tasks, keeping the last', () => {
-    const { content, todos } = toolTodoWrite(root, [
+    const { content, todos, notice } = toolTodoWrite(root, [
       { id: '1', content: 'First', status: 'in_progress' },
       { id: '2', content: 'Second', status: 'in_progress' }
     ])
     expect(todos.find((todo) => todo.id === '1')?.status).toBe('pending')
     expect(todos.find((todo) => todo.id === '2')?.status).toBe('in_progress')
-    expect(content).toMatch(/demoted 1 to pending/i)
-    expect(content).toContain('[ ] First')
-    expect(content).toContain('[~] Second')
+    expect(notice).toMatch(/demoted 1 to pending/i)
+    expect(content).not.toMatch(/^Note:/m)
+    expect(content).toContain('[ ] (1) First')
+    expect(content).toContain('[~] (2) Second')
+  })
+
+  it('collapses newlines in content and keeps one line per task', () => {
+    const { content, todos } = toolTodoWrite(root, [
+      { id: '1', content: 'First\nline', status: 'pending' }
+    ])
+    expect(todos[0]?.content).toBe('First line')
+    expect(content).toBe('0/1 complete\n[ ] (1) First line')
+  })
+
+  it('summarizes merged list length, not input length', async () => {
+    toolTodoWrite(root, [
+      { id: '1', content: 'First', status: 'pending' },
+      { id: '2', content: 'Second', status: 'pending' },
+      { id: '3', content: 'Third', status: 'pending' }
+    ])
+    const result = await executeTool(
+      'todo_write',
+      JSON.stringify({
+        todos: [{ id: '2', content: 'Second', status: 'completed' }],
+        merge: true
+      }),
+      root,
+      new AbortController().signal,
+      { runDir: root }
+    )
+    expect(result.ok).toBe(true)
+    expect(result.summary).toBe('3 tasks')
+    expect(result.content).toContain('1/3 complete')
   })
 })
 

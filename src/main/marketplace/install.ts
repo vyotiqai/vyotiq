@@ -13,6 +13,7 @@ import {
 } from 'fs'
 import { tmpdir } from 'os'
 import { basename, dirname, extname, join, resolve, sep } from 'path'
+import { randomBytes } from 'crypto'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import {
@@ -27,7 +28,7 @@ import {
   type McpServer
 } from '../../shared/ipc'
 import { parseSkillFrontmatter, skillPackageVersion } from '../agent/skills/parse'
-import { resolveSkillMdPath } from '../agent/skills/paths'
+import { resolveSkillMdPath, SKILL_MD, LEGACY_SKILL_MD } from '../agent/skills/paths'
 import { getSettings, setSettings, enqueueSettingsMutation } from '../settings/settings'
 import { formatError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
@@ -48,6 +49,49 @@ import { withCompatibleUvxArgs } from '../agent/mcp/uvxCompat'
 import { downloadPublicUrlToFile } from '../agent/tools/webFetch'
 
 const execFileAsync = promisify(execFile)
+
+/** Same shape as mcpImport npm classification — names only, no paths/URLs/flags. */
+const NPM_PACK_TARGET_RE = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/i
+
+/** Reject path/URL/flag-shaped targets before `npm pack`. */
+export function assertSafeNpmPackTarget(target: string): string {
+  const t = target.trim()
+  // Scoped names use `/` (@scope/name). Reject Windows paths, URLs, and flags.
+  if (
+    !t ||
+    t.startsWith('-') ||
+    t.includes('..') ||
+    /\\/.test(t) ||
+    t.includes('://') ||
+    /^[a-zA-Z]:/.test(t)
+  ) {
+    throw new Error('Invalid npm package name for install')
+  }
+  if (!NPM_PACK_TARGET_RE.test(t)) {
+    throw new Error('Invalid npm package name for install')
+  }
+  return t
+}
+
+/** Catalog downloads must stay on the configured registry origin. */
+export function assertRegistryDownloadUrl(downloadUrl: string, registryUrl: string): string {
+  const reg = registryUrl.trim().replace(/\/$/, '')
+  if (!reg) {
+    throw new Error('No registry URL configured for catalog download')
+  }
+  let download: URL
+  let registry: URL
+  try {
+    download = new URL(downloadUrl)
+    registry = new URL(reg)
+  } catch {
+    throw new Error('Invalid download or registry URL')
+  }
+  if (download.protocol !== registry.protocol || download.host !== registry.host) {
+    throw new Error('Catalog download URL must match the configured registry origin')
+  }
+  return downloadUrl
+}
 
 export type DetectedPackage = {
   kind: MarketplaceKind
@@ -176,7 +220,7 @@ async function downloadToFile(url: string, destPath: string): Promise<void> {
   await downloadPublicUrlToFile(url, destPath)
 }
 
-function copyPackageIntoStore(srcRoot: string, id: string, version: string): string {
+export function copyPackageIntoStore(srcRoot: string, id: string, version: string): string {
   const dest = marketplacePackageDir(id, version)
   const srcResolved = resolve(srcRoot)
   const destResolved = resolve(dest)
@@ -185,12 +229,43 @@ function copyPackageIntoStore(srcRoot: string, id: string, version: string): str
   if (srcResolved === destResolved) {
     return dest
   }
-  if (existsSync(dest)) {
-    rmSync(dest, { recursive: true, force: true })
-  }
   mkdirSync(dirname(dest), { recursive: true })
-  cpSync(srcRoot, dest, { recursive: true })
+  const staging = join(dirname(dest), `.${basename(dest)}.staging-${randomBytes(8).toString('hex')}`)
+  try {
+    cpSync(srcRoot, staging, { recursive: true })
+    commitStagedDirectory(staging, dest)
+  } catch (err) {
+    try {
+      if (existsSync(staging)) rmSync(staging, { recursive: true, force: true })
+    } catch {
+      // ignore staging cleanup
+    }
+    throw err
+  }
   return dest
+}
+
+function commitStagedDirectory(staging: string, dest: string): void {
+  const backup = existsSync(dest)
+    ? join(dirname(dest), `.${basename(dest)}.bak-${randomBytes(8).toString('hex')}`)
+    : null
+  if (backup) renameSync(dest, backup)
+  try {
+    renameSync(staging, dest)
+  } catch (err) {
+    if (backup) {
+      try {
+        if (existsSync(dest)) rmSync(dest, { recursive: true, force: true })
+        renameSync(backup, dest)
+      } catch {
+        // restore failed; original error is more useful
+      }
+    }
+    throw err
+  }
+  if (backup) {
+    rmSync(backup, { recursive: true, force: true })
+  }
 }
 
 export function mcpServerFromManifest(root: string): McpServer {
@@ -218,6 +293,7 @@ export function mcpServerFromManifest(root: string): McpServer {
 /** Sync marketplace-sourced MCP entries in settings.mcpServers from installed packages. */
 export async function syncMarketplaceMcpIntoSettings(): Promise<void> {
   repairBundledMcpManifestsFromResources()
+  repairBundledSkillPackagesFromResources()
   const index = readMarketplaceIndex()
   const settings = getSettings()
   const manual = (settings.mcpServers ?? []).filter((s) => s.source !== 'marketplace')
@@ -271,6 +347,48 @@ export async function syncMarketplaceMcpIntoSettings(): Promise<void> {
   await enqueueSettingsMutation(() =>
     setSettings({ mcpServers: [...manual, ...fromMarketplace] }, { skipMcpAck: true })
   )
+}
+
+/**
+ * Overwrite installed bundled skill SKILL.md from app resources when it drifts
+ * (so create-skill instructions stay current after an app update).
+ */
+function repairBundledSkillPackagesFromResources(): void {
+  const index = readMarketplaceIndex()
+  for (const item of index.items) {
+    if (item.kind !== 'skill' || item.installSource !== 'bundled') continue
+    let destRoot: string
+    try {
+      destRoot = resolveInstalledPackageRoot(item.packagePath)
+    } catch {
+      continue
+    }
+    const bundledRoot = bundledPackagePath(item.id)
+    for (const name of [SKILL_MD, LEGACY_SKILL_MD]) {
+      const src = join(bundledRoot, name)
+      const dest = join(destRoot, name)
+      if (!existsSync(src)) continue
+      try {
+        mkdirSync(dirname(dest), { recursive: true })
+        const next = readFileSync(src, 'utf8')
+        const prev = existsSync(dest) ? readFileSync(dest, 'utf8') : ''
+        if (next === prev) continue
+        writeFileSync(dest, next, 'utf8')
+        logger.info('Repaired bundled skill markdown from resources', {
+          scope: 'marketplace',
+          id: item.id,
+          file: name
+        })
+      } catch (err) {
+        logger.warn('Failed to repair bundled skill markdown', {
+          scope: 'marketplace',
+          id: item.id,
+          file: name,
+          err: formatError(err)
+        })
+      }
+    }
+  }
 }
 
 /**
@@ -426,11 +544,16 @@ async function materializeToTemp(req: MarketplaceInstallRequest): Promise<{
   }
 
   if (source === 'npm') {
+    const packTarget = assertSafeNpmPackTarget(target)
     const packDir = join(tmp, 'npm')
     mkdirSync(packDir, { recursive: true })
-    const { stdout } = await execFileAsync('npm', ['pack', target, '--pack-destination', packDir], {
-      timeout: 120_000
-    })
+    const { stdout } = await execFileAsync(
+      'npm',
+      ['pack', '--ignore-scripts', '--pack-destination', packDir, '--', packTarget],
+      {
+        timeout: 120_000
+      }
+    )
     const tgzName = stdout.trim().split(/\r?\n/).filter(Boolean).pop()
     if (!tgzName) {
       cleanup()
@@ -458,10 +581,10 @@ async function materializeToTemp(req: MarketplaceInstallRequest): Promise<{
         source: 'bundled'
       }
     }
+    const registryUrl = (getSettings().marketplace?.registryUrl ?? '').trim().replace(/\/$/, '')
     const downloadUrl =
       entry.downloadUrl ??
       (() => {
-        const registryUrl = (getSettings().marketplace?.registryUrl ?? '').trim().replace(/\/$/, '')
         if (!registryUrl) return null
         const version = req.version ?? entry.version
         return `${registryUrl}/v1/packages/${encodeURIComponent(entry.id)}/versions/${encodeURIComponent(version)}/download`
@@ -470,6 +593,7 @@ async function materializeToTemp(req: MarketplaceInstallRequest): Promise<{
       cleanup()
       throw new Error('No download URL for catalog entry')
     }
+    assertRegistryDownloadUrl(downloadUrl, registryUrl)
     const archivePath = join(tmp, 'pkg.zip')
     await downloadToFile(downloadUrl, archivePath)
     const extractDir = join(tmp, 'extract')
@@ -498,7 +622,7 @@ export async function installMarketplacePackage(
   const ackRequiredSources = new Set(['registry', 'git', 'npm', 'zip', 'remote', 'path'])
   if (ackRequiredSources.has(req.source) && !settings.marketplace?.remoteInstallAcked) {
     throw new Error(
-      'Acknowledge marketplace install risk in Settings → Registry before installing from registry, git, npm, zip, path, or remote MCP URLs.'
+      'Acknowledge marketplace install risk in Marketplace → Manage (Package Registry) before installing from registry, git, npm, zip, path, or remote MCP URLs.'
     )
   }
   const { root, cleanup, source } = await materializeToTemp(req)
@@ -526,7 +650,7 @@ export async function installMarketplacePackage(
       )
       if (collision) {
         throw new Error(
-          `MCP id "${detected.id}" already exists as a configured server. Remove it in Settings → Marketplace first.`
+          `MCP id "${detected.id}" already exists as a configured server. Remove it in Marketplace → Manage first.`
         )
       }
       // Reject remote URL installs that would overwrite a different remote package id collision.

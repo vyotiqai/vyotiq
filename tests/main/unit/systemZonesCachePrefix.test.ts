@@ -36,11 +36,11 @@ describe('OpenAI-compat trailing volatile', () => {
   it('puts stable first and volatile after history', () => {
     const msgs = toOpenAiMessages(history, 'ignored-combined', {
       systemStable: 'HARNESS',
-      systemVolatile: '## Session\nDate (UTC): now'
+      systemVolatile: '<session>\nDate (UTC): now'
     })
     expect(msgs[0]).toEqual({ role: 'system', content: 'HARNESS' })
     expect(msgs[msgs.length - 1]).toEqual(
-      volatileSessionMessage('## Session\nDate (UTC): now')
+      volatileSessionMessage('<session>\nDate (UTC): now')
     )
     expect(msgs.slice(1, -1).map((m) => m.role)).toEqual(['user', 'assistant', 'tool'])
   })

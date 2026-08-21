@@ -21,9 +21,8 @@ describe('markdown sanitization — url protocols', () => {
   it('drops javascript: link hrefs', () => {
     const container = renderMarkdown('[click me](javascript:alert(1))')
 
-    const anchor = container.querySelector('a')
-    expect(anchor?.textContent).toBe('click me')
-    expect(anchor?.getAttribute('href')).toBeNull()
+    expect(container.querySelector('a')).toBeNull()
+    expect(container.textContent).toContain('click me')
     expect(container.innerHTML).not.toContain('javascript:')
   })
 
@@ -39,21 +38,24 @@ describe('markdown sanitization — url protocols', () => {
       '[click](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)'
     )
 
-    expect(container.querySelector('a')?.getAttribute('href')).toBeNull()
+    expect(container.querySelector('a')).toBeNull()
+    expect(container.textContent).toContain('click')
     expect(container.innerHTML).not.toContain('data:text/html')
   })
 
   it('drops vbscript: link hrefs', () => {
     const container = renderMarkdown('[click](vbscript:msgbox("x"))')
 
-    expect(container.querySelector('a')?.getAttribute('href')).toBeNull()
+    expect(container.querySelector('a')).toBeNull()
+    expect(container.textContent).toContain('click')
     expect(container.innerHTML).not.toContain('vbscript:')
   })
 
   it('drops entity-obfuscated javascript: hrefs', () => {
     const container = renderMarkdown('[click](&#106;avascript:alert(1))')
 
-    expect(container.querySelector('a')?.getAttribute('href')).toBeNull()
+    expect(container.querySelector('a')).toBeNull()
+    expect(container.textContent).toContain('click')
     expect(container.innerHTML.toLowerCase()).not.toContain('javascript:')
   })
 

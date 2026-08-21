@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react'
+import { type ReactNode, type Ref } from 'react'
 import { Icon, type IconName } from '../icons'
 import { SIDEBAR_NAV_ACTIVE } from '@renderer/lib/utils/layout'
 import { cn } from './cn'
@@ -15,7 +15,12 @@ export function NavItem({
   variant = 'sidebar',
   className = '',
   trailing,
-  dense
+  dense,
+  buttonRef,
+  'aria-expanded': ariaExpanded,
+  'aria-haspopup': ariaHasPopup,
+  'aria-controls': ariaControls,
+  'aria-label': ariaLabel
 }: {
   label: string
   icon?: IconName
@@ -30,33 +35,44 @@ export function NavItem({
   trailing?: ReactNode
   /** Slightly tighter padding for dense lists. */
   dense?: boolean
+  buttonRef?: Ref<HTMLButtonElement>
+  'aria-expanded'?: boolean
+  'aria-haspopup'?: 'menu' | 'dialog' | boolean
+  'aria-controls'?: string
+  'aria-label'?: string
 }) {
   const isActive = active ?? current
 
   if (variant === 'icon') {
     return (
       <button
+        ref={buttonRef}
         type="button"
         className={cn(
-          'app-region-no-drag inline-grid size-8 place-items-center rounded-lg vy-transition focus-visible:vy-focus-ring',
+          'app-region-no-drag relative inline-grid size-8 place-items-center rounded-lg vy-transition focus-visible:vy-focus-ring',
           'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]',
           isActive ? SIDEBAR_NAV_ACTIVE : 'text-secondary hover:bg-surface/60 hover:text-fg active:bg-surface',
           className
         )}
-        aria-label={label}
+        aria-label={ariaLabel ?? label}
         aria-current={isActive ? 'page' : undefined}
         aria-pressed={pressed}
+        aria-expanded={ariaExpanded}
+        aria-haspopup={ariaHasPopup}
+        aria-controls={ariaControls}
         disabled={disabled}
         title={title ?? label}
         onClick={onClick}
       >
         {icon ? <Icon name={icon} size={18} weight={isActive ? 'fill' : 'bold'} /> : null}
+        {trailing}
       </button>
     )
   }
 
   return (
     <button
+      ref={buttonRef}
       type="button"
       className={cn(
         'app-region-no-drag rounded-lg text-left text-sm tracking-[var(--vy-tracking-tight)] vy-transition focus-visible:vy-focus-ring',
@@ -70,8 +86,12 @@ export function NavItem({
         isActive ? SIDEBAR_NAV_ACTIVE : 'text-secondary hover:bg-surface/50 hover:text-fg active:bg-surface',
         className
       )}
+      aria-label={ariaLabel}
       aria-current={isActive ? 'page' : undefined}
       aria-pressed={pressed}
+      aria-expanded={ariaExpanded}
+      aria-haspopup={ariaHasPopup}
+      aria-controls={ariaControls}
       disabled={disabled}
       title={title ?? label}
       onClick={onClick}

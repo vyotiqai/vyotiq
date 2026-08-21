@@ -1,8 +1,12 @@
 import { useEffect } from 'react'
 import { shouldDeferAppEscapeStop } from './escape'
-import { isEditableShortcutTarget, matchShortcut } from './match'
-
-const COMPOSER_SELECTOR = '[role="textbox"][aria-label="Message"]'
+import {
+  COMPOSER_MESSAGE_SELECTOR,
+  focusBrowserUrlIfOpen,
+  isEditableShortcutTarget,
+  matchShortcut,
+  shouldBlockAppShortcut
+} from './match'
 
 export type AppShortcutHandlers = {
   onToggleSidebar: () => void
@@ -12,6 +16,8 @@ export type AppShortcutHandlers = {
   isSearchFocused: () => boolean
   onNewChat: () => void
   onOpenSettings: () => void
+  /** Close the current chat tab (no-op when drafting). */
+  onCloseChat?: () => void
   /** When false/undefined, Cmd/Ctrl+L is a no-op. */
   chatViewActive?: boolean
   running?: boolean
@@ -33,6 +39,7 @@ export function useAppShortcuts(handlers: AppShortcutHandlers): void {
     isSearchFocused,
     onNewChat,
     onOpenSettings,
+    onCloseChat,
     chatViewActive,
     running,
     onStop,
@@ -43,46 +50,54 @@ export function useAppShortcuts(handlers: AppShortcutHandlers): void {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {
       if (matchShortcut(e, 'sidebar')) {
-        if (isEditableShortcutTarget(e.target)) return
+        if (shouldBlockAppShortcut(e.target)) return
         e.preventDefault()
         onToggleSidebar()
         return
       }
 
       if (matchShortcut(e, 'search')) {
-        if (isEditableShortcutTarget(e.target)) {
-          if (isSearchFocused()) {
-            e.preventDefault()
-            onClearSearchFocus()
-          }
+        if (isSearchFocused()) {
+          e.preventDefault()
+          onClearSearchFocus()
           return
         }
+        if (shouldBlockAppShortcut(e.target)) return
         e.preventDefault()
         onFocusSearch()
         return
       }
 
       if (matchShortcut(e, 'newChat')) {
-        if (isEditableShortcutTarget(e.target)) return
+        if (shouldBlockAppShortcut(e.target)) return
         e.preventDefault()
         onNewChat()
         return
       }
 
       if (matchShortcut(e, 'settings')) {
-        if (isEditableShortcutTarget(e.target)) return
+        if (shouldBlockAppShortcut(e.target)) return
         e.preventDefault()
         onOpenSettings()
+        return
+      }
+
+      if (matchShortcut(e, 'closeChat')) {
+        if (!chatViewActive) return
+        if (shouldBlockAppShortcut(e.target)) return
+        e.preventDefault()
+        onCloseChat?.()
         return
       }
 
       if (matchShortcut(e, 'focusComposer')) {
         if (!chatViewActive) return
         if (isEditableShortcutTarget(e.target)) return
-        const el = document.querySelector(COMPOSER_SELECTOR) as HTMLElement | null
+        e.preventDefault()
+        if (focusBrowserUrlIfOpen()) return
+        const el = document.querySelector(COMPOSER_MESSAGE_SELECTOR) as HTMLElement | null
         if (!el) return
         if (el.getAttribute('contenteditable') === 'false') return
-        e.preventDefault()
         el.focus()
         return
       }
@@ -112,6 +127,7 @@ export function useAppShortcuts(handlers: AppShortcutHandlers): void {
     isSearchFocused,
     onNewChat,
     onOpenSettings,
+    onCloseChat,
     chatViewActive,
     running,
     onStop,

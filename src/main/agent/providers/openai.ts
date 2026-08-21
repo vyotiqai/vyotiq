@@ -1,7 +1,7 @@
 import type { ChatMessage, ContentPart, MessageContent, ModelInfo, ProviderId } from '../../../shared/ipc'
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
-import { isOllamaCloudHost, ollamaNativeHost } from '../../../shared/providers'
+import { isOllamaCloudHost, OLLAMA_LOCAL_DEFAULT, ollamaNativeHost } from '../../../shared/providers'
 import {
   parseProviderReasoningState,
   normalizeEffortForOpenAiCompatReasoning,
@@ -11,13 +11,20 @@ import {
   normalizeEffortForOllamaThink,
   normalizeModelIdForHeuristics,
   isDeepSeekNativeThinkingModel,
+  isOllamaGptOssModel,
+  findOllamaCatalogModel,
+  ollamaIdWithoutCloudSuffix,
+  OLLAMA_GPT_OSS_THINKING_EFFORTS,
   type OpenAiCompatThinkChunk
 } from '../../../shared/reasoning'
 import { serviceTierForApiBody } from '../../../shared/domain/serviceTier'
 import {
   baseModelInfo,
+  contextWindowFromOllamaShow,
+  extractContextWindowFromCatalogRow,
   looksLikeChatModel,
   normalizeOpenAiStyleModels,
+  ollamaCapabilityNames,
   parseDataUrl,
   thinkingPartialFromCatalogRow,
   wireSupportedInputModalities,
@@ -33,15 +40,18 @@ import type {
   TokenUsage
 } from './types'
 import { streamOpenAiResponses } from './openaiResponses'
+import { billedCostFromUsage, cacheWriteTokensFromDetails } from './usageFields'
 import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
-import { logProviderFailure } from './log'
-import { fetchWithRetry } from './fetchWithRetry'
+import { logProviderFailure, providerFetchFailureChunk } from './log'
+import { CHAT_FETCH_MAX_ATTEMPTS, fetchWithRetry } from './fetchWithRetry'
 import { assertAllowedUrl, fetchWithValidatedRedirects } from '@main/agent/tools/webFetch'
+import { mergeOpenAiCompatToolArgDelta, wireToolCallArguments } from '../toolArgWire'
 import {
   formatProviderHttpError,
   parseOpenRouterAffordableOutputTokens,
   scrubProviderErrorSnippet,
+  scrubProviderErrorText,
   shouldRetryOmitIncludeUsage,
   shouldRetryOpenRouterCompatBody
 } from './httpErrors'
@@ -65,6 +75,49 @@ export function openAiCompatMessageReasoningDelta(
     return messageReasoning.slice(accumulated.length) || null
   }
   return accumulated ? messageReasoning : messageReasoning
+}
+
+/**
+ * DeepInfra (and some other OpenAI-compat hosts) can return HTTP 200 with an
+ * SSE payload that is only `{"error":{...}}` — AppData 071005c7 / live probe:
+ * `'list' object has no attribute 'items'` when ask_question args were a bare
+ * array. Ignoring that frame yields a silent empty_response; surface it.
+ */
+export function openAiCompatSseErrorMessage(
+  chunk: Record<string, unknown>
+): string | null {
+  if (!('error' in chunk) || chunk.error == null) return null
+  const choices = chunk.choices as Array<Record<string, unknown>> | undefined
+  const hasUsableChoices =
+    Array.isArray(choices) &&
+    choices.some((choice) => {
+      const delta = choice?.delta as Record<string, unknown> | undefined
+      const message = choice?.message as Record<string, unknown> | undefined
+      const hasContent = (value: unknown): boolean => {
+        if (typeof value === 'string') return value.length > 0
+        if (Array.isArray(value)) return value.length > 0
+        return false
+      }
+      return (
+        hasContent(delta?.content) ||
+        hasContent(message?.content) ||
+        hasContent(delta?.tool_calls) ||
+        hasContent(message?.tool_calls)
+      )
+    })
+  if (hasUsableChoices) return null
+  const err = chunk.error
+  if (typeof err === 'string' && err.trim()) {
+    return scrubProviderErrorText(err.trim())
+  }
+  if (typeof err === 'object' && !Array.isArray(err)) {
+    const message = (err as { message?: unknown }).message
+    if (typeof message === 'string' && message.trim()) {
+      return scrubProviderErrorText(message.trim())
+    }
+  }
+  const fallback = scrubProviderErrorSnippet(JSON.stringify(chunk))
+  return fallback || 'Provider stream error'
 }
 
 export type OpenAiCompatDeltaContentParts = {
@@ -231,11 +284,63 @@ export type OpenAiCompatOptions = {
   allowLocal?: boolean
 }
 
+/**
+ * Merge one OpenAI-compat `function.arguments` chunk into accumulated args.
+ * Re-exported from toolArgWire — single implementation for provider + loop.
+ */
+export { mergeOpenAiCompatToolArgDelta } from '../toolArgWire'
+
+/** Some hosts put parsed objects in `function.arguments` instead of a JSON string. */
+function openAiCompatArgumentsChunk(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (value && typeof value === 'object') {
+    try {
+      return JSON.stringify(value)
+    } catch {
+      return undefined
+    }
+  }
+  return undefined
+}
+
+function asToolCallArray(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return []
+  return value.filter(
+    (item): item is Record<string, unknown> =>
+      Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+  )
+}
+
+/**
+ * Match a tool_call row to the in-flight pending slot. Message snapshots often
+ * omit `index`; using `pending.size` would fork a second id and drop live args.
+ */
+function pendingIndexForToolCall(
+  pending: Map<number, ToolCall>,
+  tc: Record<string, unknown>
+): number {
+  if (typeof tc.index === 'number') return tc.index
+  const id = typeof tc.id === 'string' && tc.id.trim() ? tc.id.trim() : ''
+  if (id) {
+    for (const [index, call] of pending) {
+      if (call.id === id) return index
+    }
+  }
+  if (pending.size === 1) {
+    const only = pending.keys().next().value
+    if (typeof only === 'number') return only
+  }
+  return pending.size
+}
+
 /** Exported for tests — gate OpenAI `stream_options.include_usage` per provider. */
 export function compatStreamOptions(
   opts: OpenAiCompatOptions
 ): { stream_options: { include_usage: true } } | Record<string, never> {
-  if (opts.includeUsage === false || opts.ollamaVision) return {}
+  // Ollama (including vision / ollama.com cloud) only emits the final usage
+  // chunk when include_usage is set. Hosts that reject stream_options retry
+  // without it via shouldRetryOmitIncludeUsage.
+  if (opts.includeUsage === false) return {}
   return { stream_options: { include_usage: true } }
 }
 
@@ -444,9 +549,10 @@ function assistantMessageWireFields(
   opts: {
     stripReasoningReplay?: boolean
     reasoningReplayFormat?: OpenAiCompatReasoningReplayFormat
+    ollamaVision?: boolean
   },
   forToolCalls: boolean
-): { content: unknown; reasoning_content?: string } {
+): { content: unknown; reasoning_content?: string; reasoning?: string } {
   const answer = assistantAnswerText(message, forToolCalls)
   const { reasoningContent, reasoningFormat, thinkChunks } = openAiCompatReasoningFromMessage(
     message,
@@ -462,6 +568,10 @@ function assistantMessageWireFields(
     return {
       content: toOpenAiCompatThinkChunkContent(answer, reasoningContent ?? '', thinkChunks)
     }
+  }
+  // Ollama /v1 Message.Reasoning is json:"reasoning" (openai/openai.go).
+  if (opts.ollamaVision) {
+    return { content: answer, reasoning: reasoningContent }
   }
   return { content: answer, reasoning_content: reasoningContent }
 }
@@ -521,10 +631,14 @@ export function toOpenAiMessages(
         role: 'assistant',
         content: wire.content,
         ...(wire.reasoning_content ? { reasoning_content: wire.reasoning_content } : {}),
+        ...(wire.reasoning ? { reasoning: wire.reasoning } : {}),
         tool_calls: m.toolCalls.map((t) => ({
           id: t.id,
           type: 'function',
-          function: { name: t.name, arguments: t.arguments }
+          function: {
+            name: t.name,
+            arguments: wireToolCallArguments(t.name, t.arguments)
+          }
         }))
       })
     } else if (m.role === 'assistant') {
@@ -532,7 +646,8 @@ export function toOpenAiMessages(
       out.push({
         role: 'assistant',
         content: wire.content,
-        ...(wire.reasoning_content ? { reasoning_content: wire.reasoning_content } : {})
+        ...(wire.reasoning_content ? { reasoning_content: wire.reasoning_content } : {}),
+        ...(wire.reasoning ? { reasoning: wire.reasoning } : {})
       })
     } else if (m.role === 'system') {
       // Rare in-loop system rows stay in history order (not re-merged into the prefix).
@@ -589,6 +704,8 @@ export function parseOpenAiCompatUsage(raw: unknown): TokenUsage | undefined {
     const d = details as Record<string, unknown>
     if (typeof d.cached_tokens === 'number') cachedInput = d.cached_tokens
   }
+  const cacheWrite = cacheWriteTokensFromDetails(details, u.cache_write_tokens)
+  const billed = billedCostFromUsage(u)
 
   let reasoningTokens: number | undefined
   const completionDetails = u.completion_tokens_details
@@ -602,16 +719,22 @@ export function parseOpenAiCompatUsage(raw: unknown): TokenUsage | undefined {
     output === undefined &&
     total === undefined &&
     cachedInput === undefined &&
-    reasoningTokens === undefined
+    cacheWrite === undefined &&
+    reasoningTokens === undefined &&
+    billed.billedCost === undefined &&
+    billed.billedCostSaved === undefined
   ) {
     return undefined
   }
   return {
     inputTokens: input,
+    inputTokensIncludesCache: true,
     outputTokens: output,
     totalTokens: total,
     cachedInputTokens: cachedInput,
-    reasoningTokens
+    cacheCreationInputTokens: cacheWrite,
+    reasoningTokens,
+    ...billed
   }
 }
 
@@ -660,41 +783,226 @@ async function fetchJson(
   return res.json()
 }
 
-function modelsFromOllamaTags(data: unknown): ModelInfo[] {
-  const tags = data as { models?: Array<{ name?: string }> }
-  const names = (tags.models ?? [])
-    .map((m) => m.name)
-    .filter((n): n is string => Boolean(n))
-  return names.map((name) =>
-    baseModelInfo(
-      name,
-      {
-        supportsTools: true,
-        supportsVision: /llava|vision/i.test(name)
-      },
-      'ollama'
-    )
+/** POST JSON for Ollama `/api/show` (catalog GET helper is list-only). */
+async function fetchJsonPost(
+  url: string,
+  headers: Record<string, string>,
+  body: unknown,
+  signal?: AbortSignal,
+  providerId?: ProviderId,
+  opts?: { quiet?: boolean; allowLocal?: boolean }
+): Promise<unknown> {
+  const logProvider = providerId ?? 'openai-compat'
+  const allowLocal =
+    providerId === 'ollama' || providerId === 'custom' || opts?.allowLocal === true
+  let res: Response
+  try {
+    res = (
+      await fetchWithValidatedRedirects(
+        new URL(url),
+        signal ?? new AbortController().signal,
+        { 'Content-Type': 'application/json', ...headers },
+        allowLocal,
+        { method: 'POST', body: JSON.stringify(body) }
+      )
+    ).response
+  } catch (err) {
+    if (signal?.aborted) throw err
+    if (!opts?.quiet) {
+      logProviderFailure(logProvider, 'network', {}, { soft: true })
+    }
+    throw new Error(formatError(err))
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    if (!opts?.quiet) {
+      logProviderFailure(
+        logProvider,
+        'http',
+        { status: res.status, message: scrubProviderErrorSnippet(text) || undefined },
+        { soft: true }
+      )
+    }
+    throw new Error(formatProviderHttpError(res.status, text, providerId))
+  }
+  return res.json()
+}
+
+function modelInfoFromOllamaTagRow(
+  row: Record<string, unknown>,
+  opts?: { ignoreNumCtx?: boolean }
+): ModelInfo | null {
+  const name =
+    typeof row.name === 'string'
+      ? row.name
+      : typeof row.model === 'string'
+        ? row.model
+        : null
+  if (!name) return null
+  const capNames = ollamaCapabilityNames(row.capabilities)
+  const thinkingPartial = thinkingPartialFromCatalogRow(row, 'ollama')
+  const contextWindow = contextWindowFromOllamaShow(row, opts)
+  return baseModelInfo(
+    name,
+    {
+      supportsTools: true,
+      supportsVision: Boolean(capNames?.includes('vision')) || /llava|vision/i.test(name),
+      contextWindow,
+      ...thinkingPartial
+    },
+    'ollama'
   )
 }
 
-function mergeOllamaTagNames(models: ModelInfo[], names: string[]): ModelInfo[] {
-  const seen = new Set(models.map((m) => m.id))
-  const out = [...models]
-  for (const name of names) {
-    if (seen.has(name)) continue
-    out.push(
-      baseModelInfo(
-        name,
-        {
-          supportsTools: true,
-          supportsVision: /llava|vision/i.test(name)
-        },
-        'ollama'
-      )
-    )
-    seen.add(name)
+function modelsFromOllamaTags(
+  data: unknown,
+  opts?: { ignoreNumCtx?: boolean }
+): ModelInfo[] {
+  const tags = data as { models?: unknown[] }
+  const out: ModelInfo[] = []
+  for (const raw of tags.models ?? []) {
+    if (!raw || typeof raw !== 'object') continue
+    const info = modelInfoFromOllamaTagRow(raw as Record<string, unknown>, opts)
+    if (info) out.push(info)
   }
   return out
+}
+
+function mergeOllamaTagModels(models: ModelInfo[], tagModels: ModelInfo[]): ModelInfo[] {
+  const byId = new Map(models.map((m) => [m.id, m]))
+  for (const tag of tagModels) {
+    const existing = findOllamaCatalogModel([...byId.values()], tag.id)
+    if (!existing) {
+      byId.set(tag.id, tag)
+      continue
+    }
+    let next = existing
+    if (tag.supportsThinking === true && existing.supportsThinking !== true) {
+      next = {
+        ...next,
+        supportsThinking: true,
+        thinkingApi: tag.thinkingApi ?? existing.thinkingApi,
+        thinkingMode: tag.thinkingMode ?? existing.thinkingMode,
+        thinkingCanDisable: tag.thinkingCanDisable ?? existing.thinkingCanDisable,
+        supportedThinkingEfforts: tag.supportedThinkingEfforts ?? existing.supportedThinkingEfforts,
+        thinkingDefaultEffort: tag.thinkingDefaultEffort ?? existing.thinkingDefaultEffort
+      }
+    } else if (tag.supportsThinking === false && existing.supportsThinking == null) {
+      next = { ...next, supportsThinking: false }
+    }
+    if (
+      tag.contextWindow != null &&
+      tag.contextWindow > 0 &&
+      !(existing.contextWindow != null && existing.contextWindow > 0)
+    ) {
+      next = { ...next, contextWindow: tag.contextWindow }
+    }
+    byId.set(existing.id, next)
+  }
+  return [...byId.values()]
+}
+
+/** Process-local: selected model already synced via /api/show (avoid per-turn POSTs). */
+const ollamaSelectedShowCompleted = new Set<string>()
+
+function ollamaSelectedShowKey(host: string, model: string): string {
+  return `${host}\0${model}`
+}
+
+/** Drop show-completed markers so Refresh can re-fetch thinking + context. */
+export function clearOllamaSelectedShowCache(): void {
+  ollamaSelectedShowCompleted.clear()
+}
+
+/**
+ * One `/api/show` for the selected Ollama model (Bearer API key on Cloud).
+ * Refreshes thinking fields and context window — list/tags often omit both.
+ * Always fetches once per host+model (seeds invent 32k; do not treat that as live).
+ */
+export async function enrichOllamaModelsWithSelectedShow(
+  models: ModelInfo[],
+  opts: {
+    model: string
+    baseUrl?: string
+    apiKey?: string | null
+    signal?: AbortSignal
+  }
+): Promise<ModelInfo[]> {
+  const id = opts.model.trim()
+  if (!id) return models
+  const existing = findOllamaCatalogModel(models, id)
+
+  const host = ollamaNativeHost(opts.baseUrl || OLLAMA_LOCAL_DEFAULT)
+  if (isOllamaCloudHost(host) && !opts.apiKey?.trim()) return models
+  const cloud = isOllamaCloudHost(host)
+  const showId = cloud ? ollamaIdWithoutCloudSuffix(id) : id
+
+  const doneKey = ollamaSelectedShowKey(host, id)
+  // Already fetched a useful show this process — avoid spam.
+  if (ollamaSelectedShowCompleted.has(doneKey) && existing) return models
+
+  const headers: Record<string, string> = {}
+  if (opts.apiKey?.trim()) {
+    headers.Authorization = `Bearer ${opts.apiKey.trim()}`
+  }
+
+  try {
+    const raw = await fetchJsonPost(
+      `${host}/api/show`,
+      headers,
+      { model: showId },
+      opts.signal,
+      'ollama',
+      { quiet: true }
+    )
+    if (!raw || typeof raw !== 'object') return models
+    const row = raw as Record<string, unknown>
+    const thinkingPartial = thinkingPartialFromCatalogRow(
+      { ...row, id: existing?.id ?? id, name: existing?.id ?? id, model: showId },
+      'ollama'
+    )
+    const capNames = ollamaCapabilityNames(row.capabilities)
+    const showContext = contextWindowFromOllamaShow(row, { ignoreNumCtx: cloud })
+    const capsPresent = Array.isArray(row.capabilities)
+    const gotWindow = showContext != null && showContext > 0
+    // Do not mark complete on an empty Cloud payload — list stubs omit both.
+    if (capsPresent || gotWindow) {
+      ollamaSelectedShowCompleted.add(doneKey)
+    }
+    // Show omission is unknown — do not keep a list-stub `false` that hid Think.
+    const supportsThinking =
+      thinkingPartial.supportsThinking === true
+        ? true
+        : thinkingPartial.supportsThinking === false
+          ? false
+          : existing?.supportsThinking === true
+            ? true
+            : undefined
+    const catalogId = existing?.id ?? id
+    const next = baseModelInfo(
+      catalogId,
+      {
+        displayName: existing?.displayName ?? catalogId,
+        contextWindow: showContext ?? existing?.contextWindow,
+        maxOutputTokens: existing?.maxOutputTokens,
+        inputModalities: existing?.inputModalities,
+        outputModalities: existing?.outputModalities,
+        supportsTools: existing?.supportsTools ?? true,
+        supportsVision:
+          existing?.supportsVision ||
+          Boolean(capNames?.includes('vision')) ||
+          /llava|vision/i.test(catalogId),
+        supportedServiceTiers: existing?.supportedServiceTiers,
+        ...thinkingPartial,
+        supportsThinking
+      },
+      'ollama'
+    )
+    if (!existing) return [...models, next]
+    return models.map((m) => (m.id === existing.id ? next : m))
+  } catch {
+    return models
+  }
 }
 
 function normalizeXaiLanguageModels(data: unknown): ModelInfo[] {
@@ -724,12 +1032,7 @@ function normalizeXaiLanguageModels(data: unknown): ModelInfo[] {
     out.push(
       baseModelInfo(id, {
         displayName: typeof row.name === 'string' ? row.name : id,
-        contextWindow:
-          typeof row.context_window === 'number'
-            ? row.context_window
-            : typeof row.context_length === 'number'
-              ? row.context_length
-              : undefined,
+        contextWindow: extractContextWindowFromCatalogRow(row),
         inputModalities: wireSupportedInputModalities(inputMods, supportsVision, 'xai'),
         outputModalities: wireSupportedOutputModalities(outputMods),
         supportsTools: true,
@@ -776,8 +1079,10 @@ async function listOpenAiCompatModels(
       })
       try {
         const tags = await fetchJson(`${host}/api/tags`, headers, signal, ollamaId, quiet)
-        const names = modelsFromOllamaTags(tags).map((m) => m.id)
-        models = mergeOllamaTagNames(models, names)
+        models = mergeOllamaTagModels(
+          models,
+          modelsFromOllamaTags(tags, { ignoreNumCtx: cloud })
+        )
       } catch {
         // Tags enrich is best-effort when OpenAI list already succeeded.
       }
@@ -788,7 +1093,7 @@ async function listOpenAiCompatModels(
 
     try {
       const tags = await fetchJson(`${host}/api/tags`, headers, signal, ollamaId, quiet)
-      const models = modelsFromOllamaTags(tags)
+      const models = modelsFromOllamaTags(tags, { ignoreNumCtx: cloud })
       if (models.length) return models
       throw new Error('Ollama /api/tags returned no models')
     } catch (tagsErr) {
@@ -845,19 +1150,14 @@ export function buildOpenAiCompatBody(
   req: ProviderChatRequest,
   opts: OpenAiCompatOptions,
   providerId?: ProviderId,
-  overrides?: { strictTools?: boolean; omitReasoning?: boolean; omitIncludeUsage?: boolean }
+  overrides?: { omitReasoning?: boolean; omitIncludeUsage?: boolean }
 ): Record<string, unknown> {
-  const strictTools =
-    overrides?.strictTools !== undefined
-      ? overrides.strictTools
-      : req.strictTools !== false && req.tools.length > 0 && !opts.ollamaVision
   const tools = req.tools.map((t) => ({
     type: 'function',
     function: {
       name: t.name,
       description: t.description,
-      parameters: t.parameters,
-      ...(strictTools ? { strict: true } : {})
+      parameters: t.parameters
     }
   }))
   const stripReasoningReplay =
@@ -954,11 +1254,19 @@ export function buildOpenAiCompatBody(
     } else if (providerId === 'xai') {
       body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(effort, 'xai')
     } else if (providerId === 'ollama') {
+      // /v1/chat/completions: reasoning_effort is the real control (native `think`
+      // is not on ChatCompletionRequest). Dual-send think for older local daemons.
+      const gptOss = isOllamaGptOssModel(req.model)
       const mode = req.modelInfo?.thinkingMode
-      const efforts = req.modelInfo?.supportedThinkingEfforts
-      if (mode === 'effort' || (efforts && efforts.length > 0)) {
-        body.think = normalizeEffortForOllamaThink(effort, efforts)
+      const efforts =
+        req.modelInfo?.supportedThinkingEfforts ??
+        (gptOss ? OLLAMA_GPT_OSS_THINKING_EFFORTS : undefined)
+      if (gptOss || mode === 'effort' || (efforts && efforts.length > 0)) {
+        const level = normalizeEffortForOllamaThink(effort, efforts)
+        body.reasoning_effort = level
+        body.think = level
       } else {
+        body.reasoning_effort = 'medium'
         body.think = true
       }
     } else if (providerId === 'custom') {
@@ -972,10 +1280,16 @@ export function buildOpenAiCompatBody(
       body.reasoning_effort = normalizeEffortForMistral(effort)
     }
   } else if (req.thinking?.enabled === false && providerId === 'ollama') {
-    if (req.modelInfo?.thinkingCanDisable === false) {
-      const efforts = req.modelInfo.supportedThinkingEfforts
-      body.think = normalizeEffortForOllamaThink('low', efforts)
+    const gptOss = isOllamaGptOssModel(req.model)
+    if (req.modelInfo?.thinkingCanDisable === false || gptOss) {
+      const efforts =
+        req.modelInfo?.supportedThinkingEfforts ??
+        (gptOss ? OLLAMA_GPT_OSS_THINKING_EFFORTS : undefined)
+      const level = normalizeEffortForOllamaThink('low', efforts)
+      body.reasoning_effort = level
+      body.think = level
     } else {
+      body.reasoning_effort = 'none'
       body.think = false
     }
   } else if (req.thinking?.enabled === false && useDeepSeekThinking) {
@@ -1072,7 +1386,7 @@ export function createOpenAiCompatibleProvider(
       let maxOutputTokens = req.maxOutputTokens
       let res: Response | undefined
       let bodyOverrides:
-        | { strictTools?: boolean; omitReasoning?: boolean; omitIncludeUsage?: boolean }
+        | { omitReasoning?: boolean; omitIncludeUsage?: boolean }
         | undefined
       let lastHttpErrorText = ''
 
@@ -1092,12 +1406,11 @@ export function createOpenAiCompatibleProvider(
               signal: req.signal,
               body: JSON.stringify(body)
             },
-            { maxAttempts: 5 }
+            { maxAttempts: CHAT_FETCH_MAX_ATTEMPTS }
           )
         } catch (err) {
           if (req.signal.aborted) throw err
-          logProviderFailure(id, 'network', {})
-          yield { type: 'error', error: formatError(err), errorCode: 'PROVIDER_NETWORK' }
+          yield providerFetchFailureChunk(id, err)
           return
         }
 
@@ -1122,26 +1435,20 @@ export function createOpenAiCompatibleProvider(
         if (
           !bodyOverrides?.omitIncludeUsage &&
           opts.includeUsage !== false &&
-          !opts.ollamaVision &&
           shouldRetryOmitIncludeUsage(res.status, text)
         ) {
           bodyOverrides = { ...bodyOverrides, omitIncludeUsage: true }
           continue
         }
 
-        // OpenRouter/OpenAI-compat: one fallback without strict tools, then
-        // without reasoning — mirrors Anthropic's 400 field-stripping retries.
+        // OpenRouter/OpenAI-compat: fallback without reasoning when the host rejects the body.
         // Also retry on 404 "no endpoints" (privacy/params often report as 404).
         if (
           (id === 'openrouter' || opts.openRouterReasoning) &&
           shouldRetryOpenRouterCompatBody(res.status, text)
         ) {
-          if (req.tools.length > 0 && bodyOverrides?.strictTools !== false) {
-            bodyOverrides = { ...bodyOverrides, strictTools: false }
-            continue
-          }
           if (!bodyOverrides?.omitReasoning && req.thinking?.enabled) {
-            bodyOverrides = { ...bodyOverrides, strictTools: false, omitReasoning: true }
+            bodyOverrides = { ...bodyOverrides, omitReasoning: true }
             continue
           }
         }
@@ -1192,6 +1499,16 @@ export function createOpenAiCompatibleProvider(
       }
 
       for await (const chunk of iterateSseJson(res, req.signal, drops)) {
+        const sseError = openAiCompatSseErrorMessage(chunk)
+        if (sseError) {
+          logProviderFailure(id, 'http', {
+            message: sseError,
+            model: req.model
+          })
+          yield { type: 'error', error: sseError, errorCode: 'PROVIDER_HTTP' }
+          return
+        }
+
         const usage = parseOpenAiCompatUsage(chunk.usage)
         if (usage) lastUsage = usage
 
@@ -1199,10 +1516,12 @@ export function createOpenAiCompatibleProvider(
         const delta = choices?.[0]?.delta as Record<string, unknown> | undefined
         const message = choices?.[0]?.message as Record<string, unknown> | undefined
 
-        // xAI often delivers whole tool_calls on message rather than delta args
-        const wholeCalls =
-          (delta?.tool_calls as Array<Record<string, unknown>> | undefined) ??
-          (message?.tool_calls as Array<Record<string, unknown>> | undefined)
+        // Reasoning reads delta AND message snapshots (suffix extract). Tool
+        // args must do the same: `delta.tool_calls ?? message.tool_calls`
+        // dropped growing `message.tool_calls` whenever chrome-only delta
+        // rows were present (DeepSeek: empty arguments for tens of seconds).
+        const deltaCalls = asToolCallArray(delta?.tool_calls)
+        const messageCalls = asToolCallArray(message?.tool_calls)
         const contentParts = parseOpenAiCompatDeltaContent(delta?.content)
         const textContent = contentParts.text
 
@@ -1265,11 +1584,12 @@ export function createOpenAiCompatibleProvider(
 
         // Prefer tool deltas before text in the same SSE frame so the UI can
         // paint tool chrome without a text-first flash.
-        if (wholeCalls) {
-          yield* emitThinkingDoneIfNeeded()
-          for (const tc of wholeCalls) {
-            const index = typeof tc.index === 'number' ? tc.index : pending.size
-            const fn = tc.function as { name?: string; arguments?: string } | undefined
+        const absorbToolCalls = function* (
+          calls: Array<Record<string, unknown>>
+        ): Generator<StreamChunk, void, unknown> {
+          for (const tc of calls) {
+            const index = pendingIndexForToolCall(pending, tc)
+            const fn = tc.function as { name?: string; arguments?: unknown } | undefined
             const chunkId =
               typeof tc.id === 'string' && tc.id.trim() ? tc.id.trim() : undefined
             const existing = pending.get(index) ?? {
@@ -1281,34 +1601,38 @@ export function createOpenAiCompatibleProvider(
             if (fn?.name) {
               // Prefer whole name when chunk includes id (xAI whole-chunk); else append deltas
               if (chunkId && fn.name) existing.name = fn.name
-              else existing.name += fn.name
-            }
-            if (fn?.arguments) {
-              if (chunkId && fn.name && fn.arguments.startsWith('{') && !existing.arguments) {
-                existing.arguments = fn.arguments
-              } else if (
-                chunkId &&
-                fn.name &&
-                existing.arguments &&
-                fn.arguments.length >= existing.arguments.length &&
-                !fn.arguments.startsWith(existing.arguments.slice(0, 8))
-              ) {
-                existing.arguments = fn.arguments
-              } else {
-                existing.arguments += fn.arguments
+              else if (!existing.name) existing.name = fn.name
+              else if (!existing.name.endsWith(fn.name) && !fn.name.startsWith(existing.name)) {
+                existing.name += fn.name
+              } else if (fn.name.length > existing.name.length) {
+                existing.name = fn.name
               }
             }
+            const argChunk = openAiCompatArgumentsChunk(fn?.arguments)
+            let yieldArguments = argChunk ?? ''
+            if (argChunk) {
+              const merged = mergeOpenAiCompatToolArgDelta(existing.arguments, argChunk)
+              existing.arguments = merged.arguments
+              yieldArguments = merged.yieldDelta
+            }
             pending.set(index, existing)
+            if (!fn?.name && !yieldArguments) continue
             yield {
               type: 'tool_call_delta',
               toolCallDelta: {
                 index,
-                id: chunkId,
-                name: fn?.name,
-                arguments: fn?.arguments
+                id: existing.id,
+                name: fn?.name || undefined,
+                arguments: yieldArguments
               }
             }
           }
+        }
+
+        if (deltaCalls.length || messageCalls.length) {
+          yield* emitThinkingDoneIfNeeded()
+          if (deltaCalls.length) yield* absorbToolCalls(deltaCalls)
+          if (messageCalls.length) yield* absorbToolCalls(messageCalls)
         }
 
         if (textContent) {
@@ -1338,7 +1662,6 @@ export function createOpenAiCompatibleProvider(
         type: 'done',
         usage: lastUsage,
         stopReason,
-        malformedChunks: drops.dropped || undefined,
         reasoningState:
           reasoningContent || reasoningDetails !== undefined || finalizedThinkChunks
             ? {

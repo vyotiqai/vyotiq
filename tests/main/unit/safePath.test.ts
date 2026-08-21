@@ -8,9 +8,14 @@ import {
 } from '@main/workspace/safePath'
 
 const canSymlink = (() => {
-  if (process.platform === 'win32') return false
   const root = mkdtempSync(join(tmpdir(), 'vyotiq-symlink-probe-'))
   try {
+    if (process.platform === 'win32') {
+      const target = join(root, 't')
+      mkdirSync(target)
+      symlinkSync(target, join(root, 'link'), 'junction')
+      return true
+    }
     const target = join(root, 't.txt')
     writeFileSync(target, 'x', 'utf8')
     symlinkSync(target, join(root, 'link.txt'), 'file')
@@ -38,9 +43,17 @@ describe('resolveInsideWorkspace', () => {
     const root = mkdtempSync(join(tmpdir(), 'vyotiq-safe-path-'))
     const outside = mkdtempSync(join(tmpdir(), 'vyotiq-outside-'))
     try {
-      writeFileSync(join(outside, 'secret.txt'), 'outside', 'utf8')
-      symlinkSync(join(outside, 'secret.txt'), join(root, 'link.txt'), 'file')
-      expect(() => resolveInsideWorkspace(root, 'link.txt')).toThrow(/escapes workspace/)
+      if (process.platform === 'win32') {
+        // Junctions are directory-only on Windows.
+        symlinkSync(outside, join(root, 'escape'), 'junction')
+        expect(() => resolveInsideWorkspace(root, 'escape/secret.txt')).toThrow(
+          /escapes workspace/
+        )
+      } else {
+        writeFileSync(join(outside, 'secret.txt'), 'outside', 'utf8')
+        symlinkSync(join(outside, 'secret.txt'), join(root, 'link.txt'), 'file')
+        expect(() => resolveInsideWorkspace(root, 'link.txt')).toThrow(/escapes workspace/)
+      }
     } finally {
       rmSync(root, { recursive: true, force: true })
       rmSync(outside, { recursive: true, force: true })
@@ -54,7 +67,8 @@ describe('resolveInsideWorkspace', () => {
       const outside = mkdtempSync(join(tmpdir(), 'vyotiq-outside-'))
       try {
         mkdirSync(join(root, 'nested'))
-        symlinkSync(outside, join(root, 'nested', 'escape'), 'dir')
+        const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+        symlinkSync(outside, join(root, 'nested', 'escape'), linkType)
         expect(() => resolveInsideWorkspace(root, 'nested/escape/new.txt')).toThrow(
           /escapes workspace/
         )
@@ -84,7 +98,8 @@ describe('assertResolvedInsideWorkspace', () => {
       mkdirSync(join(root, 'nested'), { recursive: true })
       const nested = join(root, 'nested')
       rmSync(nested, { recursive: true, force: true })
-      symlinkSync(outside, nested, 'dir')
+      const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+      symlinkSync(outside, nested, linkType)
       expect(() => assertResolvedInsideWorkspace(root, join(nested, 'new.txt'))).toThrow(
         /escapes workspace/
       )

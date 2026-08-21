@@ -23,10 +23,13 @@ import {
   loadEvents,
   loadMessages,
   createRun,
+  renameRun,
   resumeRun,
-  syncMessages
+  syncMessages,
+  patchLatestTodoWriteMessage
 } from '@main/agent/state'
-import { readTodos, toolTodoWrite } from '@main/agent/tools/todo'
+import { RUN_INTERRUPTED_ERROR } from '@shared/runInterrupt'
+import { finalizeTodosOnRunEnd, readTodos, toolTodoWrite } from '@main/agent/tools/todo'
 import { resolveRunDir } from '@main/storage/paths'
 import { registerRunAbort, clearRunAbort } from '@main/agent/runRegistry'
 
@@ -155,14 +158,20 @@ describe('listRuns / interruptOrphanRuns', () => {
       status: string
       error?: string
       invokeId?: number
+      step?: number
+      resumable?: true
+      interruptedAt?: string
     }
     const finished = JSON.parse(
       readFileSync(join(resolveRunDir(workspace, 'finished'), 'status.json'), 'utf8')
     ) as { status: string }
 
     expect(wsStatus.status).toBe('cancelled')
-    expect(wsStatus.error).toMatch(/Interrupted/)
+    expect(wsStatus.error).toBe(RUN_INTERRUPTED_ERROR)
     expect(wsStatus.invokeId).toBe(3)
+    expect(wsStatus.step).toBe(1)
+    expect(wsStatus.resumable).toBe(true)
+    expect(wsStatus.interruptedAt).toEqual(expect.any(String))
     expect(finished.status).toBe('done')
 
     const wsEvents = loadEvents(wsDir, 'orphan-ws')
@@ -249,6 +258,41 @@ describe('listRuns / interruptOrphanRuns', () => {
     expect(readTodos(dir).find((todo) => todo.id === '1')?.status).toBe('cancelled')
   })
 
+  it('patches latest todo_write message to pending when finalize returns done content', async () => {
+    const runId = 'todo-done-patch'
+    const dir = resolveRunDir(workspace, runId)
+    writeStatus(dir, {
+      status: 'running',
+      step: 1,
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      goal: 'ship',
+      workspacePath: workspace
+    })
+    syncMessages(dir, [
+      { role: 'user', content: 'go' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'todo1', name: 'todo_write', arguments: '{}' }]
+      },
+      {
+        role: 'tool',
+        toolCallId: 'todo1',
+        toolName: 'todo_write',
+        content: '0/1 complete\n[~] Ship'
+      }
+    ])
+    toolTodoWrite(dir, [{ id: '1', content: 'Ship', status: 'in_progress' }])
+    finalizeTodosOnRunEnd(dir, 'done')
+    await patchLatestTodoWriteMessage(dir, 'done')
+    const todoMessage = loadMessages(workspace, runId).find(
+      (message) => message.role === 'tool' && message.toolName === 'todo_write'
+    )
+    expect(todoMessage?.content).toContain('[ ] Ship')
+    expect(todoMessage?.content).not.toContain('[~]')
+    expect(readTodos(dir)[0]?.status).toBe('pending')
+  })
+
   it('does not interrupt runs that are still active in memory', async () => {
     const liveId = 'live-run'
     const liveDir = resolveRunDir(workspace, liveId)
@@ -327,7 +371,7 @@ describe('listRuns / interruptOrphanRuns', () => {
         content: 'Cancelled',
         ok: false
       },
-      { role: 'user', content: 'continue' }
+      expect.objectContaining({ role: 'user', content: 'continue' })
     ])
     const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as {
       status: string
@@ -386,5 +430,16 @@ describe('listRuns / interruptOrphanRuns', () => {
     syncMessages(dir, messages)
 
     expect(loadMessages(workspace, runId)).toEqual(messages)
+  })
+
+  it('renames run goal atomically in status and contract', () => {
+    const runId = 'rename-run'
+    const dir = createRun(workspace, runId, 'old goal')
+    writeFileSync(join(dir, 'contract.md'), '# Run contract\n\n## Goal\n\nold goal\n\n## Done when\n\nx\n', 'utf8')
+    const summary = renameRun(workspace, runId, 'new goal')
+    expect(summary.goal).toBe('new goal')
+    const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as { goal?: string }
+    expect(status.goal).toBe('new goal')
+    expect(readFileSync(join(dir, 'contract.md'), 'utf8')).toContain('new goal')
   })
 })

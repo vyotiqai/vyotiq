@@ -11,8 +11,6 @@ import { isSkillMdFilename, resolveSkillMdPath, SKILL_MD } from '../skills/paths
 import { findWorkspaceSettingsOverride, getWorkspaces } from '../../workspace/workspaces'
 import type { MarketplaceOverrides } from '../../../shared/ipc'
 
-const CONTENT_CAP = 120_000
-
 function marketplaceOverridesFor(workspacePath: string): MarketplaceOverrides | null {
   const override = findWorkspaceSettingsOverride(getWorkspaces(), workspacePath)
   return override?.marketplaceOverrides ?? null
@@ -40,7 +38,7 @@ export function toolSkill(
     return loadPluginRuleBody(pluginRule)
   }
 
-  const skill = findEnabledSkillByName(skillName, overrides)
+  const skill = findEnabledSkillByName(skillName, overrides, workspaceRoot)
   if (!skill) {
     throw new Error(
       `Unknown or disabled skill/plugin-rule: ${skillName}. Enable it in Marketplace, or check Available skills / Plugin rules.`
@@ -86,7 +84,7 @@ export function toolSkill(
       .filter(Boolean)
       .join('\n')
       .trim()
-    return out.slice(0, CONTENT_CAP)
+    return out
   }
 
   let abs: string
@@ -108,11 +106,11 @@ export function toolSkill(
     const kids = listSkillBundledFiles(abs, 60).map((f) =>
       requested ? `${requested.replace(/\/$/, '')}/${f}` : f
     )
-    return [`Directory: ${requested}`, ...kids.map((k) => `- ${k}`)].join('\n').slice(0, CONTENT_CAP)
+    return [`Directory: ${requested}`, ...kids.map((k) => `- ${k}`)].join('\n')
   }
   const content = readFileSync(abs, 'utf8')
   const header = `# Skill file: ${skill.name} / ${requested}\n\n`
-  return (header + content).slice(0, CONTENT_CAP)
+  return header + content
 }
 
 export function summarizeSkillArgs(name: string, path?: string): string {

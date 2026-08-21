@@ -1,14 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import {
-  trimToolsToBudget,
-  toolCatalogFingerprint,
-  selectMcpPinsToEvict
-} from '@main/agent/context/toolsBudget'
 import type { ToolDefinition } from '@main/agent/providers/types'
+import { AGENT_TOOLS } from '@main/agent/types'
 import {
-  MCP_PIN_IDLE_TTL_STEPS,
-  MCP_PINNED_SOFT_MAX
-} from '../../../src/shared/domain/contextBudget'
+  buildStepToolCatalog,
+  isOptionalBuiltinName,
+  loopHintForDeferredMcpTools,
+  DEFERRED_MCP_HINT_CAP,
+  UNUSED_PINNED_MCP_TTL_STEPS,
+  toolCatalogFingerprint
+} from '@main/agent/context/toolsBudget'
+import { toolsBudgetFromRaw } from '@shared/domain/contextBudget'
 
 function tool(name: string, description: string): ToolDefinition {
   return {
@@ -18,235 +19,194 @@ function tool(name: string, description: string): ToolDefinition {
   }
 }
 
-describe('trimToolsToBudget', () => {
-  it('keeps all built-in tools even when budget is tight', () => {
+describe('buildStepToolCatalog', () => {
+  it('keeps every builtin including formerly deferred browser and merge tools', () => {
     const builtins = [
       tool('read', 'read files'),
       tool('edit', 'edit files'),
-      tool('search', 'search files')
+      tool('browser_navigate', 'nav'),
+      tool('browser_click', 'click'),
+      tool('browser_hover', 'hover'),
+      tool('diagnostics', 'diag'),
+      tool('merge_agent_instance', 'merge')
     ]
-    const result = trimToolsToBudget(builtins, 50)
-    expect(result.tools.map((t) => t.name)).toEqual(['read', 'edit', 'search'])
+    const result = buildStepToolCatalog(builtins, 1_000_000)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.tools.map((t) => t.name)).toEqual(builtins.map((t) => t.name))
+    expect(result.tools.map((t) => t.name)).toContain('browser_hover')
+    expect(result.tools.map((t) => t.name)).toContain('merge_agent_instance')
   })
 
-  it('defers unpinned MCP by default (pin via request_mcp_tools)', () => {
+  it('keeps sticky names without dropping tools from the full catalog', () => {
+    const builtins = [
+      tool('read', 'read'),
+      tool('browser_navigate', 'nav'),
+      tool('browser_hover', 'hover')
+    ]
+    const sticky = buildStepToolCatalog(builtins, 1_000_000, {
+      stickyKeptNames: new Set(['read', 'browser_navigate'])
+    })
+    expect(sticky.ok).toBe(true)
+    if (!sticky.ok) return
+    expect(sticky.tools.map((t) => t.name)).toEqual(builtins.map((t) => t.name))
+  })
+
+  it('offers the full AGENT_TOOLS catalog including hover and merge', () => {
+    expect(isOptionalBuiltinName('browser_hover')).toBe(true)
+    expect(isOptionalBuiltinName('merge_agent_instance')).toBe(true)
+
+    const result = buildStepToolCatalog(AGENT_TOOLS, toolsBudgetFromRaw(32_000))
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.tools.some((t) => t.name === 'browser_navigate')).toBe(true)
+    expect(result.tools.some((t) => t.name === 'diagnostics')).toBe(true)
+    expect(result.tools.some((t) => t.name === 'spawn_agent_instance')).toBe(true)
+    expect(result.tools.some((t) => t.name === 'await_agent_instance')).toBe(true)
+    expect(result.tools.some((t) => t.name === 'pull_agent_instance')).toBe(true)
+    expect(result.tools.some((t) => t.name === 'merge_agent_instance')).toBe(true)
+    expect(result.tools.some((t) => t.name === 'browser_hover')).toBe(true)
+    expect(result.evictedMcpNames).toEqual([])
+    expect(result.budgetOmittedMcpNames).toEqual([])
+    expect(result.omittedMcp).toBe(0)
+  })
+
+  it('includes unpinned MCP tools', () => {
     const tools = [
       tool('read', 'read'),
       tool('mcp__a__one', 'small'),
       tool('mcp__b__two', 'also small')
     ]
-    const result = trimToolsToBudget(tools, 1_000_000)
-    expect(result.tools.some((t) => t.name.startsWith('mcp__'))).toBe(false)
-    expect(result.omittedMcp).toBe(2)
+    const result = buildStepToolCatalog(tools, 1_000_000)
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.tools.map((t) => t.name)).toEqual(tools.map((t) => t.name))
+    expect(result.omittedMcp).toBe(0)
+    expect(result.policyDeferredMcpNames).toEqual([])
+    expect(result.budgetOmittedMcpNames).toEqual([])
   })
 
-  it('keeps pinned MCP when deferred mode is on', () => {
+  it('does not drop unpinned MCP when a pin set is provided', () => {
     const tools = [
       tool('read', 'read'),
       tool('mcp__a__one', 'small'),
       tool('mcp__pin__need', 'needed')
     ]
-    const result = trimToolsToBudget(tools, 1_000_000, {
+    const result = buildStepToolCatalog(tools, 1_000_000, {
       pinnedMcpNames: new Set(['mcp__pin__need']),
       deferUnpinnedMcp: true
     })
-    expect(result.tools.map((t) => t.name)).toContain('mcp__pin__need')
-    expect(result.tools.map((t) => t.name)).not.toContain('mcp__a__one')
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.tools.map((t) => t.name)).toEqual(tools.map((t) => t.name))
+    expect(result.policyDeferredMcpNames).toEqual([])
   })
 
-  it('drops MCP tools when over budget (legacy fill mode)', () => {
+  it('builds a Level-1 hint for deferred MCP tools with cap', () => {
+    expect(loopHintForDeferredMcpTools([])).toBeUndefined()
+    const names = Array.from({ length: DEFERRED_MCP_HINT_CAP + 3 }, (_, i) => `mcp__s__t${i}`)
+    const defs = names.map((name) => tool(name, `desc for ${name}`))
+    const hint = loopHintForDeferredMcpTools(names, defs)
+    expect(hint).toBeTruthy()
+    expect(hint).toMatch(/connected MCP tool\(s\) are omitted/)
+    expect(hint).toMatch(/unpinned/)
+    expect(hint).toMatch(/mcp__s__t0: desc for mcp__s__t0/)
+    expect(hint).toMatch(/request_mcp_tools/)
+    expect(hint).toMatch(/mcp_list_tools/)
+    expect(hint).toMatch(new RegExp(`\\+${3} more`))
+    expect(hint).not.toMatch(/mcp__s__t12:/)
+  })
+
+  it('never returns TOOLS_BUDGET_OVERFLOW', () => {
     const tools = [
       tool('read', 'read'),
-      tool('mcp__a__one', 'x'.repeat(500)),
       tool('mcp__b__two', 'y'.repeat(500))
     ]
-    const result = trimToolsToBudget(tools, 50, { deferUnpinnedMcp: false })
-    expect(result.tools.some((t) => t.name.startsWith('mcp__'))).toBe(false)
-    expect(result.omittedMcp).toBeGreaterThan(0)
+    const result = buildStepToolCatalog(tools, 50, { deferUnpinnedMcp: false })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.tools.map((t) => t.name)).toEqual(tools.map((t) => t.name))
   })
 
-  it('does not pin oversized MCP tools ahead of smaller ones', () => {
-    const builtins = [tool('read', 'r')]
-    const small = tool('mcp__other__small', 's')
-    const bigTool = tool('mcp__heavy-graph__big', 'G'.repeat(4000))
-    const base = trimToolsToBudget(builtins, 1_000_000, { deferUnpinnedMcp: false }).estimate
-    const withSmall = trimToolsToBudget([...builtins, small], 1_000_000, {
-      deferUnpinnedMcp: false
-    }).estimate
-    const budget = withSmall + 1
-    const result = trimToolsToBudget([...builtins, bigTool, small], budget, {
-      deferUnpinnedMcp: false
-    })
-    const keptMcp = result.tools.filter((t) => t.name.startsWith('mcp__')).map((t) => t.name)
-    expect(keptMcp).toEqual(['mcp__other__small'])
-    expect(result.omittedMcpNames).toContain('mcp__heavy-graph__big')
-    expect(base).toBeLessThan(withSmall)
-  })
-
-  it('prefers pinned MCP tools over smaller unpinned ones', () => {
-    const builtins = [tool('read', 'r')]
-    const small = tool('mcp__other__small', 's')
-    const pinnedBig = tool('mcp__pin__big', 'P'.repeat(2000))
-    const base = trimToolsToBudget(builtins, 1_000_000, { deferUnpinnedMcp: false }).estimate
-    const withSmall = trimToolsToBudget([...builtins, small], 1_000_000, {
-      deferUnpinnedMcp: false
-    }).estimate
-    const smallCost = withSmall - base
-    const budget = base + smallCost + 50
-    const result = trimToolsToBudget([...builtins, small, pinnedBig], budget, {
-      pinnedMcpNames: new Set(['mcp__pin__big']),
-      deferUnpinnedMcp: false
-    })
-    expect(result.tools.map((t) => t.name)).toContain('mcp__pin__big')
-  })
-
-  it('sheds optional builtins before dropping MCP tools', () => {
-    const required = [tool('read', 'r')]
-    const optional = [tool('browser_navigate', 'B'.repeat(800))]
-    const mcp = tool('mcp__git__status', 'm')
-    const withMcp = trimToolsToBudget([...required, mcp], 1_000_000, {
-      deferUnpinnedMcp: false
-    }).estimate
-    const result = trimToolsToBudget([...required, ...optional, mcp], withMcp + 5, {
-      deferUnpinnedMcp: false
-    })
-    expect(result.tools.map((t) => t.name)).toContain('mcp__git__status')
-    expect(result.tools.map((t) => t.name)).not.toContain('browser_navigate')
-    expect(result.omittedMcp).toBe(0)
-  })
-
-
-
-  it('keeps a sticky catalog across steps (fingerprint stable)', () => {
+  it('keeps sticky catalog fingerprint stable for the full tool list', () => {
     const required = [tool('read', 'r'), tool('edit', 'e')]
-    const optional = [tool('browser_navigate', 'nav')]
-    const first = trimToolsToBudget([...required, ...optional], 1_000_000)
+    const optional = [tool('browser_hover', 'hover')]
+    const first = buildStepToolCatalog([...required, ...optional], 1_000_000)
+    expect(first.ok).toBe(true)
+    if (!first.ok) return
     expect(first.fingerprint).toBe(toolCatalogFingerprint(first.tools))
-    const second = trimToolsToBudget([...required, ...optional], 1_000_000, {
+    expect(first.tools.map((t) => t.name)).toContain('browser_hover')
+    const second = buildStepToolCatalog([...required, ...optional], 1_000_000, {
       stickyKeptNames: new Set(first.tools.map((t) => t.name))
     })
-    expect(second.tools.map((t) => t.name)).toEqual(first.tools.map((t) => t.name))
+    expect(second.ok).toBe(true)
+    if (!second.ok) return
     expect(second.fingerprint).toBe(first.fingerprint)
   })
 
-  it('append-admits pins and sheds sticky optionals when over tools budget', () => {
-    const required = [tool('read', 'r')]
-    const optional = [tool('browser_navigate', 'B'.repeat(2000))]
-    const pinned = tool('mcp__pin__need', 'P'.repeat(2000))
-    const first = trimToolsToBudget([...required, ...optional], 1_000_000)
-    expect(first.tools.map((t) => t.name)).toContain('browser_navigate')
-    const tight = first.estimate + 20
-    const sticky = trimToolsToBudget([...required, ...optional, pinned], tight, {
-      pinnedMcpNames: new Set(['mcp__pin__need']),
-      stickyKeptNames: new Set(first.tools.map((t) => t.name))
+  it('does not evict unused pinned MCP after the idle TTL', () => {
+    const tools = [
+      tool('read', 'Read a file in the workspace'),
+      tool('edit', 'Edit a file in the workspace'),
+      tool('browser_hover', 'Hover a snapshot ref'),
+      tool('mcp__github__create_issue', 'Create a GitHub issue from title and body'),
+      tool('mcp__github__list_issues', 'List GitHub issues in the current repository')
+    ]
+    const pinned = new Set(['mcp__github__create_issue', 'mcp__github__list_issues'])
+    const lastUsed = new Map([
+      ['mcp__github__create_issue', 2],
+      ['mcp__github__list_issues', 2]
+    ])
+    const expired = buildStepToolCatalog(tools, 1_000_000, {
+      pinnedMcpNames: pinned,
+      deferUnpinnedMcp: true,
+      catalogStep: 2 + UNUSED_PINNED_MCP_TTL_STEPS,
+      mcpLastUsedByName: lastUsed
     })
-    const stickyNoBudget = trimToolsToBudget([...required, ...optional, pinned], 1_000_000, {
-      pinnedMcpNames: new Set(['mcp__pin__need']),
-      stickyKeptNames: new Set(first.tools.map((t) => t.name))
-    })
-    expect(sticky.tools.map((t) => t.name)).toContain('mcp__pin__need')
-    expect(sticky.tools.map((t) => t.name)).toContain('read')
-    // Optional shed so pin admit does not keep immortal optional schema tax.
-    expect(sticky.tools.map((t) => t.name)).not.toContain('browser_navigate')
-    expect(stickyNoBudget.tools.map((t) => t.name)).toContain('browser_navigate')
-    expect(sticky.estimate).toBeLessThan(stickyNoBudget.estimate)
+    expect(expired.ok).toBe(true)
+    if (!expired.ok) return
+    expect(expired.tools.map((t) => t.name)).toEqual(tools.map((t) => t.name))
+    expect(expired.evictedMcpNames).toEqual([])
   })
 
-  it('admits new pins append-only mid-run without reshuffling sticky order', () => {
-    const required = [tool('read', 'r')]
-    const optional = [tool('web_search', 'search')]
-    const pinned = tool('mcp__pin__need', 'small pin')
-    const first = trimToolsToBudget([...required, ...optional], 1_000_000)
-    const sticky = trimToolsToBudget([...required, ...optional, pinned], 1_000_000, {
-      pinnedMcpNames: new Set(['mcp__pin__need']),
-      stickyKeptNames: new Set(first.tools.map((t) => t.name))
-    })
-    expect(sticky.tools.map((t) => t.name).slice(0, first.tools.length)).toEqual(
-      first.tools.map((t) => t.name)
-    )
-    expect(sticky.tools.map((t) => t.name)).toContain('mcp__pin__need')
-    expect(sticky.tools.map((t) => t.name).at(-1)).toBe('mcp__pin__need')
-    expect(sticky.fingerprint).not.toBe(first.fingerprint)
-    expect(sticky.omittedMcpNames).not.toContain('mcp__pin__need')
-  })
-
-  it('does not append unpinned MCP into a sticky catalog', () => {
-    const required = [tool('read', 'r')]
-    const unpinned = tool('mcp__other__skip', 'skip me')
-    const first = trimToolsToBudget(required, 1_000_000)
-    const sticky = trimToolsToBudget([...required, unpinned], 1_000_000, {
-      stickyKeptNames: new Set(first.tools.map((t) => t.name)),
-      deferUnpinnedMcp: true
-    })
-    expect(sticky.tools.map((t) => t.name)).toEqual(first.tools.map((t) => t.name))
-    expect(sticky.omittedMcpNames).toContain('mcp__other__skip')
-  })
-
-  it('evicts idle pinned MCP from sticky catalog after TTL', () => {
-    const required = [tool('read', 'r')]
-    const pinned = tool('mcp__pin__old', 'old')
-    const first = trimToolsToBudget([...required, pinned], 1_000_000, {
-      pinnedMcpNames: new Set(['mcp__pin__old']),
-      currentStep: 1,
-      mcpLastUsedByName: new Map([['mcp__pin__old', 1]])
-    })
-    expect(first.tools.map((t) => t.name)).toContain('mcp__pin__old')
-    const later = trimToolsToBudget([...required, pinned], 1_000_000, {
-      pinnedMcpNames: new Set(['mcp__pin__old']),
-      stickyKeptNames: new Set(first.tools.map((t) => t.name)),
-      currentStep: 1 + MCP_PIN_IDLE_TTL_STEPS,
-      mcpLastUsedByName: new Map([['mcp__pin__old', 1]])
-    })
-    expect(later.tools.map((t) => t.name)).not.toContain('mcp__pin__old')
-    expect(later.evictedMcpNames).toContain('mcp__pin__old')
-    expect(later.tools.map((t) => t.name)).toContain('read')
-  })
-
-  it('never evicts required builtins when shedding idle MCP', () => {
-    const required = [tool('read', 'r'), tool('edit', 'e')]
-    const pinned = tool('mcp__pin__x', 'x')
-    const result = trimToolsToBudget([...required, pinned], 1_000_000, {
-      pinnedMcpNames: new Set(['mcp__pin__x']),
-      stickyKeptNames: new Set(['read', 'edit', 'mcp__pin__x']),
-      currentStep: 100,
-      mcpLastUsedByName: new Map([['mcp__pin__x', 1]])
-    })
-    expect(result.tools.map((t) => t.name)).toEqual(['read', 'edit'])
-    expect(result.evictedMcpNames).toEqual(['mcp__pin__x'])
-  })
-
-  it('append-admits re-pin after idle eviction', () => {
-    const required = [tool('read', 'r')]
-    const pinned = tool('mcp__pin__need', 'need')
-    const afterEvict = trimToolsToBudget([...required, pinned], 1_000_000, {
-      pinnedMcpNames: new Set(),
-      stickyKeptNames: new Set(['read']),
-      currentStep: 20,
+  it('keeps required builtins, deferred builtins, and unstamped pins', () => {
+    const tools = [
+      tool('read', 'Read a file in the workspace'),
+      tool('browser_hover', 'Hover a snapshot ref'),
+      tool('mcp__linear__create_issue', 'Create a Linear issue from title and description')
+    ]
+    const result = buildStepToolCatalog(tools, 1_000_000, {
+      pinnedMcpNames: new Set(['mcp__linear__create_issue']),
+      stickyKeptNames: new Set(['read', 'browser_hover', 'mcp__linear__create_issue']),
+      deferUnpinnedMcp: true,
+      catalogStep: 20,
       mcpLastUsedByName: new Map()
     })
-    expect(afterEvict.tools.map((t) => t.name)).not.toContain('mcp__pin__need')
-    const repin = trimToolsToBudget([...required, pinned], 1_000_000, {
-      pinnedMcpNames: new Set(['mcp__pin__need']),
-      stickyKeptNames: new Set(afterEvict.tools.map((t) => t.name)),
-      currentStep: 21,
-      mcpLastUsedByName: new Map([['mcp__pin__need', 21]])
-    })
-    expect(repin.tools.map((t) => t.name)).toContain('mcp__pin__need')
-    expect(repin.evictedMcpNames).toEqual([])
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.tools.map((t) => t.name)).toEqual(tools.map((t) => t.name))
+    expect(result.evictedMcpNames).toEqual([])
   })
-})
 
-describe('selectMcpPinsToEvict', () => {
-  it('evicts LRU when over soft max', () => {
-    const names = Array.from({ length: MCP_PINNED_SOFT_MAX + 3 }, (_, i) => `mcp__s__t${i}`)
-    const lastUsed = new Map(names.map((n, i) => [n, i + 1]))
-    const evicted = selectMcpPinsToEvict(names, {
-      currentStep: 50,
-      lastUsedByName: lastUsed,
-      idleTtlSteps: 1000,
-      softMax: MCP_PINNED_SOFT_MAX
+  it('does not evict unused sticky MCP pins', () => {
+    const tools = [
+      tool('read', 'Read a file in the workspace'),
+      tool('mcp__github__create_issue', 'Create a GitHub issue from title and body'),
+      tool('mcp__github__list_pulls', 'List pull requests for the current repository')
+    ]
+    const result = buildStepToolCatalog(tools, 1_000_000, {
+      pinnedMcpNames: new Set(['mcp__github__create_issue', 'mcp__github__list_pulls']),
+      stickyKeptNames: new Set(['read', 'mcp__github__create_issue', 'mcp__github__list_pulls']),
+      deferUnpinnedMcp: true,
+      catalogStep: 10,
+      mcpLastUsedByName: new Map([
+        ['mcp__github__create_issue', 9],
+        ['mcp__github__list_pulls', 3]
+      ])
     })
-    expect(evicted).toHaveLength(3)
-    expect(evicted).toEqual(['mcp__s__t0', 'mcp__s__t1', 'mcp__s__t2'])
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.tools.map((t) => t.name)).toEqual(tools.map((t) => t.name))
+    expect(result.evictedMcpNames).toEqual([])
   })
 })

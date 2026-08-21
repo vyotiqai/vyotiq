@@ -1,17 +1,24 @@
+import { readPathArg } from './argAccess'
+
 /** Workspace-local reads safe to run concurrently (no file mutation). */
 const PARALLEL_SAFE_BUILTIN = new Set([
   'read',
   'search',
   'glob',
   'grep',
+  'codebase_search',
   'list_dir',
   'memory_list',
   'memory_read',
   'Skill',
   'git_status',
   'git_diff',
-  'mcp_list_tools'
+  'mcp_list_tools',
+  'pull_agent_instance'
 ])
+
+/** Single-file writes that may overlap when normalized paths are disjoint. */
+const PARALLEL_MUTATION_BUILTIN = new Set(['edit', 'str_replace'])
 
 /**
  * Tools that skip approval in `mutating` mode.
@@ -23,8 +30,31 @@ const APPROVAL_EXEMPT_BUILTIN = new Set(
   [...PARALLEL_SAFE_BUILTIN].filter((name) => name !== 'mcp_list_tools')
 )
 
-/** Serial interactive tools — not parallel-safe, but not tool-approval gated. */
-const SERIAL_APPROVAL_EXEMPT_BUILTIN = new Set(['ask_question', 'switch_mode'])
+/**
+ * Serial tools — not parallel-safe, but not tool-approval gated.
+ * Interactive gates have their own flow.
+ */
+const SERIAL_APPROVAL_EXEMPT_BUILTIN = new Set([
+  'ask_question',
+  'switch_mode',
+  'todo_write',
+  'await_agent_instance',
+  'spawn_agent_instance'
+])
+
+/** Agent-mode-only builtins (inline instance delegation). */
+export const AGENT_ONLY_BUILTIN = new Set([
+  'spawn_agent_instance',
+  'await_agent_instance',
+  'pull_agent_instance',
+  'merge_agent_instance'
+])
+
+export const MAX_PARALLEL_READ_TOOLS = 8
+export const MAX_PARALLEL_MUTATION_TOOLS = 4
+
+/** Consecutive same-class groups in one step. Do not reorder mixed spawn/await. */
+export type StepToolBatchClass = 'read' | 'mutation' | 'spawn' | 'await' | 'serial'
 
 /**
  * Built-in tools safe to run in parallel (no workspace mutation).
@@ -36,6 +66,71 @@ export function isParallelSafeTool(name: string): boolean {
   return PARALLEL_SAFE_BUILTIN.has(name)
 }
 
+/** `edit` / `str_replace` only. `multi_edit` and `delete` stay serial. */
+export function isParallelMutationTool(name: string): boolean {
+  return PARALLEL_MUTATION_BUILTIN.has(name)
+}
+
+export function isParallelSpawnTool(name: string): boolean {
+  return name === 'spawn_agent_instance'
+}
+
+export function isParallelAwaitTool(name: string): boolean {
+  return name === 'await_agent_instance'
+}
+
+export function stepToolBatchClass(name: string): StepToolBatchClass {
+  if (isParallelSafeTool(name)) return 'read'
+  if (isParallelMutationTool(name)) return 'mutation'
+  if (isParallelSpawnTool(name)) return 'spawn'
+  if (isParallelAwaitTool(name)) return 'await'
+  return 'serial'
+}
+
+/**
+ * Normalized relative path used to keep same-file mutations serial.
+ * Missing/empty path → undefined (caller must run that call as a singleton).
+ */
+export function parallelMutationPathKey(args: Record<string, unknown>): string | undefined {
+  const raw = readPathArg(args)
+  if (!raw) return undefined
+  const normalized = raw.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+$/, '').trim()
+  if (!normalized || normalized === '.') return undefined
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+export function parallelLimitForBatchClass(cls: StepToolBatchClass): number {
+  switch (cls) {
+    case 'read':
+    case 'mutation':
+    case 'spawn':
+    case 'await':
+      return Number.POSITIVE_INFINITY
+    case 'serial':
+      return 1
+    default: {
+      const exhaustive: never = cls
+      return exhaustive
+    }
+  }
+}
+
+export function isParallelBatchClass(cls: StepToolBatchClass): boolean {
+  switch (cls) {
+    case 'read':
+    case 'mutation':
+    case 'spawn':
+    case 'await':
+      return true
+    case 'serial':
+      return false
+    default: {
+      const exhaustive: never = cls
+      return exhaustive
+    }
+  }
+}
+
 /**
  * Tools that do not require approval when mode is `mutating`.
  * `browser_*` tools are serial-only and always gated (shared window + egress).
@@ -44,5 +139,3 @@ export function isParallelSafeTool(name: string): boolean {
 export function isApprovalExemptTool(name: string): boolean {
   return APPROVAL_EXEMPT_BUILTIN.has(name) || SERIAL_APPROVAL_EXEMPT_BUILTIN.has(name)
 }
-
-export const MAX_PARALLEL_READ_TOOLS = 4

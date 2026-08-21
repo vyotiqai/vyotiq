@@ -22,6 +22,7 @@ describe('ToolApprovalOnboardingModal', () => {
   it('renders mode choices when open', () => {
     render(<ToolApprovalOnboardingModal open onChoose={vi.fn()} onDismiss={vi.fn()} />)
 
+    expect(screen.getByRole('dialog', { name: 'Tool approval' })).toBeTruthy()
     expect(screen.getByRole('heading', { name: 'Tool approval' })).toBeTruthy()
     expect(screen.getByRole('button', { name: /off/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /mutating tools/i })).toBeTruthy()
@@ -34,6 +35,20 @@ describe('ToolApprovalOnboardingModal', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /mutating tools/i }))
     expect(onChoose).toHaveBeenCalledWith('mutating')
+  })
+
+  it('shows a save error while keeping the choices available', () => {
+    render(
+      <ToolApprovalOnboardingModal
+        open
+        onChoose={vi.fn()}
+        onDismiss={vi.fn()}
+        error="Settings could not be saved."
+      />
+    )
+
+    expect(screen.getByRole('alert').textContent).toContain('Settings could not be saved.')
+    expect(screen.getByRole('button', { name: /all tools/i })).toBeTruthy()
   })
 
   it('calls onDismiss from Not now', () => {

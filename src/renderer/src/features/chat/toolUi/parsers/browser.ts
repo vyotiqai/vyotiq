@@ -16,6 +16,8 @@ export type BrowserSnapshotParsed = {
   refs: BrowserRef[]
   body: string
   screenshotNote: string
+  /** Relative run artifact path e.g. browser/snapshot-….jpg */
+  screenshotPath: string
   message: string
 }
 
@@ -56,23 +58,36 @@ export function parseBrowserSnapshotData(tool: UiToolRow): BrowserSnapshotParsed
       refs: [],
       body: '',
       screenshotNote: '',
+      screenshotPath: '',
       message: ''
     }
   }
 
-  const url = headerValue(content, 'URL')
+  // Prefer snapshot headers (`URL:`). browser_search prefixes a navigate preamble.
+  const url =
+    headerValue(content, 'URL') ||
+    (/^Navigated to\s+(\S+)/im.exec(content)?.[1] ?? '')
   const title = headerValue(content, 'Title')
   const tabId = headerValue(content, 'tab_id')
   const viewport = headerValue(content, 'Viewport')
+  const navLine = /^Navigated to\s+.+$/im.exec(content)?.[0]?.trim() ?? ''
 
-  const screenshotMatch = content.match(/\[Screenshot saved[^\]]*\]/i)
+  const screenshotMatch = content.match(/\[Screenshot (?:saved|capture failed)[^\]]*\]/i)
   const screenshotNote = screenshotMatch?.[0] ?? ''
+  const captureFailed = /capture failed/i.test(screenshotNote)
+  const pathFromNote =
+    /run\s+(browser\/snapshot(?:-[\w.-]+)?\.jpg)/i.exec(screenshotNote)?.[1] ??
+    (screenshotNote && !captureFailed ? 'browser/snapshot.jpg' : '')
 
   const refs: BrowserRef[] = []
   const newRefRe =
     /^-\s+@(e\d+)\s+role=("(?:\\.|[^"\\])*"|""|\S+)\s+name=("(?:\\.|[^"\\])*"|""|\S+)\s+css=("(?:\\.|[^"\\])*"|""|\S+)\s*$/gm
   const oldRefRe =
     /^-\s+@(e\d+)\s+(\S+)\s+("(?:\\.|[^"\\])*"|""|\S+)\s+css=("(?:\\.|[^"\\])*"|""|\S+)\s*$/gm
+  // Older browser snapshots omitted the leading dash and key/value labels:
+  // `@e1 link Skip to main content`. Keep that payload structured instead of
+  // sending the complete accessibility dump through the raw-text fallback.
+  const legacyRefRe = /^@(e\d+)\s+(\S+)(?:\s+(.+?))?\s*$/gm
   const parseQuoted = (value: string): string => {
     try {
       if (value.startsWith('"')) return JSON.parse(value) as string
@@ -100,6 +115,16 @@ export function parseBrowserSnapshotData(tool: UiToolRow): BrowserSnapshotParsed
       })
     }
   }
+  if (refs.length === 0) {
+    while ((m = legacyRefRe.exec(content)) !== null) {
+      refs.push({
+        id: m[1]!,
+        role: m[2]!,
+        name: m[3]?.trim() ?? '',
+        css: ''
+      })
+    }
+  }
 
   let body = ''
   const interactiveIdx = content.search(/^Interactive elements/im)
@@ -113,7 +138,27 @@ export function parseBrowserSnapshotData(tool: UiToolRow): BrowserSnapshotParsed
         .trim()
     }
   }
+  if (!body) {
+    const legacyRefLine = /^@e\d+\s+\S+(?:\s+.+)?\s*$/i
+    body = content
+      .split(/\r?\n/)
+      .filter((line) => {
+        const trimmed = line.trim()
+        if (!trimmed) return true
+        if (legacyRefLine.test(trimmed)) return false
+        if (/^(?:URL|Title|tab_id|Viewport):\s*/i.test(trimmed)) return false
+        if (/^Navigated to\s+/i.test(trimmed)) return false
+        if (/^Interactive elements\b/i.test(trimmed)) return false
+        if (/^Showing truncated preview\.?$/i.test(trimmed)) return false
+        if (/^\w+\s+\d+\s+refs?$/i.test(trimmed)) return false
+        if (/^\[Screenshot (?:saved|capture failed)\b/i.test(trimmed)) return false
+        return true
+      })
+      .join('\n')
+      .trim()
+  }
 
+  const structured = refs.length > 0 || Boolean(body) || Boolean(url)
   return {
     url,
     title: title === '(none)' ? '' : title,
@@ -122,7 +167,9 @@ export function parseBrowserSnapshotData(tool: UiToolRow): BrowserSnapshotParsed
     refs,
     body,
     screenshotNote,
-    message: refs.length === 0 && !body ? content.trim() : ''
+    screenshotPath: pathFromNote,
+    // Keep navigate preamble when present; otherwise fall back to raw content if unstructured.
+    message: structured ? navLine : content.trim()
   }
 }
 
@@ -134,7 +181,14 @@ export function parseBrowserTabsData(tool: UiToolRow): BrowserTabsParsed {
   const tabs: BrowserTabRow[] = []
 
   for (const line of content.split(/\r?\n/)) {
-    const m = line.match(/^[*\s]\s+(\S+)\s{2,}(.+?)\s{2,}(\S.*)$/)
+    // Prefer tab-delimited rows from manageTabs list; fall back to legacy "  " split.
+    const tabParts = line.match(/^[*\s]\s+(\S+)\t(.*)\t(\S.*)$/)
+    if (tabParts) {
+      tabs.push({ id: tabParts[1]!, title: tabParts[2]!.trim(), url: tabParts[3]!.trim() })
+      continue
+    }
+    // Greedy title so the last `\s{2,}` before the URL wins (titles may contain "  ").
+    const m = line.match(/^[*\s]\s+(\S+)\s{2,}(.+)\s{2,}(\S.*)$/)
     if (!m) continue
     tabs.push({ id: m[1]!, title: m[2]!.trim(), url: m[3]!.trim() })
   }
@@ -166,7 +220,9 @@ export function parseBrowserActionData(tool: UiToolRow): BrowserActionParsed {
   const tabFromContent = /^tab_id:\s*(\S+)/im.exec(message)?.[1] ?? ''
   const failed =
     tool.status === 'fail' ||
-    /timed out|failed|unknown snapshot ref|not interactable|ssrf|blocked/i.test(message)
+    /timed out|failed|unknown snapshot ref|not interactable|ssrf|blocked|ERR_|CONNECTION_REFUSED/i.test(
+      message
+    )
   return {
     target,
     tabId: tabFromArgs || tabFromContent,

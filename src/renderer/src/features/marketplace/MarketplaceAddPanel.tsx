@@ -95,7 +95,7 @@ export function MarketplaceAddPanel({
         <p className="m-0 text-xs font-medium text-fg">Add any MCP</p>
         <p className="m-0 text-caption text-secondary">
           Paste a GitHub URL, npm package, npx/uvx command, remote MCP URL, or Cursor/Claude
-          mcpServers JSON. Vyotiq detects how to run it and connects tools to the agent.
+          mcpServers JSON. Agent V detects how to run it and connects tools to the agent.
         </p>
         <textarea
           className="min-h-[72px] w-full rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-xs text-fg"
@@ -142,7 +142,7 @@ export function MarketplaceAddPanel({
             {detectResult.install &&
             (!editServer || (detectResult.kind === 'vyotiq-package' && !serverDirty)) ? (
               <p className="m-0 text-xs text-fg">
-                Vyotiq package detected — will install via marketplace.
+                Marketplace package detected — will install via marketplace.
               </p>
             ) : null}
             {editServer ? (

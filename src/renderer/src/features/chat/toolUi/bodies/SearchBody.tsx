@@ -3,8 +3,10 @@ import { TOOL_BODY_FLOW, TOOL_BODY_INNER, TOOL_BODY_PAD } from '@renderer/lib/ut
 import type { ToolBodyProps } from '../types'
 import { parseSearchData } from '../parsers/search'
 import { Chip, TruncatedBanner } from '../primitives'
+import { useRunSession } from '../../RunSessionContext'
 
 export function SearchBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps) {
+  const { onOpenWorkspaceFile } = useRunSession()
   const data = useMemo(() => parseSearchData(tool), [tool])
   const filenameHits = data.hits.filter((h) => h.isFilenameHit)
   const contentHits = data.hits.filter((h) => !h.isFilenameHit)
@@ -28,7 +30,18 @@ export function SearchBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps
             <ul className="m-0 list-none p-0">
               {filenameHits.map((hit) => (
                 <li key={hit.file} className="truncate font-mono text-caption text-fg/80">
-                  {hit.file}
+                  {onOpenWorkspaceFile ? (
+                    <button
+                      type="button"
+                      className="min-w-0 truncate text-left underline-offset-2 hover:underline"
+                      title={hit.file}
+                      onClick={() => onOpenWorkspaceFile(hit.file)}
+                    >
+                      {hit.file}
+                    </button>
+                  ) : (
+                    hit.file
+                  )}
                 </li>
               ))}
             </ul>
@@ -41,9 +54,22 @@ export function SearchBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps
             </h4>
             {contentHits.map((hit) => (
               <div key={`${hit.file}:${hit.line}`} className="mb-1 font-mono text-caption">
-                <div className="truncate text-tertiary">
-                  {hit.file}:{hit.line}
-                </div>
+                {onOpenWorkspaceFile && hit.line != null ? (
+                  <button
+                    type="button"
+                    className="truncate text-tertiary underline-offset-2 hover:underline"
+                    title={`${hit.file}:${hit.line}`}
+                    onClick={() =>
+                      onOpenWorkspaceFile(hit.file, { line: hit.line ?? undefined })
+                    }
+                  >
+                    {hit.file}:{hit.line}
+                  </button>
+                ) : (
+                  <div className="truncate text-tertiary">
+                    {hit.file}:{hit.line}
+                  </div>
+                )}
                 <div className="whitespace-pre-wrap text-fg/80 [overflow-wrap:anywhere]">
                   {hit.snippet}
                 </div>

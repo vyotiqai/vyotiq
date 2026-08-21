@@ -68,7 +68,9 @@ export type ModelInfo = z.infer<typeof ModelInfoSchema>
 export const ListModelsRequestSchema = z.object({
   provider: ProviderIdSchema,
   baseUrl: z.string().optional(),
-  forceRefresh: z.boolean().optional()
+  forceRefresh: z.boolean().optional(),
+  /** Selected model id — Ollama may `/api/show` this one for thinking caps. */
+  model: z.string().optional()
 })
 export type ListModelsRequest = z.infer<typeof ListModelsRequestSchema>
 

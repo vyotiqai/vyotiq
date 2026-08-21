@@ -14,8 +14,10 @@ const mockWin = vi.hoisted(() => ({
 }))
 
 const mockWcSend = vi.hoisted(() => vi.fn())
+const mockMainFrame = vi.hoisted(() => ({ id: 'main-frame' }))
 const mockWc = vi.hoisted(() => ({
   isDestroyed: vi.fn(() => false),
+  mainFrame: mockMainFrame,
   send: mockWcSend
 }))
 
@@ -30,6 +32,7 @@ const tryRegisterRunAbortMock = vi.hoisted(() =>
 const isRunTurnCompleteMock = vi.hoisted(() => vi.fn(() => false))
 const waitUntilRunInactiveMock = vi.hoisted(() => vi.fn(async () => true))
 const runAgentMock = vi.hoisted(() => vi.fn())
+const transcribeDictationMock = vi.hoisted(() => vi.fn())
 const runExistsMock = vi.hoisted(() => vi.fn())
 const isActiveMock = vi.hoisted(() => vi.fn(() => false))
 const resolveWritesMock = vi.hoisted(() => vi.fn())
@@ -77,6 +80,15 @@ vi.mock('electron', () => ({
   },
   dialog: {
     showOpenDialog: vi.fn()
+  },
+  Notification: class {
+    static isSupported(): boolean {
+      return false
+    }
+    static handleActivation(_cb: unknown): void {}
+    show(): void {}
+    close(): void {}
+    on(_event: string, _cb: unknown): void {}
   }
 }))
 
@@ -100,6 +112,10 @@ vi.mock('@main/settings/secrets', () => ({
   clearSecret: vi.fn(),
   getSecret: vi.fn(),
   secretStatus: vi.fn(() => ({}))
+}))
+
+vi.mock('@main/dictation/transcribe', () => ({
+  transcribeDictation: transcribeDictationMock
 }))
 
 vi.mock('@main/agent/loop', () => ({
@@ -138,6 +154,7 @@ vi.mock('@main/agent/providers/modelCache', () => ({
 }))
 
 vi.mock('@main/agent/runRegistry', () => ({
+  activeRunCount: vi.fn(() => 0),
   chatCancelResult: vi.fn(),
   listActiveRuns: vi.fn(() => []),
   registerRunAbort: registerRunAbortMock,
@@ -151,7 +168,9 @@ vi.mock('@main/agent/runRegistry', () => ({
   removeFollowUp: vi.fn(),
   getRunInvokeId: vi.fn(() => 1),
   followUpPreview: vi.fn(() => 'preview'),
-  getRunWorkspace: vi.fn(() => '/ws')
+  getRunWorkspace: vi.fn(() => '/ws'),
+  takeLateWriteCheckpoint: vi.fn(() => undefined),
+  takeLateFollowUpDropped: vi.fn(() => undefined)
 }))
 
 vi.mock('@main/agent/state', () => ({
@@ -164,7 +183,8 @@ vi.mock('@main/agent/state', () => ({
   loadToolResultContent: vi.fn(),
   deleteRun: vi.fn(),
   renameRun: (...args: unknown[]) => renameRunMock(...args),
-  runExists: runExistsMock
+  runExists: runExistsMock,
+  loadStatus: vi.fn(() => null)
 }))
 
 vi.mock('@main/workspace/workspaces', () => {
@@ -208,7 +228,7 @@ vi.mock('fs', async (importOriginal) => {
 
 vi.mock('@main/app/window', () => ({
   applyTitleBarTheme: vi.fn(),
-  getMainWindow: () => null
+  getMainWindow: vi.fn(() => mockWin)
 }))
 
 vi.mock('@main/logging/init', () => ({
@@ -237,6 +257,7 @@ describe('registerIpc', () => {
     handlers.clear()
     mockWcSend.mockReset()
     mockWc.isDestroyed.mockReturnValue(false)
+    mockWin.webContents = mockWc
     fromWebContents.mockReturnValue(mockWin)
     runAgentMock.mockReset()
     runExistsMock.mockReset()
@@ -275,6 +296,126 @@ describe('registerIpc', () => {
     handlers.clear()
   })
 
+  describe('workspace Files IPC boundary', () => {
+    const fileChannels = [
+      IPC.workspaceFileList,
+      IPC.workspaceFileRead,
+      IPC.workspaceFileSave,
+      IPC.workspaceFileCreate,
+      IPC.workspaceFileMove,
+      IPC.workspaceFileDelete,
+      IPC.workspaceFileReveal,
+      IPC.workspaceFormatterStatus,
+      IPC.workspaceFormatFile,
+      IPC.workspaceLspStatus,
+      IPC.workspaceLspRequest,
+      IPC.workspaceEditorRecoverySave,
+      IPC.workspaceEditorRecoveryLoad,
+      IPC.workspaceEditorRecoveryClear,
+      IPC.gitBlame
+    ] as const
+
+    const validPayloads: Record<(typeof fileChannels)[number], unknown> = {
+      [IPC.workspaceFileList]: {
+        workspacePath: '/not-open',
+        path: '',
+        offset: 0,
+        limit: 10
+      },
+      [IPC.workspaceFileRead]: { workspacePath: '/not-open', path: 'note.txt' },
+      [IPC.workspaceFileSave]: {
+        workspacePath: '/not-open',
+        path: 'note.txt',
+        kind: 'text',
+        content: 'draft',
+        encoding: 'utf8',
+        eol: 'lf',
+        bom: false,
+        expectedVersion: null,
+        replaceExisting: false
+      },
+      [IPC.workspaceFileCreate]: {
+        workspacePath: '/not-open',
+        parentPath: '',
+        name: 'note.txt',
+        kind: 'file',
+        replaceExisting: false
+      },
+      [IPC.workspaceFileMove]: {
+        workspacePath: '/not-open',
+        fromPath: 'a.txt',
+        toPath: 'b.txt',
+        replaceExisting: false
+      },
+      [IPC.workspaceFileDelete]: {
+        workspacePath: '/not-open',
+        path: 'note.txt',
+        recursive: false
+      },
+      [IPC.workspaceFileReveal]: {
+        workspacePath: '/not-open',
+        path: 'note.txt'
+      },
+      [IPC.workspaceFormatterStatus]: {
+        workspacePath: '/not-open',
+        path: 'note.ts'
+      },
+      [IPC.workspaceFormatFile]: {
+        workspacePath: '/not-open',
+        path: 'note.ts',
+        content: 'draft'
+      },
+      [IPC.workspaceLspStatus]: {
+        workspacePath: '/not-open',
+        path: 'note.ts'
+      },
+      [IPC.workspaceLspRequest]: {
+        workspacePath: '/not-open',
+        path: 'note.ts',
+        content: 'draft',
+        action: 'diagnostics',
+        line: 0,
+        character: 0
+      },
+      [IPC.workspaceEditorRecoverySave]: {
+        workspacePath: '/not-open',
+        sessionToken: 'session-token-for-tests',
+        generation: 1,
+        snapshot: {
+          version: 1,
+          activeTabId: null,
+          savedAt: new Date().toISOString(),
+          tabs: []
+        }
+      },
+      [IPC.workspaceEditorRecoveryLoad]: { workspacePath: '/not-open' },
+      [IPC.workspaceEditorRecoveryClear]: {
+        workspacePath: '/not-open',
+        sessionToken: 'session-token-for-tests',
+        generation: 1
+      },
+      [IPC.gitBlame]: {
+        workspacePath: '/not-open',
+        path: 'note.ts'
+      }
+    }
+
+    it('rejects invalid senders for every Files/recovery handler', async () => {
+      for (const channel of fileChannels) {
+        fromWebContents.mockReturnValueOnce(null)
+        const result = await handlers.get(channel)!({ sender: mockWc, senderFrame: mockMainFrame }, validPayloads[channel])
+        expect(result).toEqual({ ok: false, error: 'Invalid sender' })
+      }
+    })
+
+    it('rejects unopened workspaces before filesystem access', async () => {
+      for (const channel of fileChannels) {
+        const result = await handlers.get(channel)!({ sender: mockWc, senderFrame: mockMainFrame }, validPayloads[channel])
+        expect(result).toEqual({ ok: false, error: 'Workspace is not open' })
+      }
+    })
+  })
+
   describe('getSystemTheme', () => {
     it('rejects invalid senders', async () => {
       fromWebContents.mockReturnValueOnce(null)
@@ -308,7 +449,7 @@ describe('registerIpc', () => {
 
     it('returns native theme for valid senders', async () => {
       const handler = handlers.get(IPC.getSystemTheme)
-      const result = await handler!({ sender: mockWc })
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame })
       expect(result).toEqual({ ok: true, data: true })
     })
   })
@@ -326,7 +467,7 @@ describe('registerIpc', () => {
       })
 
       const handler = handlers.get(IPC.chatStart)
-      await handler!({ sender: mockWc }, chatStartPayload)
+      await handler!({ sender: mockWc, senderFrame: mockMainFrame }, chatStartPayload)
       await flushAsync()
 
       const cancelled = chatEvents().filter(
@@ -342,7 +483,7 @@ describe('registerIpc', () => {
       })
 
       const handler = handlers.get(IPC.chatStart)
-      await handler!({ sender: mockWc }, chatStartPayload)
+      await handler!({ sender: mockWc, senderFrame: mockMainFrame }, chatStartPayload)
       await flushAsync()
 
       const statusErrors = chatEvents().filter(
@@ -360,7 +501,7 @@ describe('registerIpc', () => {
       })
 
       const handler = handlers.get(IPC.chatStart)
-      await handler!({ sender: mockWc }, chatStartPayload)
+      await handler!({ sender: mockWc, senderFrame: mockMainFrame }, chatStartPayload)
       await flushAsync()
 
       const statusErrors = chatEvents().filter(
@@ -386,7 +527,7 @@ describe('registerIpc', () => {
       })
 
       const handler = handlers.get(IPC.chatStart)
-      await handler!({ sender: mockWc }, chatStartPayload)
+      await handler!({ sender: mockWc, senderFrame: mockMainFrame }, chatStartPayload)
       await flushAsync()
 
       const events = chatEvents()
@@ -405,7 +546,7 @@ describe('registerIpc', () => {
 
       const handler = handlers.get(IPC.chatStart)
       const result = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         {
           incremental: true,
           newMessages: [{ role: 'user' as const, content: 'follow up' }],
@@ -429,7 +570,7 @@ describe('registerIpc', () => {
 
       const handler = handlers.get(IPC.chatStart)
       const result = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         {
           incremental: true,
           newMessages: [{ role: 'user' as const, content: 'follow up' }],
@@ -448,7 +589,7 @@ describe('registerIpc', () => {
       })
 
       const handler = handlers.get(IPC.chatStart)
-      await handler!({ sender: mockWc }, chatStartPayload)
+      await handler!({ sender: mockWc, senderFrame: mockMainFrame }, chatStartPayload)
       await flushAsync()
 
       expect(markRunTurnCompleteMock).toHaveBeenCalledWith('run-test', 42)
@@ -484,7 +625,7 @@ describe('registerIpc', () => {
       })
 
       const handler = handlers.get(IPC.chatRewindAndStart)
-      const result = await handler!({ sender: mockWc }, rewindPayload)
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, rewindPayload)
 
       expect(result).toEqual({ ok: true, data: { runId: 'run-edit', invokeId: 7 } })
       expect(order).toEqual(['register', 'prepare'])
@@ -495,7 +636,7 @@ describe('registerIpc', () => {
       prepareRewindMock.mockRejectedValue(new Error('editMessageIndex out of range'))
 
       const handler = handlers.get(IPC.chatRewindAndStart)
-      const result = await handler!({ sender: mockWc }, rewindPayload)
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, rewindPayload)
 
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -520,7 +661,7 @@ describe('registerIpc', () => {
       isActiveMock.mockReturnValue(false)
 
       const handler = handlers.get(IPC.chatRewind)
-      const result = await handler!({ sender: mockWc }, rewindPayload)
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, rewindPayload)
 
       expect(result).toEqual({
         ok: true,
@@ -546,7 +687,7 @@ describe('registerIpc', () => {
       vi.mocked(chatCancelResult).mockReturnValue({ ok: true, data: true })
 
       const handler = handlers.get(IPC.chatRewind)
-      const result = await handler!({ sender: mockWc }, rewindPayload)
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, rewindPayload)
 
       expect(result.ok).toBe(true)
       expect(chatCancelResult).toHaveBeenCalledWith('run-revert')
@@ -561,7 +702,7 @@ describe('registerIpc', () => {
       )
 
       const handler = handlers.get(IPC.chatRewind)
-      const result = await handler!({ sender: mockWc }, rewindPayload)
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, rewindPayload)
 
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -578,7 +719,7 @@ describe('registerIpc', () => {
       })
       const handler = handlers.get(IPC.runsRename)
       const result = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         { workspacePath: '/ws', runId: 'run-1', goal: 'new title' }
       )
 
@@ -595,7 +736,7 @@ describe('registerIpc', () => {
       })
       const handler = handlers.get(IPC.runsRename)
       const result = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         { workspacePath: '/ws', runId: 'missing', goal: 'new title' }
       )
 
@@ -611,10 +752,10 @@ describe('registerIpc', () => {
     it('returns user-facing fail for preview when workspace has no editable harness', async () => {
       const handler = handlers.get(IPC.harnessPreviewApply)
       const result = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         {
           workspacePath: '/plain-ws',
-          proposalPath: '.vyotiq/harness/proposals/test.md'
+          proposalPath: 'resources/harness/proposals/test.md'
         }
       )
 
@@ -628,10 +769,10 @@ describe('registerIpc', () => {
     it('returns user-facing fail for apply when workspace has no editable harness', async () => {
       const handler = handlers.get(IPC.harnessApply)
       const result = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         {
           workspacePath: '/plain-ws',
-          proposalPath: '.vyotiq/harness/proposals/test.md',
+          proposalPath: 'resources/harness/proposals/test.md',
           confirm: true
         }
       )
@@ -645,7 +786,7 @@ describe('registerIpc', () => {
 
     it('returns user-facing fail for preview when harness proposal is missing', async () => {
       const handler = handlers.get(IPC.harnessPreviewApply)
-      const result = await handler!({ sender: mockWc }, { workspacePath: '/ws' })
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, { workspacePath: '/ws' })
 
       expect(result.ok).toBe(false)
       if (!result.ok) {
@@ -662,7 +803,7 @@ describe('registerIpc', () => {
       })
       const handler = handlers.get(IPC.runsResolveWrites)
       const result = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         {
           workspacePath: '/ws',
           runId: 'run-1',
@@ -688,7 +829,7 @@ describe('registerIpc', () => {
       })
       const handler = handlers.get(IPC.runsResolveWrites)
       const result = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         {
           workspacePath: '/ws',
           runId: 'run-1',
@@ -716,7 +857,7 @@ describe('registerIpc', () => {
       })
       const handler = handlers.get(IPC.runsUndoWrites)
       const result = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         {
           workspacePath: '/ws',
           runId: 'run-1',
@@ -737,7 +878,7 @@ describe('registerIpc', () => {
       })
       const handler = handlers.get(IPC.runsUndoWrites)
       const result = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         {
           workspacePath: '/ws',
           runId: 'run-1',
@@ -758,7 +899,7 @@ describe('registerIpc', () => {
       })
       const handler = handlers.get(IPC.runsUndoWrites)
       const result = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         {
           workspacePath: '/ws',
           runId: 'run-1',
@@ -779,7 +920,7 @@ describe('registerIpc', () => {
       const handler = handlers.get(IPC.mcpRefresh)
       expect(handler).toBeTypeOf('function')
 
-      const result = await handler!({ sender: mockWc }, { workspacePath: '/not-open' })
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, { workspacePath: '/not-open' })
       expect(result).toEqual({ ok: false, error: 'Workspace is not open' })
     })
   })
@@ -790,7 +931,7 @@ describe('registerIpc', () => {
       expect(handler).toBeTypeOf('function')
 
       const result = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         { x: 10, y: 20, width: 300, height: 200 }
       )
       expect(result).toEqual({ ok: true, data: true })
@@ -798,18 +939,18 @@ describe('registerIpc', () => {
 
     it('clears bounds on a null payload', async () => {
       const handler = handlers.get(IPC.browserSetBounds)
-      const result = await handler!({ sender: mockWc }, null)
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, null)
       expect(result).toEqual({ ok: true, data: true })
     })
 
     it('rejects non-finite or missing bounds fields', async () => {
       const handler = handlers.get(IPC.browserSetBounds)
 
-      const missing = await handler!({ sender: mockWc }, { x: 0, y: 0, width: 100 })
+      const missing = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, { x: 0, y: 0, width: 100 })
       expect(missing.ok).toBe(false)
 
       const nonFinite = await handler!(
-        { sender: mockWc },
+        { sender: mockWc, senderFrame: mockMainFrame },
         { x: 0, y: 0, width: Number.POSITIVE_INFINITY, height: 100 }
       )
       expect(nonFinite.ok).toBe(false)
@@ -824,7 +965,7 @@ describe('registerIpc', () => {
       ])
 
       const handler = handlers.get(IPC.workspacesRemove)
-      const result = await handler!({ sender: mockWc }, { path: '/ws', stopActiveRuns: false })
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, { path: '/ws', stopActiveRuns: false })
       expect(result).toEqual({
         ok: false,
         error:
@@ -850,7 +991,7 @@ describe('registerIpc', () => {
       })
 
       const handler = handlers.get(IPC.workspacesRemove)
-      const result = await handler!({ sender: mockWc }, { path: '/ws', stopActiveRuns: true })
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, { path: '/ws', stopActiveRuns: true })
       expect(chatCancelResult).toHaveBeenCalledWith('run-1')
       expect(removeWorkspace).toHaveBeenCalledWith('/ws')
       expect(result).toEqual({

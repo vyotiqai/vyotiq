@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react'
-import type { ProviderId, Settings, WorkspaceSettingsOverride } from '@shared/ipc'
+import { useEffect, useMemo, useState } from 'react'
+import type { ProviderId, SecretProvider, Settings, WorkspaceSettingsOverride } from '@shared/ipc'
 import {
   CUSTOM_OPENAI_DEFAULT,
-  PROVIDER_DEFAULTS,
   defaultModelFor,
   normalizeCustomOpenAiBaseUrl,
-  providerLabel
+  providerLabel,
+  providerOptionsForConfigured
 } from '@shared/providers'
 import { Input, Menu } from '@renderer/lib/ui'
 import { workspaceShort } from '../utils/settingsHelpers'
@@ -14,6 +14,7 @@ export function WorkspaceOverrideCard({
   path,
   isActive,
   globalSettings,
+  secrets,
   override,
   disabled,
   onSetOverride,
@@ -22,6 +23,7 @@ export function WorkspaceOverrideCard({
   path: string
   isActive: boolean
   globalSettings: Settings
+  secrets: Record<SecretProvider, boolean>
   override: WorkspaceSettingsOverride | undefined
   disabled?: boolean
   onSetOverride: (
@@ -36,7 +38,20 @@ export function WorkspaceOverrideCard({
   const [customUrl, setCustomUrl] = useState(
     override?.customOpenAiBaseUrl ?? globalSettings.customOpenAiBaseUrl ?? CUSTOM_OPENAI_DEFAULT
   )
-  const providerOptions = PROVIDER_DEFAULTS.map((p) => ({ value: p.id, label: p.label }))
+  const providerOptions = useMemo(
+    () =>
+      providerOptionsForConfigured(secrets, {
+        ollamaBaseUrl: globalSettings.ollamaBaseUrl,
+        customOpenAiBaseUrl: globalSettings.customOpenAiBaseUrl,
+        alwaysInclude: [provider]
+      }),
+    [
+      secrets,
+      globalSettings.ollamaBaseUrl,
+      globalSettings.customOpenAiBaseUrl,
+      provider
+    ]
+  )
 
   useEffect(() => {
     setProvider(override?.provider ?? globalSettings.provider)
@@ -65,7 +80,7 @@ export function WorkspaceOverrideCard({
   }
 
   return (
-    <div className="rounded-md border border-border bg-surface px-2.5 py-2">
+    <div className="rounded-md border border-border bg-bg px-2.5 py-2">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="m-0 text-sm tracking-[var(--vy-tracking)] text-fg-strong">
@@ -89,11 +104,13 @@ export function WorkspaceOverrideCard({
                   useOverride: true,
                   provider: globalSettings.provider,
                   model: globalSettings.model,
+                  customOpenAiBaseUrl: globalSettings.customOpenAiBaseUrl,
                   thinkingEnabled: globalSettings.thinkingEnabled,
                   thinkingEffort: globalSettings.thinkingEffort,
                   showThinking: globalSettings.showThinking,
-                  compactionTriggerRatio: globalSettings.compactionTriggerRatio,
-                  keepRecentTurns: globalSettings.keepRecentTurns
+                  keepRecentTurns: globalSettings.keepRecentTurns,
+                  autoCompactThresholdRatio: globalSettings.autoCompactThresholdRatio,
+                  toolApproval: globalSettings.toolApproval
                 }).then((res) => {
                   if (!res.ok) onOverrideError?.(res.error)
                 })
@@ -166,7 +183,7 @@ export function WorkspaceOverrideCard({
             />
           ) : null}
           <p className="m-0 text-2xs leading-snug text-muted">
-            Reasoning and thinking effort are in the composer. Compaction and approval settings are in Settings → Agent.
+            Reasoning and thinking effort are in the composer. Compaction is in Settings → Agent; approval is in Settings → Tools.
           </p>
         </div>
       ) : (

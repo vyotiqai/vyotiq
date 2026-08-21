@@ -7,6 +7,8 @@ import {
   stepCacheHitRate,
   billedCacheHitRate,
   nextLowerThinkingEffort,
+  pushRecentLargeCacheHit,
+  rollingMean,
   shouldShowTaskBoundaryTip,
   shouldSuggestLowerThinkingEffort,
   topToolsByCallCount,
@@ -35,6 +37,62 @@ describe('tokenCost', () => {
   it('computes billed cache hit rate', () => {
     expect(billedCacheHitRate(6_000_000, 170_000)).toBeCloseTo(170_000 / 6_000_000)
     expect(billedCacheHitRate(0, 10)).toBeNull()
+  })
+
+  it('warns on low cache only after a rolling window of large steps', () => {
+    const base = {
+      estimatedTokens: 40_000,
+      compactionTrigger: 64_000,
+      contentWindow: 850_000,
+      compactedThisRun: false,
+      cacheHitRate: 0,
+      stepsWithCacheReport: 10,
+      largeInput: true,
+      thinkingEnabled: false,
+      thinkingEffortHigh: false,
+      step: 10
+    }
+    // One large miss must not warn when the rolling window is still short.
+    expect(
+      evaluateTokenCostWarnings({
+        ...base,
+        recentLargeStepCacheHitRates: [0]
+      }).some((w) => w.kind === 'low_cache_hit_rate')
+    ).toBe(false)
+    // Sustained low hits across the window warn.
+    expect(
+      evaluateTokenCostWarnings({
+        ...base,
+        recentLargeStepCacheHitRates: [0, 0.05, 0, 0.02, 0.01]
+      }).some((w) => w.kind === 'low_cache_hit_rate')
+    ).toBe(true)
+    // High rolling mean does not warn even if the latest sample is 0.
+    expect(
+      evaluateTokenCostWarnings({
+        ...base,
+        cacheHitRate: 0,
+        recentLargeStepCacheHitRates: [0.9, 0.85, 0.8, 0.75, 0]
+      }).some((w) => w.kind === 'low_cache_hit_rate')
+    ).toBe(false)
+    // Empty rolling window suppresses the legacy single-step false positive.
+    expect(
+      evaluateTokenCostWarnings({
+        ...base,
+        recentLargeStepCacheHitRates: []
+      }).some((w) => w.kind === 'low_cache_hit_rate')
+    ).toBe(false)
+  })
+
+  it('pushRecentLargeCacheHit keeps a bounded window', () => {
+    const w: number[] = []
+    pushRecentLargeCacheHit(w, 0.1)
+    pushRecentLargeCacheHit(w, 0.2)
+    pushRecentLargeCacheHit(w, 0.3)
+    pushRecentLargeCacheHit(w, 0.4)
+    pushRecentLargeCacheHit(w, 0.5)
+    pushRecentLargeCacheHit(w, 0.6)
+    expect(w).toEqual([0.2, 0.3, 0.4, 0.5, 0.6])
+    expect(rollingMean(w)).toBeCloseTo(0.4)
   })
 
   it('warns when context stays above soft trigger after compaction', () => {
@@ -79,12 +137,12 @@ describe('tokenCost', () => {
     ])
   })
 
-  it('maps selected warnings to user-facing /clear guidance', () => {
-    expect(userFacingTokenCostHint('high_thinking_on_long_run', 12)).toMatch(/\/clear/)
-    expect(userFacingTokenCostHint('context_above_soft_trigger')).toMatch(/\/clear/)
-    expect(userFacingTokenCostHint('long_run_task_boundary', 40)).toMatch(/\/clear/)
-    expect(userFacingTokenCostHint('low_cache_hit_rate')).toMatch(/cache hit rate/i)
-    expect(userFacingTokenCostHint('low_cache_hit_rate')).toMatch(/\/clear/)
+  it('suppresses user-facing /clear tips — auto + menu compact own continuity', () => {
+    expect(userFacingTokenCostHint('high_thinking_on_long_run', 12)).toBeNull()
+    expect(userFacingTokenCostHint('context_above_soft_trigger')).toBeNull()
+    expect(userFacingTokenCostHint('long_run_task_boundary', 40)).toBeNull()
+    expect(userFacingTokenCostHint('low_cache_hit_rate')).toBeNull()
+    expect(userFacingTokenCostHint('high_context_watermark')).toBeNull()
   })
 
   it('marks all current token-cost hint kinds as advisory (not runNotice)', () => {
@@ -147,10 +205,10 @@ describe('tokenCost', () => {
     expect(quiet.some((w) => w.kind === 'long_run_task_boundary')).toBe(false)
   })
 
-  it('exposes shouldShowTaskBoundaryTip for meter UI', () => {
+  it('suppresses ContextMeter task-boundary /clear tip', () => {
     expect(shouldShowTaskBoundaryTip({ steps: 39, billedInputTokens: 999_999 })).toBe(false)
-    expect(shouldShowTaskBoundaryTip({ steps: 40, billedInputTokens: 0 })).toBe(true)
-    expect(shouldShowTaskBoundaryTip({ steps: 1, billedInputTokens: 1_000_000 })).toBe(true)
+    expect(shouldShowTaskBoundaryTip({ steps: 40, billedInputTokens: 0 })).toBe(false)
+    expect(shouldShowTaskBoundaryTip({ steps: 1, billedInputTokens: 1_000_000 })).toBe(false)
   })
 
   it('suggests lower thinking only for high effort on long runs (never auto)', () => {

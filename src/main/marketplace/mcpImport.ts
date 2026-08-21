@@ -606,7 +606,7 @@ function requiresRemoteAck(servers: DetectedMcpServer[]): boolean {
 }
 
 const REMOTE_ACK_WARNING =
-  'Acknowledge marketplace / MCP installs in Settings → Registry before adding MCP servers.'
+  'Acknowledge marketplace / MCP installs in Marketplace → Manage (Package Registry) before adding MCP servers.'
 
 export async function detectMcpInput(rawInput: unknown): Promise<McpDetectResult> {
   const { input } = McpDetectRequestSchema.parse(rawInput)
@@ -686,7 +686,9 @@ export async function detectMcpInput(rawInput: unknown): Promise<McpDetectResult
       kind: 'npm',
       confidence: 'medium',
       server,
-      warnings: ['Suggested stdio launch via npx. Use Advanced → Install npm for Vyotiq-packaged npm packages.']
+      warnings: [
+        'Suggested stdio launch via npx. Use Marketplace → Install npm for Vyotiq-packaged npm packages.'
+      ]
     })
   }
 
@@ -782,7 +784,7 @@ export function applyDetectedManualMcp(raw: unknown): McpApplyDetectedResult {
   const settings = getSettings()
   if (!settings.marketplace?.remoteInstallAcked) {
     throw new Error(
-      'Acknowledge marketplace / MCP installs in Settings → Registry before adding MCP servers.'
+      'Acknowledge marketplace / MCP installs in Marketplace → Manage (Package Registry) before adding MCP servers.'
     )
   }
   const list = [...(settings.mcpServers ?? [])]

@@ -180,6 +180,13 @@ describe('detectMcpInput git preview clone guardrails', () => {
     expect(result.confidence).toBe('low')
     expect(result.warnings.join('\n')).toMatch(/scheme not allowed/i)
   })
+
+  it('points npm package detection at Marketplace Install npm', async () => {
+    const result = await detectMcpInput({ input: '@modelcontextprotocol/server-memory' })
+    expect(result.kind).toBe('npm')
+    expect(result.warnings.join('\n')).toMatch(/Marketplace → Install npm/)
+    expect(result.warnings.join('\n')).not.toMatch(/Advanced/)
+  })
 })
 
 describe('applyDetectedManualMcp', () => {

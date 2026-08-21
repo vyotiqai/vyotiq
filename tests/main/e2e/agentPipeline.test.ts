@@ -65,7 +65,6 @@ vi.mock('@main/agent/context', async (importOriginal) => {
       system: 'system',
       estimatedTokens: 100,
       layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-      contextShrunk: false,
       anthropicNative: undefined,
       compaction: null
     }),
@@ -344,7 +343,7 @@ describe('e2e agent ADW pipeline (no Electron GUI)', () => {
       }
     )
     expect(outcome.messages[0]?.content).toMatch(
-      /Soft warning: edited existing file\(s\) without a prior read\/grep\/glob inspect: src\/a\.ts/
+      /Soft warning: edited existing file\(s\) without a prior read\/grep\/glob\/codebase_search inspect: src\/a\.ts/
     )
   })
 

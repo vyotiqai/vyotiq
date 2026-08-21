@@ -1,4 +1,5 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState, type KeyboardEvent, type RefCallback } from 'react'
+import { Icon } from '@renderer/lib/icons'
 import { IconButton, cn } from '@renderer/lib/ui'
 import {
   SIDEBAR_ROW,
@@ -7,6 +8,7 @@ import {
   SIDEBAR_ROW_OPEN
 } from '@renderer/lib/utils/layout'
 import type { RunSummary } from '@shared/ipc'
+import { isResumableInterruptedRun } from '@shared/runInterrupt'
 import {
   markSessionDragEnd,
   markSessionDragStart,
@@ -15,18 +17,27 @@ import {
 import { InlineConfirmActions } from './InlineConfirmActions'
 import { runTitle, runTooltip } from './runTitle'
 
-function RunStatusDot({ status }: { status: RunSummary['status'] }) {
-  if (status === 'running') {
+function RunStatusDot({ run }: { run: RunSummary }) {
+  // Shape carries the state, not hue alone: a spinner vs a warning vs an X.
+  // Color is a redundant cue; the button aria-label already names the state for AT.
+  if (run.status === 'running') {
     return (
-      <span className="size-1.5 shrink-0 rounded-full bg-fg motion-safe:animate-pulse" title="Running">
-        <span className="sr-only">Running</span>
+      <span className="inline-flex shrink-0" title="Running">
+        <Icon name="loader" size={12} className="animate-spin text-fg" />
       </span>
     )
   }
-  if (status === 'error') {
+  if (isResumableInterruptedRun(run)) {
     return (
-      <span className="size-1.5 shrink-0 rounded-full bg-danger" title="Run ended with errors">
-        <span className="sr-only">Run ended with errors</span>
+      <span className="inline-flex shrink-0" title="Interrupted — click to continue">
+        <Icon name="warning" size={12} className="text-warning" />
+      </span>
+    )
+  }
+  if (run.status === 'error') {
+    return (
+      <span className="inline-flex shrink-0" title="Run ended with errors">
+        <Icon name="close" size={12} className="text-danger" />
       </span>
     )
   }
@@ -38,17 +49,29 @@ export const ChatRow = memo(function ChatRow({
   workspacePath,
   active,
   focused,
+  nested = false,
+  titleOverride,
   onSelect,
   onRename,
-  onDelete
+  onDelete,
+  tabIndex,
+  rowRef,
+  onNavKeyDown
 }: {
   run: RunSummary
   workspacePath: string
   active: boolean
   focused?: boolean
+  /** Denser chrome for nested inline instances. */
+  nested?: boolean
+  /** Precomputed label (sibling-disambiguated instance titles). */
+  titleOverride?: string
   onSelect: () => void
   onRename: (goal: string) => void
   onDelete: () => void
+  tabIndex?: number
+  rowRef?: RefCallback<HTMLElement>
+  onNavKeyDown?: (event: KeyboardEvent<HTMLButtonElement>) => void
 }) {
   const [renaming, setRenaming] = useState(false)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
@@ -78,22 +101,35 @@ export const ChatRow = memo(function ChatRow({
     if (next && next !== (run.goal ?? '').trim()) onRename(next)
   }
 
-  const title = runTitle(run)
+  const title = titleOverride ?? runTitle(run)
   const fullLabel = runTooltip(run)
+
+  const runStatusLabel = ((): string | null => {
+    if (run.status === 'running') return 'Running'
+    if (isResumableInterruptedRun(run)) return 'Interrupted'
+    if (run.status === 'error') return 'Error'
+    return null
+  })()
+  const sessionAriaLabel = runStatusLabel ? `${title}, ${runStatusLabel}` : title
 
   if (renaming) {
     return (
-      <div role="listitem" className="px-1.5 py-0.5">
+      <div role="listitem" className={nested ? 'px-1 py-0.5' : 'px-1.5 py-0.5'}>
         <input
           ref={inputRef}
           type="text"
-          className="app-region-no-drag w-full rounded-lg border border-border/50 bg-surface/60 px-2 py-1.5 text-sm text-fg outline-none focus:border-border-strong focus:bg-surface focus:vy-focus-ring"
+          className={cn(
+            'app-region-no-drag w-full rounded-lg border border-border/50 bg-surface/60 text-fg outline-none focus:border-border-strong focus:bg-surface focus:vy-focus-ring',
+            nested ? 'px-1.5 py-1 text-xs' : 'px-2 py-1.5 text-sm'
+          )}
           value={draft}
           aria-label="Rename chat"
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commitRename()
             if (e.key === 'Escape') {
+              e.preventDefault()
+              e.stopPropagation()
               renameCancelledRef.current = true
               setRenaming(false)
               setDraft(run.goal ?? '')
@@ -112,26 +148,47 @@ export const ChatRow = memo(function ChatRow({
     >
       <button
         type="button"
-        draggable={!renaming && !confirmingDelete}
+        ref={rowRef}
+        tabIndex={tabIndex}
+        data-session-row
+        draggable={!nested && !renaming && !confirmingDelete}
         className={cn(
           'app-region-no-drag flex w-full min-w-0 items-center gap-1.5 pr-2 text-left vy-transition',
           'group-hover:pr-10 group-focus-within:pr-10 [@media(hover:none)]:pr-10',
-          SIDEBAR_ROW,
+          nested
+            ? 'rounded-md px-1.5 py-1 text-xs leading-snug border-l-2 border-l-transparent'
+            : SIDEBAR_ROW,
           active
             ? focused
               ? SIDEBAR_ROW_FOCUSED
               : SIDEBAR_ROW_OPEN
             : SIDEBAR_ROW_HOVER,
-          !active && 'text-fg/85',
+          !active && (nested ? 'text-muted' : 'text-fg/85'),
           dragging && 'opacity-50'
         )}
         aria-current={focused ? 'page' : undefined}
+        aria-label={sessionAriaLabel}
         data-session-open={active ? '1' : '0'}
         data-session-focused={focused ? '1' : '0'}
         title={runTooltip(run)}
         onClick={onSelect}
+        onKeyDown={(e) => {
+          // Same Delete-to-close pattern as dock/session tab strips; Esc cancels
+          // inside InlineConfirmActions.
+          if (e.key === 'Delete' && !renaming && !confirmingDelete) {
+            e.preventDefault()
+            setConfirmingDelete(true)
+          }
+          onNavKeyDown?.(e)
+        }}
+        onDoubleClick={(e) => {
+          e.preventDefault()
+          e.stopPropagation()
+          setConfirmingDelete(false)
+          setRenaming(true)
+        }}
         onDragStart={(e) => {
-          if (renaming || confirmingDelete) {
+          if (nested || renaming || confirmingDelete) {
             e.preventDefault()
             return
           }
@@ -147,7 +204,18 @@ export const ChatRow = memo(function ChatRow({
           setDragging(false)
         }}
       >
-        <RunStatusDot status={run.status} />
+        <RunStatusDot run={run} />
+        {!nested ? (
+          <span
+            className="pointer-events-none flex shrink-0 text-muted/60"
+            role="img"
+            aria-label="Drag to open in a split pane"
+            title="Drag to open in a split pane"
+            data-split-pane-affordance
+          >
+            <Icon name="columns" size={12} />
+          </span>
+        ) : null}
         <span className="min-w-0 flex-1 truncate">{title}</span>
       </button>
 

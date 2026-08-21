@@ -1,8 +1,7 @@
 import { type ButtonHTMLAttributes, type ReactNode } from 'react'
 import { cn } from './cn'
 
-const interactive =
-  'vy-transition disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
+const interactive = 'vy-transition disabled:vy-disabled-state'
 
 export const buttonVariants = {
   primary: cn(
@@ -17,8 +16,8 @@ export const buttonVariants = {
 } as const
 
 const buttonBase = cn(
-  'inline-flex min-h-8 items-center justify-center gap-1.5 px-3 text-sm tracking-[var(--vy-tracking)]',
-  'focus-visible:vy-focus-ring',
+  'inline-flex min-h-[var(--vy-control-min-h)] items-center justify-center gap-[var(--vy-control-gap)] px-[var(--vy-control-px)] text-sm tracking-[var(--vy-tracking)]',
+  'focus-visible:vy-focus-ring active:scale-[0.98]',
   interactive
 )
 

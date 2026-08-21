@@ -47,6 +47,28 @@ describe('compaction persistence', () => {
     expect(loadCompaction(dir)).toEqual(record)
   })
 
+  it('round-trips compaction observability metadata', () => {
+    const runId = 'run-meta'
+    const dir = createRun(workspace, runId, 'meta goal')
+    const record = {
+      summary: '## Session Intent\nFolded',
+      createdAt: new Date().toISOString(),
+      tokenEstimate: 120,
+      foldedMessages: 8,
+      triggerReason: 'proactive' as const,
+      messagesFolded: 6,
+      keptMessages: 2,
+      postCompactEstimatedTokens: 15_000,
+      contentWindowAtCompact: 128_000,
+      retainedDecisions: ['Use JWT'],
+      verified: true,
+      verifyCoverage: 1,
+      verifyFailures: []
+    }
+    saveCompaction(dir, record)
+    expect(loadCompaction(dir)).toEqual(record)
+  })
+
   it('reads contract.md with cap', () => {
     const runId = 'run-2'
     const dir = createRun(workspace, runId, 'short goal')

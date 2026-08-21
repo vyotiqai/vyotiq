@@ -6,11 +6,11 @@ import type {
   Settings
 } from '@shared/ipc'
 import { Button } from '@renderer/lib/ui'
-import { McpServerCard } from '@renderer/features/settings/components/McpServerCard'
+import { McpServerCard } from './McpServerCard'
 import {
   mcpStatusClass,
   mcpStatusLabel
-} from '@renderer/features/settings/utils/settingsHelpers'
+} from './mcpStatus'
 import { kindLabel } from './marketplaceLabels'
 import { WorkspaceEnableControls } from './WorkspaceEnableControls'
 import type { MarketplaceController } from './useMarketplaceController'
@@ -173,6 +173,7 @@ function InstalledMarketplaceItem({
             disabled={formLocked}
             hideEnable
             hideRemove
+            workspaceEnabled={ws}
             onUpdate={async (next) => {
               const updated = settings.mcpServers.map((s) => (s.id === linked.id ? next : s))
               return runUpdate({ mcpServers: updated })
@@ -182,16 +183,11 @@ function InstalledMarketplaceItem({
               void controller.loadMcpStatus(true)
             }}
           />
-          {ws === false ? (
-            <p className={`m-0 mt-1 ${mcpStatusClass(status, { workspaceEnabled: false })}`}>
-              {mcpStatusLabel(status, { workspaceEnabled: false })}
-            </p>
-          ) : null}
         </div>
       ) : null}
       {item.kind === 'plugin' && pluginContents && pluginContents.mcp.length > 0 ? (
         <div className="mt-2 flex flex-col gap-2">
-          <p className="m-0 text-caption font-medium text-secondary">Plugin MCP servers</p>
+          <p className="m-0 text-caption font-medium text-secondary">Package MCP servers</p>
           {pluginContents.mcp.map((nested) => {
             const nestedId = nestedPluginMcpServerId(item.id, nested.id)
             const overlay = settings.mcpServers.find((s) => s.id === nestedId)
@@ -215,6 +211,7 @@ function InstalledMarketplaceItem({
                   disabled={formLocked}
                   hideEnable
                   hideRemove
+                  workspaceEnabled={nestedWs}
                   onUpdate={async (next) => {
                     const others = settings.mcpServers.filter((s) => s.id !== nestedId)
                     return runUpdate({ mcpServers: [...others, next] })
@@ -234,13 +231,6 @@ function InstalledMarketplaceItem({
                     onUseGlobal={() => void clearWorkspaceEnable('mcp', nestedId)}
                     className="flex flex-wrap items-center gap-2 px-0.5"
                   />
-                ) : null}
-                {nestedWs === false ? (
-                  <p
-                    className={`m-0 px-0.5 ${mcpStatusClass(nestedStatus, { workspaceEnabled: false })}`}
-                  >
-                    {mcpStatusLabel(nestedStatus, { workspaceEnabled: false })}
-                  </p>
                 ) : null}
               </div>
             )
@@ -268,70 +258,6 @@ function InstalledMarketplaceItem({
   )
 }
 
-function ManualMcpInstalledItem({
-  server,
-  controller,
-  settings,
-  ws,
-  activeWorkspacePath,
-  canOverride,
-  setWorkspaceEnable,
-  clearWorkspaceEnable
-}: {
-  server: McpServer
-  controller: MarketplaceController
-  settings: Settings
-  ws: boolean | undefined
-  activeWorkspacePath?: string | null
-  canOverride: boolean
-  setWorkspaceEnable: WorkspaceEnableFns['setWorkspaceEnable']
-  clearWorkspaceEnable: WorkspaceEnableFns['clearWorkspaceEnable']
-}) {
-  const { formLocked, mcpStatusById, runUpdate, loadMcpStatus } = controller
-
-  return (
-    <>
-      <McpServerCard
-        server={server}
-        status={mcpStatusById.get(server.id)}
-        disabled={formLocked}
-        onUpdate={async (next) => {
-          const updated = settings.mcpServers.map((s) => (s.id === server.id ? next : s))
-          return runUpdate({ mcpServers: updated })
-        }}
-        onRemove={() => {
-          void (async () => {
-            await window.vyotiq.mcpClearAuthToken?.(server.id)
-            await runUpdate({
-              mcpServers: settings.mcpServers.filter((s) => s.id !== server.id)
-            })
-          })()
-        }}
-        onAuthChanged={() => {
-          void loadMcpStatus(true)
-        }}
-      />
-      {ws === false ? (
-        <p
-          className={`m-0 mt-1 px-0.5 text-xs ${mcpStatusClass(mcpStatusById.get(server.id), { workspaceEnabled: false })}`}
-        >
-          {mcpStatusLabel(mcpStatusById.get(server.id), { workspaceEnabled: false })}
-        </p>
-      ) : null}
-      {activeWorkspacePath && canOverride ? (
-        <WorkspaceEnableControls
-          formLocked={formLocked}
-          ws={ws}
-          onForceOn={() => void setWorkspaceEnable('mcp', server.id, true)}
-          onForceOff={() => void setWorkspaceEnable('mcp', server.id, false)}
-          onUseGlobal={() => void clearWorkspaceEnable('mcp', server.id)}
-          className="mt-2 flex flex-wrap items-center gap-2 px-0.5"
-        />
-      ) : null}
-    </>
-  )
-}
-
 export function MarketplaceInstalledList({
   controller,
   settings,
@@ -346,9 +272,7 @@ export function MarketplaceInstalledList({
   activeWorkspacePath?: string | null
   canOverride: boolean
 } & WorkspaceEnableFns) {
-  const { installed, formLocked, mcpStatusLoading, loadMcpStatus } = controller
-
-  const manualServers = settings.mcpServers.filter((s) => s.source !== 'marketplace')
+  const { installed } = controller
 
   const workspaceEnabled = (item: MarketplaceInstalledItem): boolean | undefined => {
     const kind = item.kind === 'mcp' ? 'mcp' : item.kind === 'skill' ? 'skills' : 'plugins'
@@ -362,57 +286,31 @@ export function MarketplaceInstalledList({
 
   return (
     <div className="flex flex-col gap-2">
-      <div className="flex justify-end">
-        <Button
-          variant="subtle"
-          disabled={formLocked || mcpStatusLoading}
-          onClick={() => void loadMcpStatus(true)}
-        >
-          {mcpStatusLoading ? 'Refreshing…' : 'Refresh MCP connections'}
-        </Button>
-      </div>
-      {manualServers.length === 0 && installed.items.length === 0 ? (
+      {installed.items.length === 0 ? (
         <p className="m-0 text-xs text-muted">
-          Nothing installed yet. Use Add to configure a stdio or remote MCP, or browse the
-          marketplace catalog.
+          Nothing installed yet. Browse the catalog to add MCP servers, skills, or packages.
         </p>
       ) : (
-        <>
-          {manualServers.map((server) => (
-            <div key={server.id} data-mcp-server-id={server.id} tabIndex={-1}>
-              <ManualMcpInstalledItem
-                server={server}
-                controller={controller}
-                settings={settings}
-                ws={workspaceEnabledForId('mcp', server.id)}
-                activeWorkspacePath={activeWorkspacePath}
-                canOverride={canOverride}
-                setWorkspaceEnable={setWorkspaceEnable}
-                clearWorkspaceEnable={clearWorkspaceEnable}
-              />
-            </div>
-          ))}
-          {installed.items.map((item) => (
-            <div
-              key={item.id}
-              data-mcp-server-id={item.kind === 'mcp' ? item.id : undefined}
-              tabIndex={-1}
-            >
-              <InstalledMarketplaceItem
-                item={item}
-                controller={controller}
-                settings={settings}
-                linked={item.kind === 'mcp' ? mcpServerForPackage(item) : undefined}
-                ws={workspaceEnabled(item)}
-                activeWorkspacePath={activeWorkspacePath}
-                canOverride={canOverride}
-                setWorkspaceEnable={setWorkspaceEnable}
-                clearWorkspaceEnable={clearWorkspaceEnable}
-                workspaceEnabledForId={workspaceEnabledForId}
-              />
-            </div>
-          ))}
-        </>
+        installed.items.map((item) => (
+          <div
+            key={item.id}
+            data-mcp-server-id={item.kind === 'mcp' ? item.id : undefined}
+            tabIndex={-1}
+          >
+            <InstalledMarketplaceItem
+              item={item}
+              controller={controller}
+              settings={settings}
+              linked={item.kind === 'mcp' ? mcpServerForPackage(item) : undefined}
+              ws={workspaceEnabled(item)}
+              activeWorkspacePath={activeWorkspacePath}
+              canOverride={canOverride}
+              setWorkspaceEnable={setWorkspaceEnable}
+              clearWorkspaceEnable={clearWorkspaceEnable}
+              workspaceEnabledForId={workspaceEnabledForId}
+            />
+          </div>
+        ))
       )}
     </div>
   )

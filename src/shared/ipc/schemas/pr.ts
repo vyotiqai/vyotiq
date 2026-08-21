@@ -60,7 +60,8 @@ export const PrViewSchema = z.object({
   reviews: z.array(PrReviewSchema),
   latestReviews: z.array(PrReviewSchema),
   reviewDecision: z.string(),
-  reviewRequests: z.array(z.string())
+  reviewRequests: z.array(z.string()),
+  isDraft: z.boolean().default(false)
 })
 export type PrView = z.infer<typeof PrViewSchema>
 
@@ -68,9 +69,28 @@ export const PrViewRequestSchema = z.object({
   workspacePath: z.string().min(1)
 })
 
+export const PrCreateRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  /** When present, commit these changes before creating/updating the PR. */
+  message: z.string().trim().min(1).max(2000).optional(),
+  mode: z.enum(['all', 'staged']).optional().default('all'),
+  /** Draft is the safe default for automated creation. */
+  draft: z.boolean().optional().default(true)
+})
+
+export const PrCreateResultSchema = z.object({
+  url: z.string().min(1),
+  branch: z.string().min(1),
+  baseBranch: z.string().min(1),
+  draft: z.boolean(),
+  detail: z.string().min(1)
+})
+export type PrCreateResult = z.infer<typeof PrCreateResultSchema>
+
 export const PrMergeRequestSchema = z.object({
   workspacePath: z.string().min(1),
-  method: PrMergeMethodSchema
+  method: PrMergeMethodSchema,
+  number: z.number().int().positive()
 })
 
 export const PrMergeResultSchema = z.object({
@@ -81,7 +101,8 @@ export type PrMergeResult = z.infer<typeof PrMergeResultSchema>
 export const PrDiffRequestSchema = z.object({
   workspacePath: z.string().min(1),
   path: z.string().min(1).optional(),
-  ignoreWhitespace: z.boolean().optional()
+  ignoreWhitespace: z.boolean().optional(),
+  number: z.number().int().positive()
 })
 
 export const PrDiffResultSchema = z.object({
@@ -89,7 +110,8 @@ export const PrDiffResultSchema = z.object({
 })
 
 export const PrCloseRequestSchema = z.object({
-  workspacePath: z.string().min(1)
+  workspacePath: z.string().min(1),
+  number: z.number().int().positive()
 })
 
 export const PrCloseResultSchema = z.object({
@@ -98,7 +120,8 @@ export const PrCloseResultSchema = z.object({
 
 export const PrEditTitleRequestSchema = z.object({
   workspacePath: z.string().min(1),
-  title: z.string().min(1)
+  title: z.string().min(1).max(256),
+  number: z.number().int().positive()
 })
 
 export const PrEditTitleResultSchema = z.object({

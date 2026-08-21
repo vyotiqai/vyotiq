@@ -21,7 +21,7 @@ describe('resolveComposerPlaceholder', () => {
 
   it('ignores blank override', () => {
     expect(resolveComposerPlaceholder({ ...base, override: '  ' })).toBe(
-      'Describe a task · @ to attach'
+      'Describe a task · @ to attach · / for commands'
     )
   })
 
@@ -33,32 +33,34 @@ describe('resolveComposerPlaceholder', () => {
 
   it('uses mid-run follow-up copy while running', () => {
     expect(resolveComposerPlaceholder({ ...base, running: true })).toBe(
-      'Queue a follow-up… · @ to attach'
+      'Queue a follow-up… · @ to attach · / for commands'
     )
   })
 
   it('covers Ask empty and follow-up', () => {
     expect(resolveComposerPlaceholder({ ...base, agentMode: 'ask' })).toBe(
-      'Ask a question · won’t edit files · @ to attach'
+      'Ask a question · won’t edit files · @ to attach · / for commands'
     )
     expect(
       resolveComposerPlaceholder({ ...base, agentMode: 'ask', hasTranscript: true })
-    ).toBe('Ask a follow-up · won’t edit files · @ to attach')
+    ).toBe('Ask a follow-up · won’t edit files · @ to attach · / for commands')
   })
 
   it('covers Plan empty and follow-up', () => {
     expect(resolveComposerPlaceholder({ ...base, agentMode: 'plan' })).toBe(
-      'Describe a plan · @ to attach'
+      'Describe a plan · @ to attach · / for commands'
     )
     expect(
       resolveComposerPlaceholder({ ...base, agentMode: 'plan', hasTranscript: true })
-    ).toBe('Refine the plan · @ to attach')
+    ).toBe('Refine the plan · @ to attach · / for commands')
   })
 
   it('covers Agent empty and follow-up', () => {
-    expect(resolveComposerPlaceholder(base)).toBe('Describe a task · @ to attach')
+    expect(resolveComposerPlaceholder(base)).toBe(
+      'Describe a task · @ to attach · / for commands'
+    )
     expect(resolveComposerPlaceholder({ ...base, hasTranscript: true })).toBe(
-      'Send a follow-up · @ to attach'
+      'Send a follow-up · @ to attach · / for commands'
     )
   })
 
@@ -70,7 +72,7 @@ describe('resolveComposerPlaceholder', () => {
         agentMode: 'ask',
         hasTranscript: true
       })
-    ).toBe('Queue a follow-up… · @ to attach')
+    ).toBe('Queue a follow-up… · @ to attach · / for commands')
   })
 
   it('workspace gate beats running', () => {

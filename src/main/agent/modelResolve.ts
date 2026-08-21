@@ -4,6 +4,7 @@ import {
   withResolvedContextWindow
 } from '../../shared/domain/modelContextWindows'
 import { seedModelsFor } from '../../shared/providers'
+import { findOllamaCatalogModel } from '../../shared/reasoning'
 import { baseModelInfo } from './providers/normalize'
 import { listProviderModels } from './providers'
 
@@ -26,9 +27,13 @@ export async function resolveModelInfo(
     provider: providerId,
     apiKey,
     baseUrl,
-    signal
+    signal,
+    model: modelId
   })
-  const found = listed.models.find((m) => m.id === modelId)
+  const found =
+    providerId === 'ollama'
+      ? findOllamaCatalogModel(listed.models, modelId)
+      : listed.models.find((m) => m.id === modelId)
   if (found) {
     const enriched = withResolvedContextWindow(found, providerId)
     if (enriched.contextWindow != null && enriched.contextWindow > 0) return enriched

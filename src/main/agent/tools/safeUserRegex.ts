@@ -7,11 +7,11 @@ export const SCHEMA_REGEX_MAX_LENGTH = 2000
 function compileWithLimit(
   pattern: string,
   flags: string | undefined,
-  maxLength: number
+  maxLength: number | undefined
 ): RegExp {
   const trimmed = pattern.trim()
   if (!trimmed) throw new Error('Empty regex pattern')
-  if (trimmed.length > maxLength) {
+  if (maxLength != null && trimmed.length > maxLength) {
     throw new Error(`Regex pattern exceeds ${maxLength} characters`)
   }
   // Classic nested quantifiers: (a+)+, (a*)*, (a+){2,}
@@ -27,12 +27,11 @@ function compileWithLimit(
 }
 
 /**
- * Compile an untrusted regex with length + nested-quantifier guards (ReDoS mitigation).
- * Length alone does not eliminate exponential backtracking; nested quantifiers are rejected
- * as a second line of defense. Prefer RE2/worker timeouts for stronger guarantees later.
+ * Compile an untrusted regex with nested-quantifier guards (ReDoS mitigation).
+ * Nested quantifiers are rejected as a line of defense. Prefer RE2/worker timeouts for stronger guarantees later.
  */
 export function compileUserRegex(pattern: string, flags?: string): RegExp {
-  return compileWithLimit(pattern, flags, USER_REGEX_MAX_LENGTH)
+  return compileWithLimit(pattern, flags, undefined)
 }
 
 /**

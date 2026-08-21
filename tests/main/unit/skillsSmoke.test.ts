@@ -2,10 +2,9 @@
  * Smoke: Agent Skills alignment against real bundled packages (isolated temp userData).
  */
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { mkdtempSync } from 'fs'
 
 const REPO = process.cwd()
 const PACKAGES = join(REPO, 'resources', 'marketplace', 'packages')
@@ -19,37 +18,25 @@ vi.mock('electron', () => ({
   }
 }))
 
-function listSkillDirs(root: string): string[] {
-  const out: string[] = []
-  const walk = (dir: string): void => {
-    for (const name of readdirSync(dir)) {
-      const abs = join(dir, name)
-      let st
-      try {
-        st = statSync(abs)
-      } catch {
-        continue
-      }
-      if (!st.isDirectory()) continue
-      if (existsSync(join(abs, 'SKILL.md')) || existsSync(join(abs, 'skill.md'))) {
-        out.push(abs)
-      }
-      walk(abs)
-    }
-  }
-  walk(root)
-  return out
-}
-
 describe('skills smoke (bundled + isolated marketplace)', () => {
   let skillDirs: string[] = []
 
-  beforeAll(() => {
+  beforeAll(async () => {
     mkdirSync(join(USER_DATA, 'marketplace', 'packages'), { recursive: true })
-    skillDirs = listSkillDirs(PACKAGES)
+    mkdirSync(join(USER_DATA, 'personal-skills'), { recursive: true })
+    const { setPersonalSkillsRootForTests } = await import('@main/agent/skills/local')
+    setPersonalSkillsRootForTests(join(USER_DATA, 'personal-skills'))
+    const catalog = JSON.parse(
+      readFileSync(join(REPO, 'resources', 'marketplace', 'catalog.json'), 'utf8')
+    ) as { packages: Array<{ id: string; kind: string }> }
+    skillDirs = catalog.packages
+      .filter((pkg) => pkg.kind === 'skill')
+      .map((pkg) => join(PACKAGES, pkg.id))
   })
 
-  afterAll(() => {
+  afterAll(async () => {
+    const { setPersonalSkillsRootForTests } = await import('@main/agent/skills/local')
+    setPersonalSkillsRootForTests(null)
     rmSync(USER_DATA, { recursive: true, force: true })
   })
 
@@ -61,11 +48,30 @@ describe('skills smoke (bundled + isolated marketplace)', () => {
     vi.restoreAllMocks()
   })
 
-  it('finds all 18 bundled skill directories with SKILL.md', () => {
-    expect(skillDirs.length).toBe(18)
+  it('finds the five workflow skills plus create-skill with SKILL.md', () => {
+    expect(skillDirs.length).toBe(6)
     for (const dir of skillDirs) {
       expect(existsSync(join(dir, 'SKILL.md')), dir).toBe(true)
     }
+  })
+
+  it('bundles exactly the five workflows plus create-skill and no plugins', () => {
+    const catalog = JSON.parse(
+      readFileSync(join(REPO, 'resources', 'marketplace', 'catalog.json'), 'utf8')
+    ) as { packages: Array<{ id: string; kind: string }> }
+    const skillIds = catalog.packages
+      .filter((pkg) => pkg.kind === 'skill')
+      .map((pkg) => pkg.id)
+      .sort()
+    expect(skillIds).toEqual([
+      'create-skill',
+      'explain-code',
+      'fix-bug',
+      'implement-feature',
+      'review-code',
+      'write-tests'
+    ])
+    expect(catalog.packages.filter((pkg) => pkg.kind === 'plugin')).toHaveLength(0)
   })
 
   it('parses every bundled SKILL.md with agentskills frontmatter', async () => {
@@ -82,20 +88,40 @@ describe('skills smoke (bundled + isolated marketplace)', () => {
     }
   })
 
+  it('bundled skills declare intended scope, out-of-scope guidance, and output contracts', async () => {
+    const contracts: Record<string, string[]> = {
+      'implement-feature': ['## when to use', '## when not to use', '## output', 'fix-bug', 'review-code'],
+      'fix-bug': ['## when to use', '## when not to use', '## output', 'implement-feature', 'review-code'],
+      'review-code': ['## when to use', '## when not to use', '## output', 'implement-feature', 'fix-bug'],
+      'write-tests': ['## when to use', '## when not to use', '## output', 'implement-feature', 'fix-bug'],
+      'explain-code': ['## when to use', '## when not to use', '## output', 'implement-feature', 'fix-bug'],
+      'create-skill': [
+        '## before you begin: gather requirements',
+        '## skill creation workflow',
+        '## final checklist',
+        'create a skill only when',
+        '.vyotiq/skills',
+        '/create-skill personal'
+      ]
+    }
+    const { parseSkillFrontmatter } = await import('@main/agent/skills/parse')
+    for (const [id, terms] of Object.entries(contracts)) {
+      const parsed = parseSkillFrontmatter(readFileSync(join(PACKAGES, id, 'SKILL.md'), 'utf8'))
+      const content = `${parsed.description}\n${parsed.body}`.toLowerCase()
+      expect(parsed.description.toLowerCase()).toContain('use when')
+      for (const term of terms) expect(content).toContain(term)
+    }
+  })
+
   it('detectPackageAt treats each standalone skill package as kind skill', async () => {
     const { detectPackageAt } = await import('@main/marketplace/install')
     const standalone = [
-      'accessibility',
-      'api-design',
-      'code-review',
-      'commit-message',
-      'debug',
-      'docs',
-      'frontend-design',
-      'pr-description',
-      'refactor',
-      'security-review',
-      'test-writing'
+      'explain-code',
+      'fix-bug',
+      'implement-feature',
+      'review-code',
+      'create-skill',
+      'write-tests'
     ]
     for (const id of standalone) {
       const detected = detectPackageAt(join(PACKAGES, id))
@@ -131,23 +157,23 @@ describe('skills smoke (bundled + isolated marketplace)', () => {
       }
     ]
     const section = buildSkillsSection(withDup)
-    expect(section).toContain('## Available skills')
+    expect(section).toContain('<available_skills>')
     expect(section).toContain('`Skill` tool')
-    expect(section).toContain('code-review')
+    expect(section).toContain('implement-feature')
     expect(section).not.toMatch(/## Instructions/)
     expect(section).not.toContain('duplicate plugin copy')
     const nameHits = section.match(new RegExp(`\\*\\*${skills[0]!.name}\\*\\*`, 'g'))
     expect(nameHits?.length).toBe(1)
   })
 
-  it('Skill tool loads real code-review body and blocks escape', async () => {
-    const skillRoot = join(PACKAGES, 'code-review')
+  it('Skill tool loads real implement-feature body and blocks escape', async () => {
+    const skillRoot = join(PACKAGES, 'implement-feature')
     const skillsMod = await import('@main/agent/skills')
     const parsed = (await import('@main/agent/skills/parse')).parseSkillFrontmatter(
       readFileSync(join(skillRoot, 'SKILL.md'), 'utf8')
     )
     vi.spyOn(skillsMod, 'findEnabledSkillByName').mockReturnValue({
-      id: 'code-review',
+      id: 'implement-feature',
       name: parsed.name,
       description: parsed.description,
       body: parsed.body,
@@ -156,22 +182,21 @@ describe('skills smoke (bundled + isolated marketplace)', () => {
       source: 'skill'
     })
     const { toolSkill } = await import('@main/agent/tools/skill')
-    const loaded = toolSkill(USER_DATA, 'code-review')
-    expect(loaded).toContain('Summarize what changed')
-    expect(loaded).toMatch(/skill:\s*code-review/i)
-    expect(() => toolSkill(USER_DATA, 'code-review', '../settings.json')).toThrow()
+    const loaded = toolSkill(USER_DATA, 'implement-feature')
+    expect(loaded).toContain('architecture')
+    expect(loaded).toMatch(/skill:\s*implement-feature/i)
+    expect(() => toolSkill(USER_DATA, 'implement-feature', '../settings.json')).toThrow()
   })
 
   it('TOOL_REGISTRY exposes Skill as a builtin', async () => {
-    const { AGENT_TOOLS } = await import('@main/agent/schemas/tools')
-    const { BUILTIN_TOOL_NAMES } = await import('@main/agent/tools')
+    const { AGENT_TOOLS, BUILTIN_TOOL_NAMES } = await import('@main/agent/schemas/tools')
     expect([...BUILTIN_TOOL_NAMES]).toContain('Skill')
     const skill = AGENT_TOOLS.find((t) => t.name === 'Skill')
     expect(skill).toBeTruthy()
     expect(skill!.description.toLowerCase()).toMatch(/skill/)
   })
 
-  it('installs code-review into temp marketplace and loadEnabledSkills finds it', async () => {
+  it('installs implement-feature into temp marketplace and loadEnabledSkills finds it', async () => {
     const { writeMarketplaceIndex } = await import('@main/marketplace/indexStore')
     writeMarketplaceIndex({ schemaVersion: 1, items: [] })
 
@@ -181,26 +206,26 @@ describe('skills smoke (bundled + isolated marketplace)', () => {
 
     const result = await installMarketplacePackage({
       source: 'bundled',
-      target: 'code-review'
+      target: 'implement-feature'
     })
     expect(result.item.kind).toBe('skill')
-    expect(result.item.id).toBe('code-review')
+    expect(result.item.id).toBe('implement-feature')
     expect(result.item.enabled).toBe(true)
 
     const enabled = skillsMod.loadEnabledSkills()
-    const review = enabled.find((s) => s.name === 'code-review')
+    const review = enabled.find((s) => s.name === 'implement-feature')
     expect(review).toBeTruthy()
     expect(existsSync(review!.skillPath)).toBe(true)
 
     const section = skillsMod.buildSkillsSection(enabled)
-    expect(section).toContain('code-review')
+    expect(section).toContain('implement-feature')
     expect(section).toContain('`Skill` tool')
     expect(section).not.toMatch(/## Instructions/)
 
-    const found = skillsMod.findEnabledSkillByName('code-review')
-    expect(found?.name).toBe('code-review')
+    const found = skillsMod.findEnabledSkillByName('implement-feature')
+    expect(found?.name).toBe('implement-feature')
 
-    const body = (await import('@main/agent/tools/skill')).toolSkill(USER_DATA, 'code-review')
-    expect(body).toContain('Summarize what changed')
+    const body = (await import('@main/agent/tools/skill')).toolSkill(USER_DATA, 'implement-feature')
+    expect(body).toContain('architecture')
   })
 })

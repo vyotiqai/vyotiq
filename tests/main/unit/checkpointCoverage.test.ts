@@ -13,8 +13,6 @@ const WORKSPACE_WRITE_BUILTINS = new Set([
   'str_replace',
   'multi_edit',
   'delete',
-  'generate_image',
-  'edit_image',
   'terminal'
 ])
 

@@ -14,12 +14,43 @@ function stripQuotes(value: string): string {
  * Parse simple YAML frontmatter including optional nested `metadata:` maps.
  * Not a full YAML parser — sufficient for Agent Skills frontmatter.
  */
+function parseBlockScalar(
+  lines: string[],
+  start: number,
+  marker: string
+): { value: string; nextIndex: number } {
+  const block: string[] = []
+  let indent: number | undefined
+  let index = start
+
+  while (index < lines.length) {
+    const line = lines[index]
+    if (!line.trim()) {
+      block.push('')
+      index += 1
+      continue
+    }
+    const leading = /^\s*/.exec(line)?.[0].length ?? 0
+    if (leading === 0) break
+    indent ??= leading
+    block.push(line.slice(indent).trimEnd())
+    index += 1
+  }
+
+  const value = marker.startsWith('|')
+    ? block.join('\n')
+    : block.join(' ').replace(/[ \t]+/g, ' ')
+  return { value: value.trim(), nextIndex: index - 1 }
+}
+
 function parseFrontmatterFields(yaml: string): Record<string, string | Record<string, string>> {
   const fields: Record<string, string | Record<string, string>> = {}
   let inMetadata = false
   const metadata: Record<string, string> = {}
+  const lines = yaml.split(/\r?\n/)
 
-  for (const rawLine of yaml.split(/\r?\n/)) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const rawLine = lines[index]
     if (!rawLine.trim() || rawLine.trim().startsWith('#')) continue
 
     const metaLine = /^(?: {2}|\t)([A-Za-z0-9_-]+):\s*(.*)$/.exec(rawLine)
@@ -48,6 +79,12 @@ function parseFrontmatterFields(yaml: string): Record<string, string | Record<st
       continue
     }
     inMetadata = false
+    if (value === '>' || value === '>-' || value === '|' || value === '|-') {
+      const block = parseBlockScalar(lines, index + 1, value)
+      fields[key] = block.value
+      index = block.nextIndex
+      continue
+    }
     fields[key] = stripQuotes(value)
   }
 

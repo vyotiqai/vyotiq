@@ -38,6 +38,7 @@ export const BuiltinClientActionSchema = z.enum([
   'open_marketplace',
   'open_settings',
   'create_rule',
+  'create_skill',
   'undo_writes',
   'set_mode_ask',
   'set_mode_plan',
@@ -97,6 +98,97 @@ export const SlashCommandsCreateRuleResultSchema = z.object({
   relativePath: z.string().min(1)
 })
 export type SlashCommandsCreateRuleResult = z.infer<typeof SlashCommandsCreateRuleResultSchema>
+
+export const SlashCommandsCreateSkillRequestSchema = z.object({
+  workspacePath: z.string().min(1).nullable().optional(),
+  title: z.string().optional(),
+  scope: z.enum(['project', 'personal']).optional()
+})
+export type SlashCommandsCreateSkillRequest = z.infer<typeof SlashCommandsCreateSkillRequestSchema>
+
+export const SlashCommandsCreateSkillResultSchema = z.object({
+  path: z.string().min(1),
+  relativePath: z.string().min(1),
+  name: z.string().min(1),
+  source: z.enum(['project', 'personal'])
+})
+export type SlashCommandsCreateSkillResult = z.infer<typeof SlashCommandsCreateSkillResultSchema>
+
+export const LocalSkillOriginSchema = z.enum(['vyotiq', 'cursor'])
+export type LocalSkillOrigin = z.infer<typeof LocalSkillOriginSchema>
+
+export const LocalSkillItemSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().default(''),
+  source: z.enum(['project', 'personal']),
+  origin: LocalSkillOriginSchema.optional(),
+  skillPath: z.string().min(1),
+  relativePath: z.string().min(1)
+})
+export type LocalSkillItem = z.infer<typeof LocalSkillItemSchema>
+
+export const SkillsListLocalRequestSchema = z.object({
+  workspacePath: z.string().min(1).nullable().optional()
+})
+export type SkillsListLocalRequest = z.infer<typeof SkillsListLocalRequestSchema>
+
+export const SkillsListLocalResultSchema = z.object({
+  skills: z.array(LocalSkillItemSchema)
+})
+export type SkillsListLocalResult = z.infer<typeof SkillsListLocalResultSchema>
+
+export const SkillsOpenLocalRequestSchema = z.object({
+  workspacePath: z.string().min(1).nullable().optional(),
+  skillPath: z.string().min(1)
+})
+export type SkillsOpenLocalRequest = z.infer<typeof SkillsOpenLocalRequestSchema>
+
+const SKILL_FILE_CONTENT_MAX = 256_000
+
+export const SkillsReadLocalRequestSchema = z.object({
+  workspacePath: z.string().min(1).nullable().optional(),
+  skillPath: z.string().min(1)
+})
+export type SkillsReadLocalRequest = z.infer<typeof SkillsReadLocalRequestSchema>
+
+export const SkillsReadLocalResultSchema = z.object({
+  skillPath: z.string().min(1),
+  content: z.string(),
+  name: z.string().min(1),
+  description: z.string(),
+  license: z.string().optional(),
+  compatibility: z.string().optional(),
+  allowedTools: z.string().optional(),
+  metadata: z.record(z.string(), z.string()).optional(),
+  body: z.string()
+})
+export type SkillsReadLocalResult = z.infer<typeof SkillsReadLocalResultSchema>
+
+export const SkillsWriteLocalRequestSchema = z.object({
+  workspacePath: z.string().min(1).nullable().optional(),
+  skillPath: z.string().min(1),
+  content: z.string().min(1).max(SKILL_FILE_CONTENT_MAX)
+})
+export type SkillsWriteLocalRequest = z.infer<typeof SkillsWriteLocalRequestSchema>
+
+export const SkillsWriteLocalResultSchema = z.object({
+  skillPath: z.string().min(1),
+  relativePath: z.string().min(1),
+  name: z.string().min(1)
+})
+export type SkillsWriteLocalResult = z.infer<typeof SkillsWriteLocalResultSchema>
+
+export const SkillsDeleteLocalRequestSchema = z.object({
+  workspacePath: z.string().min(1).nullable().optional(),
+  skillPath: z.string().min(1)
+})
+export type SkillsDeleteLocalRequest = z.infer<typeof SkillsDeleteLocalRequestSchema>
+
+export const SkillsChangedPayloadSchema = z.object({
+  workspacePath: z.string().nullable()
+})
+export type SkillsChangedPayload = z.infer<typeof SkillsChangedPayloadSchema>
 
 export const SlashCommandsOpenFileRequestSchema = z.object({
   workspacePath: z.string().min(1),

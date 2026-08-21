@@ -5,12 +5,10 @@ import { getSettings } from '@main/settings/settings'
 import { resolveInsideWorkspace } from '@main/workspace/safePath'
 import { assertInsideWorkspace } from '../../../shared/workspacePath'
 import { scrubPath } from '../../../shared/utils/scrub'
+import { abortError } from '../../../shared/errors'
 import { sanitizedTerminalEnv } from './terminal'
 
 const DIAG_TIMEOUT_MS = 120_000
-const DIAG_MAX_BUFFER = 4 * 1024 * 1024
-const DIAG_OUTPUT_CAP = 80_000
-const MAX_DIAGNOSTICS = 80
 
 export type DiagnosticsKind = 'typecheck' | 'lint'
 
@@ -196,15 +194,8 @@ function runSafeCommand(
     }
 
     function appendBuffer(chunks: Buffer[], total: number, chunk: Buffer): number {
-      const next = total + chunk.length
-      if (next > DIAG_MAX_BUFFER) {
-        kill('maxBuffer')
-        const cap = Math.max(0, DIAG_MAX_BUFFER - total)
-        if (cap > 0) chunks.push(chunk.subarray(0, cap))
-        return total + cap
-      }
       chunks.push(chunk)
-      return next
+      return total + chunk.length
     }
 
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -307,7 +298,6 @@ export function parseEslintJsonDiagnostics(text: string): DiagnosticItem[] | nul
         severity,
         message: `${m.message}${rule}`
       })
-      if (items.length >= MAX_DIAGNOSTICS) return items
     }
   }
   return items
@@ -335,7 +325,6 @@ export function parseDiagnosticLines(text: string): DiagnosticItem[] {
       severity: (m[4] || 'error').toLowerCase(),
       message: m[5]!.trim()
     })
-    if (items.length >= MAX_DIAGNOSTICS) break
   }
   return items
 }
@@ -391,13 +380,10 @@ export async function toolDiagnosticsAsync(
       signal,
       timeoutMs: DIAG_TIMEOUT_MS
     })
-    if (signal.aborted) throw new Error('Aborted')
+    if (signal.aborted) throw abortError()
 
     const combined = [stdout, stderr].filter(Boolean).join('\n').trim()
-    const capped =
-      combined.length > DIAG_OUTPUT_CAP
-        ? combined.slice(0, DIAG_OUTPUT_CAP) + '\n… (output truncated)'
-        : combined || '(no output)'
+    const output = combined || '(no output)'
     const parsed = parseDiagnosticLines(combined).map((d) => ({
       ...d,
       file: relativizeDiagnosticFile(workspace, d.file)
@@ -409,7 +395,7 @@ export async function toolDiagnosticsAsync(
         content: [
           `command: ${command}`,
           `exit: ${exitCode ?? 'error'}`,
-          capped
+          output
         ]
           .filter(Boolean)
           .join('\n')
@@ -420,7 +406,7 @@ export async function toolDiagnosticsAsync(
       const lines = [
         `command: ${command}`,
         ...(exitCode !== 0 ? [`exit: ${exitCode ?? 'error'}`] : []),
-        `diagnostics: ${parsed.length}${parsed.length >= MAX_DIAGNOSTICS ? '+' : ''}`,
+        `diagnostics: ${parsed.length}`,
         '',
         ...parsed.map(
           (d) =>
@@ -433,13 +419,13 @@ export async function toolDiagnosticsAsync(
     if (killed) {
       return {
         ok: false,
-        content: [`command: ${command}`, 'Diagnostics command was killed (timeout or output too large)', capped]
+        content: [`command: ${command}`, 'Diagnostics command was killed (timeout or output too large)', output]
           .filter(Boolean)
           .join('\n')
       }
     }
 
-    return { ok: true, content: [`command: ${command}`, '', capped].join('\n') }
+    return { ok: true, content: [`command: ${command}`, '', output].join('\n') }
   } catch (err) {
     if (signal.aborted) throw err
     return {

@@ -6,8 +6,10 @@ import {
   parseOpenAiCompatDeltaContent,
   parseOpenAiCompatUsage,
   toOpenAiCompatThinkChunkContent,
-  absorbOpenAiCompatThinkChunks
+  absorbOpenAiCompatThinkChunks,
+  toOpenAiMessages
 } from '@main/agent/providers/openai'
+import { parseOpenAiResponsesUsage } from '@main/agent/providers/openaiResponses'
 import type { ProviderChatRequest } from '@main/agent/providers/types'
 
 describe('compatStreamOptions', () => {
@@ -17,13 +19,19 @@ describe('compatStreamOptions', () => {
     })
   })
 
-  it('omits stream_options for Mistral and Ollama', () => {
+  it('omits stream_options for Mistral', () => {
     expect(
       compatStreamOptions({ defaultBaseUrl: 'https://api.mistral.ai/v1', includeUsage: false })
     ).toEqual({})
+  })
+
+  it('requests include_usage for Ollama so the final usage chunk is sent', () => {
     expect(
       compatStreamOptions({ defaultBaseUrl: 'http://127.0.0.1:11434/v1', ollamaVision: true })
-    ).toEqual({})
+    ).toEqual({ stream_options: { include_usage: true } })
+    expect(
+      compatStreamOptions({ defaultBaseUrl: 'https://ollama.com', ollamaVision: true })
+    ).toEqual({ stream_options: { include_usage: true } })
   })
 })
 
@@ -73,6 +81,136 @@ describe('buildOpenAiCompatBody prompt cache', () => {
   })
 })
 
+describe('mergeOpenAiCompatToolArgDelta', () => {
+  it('yields the first fragment as-is', async () => {
+    const { mergeOpenAiCompatToolArgDelta } = await import('@main/agent/providers/openai')
+    expect(mergeOpenAiCompatToolArgDelta('', '{"path":"')).toEqual({
+      arguments: '{"path":"',
+      yieldDelta: '{"path":"'
+    })
+  })
+
+  it('yields only the suffix when the host re-sends growing full JSON', async () => {
+    const { mergeOpenAiCompatToolArgDelta } = await import('@main/agent/providers/openai')
+    const first = mergeOpenAiCompatToolArgDelta('', '{"path":"a.ts","diff":"')
+    const second = mergeOpenAiCompatToolArgDelta(
+      first.arguments,
+      '{"path":"a.ts","diff":"@@\\n+line'
+    )
+    expect(second.yieldDelta).toBe('@@\\n+line')
+    expect(second.arguments).toBe('{"path":"a.ts","diff":"@@\\n+line')
+  })
+
+  it('appends true fragment deltas', async () => {
+    const { mergeOpenAiCompatToolArgDelta } = await import('@main/agent/providers/openai')
+    const first = mergeOpenAiCompatToolArgDelta('', '{"path":"')
+    const second = mergeOpenAiCompatToolArgDelta(first.arguments, 'a.ts"}')
+    expect(second).toEqual({
+      arguments: '{"path":"a.ts"}',
+      yieldDelta: 'a.ts"}'
+    })
+  })
+
+  it('replaces a wholly different complete payload and yields it so the UI can paint', async () => {
+    const { mergeOpenAiCompatToolArgDelta } = await import('@main/agent/providers/openai')
+    const next = mergeOpenAiCompatToolArgDelta('{"old":1}', '{"new":true,"x":2}')
+    expect(next.arguments).toBe('{"new":true,"x":2}')
+    expect(next.yieldDelta).toBe('{"new":true,"x":2}')
+  })
+
+  it('yields path-only then path+contents complete snapshots (live edit dump)', async () => {
+    const { mergeOpenAiCompatToolArgDelta } = await import('@main/agent/providers/openai')
+    const pathOnly = '{"path":"plan.md"}'
+    const withContents = '{"path":"plan.md","contents":"# Plan\\nline two"}'
+    const first = mergeOpenAiCompatToolArgDelta('', pathOnly)
+    expect(first.yieldDelta).toBe(pathOnly)
+    const second = mergeOpenAiCompatToolArgDelta(first.arguments, withContents)
+    expect(second.arguments).toBe(withContents)
+    expect(second.yieldDelta).toBe(withContents)
+  })
+
+  it('takes the last complete snapshot when IPC concatenated two objects', async () => {
+    const { mergeOpenAiCompatToolArgDelta } = await import('@main/agent/providers/openai')
+    const pathOnly = '{"path":"plan.md"}'
+    const withContents = '{"path":"plan.md","contents":"hello"}'
+    const merged = mergeOpenAiCompatToolArgDelta(pathOnly, pathOnly + withContents)
+    expect(merged.arguments).toBe(withContents)
+    expect(merged.yieldDelta).toBe(withContents)
+  })
+
+  it('appends mid-object fragments instead of replacing a valid prefix (live 24e7f3d6)', async () => {
+    const { mergeOpenAiCompatToolArgDelta } = await import('@main/agent/providers/openai')
+    // Prefix stops mid-string so a later fragment starting with `", "questions"` can complete it.
+    const first = mergeOpenAiCompatToolArgDelta('', '{"title":"Plan')
+    const second = mergeOpenAiCompatToolArgDelta(
+      first.arguments,
+      '", "questions": [{"id":"purpose","prompt":"What?","type":"single","options":["A"]}]}'
+    )
+    expect(second.arguments.startsWith('{"title":"Plan')).toBe(true)
+    expect(second.arguments).toContain('"questions"')
+    expect(JSON.parse(second.arguments)).toEqual({
+      title: 'Plan',
+      questions: [{ id: 'purpose', prompt: 'What?', type: 'single', options: ['A'] }]
+    })
+  })
+
+  it('keeps the object prefix when a fragment opens the questions array (live 4406e6a2)', async () => {
+    const { mergeOpenAiCompatToolArgDelta } = await import('@main/agent/providers/openai')
+    // Live DeepSeek chunking: `{"questions": ` then a longer fragment starting
+    // with `[`. Replacing on the `[` root dropped the prefix and produced `[…]}`.
+    const chunks = [
+      '{"questions": ',
+      '[{"id": "topic", "prompt": "What topic should I research?", "type": "single", "options": ["AI coding agents", "Frontend"], "allowCustom": true}',
+      ', {"id": "output", "prompt": "How would you like it delivered?", "type": "single", "options": ["Chat summary", "Markdown file"], "allowCustom": false}]',
+      '}'
+    ]
+    let accumulated = ''
+    for (const chunk of chunks) {
+      accumulated = mergeOpenAiCompatToolArgDelta(accumulated, chunk).arguments
+    }
+
+    expect(accumulated.startsWith('[')).toBe(false)
+    expect(accumulated).toBe(chunks.join(''))
+    expect(JSON.parse(accumulated)).toEqual({
+      questions: [
+        {
+          id: 'topic',
+          prompt: 'What topic should I research?',
+          type: 'single',
+          options: ['AI coding agents', 'Frontend'],
+          allowCustom: true
+        },
+        {
+          id: 'output',
+          prompt: 'How would you like it delivered?',
+          type: 'single',
+          options: ['Chat summary', 'Markdown file'],
+          allowCustom: false
+        }
+      ]
+    })
+  })
+
+  it('still replaces a re-sent payload that only differs by whitespace', async () => {
+    const { mergeOpenAiCompatToolArgDelta } = await import('@main/agent/providers/openai')
+    const merged = mergeOpenAiCompatToolArgDelta('{"path":"a.ts","start', '{"path": "a.ts", "startLine": 3}')
+    expect(merged.arguments).toBe('{"path": "a.ts", "startLine": 3}')
+    expect(merged.yieldDelta).toBe('{"path": "a.ts", "startLine": 3}')
+  })
+
+  it('appends a nested object fragment that follows an open array', async () => {
+    const { mergeOpenAiCompatToolArgDelta } = await import('@main/agent/providers/openai')
+    const first = mergeOpenAiCompatToolArgDelta('', '{"todos": [')
+    const second = mergeOpenAiCompatToolArgDelta(
+      first.arguments,
+      '{"id": "1", "content": "Verify the fix", "status": "pending"}]}'
+    )
+    expect(JSON.parse(second.arguments)).toEqual({
+      todos: [{ id: '1', content: 'Verify the fix', status: 'pending' }]
+    })
+  })
+})
+
 describe('parseOpenAiCompatUsage cache metrics', () => {
   it('reads DeepSeek prompt_cache_hit_tokens', () => {
     const usage = parseOpenAiCompatUsage({
@@ -97,6 +235,60 @@ describe('parseOpenAiCompatUsage cache metrics', () => {
   it('returns undefined for empty usage payloads', () => {
     expect(parseOpenAiCompatUsage(null)).toBeUndefined()
     expect(parseOpenAiCompatUsage({})).toBeUndefined()
+  })
+
+  it('reads OpenRouter cost, cache_discount, and cache_write_tokens', () => {
+    const usage = parseOpenAiCompatUsage({
+      prompt_tokens: 2000,
+      completion_tokens: 80,
+      cost: 0.0123,
+      cache_discount: 0.004,
+      prompt_tokens_details: { cached_tokens: 1500, cache_write_tokens: 200 }
+    })
+    expect(usage?.billedCost).toBe(0.0123)
+    expect(usage?.billedCostSaved).toBe(0.004)
+    expect(usage?.cachedInputTokens).toBe(1500)
+    expect(usage?.cacheCreationInputTokens).toBe(200)
+  })
+
+  it('parses cost-only usage payloads', () => {
+    const usage = parseOpenAiCompatUsage({ cost: 0.01 })
+    expect(usage?.billedCost).toBe(0.01)
+    expect(usage?.inputTokens).toBeUndefined()
+  })
+
+  it('does not treat upstream_inference_cost as billed', () => {
+    const usage = parseOpenAiCompatUsage({
+      prompt_tokens: 10,
+      completion_tokens: 2,
+      cost_details: { upstream_inference_cost: 9.99 }
+    })
+    expect(usage?.billedCost).toBeUndefined()
+  })
+
+  it('reads Ollama cloud usage when total_tokens is zero', () => {
+    const usage = parseOpenAiCompatUsage({
+      prompt_tokens: 31,
+      completion_tokens: 28,
+      total_tokens: 0
+    })
+    expect(usage?.inputTokens).toBe(31)
+    expect(usage?.outputTokens).toBe(28)
+    expect(usage?.billedCost).toBeUndefined()
+  })
+})
+
+describe('parseOpenAiResponsesUsage', () => {
+  it('reads cache_write_tokens into cacheCreationInputTokens', () => {
+    const usage = parseOpenAiResponsesUsage({
+      input_tokens: 800,
+      output_tokens: 40,
+      total_tokens: 840,
+      input_tokens_details: { cached_tokens: 600, cache_write_tokens: 50 }
+    })
+    expect(usage?.cacheCreationInputTokens).toBe(50)
+    expect(usage?.cachedInputTokens).toBe(600)
+    expect(usage?.billedCost).toBeUndefined()
   })
 })
 
@@ -384,5 +576,72 @@ describe('absorbOpenAiCompatThinkChunks', () => {
         ]
       }
     ])
+  })
+})
+
+describe('toOpenAiMessages tool argument wire safety', () => {
+  it('wraps bare todo_write arrays when replaying assistant history', () => {
+    const msgs = toOpenAiMessages(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [
+            {
+              id: 'todo-1',
+              name: 'todo_write',
+              arguments: '[{"id":"1","content":"Verify the fix","status":"completed"}]'
+            }
+          ]
+        }
+      ],
+      undefined
+    )
+    const assistant = msgs.find((m) => m.role === 'assistant' && Array.isArray(m.tool_calls))
+    expect(assistant).toBeTruthy()
+    const toolCall = (
+      assistant as { tool_calls: Array<{ function: { arguments: string } }> }
+    ).tool_calls[0]
+    expect(JSON.parse(toolCall!.function.arguments)).toEqual({
+      todos: [{ id: '1', content: 'Verify the fix', status: 'completed' }]
+    })
+  })
+
+  it('never emits unparseable function.arguments', () => {
+    const msgs = toOpenAiMessages(
+      [
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [
+            { id: 'c1', name: 'edit', arguments: '[' },
+            { id: 'c2', name: 'ask_question', arguments: 'not-json' },
+            {
+              id: 'c3',
+              name: 'ask_question',
+              arguments: '[{"id":"x","prompt":"X?","type":"single","options":["a"]}'
+            }
+          ]
+        },
+        { role: 'tool', toolCallId: 'c1', toolName: 'edit', content: 'invalid' },
+        { role: 'tool', toolCallId: 'c2', toolName: 'ask_question', content: 'invalid' },
+        { role: 'tool', toolCallId: 'c3', toolName: 'ask_question', content: 'ok' }
+      ],
+      undefined
+    )
+    const assistant = msgs.find((m) => m.role === 'assistant' && Array.isArray(m.tool_calls))
+    expect(assistant).toBeTruthy()
+    const toolCalls = (
+      assistant as { tool_calls: Array<{ function: { arguments: string; name: string } }> }
+    ).tool_calls
+    for (const tc of toolCalls) {
+      const parsed = JSON.parse(tc.function.arguments)
+      expect(parsed).not.toBeNull()
+      expect(typeof parsed).toBe('object')
+      expect(Array.isArray(parsed)).toBe(false)
+    }
+    expect(JSON.parse(toolCalls[0]!.function.arguments)).toEqual({})
+    expect(JSON.parse(toolCalls[1]!.function.arguments)).toEqual({})
+    expect(JSON.parse(toolCalls[2]!.function.arguments)).toEqual({})
   })
 })

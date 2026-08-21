@@ -1,8 +1,9 @@
 import { resolveInsideWorkspace, assertResolvedInsideWorkspace } from '../../workspace/safePath'
-import { mkdirSync, readFileSync, existsSync } from 'fs'
+import { mkdirSync, readFileSync, existsSync, statSync } from 'fs'
 import { dirname } from 'path'
 import { atomicWriteFile } from '@main/storage/atomicWrite'
-import { assertWritableTextContent } from './writeGuard'
+import { withWorkspaceMutation } from '@main/workspace/mutationQueue'
+import { assertWritablePath } from './writeGuard'
 
 function normalizeNewlines(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
@@ -35,12 +36,14 @@ function parseHunks(diff: string): Hunk[] {
     }
 
     const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(header)
-    if (!match) {
+    // Bare `@@` (no -N,+M) — models emit this; search-based apply still works.
+    const bareAt = !match && /^@@(?:\s.*)?$/.test(header)
+    if (!match && !bareAt) {
       i++
       continue
     }
 
-    const oldStart = Math.max(0, Number(match[1]) - 1)
+    const oldStart = match ? Math.max(0, Number(match[1]) - 1) : 0
     i++
     const lines: HunkLine[] = []
 
@@ -179,25 +182,48 @@ export function toolEdit(
   contents?: string,
   diff?: string
 ): string {
-  if (!pathArg.trim()) throw new Error('edit requires a non-empty path')
-  const resolved = resolveInsideWorkspace(workspaceRoot, pathArg)
+  const path = (pathArg ?? '').trim()
+  if (!path) throw new Error('edit requires a non-empty path')
+  const resolved = resolveInsideWorkspace(workspaceRoot, path)
   assertResolvedInsideWorkspace(workspaceRoot, dirname(resolved))
   mkdirSync(dirname(resolved), { recursive: true })
   assertResolvedInsideWorkspace(workspaceRoot, resolved)
 
+  const existed = existsSync(resolved)
+
   if (typeof contents === 'string') {
-    assertWritableTextContent(pathArg, contents)
+    if (existed && contents.length === 0 && statSync(resolved).size > 0) {
+      throw new Error(
+        `edit refuses to replace non-empty ${path} with empty contents; use diff to remove contents explicitly`
+      )
+    }
+    assertWritablePath(path)
     atomicWriteFile(resolved, contents)
-    return `Wrote ${pathArg} (${contents.length} chars)`
+    return existed
+      ? `Wrote ${path} (${contents.length} chars)`
+      : `Created ${path} (${contents.length} chars)`
   }
 
   if (typeof diff === 'string' && diff.trim()) {
-    const original = existsSync(resolved) ? readFileSync(resolved, 'utf8') : ''
+    const original = existed ? readFileSync(resolved, 'utf8') : ''
     const next = applyUnifiedDiff(original, diff)
-    assertWritableTextContent(pathArg, next)
+    assertWritablePath(path)
     atomicWriteFile(resolved, next)
-    return `Applied diff to ${pathArg}`
+    return existed ? `Applied diff to ${path}` : `Created ${path}`
   }
 
   throw new Error('edit requires contents or diff')
+}
+
+export async function toolEditAsync(
+  workspaceRoot: string,
+  pathArg: string,
+  contents?: string,
+  diff?: string
+): Promise<string> {
+  const path = (pathArg ?? '').trim()
+  if (!path) throw new Error('edit requires a non-empty path')
+  return withWorkspaceMutation(workspaceRoot, path, () =>
+    toolEdit(workspaceRoot, path, contents, diff)
+  )
 }

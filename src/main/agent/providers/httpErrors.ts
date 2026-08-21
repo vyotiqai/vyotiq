@@ -143,7 +143,7 @@ export function formatProviderHttpError(
     }
     return (
       scrubbedMessage ??
-      `Authentication failed (HTTP ${status}). Check your API key in Settings.`
+      `Authentication failed (HTTP ${status}). Check your API key in Settings → Providers.`
     )
   }
 

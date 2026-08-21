@@ -1,6 +1,7 @@
 import {
   Children,
   cloneElement,
+  useCallback,
   useEffect,
   useId,
   useRef,
@@ -49,12 +50,15 @@ export function Tooltip({
   content,
   children,
   delayMs = 400,
-  side = 'top'
+  side = 'top',
+  describeChild = true
 }: {
   content: string
   children: ReactElement
   delayMs?: number
   side?: Side
+  /** Disable the tooltip's accessible description when the child already names itself. */
+  describeChild?: boolean
 }) {
   const tooltipId = useId()
   const [open, setOpen] = useState(false)
@@ -74,12 +78,12 @@ export function Tooltip({
     timerRef.current = null
   }
 
-  const hide = (): void => {
+  const hide = useCallback((): void => {
     clearTimer()
     openedByRef.current = null
     setOpenedBy(null)
     setOpen(false)
-  }
+  }, [])
 
   const show = (via: OpenedBy): void => {
     if (!content) return
@@ -120,7 +124,7 @@ export function Tooltip({
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open])
+  }, [open, hide])
 
   useEffect(() => {
     if (!open) return
@@ -133,7 +137,7 @@ export function Tooltip({
       window.removeEventListener('scroll', onReposition, true)
       window.removeEventListener('resize', onReposition)
     }
-  }, [open])
+  }, [open, hide])
 
   const child = Children.only(children) as ReactElement<{
     ref?: Ref<HTMLElement>
@@ -144,7 +148,7 @@ export function Tooltip({
     onBlur?: (e: FocusEvent) => void
   }>
 
-  const describedBy = [child.props['aria-describedby'], open ? tooltipId : null]
+  const describedBy = [child.props['aria-describedby'], describeChild && open ? tooltipId : null]
     .filter(Boolean)
     .join(' ')
 
@@ -188,12 +192,14 @@ export function Tooltip({
             role="tooltip"
             data-opened-by={openedBy ?? undefined}
             className={cn(
-              'pointer-events-none fixed z-tooltip max-w-xs -translate-x-1/2 rounded-md border border-border bg-card px-2 py-1 text-xs text-fg shadow-menu animate-fade-in',
+              'pointer-events-none fixed z-tooltip max-w-xs -translate-x-1/2',
               tipSide === 'top' ? '-translate-y-full' : undefined
             )}
             style={style}
           >
-            {content}
+            <div className="whitespace-pre-line rounded-md border border-border bg-card px-2 py-1 text-xs text-fg shadow-menu animate-tip-in">
+              {content}
+            </div>
           </div>,
           document.body
         )

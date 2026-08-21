@@ -7,12 +7,13 @@ import type {
 export type SlashClientHandlers = {
   /** Task-boundary reset — start a fresh chat (Claude Code `/clear` practice). */
   onClear?: () => void | boolean | Promise<void | boolean>
-  onCompact?: () => void | boolean | Promise<void | boolean>
+  onCompact?: (focus?: string) => void | boolean | Promise<void | boolean>
   onUndoWrites?: () => void | boolean | Promise<void | boolean>
   onSetAgentMode?: (mode: 'ask' | 'plan' | 'agent') => void | boolean | Promise<void | boolean>
   onOpenMarketplace?: (mcpServerId?: string) => void
-  onOpenSettings?: () => void
+  onOpenSettings?: (section?: 'voice' | 'providers') => void
   onCreateRule?: (title?: string) => void | boolean | Promise<void | boolean>
+  onCreateSkill?: (title?: string) => void | boolean | Promise<void | boolean>
   onHarnessApply?: (proposalPath?: string) => void | boolean | Promise<void | boolean>
   onMarketplaceAction?: (
     packageId: string,
@@ -60,7 +61,9 @@ async function runClientAction(
       return r !== false
     }
     case 'compact': {
-      const r = await handlers.onCompact?.()
+      if (!handlers.onCompact) return false
+      const focus = opts.trailingText?.trim()
+      const r = await handlers.onCompact(focus || undefined)
       return r !== false
     }
     case 'undo_writes': {
@@ -87,6 +90,10 @@ async function runClientAction(
       return true
     case 'create_rule': {
       const r = await handlers.onCreateRule?.(opts.trailingText)
+      return r !== false
+    }
+    case 'create_skill': {
+      const r = await handlers.onCreateSkill?.(opts.trailingText)
       return r !== false
     }
     case 'harness_apply': {

@@ -4,17 +4,22 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, fireEvent, within, waitFor, act } from '@testing-library/react'
 import { Composer } from '@renderer/features/chat/components/composer'
-import { DEFAULT_SETTINGS } from '@shared/ipc'
+import { mentionMarker } from '@renderer/features/chat/components/composer/mentionModel'
+import { DEFAULT_SETTINGS, emptySecretStatus } from '@shared/ipc'
 import type { EffectiveChatSettings } from '@shared/effectiveSettings'
+import {
+  resetWorkspaceHotUiStoreForTests,
+  setWorkspaceHotComposerDraft
+} from '@renderer/lib/hooks/workspaceHotUiStore'
 
 afterEach(() => {
   cleanup()
+  resetWorkspaceHotUiStoreForTests()
 })
 
 const chatSettings: EffectiveChatSettings = {
   provider: 'ollama',
   model: 'qwen2.5',
-  compactionTriggerRatio: DEFAULT_SETTINGS.compactionTriggerRatio,
   keepRecentTurns: DEFAULT_SETTINGS.keepRecentTurns,
   thinkingEnabled: DEFAULT_SETTINGS.thinkingEnabled,
   thinkingEffort: DEFAULT_SETTINGS.thinkingEffort,
@@ -29,27 +34,60 @@ beforeEach(() => {
       data: {
         models: [
           {
-            id: 'gpt-5.6',
+            id: 'qwen2.5',
+            inputModalities: ['text'],
+            outputModalities: ['text'],
+            supportsTools: true,
+            supportsVision: false
+          },
+          {
+            id: 'llama3.2',
             inputModalities: ['text'],
             outputModalities: ['text'],
             supportsTools: true,
             supportsVision: false
           }
         ],
-        warning: 'seed'
+        warning: null
       }
     }))
   }
 })
 
+const testSecrets = emptySecretStatus()
+
 describe('Composer', () => {
-  it('uses custom model menu not select', () => {
+  it('explains why Send is disabled when no workspace is available', () => {
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running={false}
+        disabled
+        hasWorkspace={false}
+        secrets={testSecrets}
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+      />
+    )
+
+    expect(screen.getByTitle('Open a workspace to send a message.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Send$/i }).getAttribute('aria-disabled')).toBe(
+      'true'
+    )
+  })
+
+  it('uses custom model menu not select', async () => {
     const onProviderModel = vi.fn()
     render(
       <Composer
         provider="ollama"
         model="qwen2.5"
         running={false}
+        secrets={testSecrets}
         chatSettings={{ ...chatSettings, provider: 'ollama', model: 'qwen2.5' }}
         onChatSettingsChange={vi.fn()}
         onProviderModel={onProviderModel}
@@ -59,14 +97,11 @@ describe('Composer', () => {
     )
 
     expect(document.querySelector('select')).toBeNull()
-    const modelBtn = screen.getByRole('button', { name: /Select model/i })
-    act(() => {
-      fireEvent.click(modelBtn)
+    fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
+    await waitFor(() => {
+      expect(within(screen.getByRole('listbox')).getByText('llama3.2')).toBeTruthy()
     })
-    const listbox = screen.getByRole('listbox')
-    act(() => {
-      fireEvent.click(within(listbox).getByText('llama3.2'))
-    })
+    fireEvent.click(within(screen.getByRole('listbox')).getByText('llama3.2'))
     expect(onProviderModel).toHaveBeenCalledWith('ollama', 'llama3.2')
     expect(screen.queryByRole('listbox')).toBeNull()
   })
@@ -78,6 +113,7 @@ describe('Composer', () => {
         provider="ollama"
         model="qwen2.5"
         running={false}
+        secrets={testSecrets}
         chatSettings={chatSettings}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
@@ -99,11 +135,104 @@ describe('Composer', () => {
     })
   })
 
-  it('filters seed model menu for vision when images are attached', async () => {
+  it('does not overwrite a newer draft when an earlier send fails', async () => {
+    let finishSend: ((ok: boolean) => void) | undefined
+    const onSend = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishSend = resolve
+        })
+    )
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running={false}
+        secrets={testSecrets}
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={onSend}
+        onStop={vi.fn()}
+      />
+    )
+
+    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    ta.textContent = 'first message'
+    fireEvent.input(ta)
+    fireEvent.click(screen.getByRole('button', { name: /^Send$/i }))
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1))
+
+    ta.textContent = 'newer draft'
+    fireEvent.input(ta)
+    await act(async () => finishSend?.(false))
+
+    await waitFor(() => expect(ta.textContent).toBe('newer draft'))
+  })
+
+  it('does not send partial text when a referenced mention cannot be resolved', async () => {
+    // @ts-expect-error test bridge
+    window.vyotiq.workspaceReadText = vi.fn(async () => ({
+      ok: false as const,
+      error: 'Referenced file no longer exists'
+    }))
+    const onSend = vi.fn()
+    const onDraftChange = vi.fn()
+    const draft = `Review ${mentionMarker({ kind: 'file', path: 'src/missing.ts' })}`
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running={false}
+        hasWorkspace
+        workspacePath="/ws"
+        draft={draft}
+        onDraftChange={onDraftChange}
+        secrets={testSecrets}
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={onSend}
+        onStop={vi.fn()}
+      />
+    )
+
+    fireEvent.submit(screen.getByRole('textbox', { name: /^Message$/i }).closest('form')!)
+
+    expect((await screen.findByRole('alert')).textContent).toMatch(/no longer exists/i)
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('filters live model menu for vision when images are attached', async () => {
     // @ts-expect-error test bridge
     window.vyotiq.listModels = vi.fn(async () => ({
-      ok: false as const,
-      error: 'offline'
+      ok: true as const,
+      data: {
+        models: [
+          {
+            id: 'gpt-5.6',
+            inputModalities: ['text', 'image'],
+            outputModalities: ['text'],
+            supportsTools: true,
+            supportsVision: true
+          },
+          {
+            id: 'gpt-5.6-terra',
+            inputModalities: ['text', 'image'],
+            outputModalities: ['text'],
+            supportsTools: true,
+            supportsVision: true
+          },
+          {
+            id: 'text-only',
+            inputModalities: ['text'],
+            outputModalities: ['text'],
+            supportsTools: true,
+            supportsVision: false
+          }
+        ],
+        warning: null
+      }
     }))
     render(
       <Composer
@@ -111,6 +240,7 @@ describe('Composer', () => {
         model="gpt-5.6"
         running={false}
         hasWorkspace
+        secrets={{ ...testSecrets, openai: true }}
         chatSettings={{ ...chatSettings, provider: 'openai', model: 'gpt-5.6' }}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
@@ -129,10 +259,70 @@ describe('Composer', () => {
     })
 
     fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
-    const listbox = screen.getByRole('listbox')
-    // Offline → OpenAI seeds; all mid-2026 seeds are vision-capable.
-    expect(within(listbox).getByText('gpt-5.6')).toBeTruthy()
-    expect(within(listbox).getByText('gpt-5.6-terra')).toBeTruthy()
+    await waitFor(() => {
+      const listbox = screen.getByRole('listbox')
+      expect(within(listbox).getByText('gpt-5.6')).toBeTruthy()
+      expect(within(listbox).getByText('gpt-5.6-terra')).toBeTruthy()
+      expect(within(listbox).queryByText('text-only')).toBeNull()
+    })
+  })
+
+  it('blocks send while a selected attachment is still being extracted', async () => {
+    let finishExtract:
+      | ((value: {
+          ok: true
+          data: { name: string; mime: string; text: string; truncated: false }
+        }) => void)
+      | undefined
+    // @ts-expect-error test bridge
+    window.vyotiq.extractAttachment = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          finishExtract = resolve
+        })
+    )
+    const onSend = vi.fn()
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running={false}
+        secrets={testSecrets}
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={onSend}
+        onStop={vi.fn()}
+      />
+    )
+
+    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    ta.textContent = 'read the attachment'
+    fireEvent.input(ta)
+    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
+    const file = new File(['pending'], 'pending.md', { type: 'text/markdown' })
+    Object.defineProperty(fileInput, 'files', { value: [file] })
+    fireEvent.change(fileInput)
+    await waitFor(() => expect(window.vyotiq.extractAttachment).toHaveBeenCalled())
+
+    expect(screen.getByRole('button', { name: /^Send$/i }).getAttribute('aria-disabled')).toBe(
+      'true'
+    )
+    fireEvent.keyDown(ta, { key: 'Enter', code: 'Enter' })
+    expect(onSend).not.toHaveBeenCalled()
+
+    await act(async () => {
+      finishExtract?.({
+        ok: true,
+        data: {
+          name: 'pending.md',
+          mime: 'text/markdown',
+          text: 'pending',
+          truncated: false
+        }
+      })
+    })
+    await waitFor(() => expect(screen.getByText('pending.md')).toBeTruthy())
   })
 
   it('attaches a document and sends its extracted text', async () => {
@@ -148,6 +338,7 @@ describe('Composer', () => {
         provider="ollama"
         model="qwen2.5"
         running={false}
+        secrets={testSecrets}
         chatSettings={chatSettings}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
@@ -188,6 +379,7 @@ describe('Composer', () => {
         provider="ollama"
         model="qwen2.5"
         running={false}
+        secrets={testSecrets}
         chatSettings={chatSettings}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
@@ -213,6 +405,7 @@ describe('Composer', () => {
         model="qwen2.5"
         running
         hasWorkspace
+        secrets={testSecrets}
         chatSettings={chatSettings}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
@@ -228,6 +421,56 @@ describe('Composer', () => {
     expect(screen.queryByRole('button', { name: /^Send$/i })).toBeNull()
   })
 
+  it('focuses an inline composer when it mounts for prompt editing', () => {
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running={false}
+        hasWorkspace
+        hasTranscript
+        variant="inline"
+        draft="Edit this prompt"
+        onDraftChange={vi.fn()}
+        secrets={testSecrets}
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        onCancelEdit={vi.fn()}
+      />
+    )
+
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: /^Message$/i }))
+  })
+
+  it('cancels inline edit on Escape when no menu consumed it', () => {
+    const onCancelEdit = vi.fn()
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running={false}
+        hasWorkspace
+        hasTranscript
+        variant="inline"
+        draft="Edit this prompt about SessionChatColumn file open wiring"
+        onDraftChange={vi.fn()}
+        secrets={testSecrets}
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        onCancelEdit={onCancelEdit}
+      />
+    )
+
+    fireEvent.keyDown(screen.getByRole('textbox', { name: /^Message$/i }), { key: 'Escape' })
+    expect(onCancelEdit).toHaveBeenCalledTimes(1)
+  })
+
   it('queues follow-ups via Enter while running without a Send button', async () => {
     const onSend = vi.fn(async () => true)
     render(
@@ -236,6 +479,7 @@ describe('Composer', () => {
         model="qwen2.5"
         running
         hasWorkspace
+        secrets={testSecrets}
         chatSettings={chatSettings}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
@@ -264,6 +508,7 @@ describe('Composer', () => {
         model="qwen2.5"
         running
         hasWorkspace
+        secrets={testSecrets}
         chatSettings={chatSettings}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
@@ -302,6 +547,7 @@ describe('Composer', () => {
         model="qwen2.5"
         running
         hasWorkspace
+        secrets={testSecrets}
         chatSettings={chatSettings}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
@@ -322,22 +568,76 @@ describe('Composer', () => {
     expect(screen.getByRole('textbox', { name: /^Edit queued follow-up$/i })).toBeTruthy()
   })
 
-  it('shows reconnecting status while running with network_wait', () => {
+  it('does not show reconnecting status below the composer while running with network_wait', () => {
     render(
       <Composer
         provider="ollama"
         model="qwen2.5"
         running
         hasWorkspace
+        secrets={testSecrets}
         chatSettings={chatSettings}
         onChatSettingsChange={vi.fn()}
         onProviderModel={vi.fn()}
         onSend={vi.fn()}
         onStop={vi.fn()}
-        networkWait={{ attempt: 2, maxAttempts: 5, retryInMs: 1500 }}
       />
     )
 
-    expect(screen.getByText('Reconnecting in 2s (attempt 2/5)…')).toBeTruthy()
+    expect(screen.queryByText(/Reconnecting/i)).toBeNull()
+  })
+
+  it('enables send when per-run hot draft has content even if draft prop is empty', () => {
+    setWorkspaceHotComposerDraft('/ws/demo', 'run-1', 'I have a typed message')
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running={false}
+        hasWorkspace
+        workspacePath="/ws/demo"
+        activeRunId="run-1"
+        draft=""
+        onDraftChange={vi.fn()}
+        secrets={testSecrets}
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+      />
+    )
+
+    const send = screen.getByRole('button', { name: 'Send' })
+    expect(send.hasAttribute('disabled')).toBe(false)
+  })
+
+  it('attaches a dropped image on the composer shell', async () => {
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running={false}
+        secrets={testSecrets}
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+      />
+    )
+    const shell = document.querySelector('[data-composer-shell]')
+    expect(shell).toBeTruthy()
+    const file = new File([new Uint8Array([137, 80, 78, 71])], 'shot.png', { type: 'image/png' })
+    fireEvent.drop(shell as Element, {
+      dataTransfer: {
+        files: [file],
+        items: [],
+        types: ['Files']
+      }
+    })
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /Remove image/i })).toBeTruthy()
+    })
   })
 })

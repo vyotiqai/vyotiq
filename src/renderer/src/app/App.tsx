@@ -3,14 +3,25 @@ import { AppShell } from './AppShell'
 import { ChatView } from '../features/chat/ChatView'
 import { SessionChatColumn } from '../features/chat/SessionChatColumn'
 import type { ChatPane } from '@renderer/lib/chat/chatPaneLayout'
+import type { PaneRenderOptions } from '../features/chat/ChatPaneHost'
 import { SettingsView, type SettingsSection } from '../features/settings'
 import { MarketplaceView } from '../features/marketplace'
-import { useTheme } from '@renderer/lib/hooks/useTheme'
+import { useAppearance } from '@renderer/lib/hooks/useAppearance'
+import { pickAppearanceSettings, stepFontScale, DEFAULT_FONT_SCALE } from '@shared/appearance'
 import { useSettings } from '@renderer/lib/hooks/useSettings'
 import { useWorkspaceManager, resolveComposerDraft } from '@renderer/lib/hooks/useWorkspaceManager'
 import { ErrorBoundary } from '@renderer/lib/ErrorBoundary'
 import { ToastHost, pushToast } from '@renderer/lib/ui'
-import type { ProviderId, SecretProvider, ServiceTier, AttachedFile, ToolApprovalMode } from '@shared/ipc'
+import { focusComposerMessage } from '@renderer/lib/shortcuts'
+import { useLiveAnnouncer } from '@renderer/lib/a11y'
+import type {
+  ProviderId,
+  SecretProvider,
+  ServiceTier,
+  AttachedFile,
+  ToolApprovalMode,
+  AgentInteractionMode
+} from '@shared/ipc'
 import { defaultModelFor } from '@shared/providers'
 import {
   resolveEffectiveSettings,
@@ -22,17 +33,46 @@ import {
   pushRecentModel,
   resolveServiceTier
 } from '@shared/domain/modelSelection'
-import { resolveImageReadyLabel } from '@shared/domain/imageCapability'
 import { logger } from '@shared/logger'
 import { workspacePathsEqual, findByWorkspacePath } from '@shared/workspacePathMatch'
 import { normalizeRelPath } from '../features/chat/utils/turnFileDiffs'
 import { ToolApprovalOnboardingModal } from '../features/chat/components/ToolApprovalOnboardingModal'
 import { useOfflineSendQueue } from '@renderer/lib/hooks/useOfflineSendQueue'
+import {
+  removeOfflineQueueEntriesForRun,
+  resolveOfflineFlushTarget
+} from '@renderer/lib/hooks/offlineQueueStore'
+import {
+  clearComposerAttachments,
+  composerAttachmentKey
+} from '@renderer/lib/hooks/composerAttachmentStore'
+import { mergeLiveInstanceRuns } from './mergeLiveInstanceRuns'
+import type { SlashClientHandlers } from '../features/chat/components/composer/slashCommandExecute'
+import type { ChatStreamController } from '@renderer/lib/hooks/createChatStreamController'
 
 /** Sent as a visible user turn when resuming a run that was cut short. */
 const CONTINUE_PROMPT = 'Continue from where you stopped.'
 
-export function App() {
+function modelsRefreshKeyFor(
+  chatSettings: {
+    provider: string
+    ollamaBaseUrl?: string
+    customOpenAiBaseUrl?: string
+  },
+  secrets: Record<SecretProvider, boolean> & { ollama?: boolean; custom?: boolean },
+  nonce: number
+): string {
+  const providerKey =
+    chatSettings.provider === 'ollama'
+      ? `ollama:${chatSettings.ollamaBaseUrl}:${secrets.ollama ? '1' : '0'}`
+      : chatSettings.provider === 'custom'
+        ? `custom:${chatSettings.customOpenAiBaseUrl}:${secrets.custom ? '1' : '0'}`
+        : `${chatSettings.provider}:${secrets[chatSettings.provider as SecretProvider] ? '1' : '0'}`
+  return `${providerKey}:${nonce}`
+}
+
+function App() {
+  const { LiveRegion } = useLiveAnnouncer()
   const {
     settings,
     secrets,
@@ -47,8 +87,40 @@ export function App() {
     error: settingsError,
     setError: setSettingsError
   } = useSettings()
-  const { setTheme, hydrate } = useTheme(settings.theme)
-  const workspace = useWorkspaceManager()
+  const { setAppearance, hydrate } = useAppearance(pickAppearanceSettings(settings))
+  const [openInstanceByParent, setOpenInstanceByParent] = useState<Record<string, string | null>>(
+    {}
+  )
+  const openInstanceRunIds = useMemo(
+    () => Object.values(openInstanceByParent).filter((id): id is string => Boolean(id)),
+    [openInstanceByParent]
+  )
+
+  const setOpenInstanceForParent = useCallback(
+    (parentRunId: string | null | undefined, childId: string | null): void => {
+      if (!parentRunId) return
+      setOpenInstanceByParent((prev) => {
+        if ((prev[parentRunId] ?? null) === childId) return prev
+        return { ...prev, [parentRunId]: childId }
+      })
+    },
+    []
+  )
+
+  const clearOpenInstanceMatching = useCallback((runId: string): void => {
+    setOpenInstanceByParent((prev) => {
+      let changed = false
+      const next = { ...prev }
+      for (const [parentId, childId] of Object.entries(next)) {
+        if (childId === runId || parentId === runId) {
+          next[parentId] = null
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+  }, [])
+  const workspace = useWorkspaceManager({ openInstanceRunIds })
   const {
     registry,
     activeWorkspace,
@@ -101,17 +173,29 @@ export function App() {
     isSessionFocusedInPane,
     getPaneChatSnapshot,
     focusedWorkspacePath,
-    getFocusedPane
+    getFocusedPane,
+    getPaneById,
+    openNewChatInPane,
+    focusedRunId
   } = workspace
 
+  const focusedParentRunId = chat.runId ?? activeContext?.activeRunId ?? null
+  const focusedOpenInstance =
+    focusedParentRunId != null ? (openInstanceByParent[focusedParentRunId] ?? null) : null
+
   const [view, setView] = useState<'chat' | 'settings' | 'marketplace'>('chat')
+  const previousViewRef = useRef(view)
   const [marketplaceFocusServerId, setMarketplaceFocusServerId] = useState<string | null>(null)
+  const [marketplaceFocusSkillPath, setMarketplaceFocusSkillPath] = useState<string | null>(null)
+  const [marketplaceFocusRulePath, setMarketplaceFocusRulePath] = useState<string | null>(null)
   const [settingsSection, setSettingsSection] = useState<SettingsSection>('general')
   const [modelsRefreshNonce, setModelsRefreshNonce] = useState(0)
   const chatHeadingRef = useRef<HTMLHeadingElement>(null)
   const settingsBackRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
+    const previous = previousViewRef.current
+    previousViewRef.current = view
     const focusWhenRendered = (el: HTMLElement | null): void => {
       if (!el) return
       requestAnimationFrame(() => requestAnimationFrame(() => el.focus()))
@@ -119,17 +203,58 @@ export function App() {
     if (view === 'settings') {
       focusWhenRendered(settingsBackRef.current)
     } else if (view === 'marketplace') {
-      // MarketplaceView focuses its Close control on mount.
+      // MarketplaceView focuses Search marketplace on mount.
     } else if (view === 'chat') {
-      focusWhenRendered(chatHeadingRef.current)
+      // Returning from settings/marketplace must not steal the first Tab stop
+      // (skip link). New chat focuses the composer explicitly in onNewChat.
+      if (previous === 'settings' || previous === 'marketplace') return
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        focusComposerMessage()
+      }))
     }
   }, [view])
 
   useLayoutEffect(() => {
-    hydrate(settings.theme)
-  }, [settings.theme, hydrate])
+    hydrate(
+      pickAppearanceSettings({
+        theme: settings.theme,
+        fontScale: settings.fontScale,
+        uiDensity: settings.uiDensity,
+        accentPreset: settings.accentPreset
+      })
+    )
+  }, [settings.theme, settings.fontScale, settings.uiDensity, settings.accentPreset, hydrate])
 
-  const onProviderModel = (provider: ProviderId, model: string): void => {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey) return
+      let next = settings.fontScale
+      if (e.key === '-' || e.key === '_') {
+        next = stepFontScale(settings.fontScale, -1)
+      } else if (e.key === '=' || e.key === '+') {
+        next = stepFontScale(settings.fontScale, 1)
+      } else if (e.key === '0') {
+        next = DEFAULT_FONT_SCALE
+      } else {
+        return
+      }
+      e.preventDefault()
+      if (next === settings.fontScale) return
+      const prev = pickAppearanceSettings(settings)
+      setAppearance({ fontScale: next })
+      void update({ fontScale: next }).then((res) => {
+        if (!res.ok) setAppearance(prev)
+      })
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [settings, setAppearance, update])
+
+  const onProviderModelForWorkspace = useCallback((
+    workspacePath: string | null | undefined,
+    provider: ProviderId,
+    model: string
+  ): void => {
     const resolvedModel = model || defaultModelFor(provider)
     const key = modelSelectionKey(provider, resolvedModel)
     const recentModels = pushRecentModel(settings.recentModels, key)
@@ -143,9 +268,10 @@ export function App() {
       serviceTier
     }
 
-    const override = activeContext?.settingsOverride
-    if (override?.useOverride && activeWorkspace) {
-      void setSettingsOverride(activeWorkspace, {
+    const ctx = workspacePath ? findByWorkspacePath(contexts, workspacePath) : null
+    const override = ctx?.settingsOverride
+    if (override?.useOverride && workspacePath) {
+      void setSettingsOverride(workspacePath, {
         ...override,
         useOverride: true,
         provider,
@@ -163,26 +289,14 @@ export function App() {
       model: resolvedModel,
       ...globalPatch
     })
-  }
+  }, [contexts, setSettingsError, setSettingsOverride, settings, update])
 
-  const onToggleFavorite = (provider: ProviderId, model: string): void => {
-    const key = modelSelectionKey(provider, model)
-    const set = new Set(settings.favoriteModels)
-    if (set.has(key)) set.delete(key)
-    else set.add(key)
-    void update({ favoriteModels: [...set] })
-  }
-
-  const onServiceTierChange = (tier: ServiceTier): void => {
-    const key = modelSelectionKey(effectiveChatSettings.provider, effectiveChatSettings.model)
-    void update({
-      serviceTier: tier,
-      serviceTierByModel: { ...settings.serviceTierByModel, [key]: tier }
-    })
-  }
-
-  const onChatSettingsChange = (patch: ChatSettingsPatch): void => {
-    const provider = effectiveChatSettings.provider
+  const onChatSettingsChangeForWorkspace = useCallback((
+    workspacePath: string | null | undefined,
+    patch: ChatSettingsPatch,
+    chatSettings: ReturnType<typeof resolveEffectiveSettings>
+  ): void => {
+    const provider = chatSettings.provider
     const thinkingPrefsByProvider = { ...settings.thinkingPrefsByProvider }
     if (patch.thinkingEnabled !== undefined || patch.thinkingEffort !== undefined) {
       const current = thinkingPrefsByProvider[provider] ?? DEFAULT_THINKING_PREFS
@@ -192,9 +306,10 @@ export function App() {
       }
     }
 
-    const override = activeContext?.settingsOverride
-    if (override?.useOverride && activeWorkspace) {
-      void setSettingsOverride(activeWorkspace, {
+    const ctx = workspacePath ? findByWorkspacePath(contexts, workspacePath) : null
+    const override = ctx?.settingsOverride
+    if (override?.useOverride && workspacePath) {
+      void setSettingsOverride(workspacePath, {
         ...override,
         useOverride: true,
         ...patch
@@ -207,50 +322,130 @@ export function App() {
       return
     }
     void update({ ...patch, thinkingPrefsByProvider })
+  }, [contexts, setSettingsError, setSettingsOverride, settings.thinkingPrefsByProvider, update])
+
+  const onProviderModel = (provider: ProviderId, model: string): void => {
+    onProviderModelForWorkspace(focusedWorkspacePath ?? activeWorkspace, provider, model)
+  }
+
+  const onToggleFavorite = useCallback((provider: ProviderId, model: string): void => {
+    const key = modelSelectionKey(provider, model)
+    const set = new Set(settings.favoriteModels)
+    if (set.has(key)) set.delete(key)
+    else set.add(key)
+    void update({ favoriteModels: [...set] })
+  }, [settings.favoriteModels, update])
+
+  const onServiceTierChange = (tier: ServiceTier): void => {
+    const key = modelSelectionKey(effectiveChatSettings.provider, effectiveChatSettings.model)
+    void update({
+      serviceTier: tier,
+      serviceTierByModel: { ...settings.serviceTierByModel, [key]: tier }
+    })
+  }
+
+  const onChatSettingsChange = (patch: ChatSettingsPatch): void => {
+    onChatSettingsChangeForWorkspace(
+      focusedWorkspacePath ?? activeWorkspace,
+      patch,
+      effectiveChatSettings
+    )
   }
 
   const effectiveChatSettings = resolveEffectiveSettings(
     settings,
-    activeContext?.settingsOverride
+    (focusedWorkspacePath
+      ? (findByWorkspacePath(contexts, focusedWorkspacePath) ?? activeContext)
+      : activeContext
+    )?.settingsOverride
   )
 
-  const modelsRefreshKey = `${
-    effectiveChatSettings.provider === 'ollama'
-      ? `ollama:${effectiveChatSettings.ollamaBaseUrl}:${secrets.ollama ? '1' : '0'}`
-      : effectiveChatSettings.provider === 'custom'
-        ? `custom:${effectiveChatSettings.customOpenAiBaseUrl}:${secrets.custom ? '1' : '0'}`
-        : `${effectiveChatSettings.provider}:${secrets[effectiveChatSettings.provider as SecretProvider] ? '1' : '0'}`
-  }:${modelsRefreshNonce}`
+  // Clear nested instance view when it no longer belongs to the focused parent session.
+  useEffect(() => {
+    if (focusedOpenInstance == null || focusedParentRunId == null) return
+    const live = chat.agentInstances?.[focusedOpenInstance]
+    if (live) return
+    const listed = (activeContext?.instanceRuns ?? []).some(
+      (inst) => inst.runId === focusedOpenInstance && inst.parentRunId === focusedParentRunId
+    )
+    if (!listed) setOpenInstanceForParent(focusedParentRunId, null)
+  }, [
+    focusedOpenInstance,
+    focusedParentRunId,
+    chat.agentInstances,
+    activeContext?.instanceRuns,
+    setOpenInstanceForParent
+  ])
 
-  const imageReadyHint = useMemo(
-    () =>
-      resolveImageReadyLabel({
-        imageProvider: settings.imageProvider,
-        secrets,
-        customImageEnabled: settings.customImageEnabled,
-        customOpenAiBaseUrl: effectiveChatSettings.customOpenAiBaseUrl
-      }),
-    [
-      settings.imageProvider,
-      settings.customImageEnabled,
-      effectiveChatSettings.customOpenAiBaseUrl,
-      secrets
-    ]
+  const modelsRefreshKey = modelsRefreshKeyFor(
+    effectiveChatSettings,
+    secrets,
+    modelsRefreshNonce
   )
 
-  const onSelectRunInWorkspace = async (path: string, runId: string): Promise<void> => {
+  const onSelectRunInWorkspace = useCallback(async (path: string, runId: string): Promise<void> => {
     if (!chatActions) {
       setSettingsError('Session loading is unavailable.')
       setView('chat')
       return
     }
+    const ctx = findByWorkspacePath(contexts, path)
+    const listedInstance = ctx?.instanceRuns?.find((run) => run.runId === runId)
+    const liveParentId = chat.runId ?? activeContext?.activeRunId ?? null
+    const isLiveChild = Boolean(chat.agentInstances?.[runId])
+    const parentRunId = listedInstance?.parentRunId ?? (isLiveChild ? liveParentId : null)
+
+    if (parentRunId) {
+      await openRunInWorkspace(path, parentRunId)
+      const ctrl = getRunController(parentRunId, path)
+      if (!ctrl || ctrl.items.length === 0) {
+        await loadRunTranscriptIntoTab(path, parentRunId)
+      }
+      setOpenInstanceForParent(parentRunId, runId)
+      setView('chat')
+      return
+    }
+
+    setOpenInstanceForParent(runId, null)
     await openRunInWorkspace(path, runId)
     const ctrl = getRunController(runId, path)
     if (!ctrl || ctrl.items.length === 0) {
       await loadRunTranscriptIntoTab(path, runId)
     }
     setView('chat')
-  }
+  }, [
+    activeContext?.activeRunId,
+    chat.agentInstances,
+    chat.runId,
+    chatActions,
+    contexts,
+    getRunController,
+    loadRunTranscriptIntoTab,
+    openRunInWorkspace,
+    setOpenInstanceForParent,
+    setSettingsError
+  ])
+
+  useEffect(() => {
+    const unsub = window.vyotiq?.onNotificationActivate?.((action) => {
+      switch (action.type) {
+        case 'open_run':
+          void onSelectRunInWorkspace(action.workspacePath, action.runId)
+          return
+        case 'open_settings':
+          setSettingsSection(action.section)
+          setView('settings')
+          return
+        default: {
+          const _exhaustive: never = action
+          return _exhaustive
+        }
+      }
+    })
+    return () => {
+      unsub?.()
+    }
+  }, [onSelectRunInWorkspace])
 
   const handleSessionDrop = useCallback(
     (
@@ -286,10 +481,16 @@ export function App() {
     [contexts]
   )
 
-  const onNewChat = (): void => {
+  const onNewChat = useCallback((): void => {
+    setOpenInstanceForParent(focusedParentRunId, null)
     openRunTab(null)
     setView('chat')
-  }
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        focusComposerMessage()
+      })
+    )
+  }, [focusedParentRunId, openRunTab, setOpenInstanceForParent])
 
   const onPickWorkspace = (): void => {
     void pickWorkspace().then(async (res) => {
@@ -305,12 +506,16 @@ export function App() {
   getRunControllerRef.current = getRunController
   const getFocusedPaneRef = useRef(getFocusedPane)
   getFocusedPaneRef.current = getFocusedPane
+  const getPaneByIdRef = useRef(getPaneById)
+  getPaneByIdRef.current = getPaneById
   const [approvalOnboardingOpen, setApprovalOnboardingOpen] = useState(false)
   const pendingSendRef = useRef<{
     text: string
     images?: string[]
     files?: AttachedFile[]
     extras?: import('@shared/ipc').ComposerSendExtras
+    workspacePath: string
+    runId: string | null
     deliver: (
       text: string,
       images?: string[],
@@ -320,43 +525,68 @@ export function App() {
   } | null>(null)
 
   const offlineWorkspacePath = focusedWorkspacePath ?? activeWorkspace ?? ''
+  const agentSessionContext = focusedWorkspacePath
+    ? (findByWorkspacePath(contexts, focusedWorkspacePath) ?? activeContext)
+    : activeContext
 
-  const flushOfflineDeliver = useCallback(
-    (
-      text: string,
-      images?: string[],
-      files?: AttachedFile[],
-      extras?: import('@shared/ipc').ComposerSendExtras
-    ) => {
-      const focused = getFocusedPaneRef.current()
-      if (focused) {
-        return (
-          getRunControllerRef.current(focused.runId, focused.workspacePath)?.send(
-            text,
-            images,
-            files,
-            extras
-          ) ?? false
-        )
-      }
-      return chatActionsRef.current?.send(text, images, files, extras) ?? false
+  const flushOfflineEntry = useCallback(
+    (entry: import('@renderer/lib/hooks/offlineQueueStore').OfflineQueuedSend) => {
+      const pane = entry.paneId ? getPaneByIdRef.current(entry.paneId) : null
+      const target = resolveOfflineFlushTarget(
+        entry,
+        pane ? [pane] : [],
+        offlineWorkspacePath || undefined
+      )
+      if (!target) return false
+      return (
+        getRunControllerRef.current(target.runId, target.workspacePath)?.send(
+          entry.text,
+          entry.images,
+          entry.files,
+          entry.extras
+        ) ?? false
+      )
     },
-    []
+    [offlineWorkspacePath]
   )
 
-  const {
-    offlineHint,
-    sendWithOfflineQueue,
-    clearOfflineQueueForWorkspace
-  } = useOfflineSendQueue(offlineWorkspacePath, flushOfflineDeliver)
+  const { sendWithOfflineQueue } = useOfflineSendQueue(offlineWorkspacePath, flushOfflineEntry)
 
   const flushPendingSend = useCallback(async () => {
     const pending = pendingSendRef.current
     pendingSendRef.current = null
     if (!pending) return false
-    const { deliver, text, images, files, extras } = pending
-    return Boolean(await deliver(text, images, files, extras))
-  }, [])
+    const { deliver, text, images, files, extras, workspacePath, runId } = pending
+    const ok = Boolean(await deliver(text, images, files, extras))
+    if (ok) {
+      setComposerDraftForPane(workspacePath, runId, '')
+      const attKey = composerAttachmentKey(workspacePath, runId)
+      if (attKey) clearComposerAttachments(attKey)
+    }
+    return ok
+  }, [setComposerDraftForPane])
+
+  const completeApprovalOnboarding = useCallback(
+    async (mode: ToolApprovalMode) => {
+      const res = await update({
+        toolApproval: { ...settings.toolApproval, mode },
+        toolApprovalOnboardingDone: true
+      })
+      if (!res.ok) return
+      setApprovalOnboardingOpen(false)
+      await flushPendingSend()
+    },
+    [flushPendingSend, settings.toolApproval, update]
+  )
+
+  const dismissApprovalOnboarding = useCallback(async () => {
+    pendingSendRef.current = null
+    await update({
+      toolApproval: { ...settings.toolApproval, mode: 'off' },
+      toolApprovalOnboardingDone: true
+    })
+    setApprovalOnboardingOpen(false)
+  }, [settings.toolApproval, update])
 
   const gateSendWithOnboarding = useCallback(
     async (
@@ -367,30 +597,27 @@ export function App() {
         extras?: import('@shared/ipc').ComposerSendExtras
       ) => boolean | void | Promise<boolean | void>,
       text: string,
-      images?: string[],
-      files?: AttachedFile[],
-      extras?: import('@shared/ipc').ComposerSendExtras
+      images: string[] | undefined,
+      files: AttachedFile[] | undefined,
+      extras: import('@shared/ipc').ComposerSendExtras | undefined,
+      binding: { workspacePath: string; runId: string | null }
     ) => {
       if (!settings.toolApprovalOnboardingDone) {
-        pendingSendRef.current = { text, images, files, extras, deliver }
+        pendingSendRef.current = {
+          text,
+          images,
+          files,
+          extras,
+          workspacePath: binding.workspacePath,
+          runId: binding.runId,
+          deliver
+        }
         setApprovalOnboardingOpen(true)
         return false
       }
       return Boolean(await deliver(text, images, files, extras))
     },
     [settings.toolApprovalOnboardingDone]
-  )
-
-  const completeApprovalOnboarding = useCallback(
-    async (mode: ToolApprovalMode) => {
-      await update({
-        toolApproval: { ...settings.toolApproval, mode },
-        toolApprovalOnboardingDone: true
-      })
-      setApprovalOnboardingOpen(false)
-      await flushPendingSend()
-    },
-    [flushPendingSend, settings.toolApproval, update]
   )
 
   /** Onboarding gate runs before offline enqueue (deliver is sendWithOfflineQueue). */
@@ -401,6 +628,10 @@ export function App() {
       files?: AttachedFile[],
       extras?: import('@shared/ipc').ComposerSendExtras
     ) => {
+      const focused = getFocusedPaneRef.current()
+      const path = focused?.workspacePath ?? activeWorkspace
+      if (!path) return false
+      const runId = focused?.runId ?? null
       return gateSendWithOnboarding(
         (sendText, sendImages, sendFiles, sendExtras) =>
           sendWithOfflineQueue(
@@ -408,15 +639,18 @@ export function App() {
             sendImages,
             sendFiles,
             sendExtras,
-            (t, i, f, e) => chatActionsRef.current?.send(t, i, f, e) ?? false
+            (t, i, f, e) =>
+              getRunControllerRef.current(runId, path)?.send(t, i, f, e) ?? false,
+            { runId, paneId: focused?.paneId, workspacePath: path }
           ),
         text,
         images,
         files,
-        extras
+        extras,
+        { workspacePath: path, runId }
       )
     },
-    [gateSendWithOnboarding, sendWithOfflineQueue]
+    [activeWorkspace, gateSendWithOnboarding, sendWithOfflineQueue]
   )
 
   const onChatEditAndResend = useCallback(
@@ -461,37 +695,63 @@ export function App() {
 
   const activeRunId = chat.runId
   const [undoBusy, setUndoBusy] = useState(false)
-  const onCompactContext = useCallback(async () => {
-    if (!activeWorkspace || !activeRunId) {
-      return { ok: false as const, message: 'Compaction is unavailable.' }
-    }
-    const res = await window.vyotiq.chatCompact(activeWorkspace, activeRunId)
-    if (!res.ok) return { ok: false as const, message: res.error }
-    chatActionsRef.current?.applyManualCompaction?.(res.data)
-    return {
-      ok: true as const,
-      message: `Summarized ${res.data.messagesBefore - res.data.keptMessages} messages; ${res.data.keptMessages} kept verbatim.`
-    }
-  }, [activeWorkspace, activeRunId])
+  const onCompactContext = useCallback(
+    async (focus?: string) => {
+      const workspacePath = focusedWorkspacePath ?? activeWorkspace
+      const runId = activeRunId
+      if (!workspacePath || !runId) {
+        return { ok: false as const, message: 'Compaction is unavailable.' }
+      }
+      chatActionsRef.current?.setCompacting?.(true)
+      try {
+        const res = await window.vyotiq.chatCompact(workspacePath, runId, focus)
+        if (!res.ok) {
+          return { ok: false as const, message: res.error }
+        }
+        chatActionsRef.current?.applyManualCompaction?.(res.data)
+        return {
+          ok: true as const,
+          message: `Summarized ${res.data.messagesBefore - res.data.keptMessages} messages; ${res.data.keptMessages} kept verbatim.`
+        }
+      } finally {
+        chatActionsRef.current?.setCompacting?.(false)
+      }
+    },
+    [activeWorkspace, activeRunId, focusedWorkspacePath]
+  )
 
   const resolveAgentWrites = useCallback(
-    async (action: 'keep' | 'discard', paths?: string[]): Promise<boolean> => {
-      if (!activeWorkspace || !activeRunId) {
+    async (
+      action: 'keep' | 'discard',
+      paths?: string[],
+      target?: {
+        workspacePath: string
+        runId: string | null
+        running: boolean
+        writeCheckpoint: ChatStreamController['writeCheckpoint']
+        applyWriteCheckpointResolution?: ChatStreamController['applyWriteCheckpointResolution']
+      }
+    ): Promise<boolean> => {
+      const workspacePath = target?.workspacePath ?? focusedWorkspacePath ?? activeWorkspace
+      const runId = target?.runId ?? activeRunId
+      const running = target?.running ?? chat.running
+      const writeCheckpoint = target?.writeCheckpoint ?? chat.writeCheckpoint
+      if (!workspacePath || !runId) {
         setSettingsError('Keep/Discard is unavailable.')
         return false
       }
-      if (chat.running) {
+      if (running) {
         setSettingsError('Stop the run to Keep/Discard agent writes.')
         return false
       }
-      const checkpointId = chat.writeCheckpoint?.undone
+      const checkpointId = writeCheckpoint?.undone
         ? undefined
-        : chat.writeCheckpoint?.checkpointId
+        : writeCheckpoint?.checkpointId
       setUndoBusy(true)
       try {
         const res = await window.vyotiq.resolveWrites({
-          workspacePath: activeWorkspace,
-          runId: activeRunId,
+          workspacePath,
+          runId,
           ...(checkpointId ? { checkpointId } : {}),
           action,
           ...(paths?.length ? { paths } : {})
@@ -500,14 +760,24 @@ export function App() {
           setSettingsError(res.error)
           return false
         }
-        chatActionsRef.current?.applyWriteCheckpointResolution?.(res.data)
+        const apply =
+          target?.applyWriteCheckpointResolution ??
+          chatActionsRef.current?.applyWriteCheckpointResolution
+        apply?.(res.data)
         setSettingsError(null)
         return true
       } finally {
         setUndoBusy(false)
       }
     },
-    [activeWorkspace, activeRunId, chat.running, chat.writeCheckpoint, setSettingsError]
+    [
+      activeWorkspace,
+      activeRunId,
+      chat.running,
+      chat.writeCheckpoint,
+      focusedWorkspacePath,
+      setSettingsError
+    ]
   )
 
   const onUndoWrites = useCallback(async (): Promise<boolean> => {
@@ -545,15 +815,31 @@ export function App() {
     )
   }, [chat.writeCheckpoint])
 
-  const slashHandlersValue = useMemo(
-    () => ({
+  const writeCheckpointFiles = useMemo(() => {
+    const files = chat.writeCheckpoint?.files
+    if (!files?.length || chat.writeCheckpoint?.undone) return undefined
+    return files.map((f) => ({ path: f.path, action: f.action }))
+  }, [chat.writeCheckpoint])
+
+  const createSlashHandlers = useCallback(
+    (scope: {
+      workspacePath: string | null
+      running: boolean
+      pendingRun: boolean
+      onClear: () => void
+      onCompact: (
+        focus?: string
+      ) => Promise<{ ok: true; message: string } | { ok: false; message: string }>
+      onUndoWrites: () => Promise<boolean>
+      onSetAgentMode: (mode: AgentInteractionMode) => void
+    }): SlashClientHandlers => ({
       onClear: () => {
-        onNewChat()
+        scope.onClear()
         setSettingsError(null)
         return true
       },
-      onCompact: async () => {
-        const result = await onCompactContext()
+      onCompact: async (focus?: string) => {
+        const result = await scope.onCompact(focus)
         if (!result.ok) {
           setSettingsError(result.message)
           return false
@@ -561,29 +847,30 @@ export function App() {
         setSettingsError(null)
         return true
       },
-      onUndoWrites: () => onUndoWrites(),
-      onSetAgentMode: (mode: import('@shared/ipc').AgentInteractionMode) => {
-        if (chat.running || chat.pendingRun) {
+      onUndoWrites: () => scope.onUndoWrites(),
+      onSetAgentMode: (mode: AgentInteractionMode) => {
+        if (scope.running || scope.pendingRun) {
           setSettingsError('Mode is locked while a run is active.')
           return false
         }
-        setAgentMode(mode)
+        scope.onSetAgentMode(mode)
         return true
       },
       onOpenMarketplace: (mcpServerId?: string) => {
         setMarketplaceFocusServerId(mcpServerId ?? null)
         setView('marketplace')
       },
-      onOpenSettings: () => {
+      onOpenSettings: (section?: 'voice' | 'providers') => {
+        if (section) setSettingsSection(section)
         setView('settings')
       },
       onCreateRule: async (title?: string) => {
-        if (!activeWorkspace) {
+        if (!scope.workspacePath) {
           setSettingsError('Open a workspace to create a rule.')
           return false
         }
         const res = await window.vyotiq.slashCommandsCreateRule({
-          workspacePath: activeWorkspace,
+          workspacePath: scope.workspacePath,
           title
         })
         if (!res.ok) {
@@ -595,19 +882,46 @@ export function App() {
           scope: 'slash',
           path: res.data.relativePath
         })
+        setMarketplaceFocusRulePath(res.data.relativePath)
+        setView('marketplace')
+        return true
+      },
+      onCreateSkill: async (title?: string) => {
+        const raw = (title ?? '').trim()
+        const personal = /^personal(?:\s|$)/i.test(raw)
+        const skillTitle = personal ? raw.replace(/^personal\s*/i, '').trim() : raw
+        if (!personal && !scope.workspacePath) {
+          setSettingsError('Open a workspace to create a project skill.')
+          return false
+        }
+        const res = await window.vyotiq.slashCommandsCreateSkill({
+          workspacePath: scope.workspacePath ?? null,
+          title: skillTitle || undefined,
+          scope: personal ? 'personal' : 'project'
+        })
+        if (!res.ok) {
+          setSettingsError(res.error)
+          return false
+        }
+        setSettingsError(null)
+        logger.info('Created skill', {
+          scope: 'slash',
+          path: res.data.relativePath
+        })
+        setMarketplaceFocusSkillPath(res.data.path)
+        setView('marketplace')
         return true
       },
       onHarnessApply: async (proposalPath?: string) => {
-        if (!activeWorkspace) {
+        if (!scope.workspacePath) {
           setSettingsError('Open a workspace to apply a harness proposal.')
           return false
         }
         const preview = await window.vyotiq.harnessPreviewApply({
-          workspacePath: activeWorkspace,
+          workspacePath: scope.workspacePath,
           ...(proposalPath?.trim() ? { proposalPath: proposalPath.trim() } : {})
         })
         if (!preview.ok) {
-          // Expected when the open project is not the Agent V repo — soft notice, not a crash.
           setSettingsError(preview.error)
           return false
         }
@@ -620,7 +934,7 @@ export function App() {
         )
         if (!confirmed) return false
         const res = await window.vyotiq.harnessApply({
-          workspacePath: activeWorkspace,
+          workspacePath: scope.workspacePath,
           ...(proposalPath?.trim() ? { proposalPath: proposalPath.trim() } : {}),
           confirm: true
         })
@@ -677,7 +991,6 @@ export function App() {
                 kind: entry.kind,
                 version: entry.version
               }
-        // Registry installs require ack; prompt here so slash/skills paths match Marketplace UI.
         if (payload.source === 'registry' && !settings.marketplace?.remoteInstallAcked) {
           const ack = await window.vyotiq.marketplaceAckRemoteInstall(true)
           if (!ack.ok) {
@@ -691,12 +1004,12 @@ export function App() {
         if (!res.ok) setSettingsError(res.error)
       },
       onOpenFile: async (path: string) => {
-        if (!activeWorkspace) {
+        if (!scope.workspacePath) {
           setSettingsError('Open a workspace to open files.')
           return
         }
         const res = await window.vyotiq.slashCommandsOpenFile({
-          workspacePath: activeWorkspace,
+          workspacePath: scope.workspacePath,
           path
         })
         if (!res.ok) setSettingsError(res.error)
@@ -705,18 +1018,38 @@ export function App() {
         pushToast(message)
       }
     }),
+    [refresh, setSettingsError, settings.marketplace]
+  )
+
+  const slashHandlersValue = useMemo(
+    () =>
+      createSlashHandlers({
+        workspacePath: focusedWorkspacePath ?? activeWorkspace,
+        running: chat.running,
+        pendingRun: chat.pendingRun,
+        onClear: () => {
+          onNewChat()
+        },
+        onCompact: onCompactContext,
+        onUndoWrites,
+        onSetAgentMode: (mode) => {
+          setAgentMode(mode, {
+            workspacePath: focusedWorkspacePath ?? undefined,
+            runId: focusedRunId
+          })
+        }
+      }),
     [
       activeWorkspace,
+      chat.pendingRun,
+      chat.running,
+      createSlashHandlers,
+      focusedRunId,
+      focusedWorkspacePath,
       onCompactContext,
       onNewChat,
       onUndoWrites,
-      refresh,
-      setAgentMode,
-      setSettingsError,
-      chat.running,
-      chat.pendingRun,
-      settings.marketplace,
-      update
+      setAgentMode
     ]
   )
 
@@ -768,7 +1101,7 @@ export function App() {
     }
   }, [settings.mcpServers, activeWorkspace])
 
-  const onDismissChatBanner = (): void => {
+  const onDismissChatBanner = useCallback((): void => {
     // Banner shows settingsError ?? workspaceError ?? chat.error — clear only that source.
     if (settingsError) {
       setSettingsError(null)
@@ -777,25 +1110,23 @@ export function App() {
     } else {
       chatActions?.clearError()
     }
-  }
+  }, [chatActions, clearWorkspaceError, setSettingsError, settingsError, workspaceError])
 
   const renderPaneSession = useCallback(
-    (
-      pane: ChatPane,
-      options: {
-        focused: boolean
-        sideRailPad: boolean
-        onOpenChanges?: () => void
-        onOpenUncommittedChanges?: () => void
-      }
-    ) => {
-      const { focused, sideRailPad, onOpenChanges, onOpenUncommittedChanges } = options
+    (pane: ChatPane, options: PaneRenderOptions) => {
+      const { focused, sideRailPad, onOpenChanges, onOpenWorkspaceFile } =
+        options
       const snap = getPaneChatSnapshot(pane.workspacePath, pane.runId)
       const paneContext = findByWorkspacePath(contexts, pane.workspacePath)
+      const paneScrollKey = pane.runId ?? '__draft__'
       const paneScroll =
-        paneContext?.ui.scrollTopByRunId[pane.runId ?? '__draft__'] ??
-        paneContext?.ui.scrollTop ??
-        0
+        paneContext && paneScrollKey in paneContext.ui.scrollTopByRunId
+          ? paneContext.ui.scrollTopByRunId[paneScrollKey]
+          : paneContext &&
+              Object.keys(paneContext.ui.scrollTopByRunId).length === 0 &&
+              paneContext.ui.scrollTop > 0
+            ? paneContext.ui.scrollTop
+            : undefined
       const paneCollapsed =
         snap.collapsedTurnIndices.length > 0
           ? new Set(snap.collapsedTurnIndices)
@@ -806,16 +1137,68 @@ export function App() {
         : undefined
       const paneCompact =
         pane.workspacePath && pane.runId
-          ? async () => {
-              const res = await window.vyotiq.chatCompact(pane.workspacePath!, pane.runId!)
-              if (!res.ok) return { ok: false as const, message: res.error }
-              paneCtrl?.applyManualCompaction?.(res.data)
-              return {
-                ok: true as const,
-                message: `Summarized ${res.data.messagesBefore - res.data.keptMessages} messages; ${res.data.keptMessages} kept verbatim.`
+          ? async (focus?: string) => {
+              paneCtrl?.setCompacting?.(true)
+              try {
+                const res = await window.vyotiq.chatCompact(
+                  pane.workspacePath!,
+                  pane.runId!,
+                  focus
+                )
+                if (!res.ok) {
+                  return { ok: false as const, message: res.error }
+                }
+                paneCtrl?.applyManualCompaction?.(res.data)
+                return {
+                  ok: true as const,
+                  message: `Summarized ${res.data.messagesBefore - res.data.keptMessages} messages; ${res.data.keptMessages} kept verbatim.`
+                }
+              } finally {
+                paneCtrl?.setCompacting?.(false)
               }
             }
           : undefined
+      const paneChatSettings = resolveEffectiveSettings(
+        settings,
+        paneContext?.settingsOverride
+      )
+      const paneModelsRefreshKey = modelsRefreshKeyFor(
+        paneChatSettings,
+        secrets,
+        modelsRefreshNonce
+      )
+      const paneSlashHandlers = createSlashHandlers({
+        workspacePath: pane.workspacePath,
+        running: snap.running,
+        pendingRun: snap.pendingRun,
+        onClear: () => {
+          setOpenInstanceForParent(pane.runId, null)
+          openNewChatInPane(pane.paneId)
+          setView('chat')
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => {
+              focusComposerMessage()
+            })
+          )
+        },
+        onCompact:
+          paneCompact ??
+          (async () => ({
+            ok: false as const,
+            message: 'Compaction is unavailable.'
+          })),
+        onUndoWrites: () =>
+          resolveAgentWrites('discard', undefined, {
+            workspacePath: pane.workspacePath,
+            runId: pane.runId,
+            running: snap.running,
+            writeCheckpoint: snap.writeCheckpoint,
+            applyWriteCheckpointResolution: paneCtrl?.applyWriteCheckpointResolution.bind(paneCtrl)
+          }),
+        onSetAgentMode: (mode) => {
+          setAgentMode(mode, { workspacePath: pane.workspacePath, runId: pane.runId })
+        }
+      })
       return (
         <SessionChatColumn
           items={snap.items}
@@ -827,7 +1210,9 @@ export function App() {
           metaStore={{
             subscribeMeta: snap.subscribeMeta,
             getMetaRevision: snap.getMetaRevision,
-            getContextUsage: snap.getContextUsage
+            getContextUsage: snap.getContextUsage,
+            getTurnUsage: snap.getTurnUsage,
+            getCostHint: snap.getCostHint
           }}
           running={snap.running}
           invokeId={snap.invokeId}
@@ -835,41 +1220,54 @@ export function App() {
           error={snap.error}
           errorCode={snap.errorCode}
           networkWait={snap.networkWait}
-          runNotice={snap.runNotice}
-          incomplete={snap.incomplete}
-          onContinue={() => {
+           compacting={snap.compacting}
+           incomplete={snap.incomplete}
+           turnStatus={snap.turnStatus}
+           onContinue={() => {
             void paneCtrl?.send(CONTINUE_PROMPT)
           }}
           contextUsage={snap.contextUsage}
+          turnUsage={snap.turnUsage}
           onCompactContext={paneCompact}
           operationalError={focused ? operationalError : null}
           hasWorkspace={Boolean(pane.workspacePath)}
           workspacePath={pane.workspacePath}
-          provider={effectiveChatSettings.provider}
-          model={effectiveChatSettings.model}
-          ollamaBaseUrl={effectiveChatSettings.ollamaBaseUrl}
-          customOpenAiBaseUrl={effectiveChatSettings.customOpenAiBaseUrl}
-          modelsRefreshKey={modelsRefreshKey}
+          provider={paneChatSettings.provider}
+          model={paneChatSettings.model}
+          ollamaBaseUrl={paneChatSettings.ollamaBaseUrl}
+          customOpenAiBaseUrl={paneChatSettings.customOpenAiBaseUrl}
+          modelsRefreshKey={paneModelsRefreshKey}
+          secrets={secrets}
           activeRunId={pane.runId}
           transcriptLoading={snap.transcriptLoading}
           showPageHeading={false}
           dockEmptyComposer
           onActivate={() => focusPaneById(pane.paneId)}
-          onProviderModel={onProviderModel}
+          onProviderModel={(provider, model) =>
+            onProviderModelForWorkspace(pane.workspacePath, provider, model)
+          }
           favoriteModels={settings.favoriteModels}
           recentModels={settings.recentModels}
           serviceTier={resolveServiceTier(
             settings,
-            effectiveChatSettings.provider,
-            effectiveChatSettings.model
+            paneChatSettings.provider,
+            paneChatSettings.model
           )}
           onToggleFavorite={onToggleFavorite}
-          onServiceTierChange={onServiceTierChange}
-          chatSettings={effectiveChatSettings}
-          onChatSettingsChange={onChatSettingsChange}
+          onServiceTierChange={(tier) => {
+            const key = modelSelectionKey(paneChatSettings.provider, paneChatSettings.model)
+            void update({
+              serviceTier: tier,
+              serviceTierByModel: { ...settings.serviceTierByModel, [key]: tier }
+            })
+          }}
+          chatSettings={paneChatSettings}
+          onChatSettingsChange={(patch) =>
+            onChatSettingsChangeForWorkspace(pane.workspacePath, patch, paneChatSettings)
+          }
           agentMode={paneContext?.ui.agentMode ?? 'agent'}
           onAgentModeChange={(mode) => {
-            setAgentMode(mode, { syncOnly: true })
+            setAgentMode(mode, { workspacePath: pane.workspacePath, runId: pane.runId })
           }}
           onSend={(text, images, files, extras) =>
             gateSendWithOnboarding(
@@ -880,37 +1278,25 @@ export function App() {
                   f?: AttachedFile[],
                   e?: import('@shared/ipc').ComposerSendExtras
                 ) => paneCtrl?.send(t, i, f, e) ?? false
-                if (
-                  !offlineWorkspacePath ||
-                  !workspacePathsEqual(pane.workspacePath, offlineWorkspacePath)
-                ) {
-                  return paneDeliver(sendText, sendImages, sendFiles, sendExtras)
-                }
                 return sendWithOfflineQueue(
                   sendText,
                   sendImages,
                   sendFiles,
                   sendExtras,
-                  paneDeliver
+                  paneDeliver,
+                  {
+                    runId: pane.runId,
+                    paneId: pane.paneId,
+                    workspacePath: pane.workspacePath
+                  }
                 )
               },
               text,
               images,
               files,
-              extras
+              extras,
+              { workspacePath: pane.workspacePath, runId: pane.runId }
             )
-          }
-          offlineHint={
-            offlineWorkspacePath &&
-            workspacePathsEqual(pane.workspacePath, offlineWorkspacePath)
-              ? offlineHint
-              : null
-          }
-          onClearOfflineQueue={
-            offlineWorkspacePath &&
-            workspacePathsEqual(pane.workspacePath, offlineWorkspacePath)
-              ? clearOfflineQueueForWorkspace
-              : undefined
           }
           onStop={() => {
             void paneCtrl?.stop()
@@ -923,6 +1309,10 @@ export function App() {
           }
           messages={snap.messages}
           pendingFollowUps={snap.pendingFollowUps}
+          agentInstances={snap.agentInstances}
+          openInstanceRunId={pane.runId ? (openInstanceByParent[pane.runId] ?? null) : null}
+          onOpenInstanceRunIdChange={(id) => setOpenInstanceForParent(pane.runId, id)}
+          getInstanceController={getRunController}
           onRemoveFollowUp={(id) => {
             void paneCtrl?.removeFollowUp(id)
           }}
@@ -941,7 +1331,7 @@ export function App() {
             onMessageListScrollForPane(pane.workspacePath, pane.runId, scrollTop)
           }
           chatSurfaceEpoch={chatSurfaceEpoch}
-          showThinking={effectiveChatSettings.showThinking}
+          showThinking={paneChatSettings.showThinking}
           onLoadToolContent={
             paneCtrl ? (toolCallId) => paneCtrl.loadToolContent(toolCallId) : undefined
           }
@@ -976,42 +1366,41 @@ export function App() {
               : undefined
           }
           mcpServerNames={mcpServerNames}
-          slashHandlers={slashHandlersValue}
+          slashHandlers={paneSlashHandlers}
+          approvalAutoFocus={focused}
           sideRailPad={sideRailPad}
-          imageReadyHint={imageReadyHint}
           onOpenChanges={onOpenChanges}
-          onOpenUncommittedChanges={onOpenUncommittedChanges}
+          onOpenWorkspaceFile={onOpenWorkspaceFile}
         />
       )
     },
     [
       chatSurfaceEpoch,
       contexts,
-      effectiveChatSettings,
+      createSlashHandlers,
       getPaneChatSnapshot,
       getRunController,
-      imageReadyHint,
       mcpServerNames,
-      modelsRefreshKey,
       focusPaneById,
       gateSendWithOnboarding,
       sendWithOfflineQueue,
-      offlineHint,
-      offlineWorkspacePath,
-      clearOfflineQueueForWorkspace,
-      onChatSettingsChange,
+      modelsRefreshNonce,
       onDismissChatBanner,
       onMessageListScrollForPane,
-      onProviderModel,
+      openNewChatInPane,
+      openInstanceByParent,
+      resolveAgentWrites,
+      secrets,
       setComposerDraftForPane,
-      onServiceTierChange,
-      onToggleFavorite,
+      setOpenInstanceForParent,
       operationalError,
       scrollRestoreToken,
       setAgentMode,
-      settings.favoriteModels,
-      settings.recentModels,
-      slashHandlersValue
+      settings,
+      update,
+      onChatSettingsChangeForWorkspace,
+      onProviderModelForWorkspace,
+      onToggleFavorite
     ]
   )
 
@@ -1059,7 +1448,9 @@ export function App() {
       setSettingsError(res.error)
       return
     }
+    removeOfflineQueueEntriesForRun(activeWorkspace, runId)
     purgeDeletedRunUi(activeWorkspace, runId)
+    clearOpenInstanceMatching(runId)
     closeRunTab(runId)
     refreshActiveRuns()
   }
@@ -1071,7 +1462,9 @@ export function App() {
       setSettingsError(res.error)
       return
     }
+    removeOfflineQueueEntriesForRun(path, runId)
     purgeDeletedRunUi(path, runId)
+    clearOpenInstanceMatching(runId)
     if (activeWorkspace && workspacePathsEqual(path, activeWorkspace)) {
       closeRunTab(runId)
     }
@@ -1087,25 +1480,43 @@ export function App() {
   const runsByWorkspacePath = useMemo(
     () =>
       Object.fromEntries(
-        Object.entries(contexts).map(([path, ctx]) => [
-          path,
-          {
-            runs: ctx.runs,
-            runsCapped: ctx.runsCapped,
-            runsError: ctx.runsError,
-            runsLoaded: ctx.runsLoaded,
-            activeRunId: ctx.activeRunId
-          }
-        ])
+        Object.entries(contexts).map(([path, ctx]) => {
+          const liveParentId =
+            activeWorkspace && workspacePathsEqual(path, activeWorkspace)
+              ? (chat.runId ?? ctx.activeRunId)
+              : ctx.activeRunId
+          const liveInstances =
+            activeWorkspace && workspacePathsEqual(path, activeWorkspace)
+              ? chat.agentInstances
+              : undefined
+          return [
+            path,
+            {
+              runs: ctx.runs,
+              instanceRuns: mergeLiveInstanceRuns(
+                ctx.instanceRuns ?? [],
+                liveInstances,
+                liveParentId
+              ),
+              runsCapped: ctx.runsCapped,
+              runsError: ctx.runsError,
+              runsLoaded: ctx.runsLoaded,
+              activeRunId: ctx.activeRunId
+            }
+          ]
+        })
       ),
-    [contexts]
+    [contexts, activeWorkspace, chat.runId, chat.agentInstances]
   )
 
   const shellWorkspaceProps = {
     openWorkspaces,
     activeRuns,
     runsByWorkspacePath,
-    onSwitchWorkspace: (path: string) => void switchWorkspace(path),
+    onSwitchWorkspace: (path: string) => {
+      setOpenInstanceByParent({})
+      void switchWorkspace(path)
+    },
     onCloseWorkspace,
     onAddWorkspace: onPickWorkspace,
     workspaceHasBackgroundRun,
@@ -1114,7 +1525,8 @@ export function App() {
       void onRenameRunInWorkspace(path, runId, goal),
     onDeleteRunInWorkspace: (path: string, runId: string) => void onDeleteRunInWorkspace(path, runId),
     isRunOpenInPane: isSessionOpenInPane,
-    isRunFocusedInPane: isSessionFocusedInPane
+    isRunFocusedInPane: isSessionFocusedInPane,
+    openInstanceRunId: focusedOpenInstance
   }
 
   if (loading) {
@@ -1136,7 +1548,7 @@ export function App() {
           role="status"
           aria-busy="true"
         >
-          <span className="sr-only">Loading Vyotiq…</span>
+          <span className="sr-only">Loading Agent V…</span>
           <div className="mx-auto flex w-full max-w-2xl flex-col gap-3 animate-fade-in">
             <div className="h-4 w-2/5 animate-pulse rounded bg-surface" />
             <div className="h-4 w-3/5 animate-pulse rounded bg-surface" />
@@ -1155,12 +1567,23 @@ export function App() {
       onDismissRunsError={clearRunsError}
       sessionQuery=""
       onSessionQuery={setSessionQuery}
-      onOpenSettings={() => setView('settings')}
+      onOpenSettings={() => {
+        setView('settings')
+      }}
+      onOpenNotificationSettings={() => {
+        setSettingsSection('general')
+        setView('settings')
+      }}
+      focusedRunId={focusedRunId}
       onOpenMarketplace={() => setView('marketplace')}
       onOpenChat={() => setView('chat')}
       onNewChat={onNewChat}
       running={chat.running || chat.pendingRun}
       onChatStop={onChatStop}
+      onCloseChat={() => {
+        const id = chat.runId ?? getFocusedPane()?.runId
+        if (id) closeRunTab(id)
+      }}
       {...shellWorkspaceProps}
     >
       {view === 'settings' ? (
@@ -1180,11 +1603,11 @@ export function App() {
             onReloadSettings={refresh}
             onSaveSecret={saveSecret}
             onClearSecret={removeSecret}
-            onSetTheme={(theme) => {
-              const prev = settings.theme
-              setTheme(theme)
-              void update({ theme }).then((res) => {
-                if (!res.ok) setTheme(prev)
+            onAppearanceChange={(partial) => {
+              const prev = pickAppearanceSettings(settings)
+              setAppearance(partial)
+              void update(partial).then((res) => {
+                if (!res.ok) setAppearance(prev)
               })
             }}
             onPickWorkspace={async () => {
@@ -1192,35 +1615,48 @@ export function App() {
               if (res.ok && res.data) await addWorkspace(res.data)
               return res
             }}
-            activeWorkspacePath={activeWorkspace}
+            activeWorkspacePath={focusedWorkspacePath ?? activeWorkspace}
             openWorkspaces={openWorkspaces}
             settingsOverridesByPath={registry?.settingsOverridesByPath ?? {}}
             effectiveChatSettings={effectiveChatSettings}
             onSetSettingsOverride={setSettingsOverride}
             onModelsRefreshed={() => setModelsRefreshNonce((n) => n + 1)}
+            onOpenComposerModel={() => {
+              setView('chat')
+              window.setTimeout(() => {
+                const trigger = document.querySelector<HTMLButtonElement>(
+                  'button[aria-label="Select model"]'
+                )
+                trigger?.focus()
+                trigger?.click()
+              }, 80)
+            }}
           />
         </ErrorBoundary>
       ) : view === 'marketplace' ? (
         <ErrorBoundary
           title="Marketplace couldn't render"
-          resetKey={marketplaceFocusServerId ?? 'marketplace'}
+          resetKey={`${marketplaceFocusServerId ?? ''}:${marketplaceFocusSkillPath ?? ''}:${marketplaceFocusRulePath ?? ''}:marketplace`}
         >
           <MarketplaceView
             settings={settings}
             onUpdate={update}
             onReloadSettings={refresh}
-            activeWorkspacePath={activeWorkspace}
+            activeWorkspacePath={focusedWorkspacePath ?? activeWorkspace}
             settingsOverridesByPath={registry?.settingsOverridesByPath ?? {}}
             onSetSettingsOverride={setSettingsOverride}
             focusServerId={marketplaceFocusServerId}
+            focusSkillPath={marketplaceFocusSkillPath}
+            focusRulePath={marketplaceFocusRulePath}
             onFocusServerConsumed={() => setMarketplaceFocusServerId(null)}
+            onFocusSkillConsumed={() => setMarketplaceFocusSkillPath(null)}
+            onFocusRuleConsumed={() => setMarketplaceFocusRulePath(null)}
             onClose={() => setView('chat')}
           />
         </ErrorBoundary>
       ) : (
         <ErrorBoundary title="Chat couldn't render" resetKey={chatSurfaceEpoch}>
           <ChatView
-            imageReadyHint={imageReadyHint}
             items={chat.items}
             itemsStore={{
               subscribeItems: chat.subscribeItems,
@@ -1230,7 +1666,9 @@ export function App() {
             metaStore={{
               subscribeMeta: chat.subscribeMeta,
               getMetaRevision: chat.getMetaRevision,
-              getContextUsage: chat.getContextUsage
+              getContextUsage: chat.getContextUsage,
+              getTurnUsage: chat.getTurnUsage,
+              getCostHint: chat.getCostHint
             }}
             running={chat.running}
             invokeId={chat.invokeId}
@@ -1238,11 +1676,17 @@ export function App() {
             error={chatError}
             errorCode={chat.errorCode}
             networkWait={chat.networkWait}
-            runNotice={chat.runNotice}
+            compacting={chat.compacting}
             incomplete={chat.incomplete}
+            turnStatus={chat.turnStatus}
             onContinue={onChatContinue}
             contextUsage={chat.contextUsage}
-            onCompactContext={activeWorkspace && activeRunId ? onCompactContext : undefined}
+            turnUsage={chat.turnUsage}
+            onCompactContext={
+              (focusedWorkspacePath ?? activeWorkspace) && activeRunId
+                ? onCompactContext
+                : undefined
+            }
             operationalError={operationalError}
             hasWorkspace={Boolean(focusedWorkspacePath ?? activeWorkspace)}
             workspacePath={focusedWorkspacePath ?? activeWorkspace}
@@ -1251,6 +1695,7 @@ export function App() {
             ollamaBaseUrl={effectiveChatSettings.ollamaBaseUrl}
             customOpenAiBaseUrl={effectiveChatSettings.customOpenAiBaseUrl}
             modelsRefreshKey={modelsRefreshKey}
+            secrets={secrets}
             activeRunId={chat.runId ?? activeContext?.activeRunId ?? null}
             transcriptLoading={chat.transcriptLoading}
             headingRef={chatHeadingRef}
@@ -1266,17 +1711,23 @@ export function App() {
             onServiceTierChange={onServiceTierChange}
             chatSettings={effectiveChatSettings}
             onChatSettingsChange={onChatSettingsChange}
-            agentMode={activeContext?.ui.agentMode ?? 'agent'}
-            onAgentModeChange={(mode) => setAgentMode(mode, { syncOnly: true })}
+            agentMode={agentSessionContext?.ui.agentMode ?? 'agent'}
+            onAgentModeChange={(mode) =>
+              setAgentMode(mode, {
+                workspacePath: focusedWorkspacePath ?? undefined,
+                runId: focusedRunId
+              })
+            }
             onContinueInAgent={() => {
-              setAgentMode('agent')
+              setAgentMode('agent', {
+                workspacePath: focusedWorkspacePath ?? undefined,
+                runId: focusedRunId
+              })
               setComposerDraft(
                 'Implement the approved plan from plan.md (run artifact — read plan.md to load it).'
               )
             }}
             onSend={onChatSend}
-            offlineHint={offlineHint}
-            onClearOfflineQueue={clearOfflineQueueForWorkspace}
             onEditAndResend={onChatEditAndResend}
             onRevertToUserMessage={onChatRevertToUserMessage}
             messages={chat.messages}
@@ -1310,23 +1761,36 @@ export function App() {
             onUndoWrites={onUndoWrites}
             writeFileResolutions={writeFileResolutions}
             writeResolvablePaths={writeResolvablePaths}
+            writeCheckpointFiles={writeCheckpointFiles}
             onKeepWriteFile={onKeepWriteFile}
             onDiscardWriteFile={onDiscardWriteFile}
             onKeepAllWrites={onKeepAllWrites}
             multiPane={multiPaneConfig}
             onPaneCapacityChange={setPaneCapacityContext}
             paneCount={paneLayout?.panes.length ?? 1}
+            openRunIds={agentSessionContext?.openRunIds ?? []}
+            runs={agentSessionContext?.runs ?? []}
+            onOpenRunTab={openRunTab}
+            onCloseRunTab={closeRunTab}
+            agentInstances={chat.agentInstances}
+            openInstanceRunId={focusedOpenInstance}
+            onOpenInstanceRunIdChange={(id) =>
+              setOpenInstanceForParent(focusedParentRunId, id)
+            }
+            getInstanceController={getRunController}
           />
         </ErrorBoundary>
       )}
+      <LiveRegion />
       <ToastHost />
       <ToolApprovalOnboardingModal
         open={approvalOnboardingOpen}
+        error={settingsError}
         onChoose={(mode) => {
           void completeApprovalOnboarding(mode)
         }}
         onDismiss={() => {
-          void completeApprovalOnboarding('off')
+          void dismissApprovalOnboarding()
         }}
       />
     </AppShell>

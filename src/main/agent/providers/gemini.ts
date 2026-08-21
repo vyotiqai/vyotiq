@@ -11,13 +11,15 @@ import type {
   ToolCall,
   TokenUsage
 } from './types'
+import { billedCostFromUsage } from './usageFields'
 import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
-import { logProviderFailure } from './log'
-import { fetchWithRetry } from './fetchWithRetry'
+import { logProviderFailure, providerFetchFailureChunk } from './log'
+import { CHAT_FETCH_MAX_ATTEMPTS, fetchWithRetry } from './fetchWithRetry'
 import { formatProviderHttpError, scrubProviderErrorText } from './httpErrors'
 import { streamGeminiInteractions } from './geminiInteractions'
 import { resolveSystemZones, volatileSessionMessage } from './systemZones'
+import { wireToolCallArguments } from '../toolArgWire'
 
 /** Exported for tests — parse Gemini usage metadata including implicit cache hits. */
 export function parseGeminiUsage(usageMetadata: Record<string, unknown>): TokenUsage {
@@ -34,6 +36,7 @@ export function parseGeminiUsage(usageMetadata: Record<string, unknown>): TokenU
         : typeof usageMetadata.prompt_token_count === 'number'
           ? usageMetadata.prompt_token_count
           : undefined,
+    inputTokensIncludesCache: true,
     outputTokens:
       typeof usageMetadata.candidatesTokenCount === 'number'
         ? usageMetadata.candidatesTokenCount
@@ -52,7 +55,8 @@ export function parseGeminiUsage(usageMetadata: Record<string, unknown>): TokenU
         ? usageMetadata.thoughtsTokenCount
         : typeof usageMetadata.thoughts_token_count === 'number'
           ? usageMetadata.thoughts_token_count
-          : undefined
+          : undefined,
+    ...billedCostFromUsage(usageMetadata)
   }
 }
 
@@ -127,9 +131,9 @@ function toGeminiContents(messages: ChatMessage[]): Array<Record<string, unknown
       for (const t of m.toolCalls) {
         let args: unknown = {}
         try {
-          args = JSON.parse(t.arguments || '{}')
+          args = JSON.parse(wireToolCallArguments(t.name, t.arguments))
         } catch {
-          args = { raw: t.arguments }
+          args = {}
         }
         parts.push({
           functionCall: {
@@ -233,11 +237,15 @@ export const geminiProvider: LlmProvider = {
     const url = 'https://generativelanguage.googleapis.com/v1beta/models'
     let res: Response
     try {
-      res = await fetchWithRetry(url, {
-        method: 'GET',
-        headers: { 'x-goog-api-key': req.apiKey },
-        signal: req.signal
-      })
+      res = await fetchWithRetry(
+        url,
+        {
+          method: 'GET',
+          headers: { 'x-goog-api-key': req.apiKey },
+          signal: req.signal
+        },
+        { circuitKey: false }
+      )
     } catch (err) {
       if (req.signal?.aborted) throw err
       logProviderFailure('gemini', 'network', {})
@@ -308,19 +316,18 @@ export const geminiProvider: LlmProvider = {
           signal: req.signal,
           body: JSON.stringify(requestBody)
         },
-        { maxAttempts: 5 }
+        { maxAttempts: CHAT_FETCH_MAX_ATTEMPTS }
       )
     } catch (err) {
       if (req.signal.aborted) throw err
-      logProviderFailure('gemini', 'network', {})
-      yield { type: 'error', error: formatError(err) }
+      yield providerFetchFailureChunk('gemini', err)
       return
     }
 
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       logProviderFailure('gemini', 'http', { status: res.status })
-      yield { type: 'error', error: formatProviderHttpError(res.status, text, 'gemini') }
+      yield { type: 'error', error: formatProviderHttpError(res.status, text, 'gemini'), errorCode: 'PROVIDER_HTTP' }
       return
     }
 
@@ -386,8 +393,7 @@ export const geminiProvider: LlmProvider = {
     yield {
       type: 'done',
       usage: lastUsage,
-      stopReason,
-      malformedChunks: drops.dropped || undefined
+      stopReason
     }
   }
 }

@@ -101,4 +101,45 @@ describe('useSlashCommands navigation', () => {
     expect(ensured).toEqual(commands)
     expect(list.mock.calls.length).toBe(calls)
   })
+
+  it('refetches when skills change and after workspace switch once loaded', async () => {
+    let skillsHandler: (() => void) | undefined
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        slashCommandsList: vi.fn().mockResolvedValue({ ok: true, data: { commands } }),
+        onSkillsChanged: vi.fn((handler: () => void) => {
+          skillsHandler = handler
+          return () => {}
+        })
+      }
+    })
+
+    const { result, rerender } = renderHook(
+      ({ workspacePath }: { workspacePath: string | null }) =>
+        useSlashCommands({
+          text: '/',
+          cursor: 1,
+          enabled: true,
+          workspacePath
+        }),
+      { initialProps: { workspacePath: '/ws-a' } }
+    )
+
+    await vi.waitFor(() => expect(result.current.commands.length).toBe(2))
+    const list = vi.mocked(window.vyotiq.slashCommandsList)
+    const afterLoad = list.mock.calls.length
+
+    await act(async () => {
+      skillsHandler?.()
+      await Promise.resolve()
+    })
+    await vi.waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(afterLoad))
+
+    const afterSkills = list.mock.calls.length
+    rerender({ workspacePath: '/ws-b' })
+    await vi.waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(afterSkills))
+    expect(list).toHaveBeenCalledWith({ workspacePath: '/ws-b' })
+  })
 })

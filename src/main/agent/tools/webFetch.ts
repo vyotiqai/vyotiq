@@ -2,19 +2,29 @@ import { lookup as dnsLookup } from 'dns/promises'
 import { mkdirSync, writeFileSync } from 'fs'
 import * as http from 'http'
 import * as https from 'https'
-import { isIP } from 'net'
+import { BlockList, isIP } from 'net'
 import { dirname } from 'path'
 import { isRetriableToolNetworkError } from '../networkMonitor'
+import {
+  circuitKeyHttp,
+  assertCircuitClosed,
+  isCircuitOpenError,
+  recordCircuitFailure,
+  recordCircuitSuccess
+} from '../circuitBreaker'
+import {
+  httpRetryBackoffMs,
+  runWithNetworkRetry,
+  sleepAbortable
+} from '../providers/fetchWithRetry'
+import { abortError } from '../../../shared/errors'
 import type { IncomingMessage, RequestOptions } from 'http'
 
-export const WEB_FETCH_MAX_BYTES = 2 * 1024 * 1024
+export const WEB_FETCH_MAX_BYTES = Number.POSITIVE_INFINITY
 export const WEB_FETCH_DEFAULT_TIMEOUT_MS = 20_000
 export const WEB_FETCH_DEFAULT_MAX_CHARS = 40_000
 export const WEB_FETCH_MAX_TIMEOUT_MS = 60_000
-const MAX_BYTES = WEB_FETCH_MAX_BYTES
 const DEFAULT_TIMEOUT_MS = WEB_FETCH_DEFAULT_TIMEOUT_MS
-const MAX_TIMEOUT_MS = WEB_FETCH_MAX_TIMEOUT_MS
-const DEFAULT_MAX_CHARS = WEB_FETCH_DEFAULT_MAX_CHARS
 const MAX_REDIRECTS = 5
 
 type LookupFn = typeof dnsLookup
@@ -195,7 +205,7 @@ function parseIpv4Parts(host: string): [number, number, number, number] | null {
   return null
 }
 
-function isPrivateIpv4Bytes(a: number, b: number, c: number, d: number): boolean {
+function isPrivateIpv4Bytes(a: number, b: number): boolean {
   if (a === 0) return true
   if (a === 10) return true
   if (a === 127) return true
@@ -204,19 +214,10 @@ function isPrivateIpv4Bytes(a: number, b: number, c: number, d: number): boolean
   if (a === 172 && b >= 16 && b <= 31) return true
   if (a === 192 && b === 168) return true
   if (a >= 224) return true
-  return a === 0 && b === 0 && c === 0 && d === 0
+  return false
 }
 
-function isPrivateIpv4(host: string): boolean {
-  const parts = parseIpv4Parts(host)
-  if (!parts) return false
-  return isPrivateIpv4Bytes(...parts)
-}
-
-function isAllowedLocalIpv4(host: string): boolean {
-  const parts = parseIpv4Parts(host)
-  if (!parts) return false
-  const [a, b] = parts
+function isAllowedLocalIpv4Bytes(a: number, b: number): boolean {
   if (a === 127) return true
   if (a === 10) return true
   if (a === 100 && b >= 64 && b <= 127) return true
@@ -226,44 +227,64 @@ function isAllowedLocalIpv4(host: string): boolean {
   return false
 }
 
-function isPrivateIpv6(host: string): boolean {
-  const normalized = host.toLowerCase()
-  if (normalized === '::1') return true
-  if (normalized.startsWith('fe80:')) return true
-  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true
+/** RFC1918 / loopback / link-local / CGNAT / multicast / this-network — plus 240/4 reserved. */
+const BLOCKED_V4 = new BlockList()
+BLOCKED_V4.addSubnet('0.0.0.0', 8, 'ipv4')
+BLOCKED_V4.addSubnet('10.0.0.0', 8, 'ipv4')
+BLOCKED_V4.addSubnet('100.64.0.0', 10, 'ipv4')
+BLOCKED_V4.addSubnet('127.0.0.0', 8, 'ipv4')
+BLOCKED_V4.addSubnet('169.254.0.0', 16, 'ipv4')
+BLOCKED_V4.addSubnet('172.16.0.0', 12, 'ipv4')
+BLOCKED_V4.addSubnet('192.168.0.0', 16, 'ipv4')
+BLOCKED_V4.addSubnet('224.0.0.0', 3, 'ipv4')
 
-  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
-  if (mapped) return isPrivateIpv4(mapped[1])
+/** Loopback, unspecified, link-local, unique-local. IPv4-mapped uses BLOCKED_V4. */
+const BLOCKED_V6 = new BlockList()
+BLOCKED_V6.addSubnet('::1', 128, 'ipv6')
+BLOCKED_V6.addSubnet('::', 128, 'ipv6')
+BLOCKED_V6.addSubnet('fe80::', 10, 'ipv6')
+BLOCKED_V6.addSubnet('fc00::', 7, 'ipv6')
 
-  return false
-}
+const ALLOWED_LOCAL_V4 = new BlockList()
+ALLOWED_LOCAL_V4.addSubnet('10.0.0.0', 8, 'ipv4')
+ALLOWED_LOCAL_V4.addSubnet('100.64.0.0', 10, 'ipv4')
+ALLOWED_LOCAL_V4.addSubnet('127.0.0.0', 8, 'ipv4')
+ALLOWED_LOCAL_V4.addSubnet('169.254.0.0', 16, 'ipv4')
+ALLOWED_LOCAL_V4.addSubnet('172.16.0.0', 12, 'ipv4')
+ALLOWED_LOCAL_V4.addSubnet('192.168.0.0', 16, 'ipv4')
 
-function isAllowedLocalIpv6(host: string): boolean {
-  const normalized = host.toLowerCase()
-  if (normalized === '::1') return true
-  if (normalized.startsWith('fe80:')) return true
-  if (normalized.startsWith('fc') || normalized.startsWith('fd')) return true
+const ALLOWED_LOCAL_V6 = new BlockList()
+ALLOWED_LOCAL_V6.addSubnet('::1', 128, 'ipv6')
+ALLOWED_LOCAL_V6.addSubnet('fe80::', 10, 'ipv6')
+ALLOWED_LOCAL_V6.addSubnet('fc00::', 7, 'ipv6')
 
-  const mapped = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
-  if (mapped) return isAllowedLocalIpv4(mapped[1])
-
-  return false
+function isPrivateIpv4(host: string): boolean {
+  const parts = parseIpv4Parts(host)
+  if (!parts) return false
+  return isPrivateIpv4Bytes(parts[0], parts[1])
 }
 
 function isAllowedLocalAddress(address: string): boolean {
   const version = isIP(address)
-  if (version === 4) return isAllowedLocalIpv4(address)
-  if (version === 6) return isAllowedLocalIpv6(address)
-  return false
+  if (version === 4) return ALLOWED_LOCAL_V4.check(address, 'ipv4')
+  if (version === 6) {
+    return ALLOWED_LOCAL_V6.check(address, 'ipv6') || ALLOWED_LOCAL_V4.check(address, 'ipv6')
+  }
+  const parts = parseIpv4Parts(address)
+  if (!parts) return false
+  return isAllowedLocalIpv4Bytes(parts[0], parts[1])
 }
 
 function isBlockedAddress(address: string, allowLocal = false): boolean {
   if (allowLocal && isAllowedLocalAddress(address)) return false
   const version = isIP(address)
-  if (version === 4) return isPrivateIpv4(address)
-  if (version === 6) return isPrivateIpv6(address)
-  // Also catch decimal / hex IPv4 encodings that `isIP()` does not classify.
-  return isPrivateIpv4(address) || isPrivateIpv6(address)
+  if (version === 4) return BLOCKED_V4.check(address, 'ipv4')
+  if (version === 6) {
+    // type 'ipv6' also matches IPv4-mapped forms (::ffff:7f00:1) against v4 ranges.
+    return BLOCKED_V6.check(address, 'ipv6') || BLOCKED_V4.check(address, 'ipv6')
+  }
+  // Decimal / hex IPv4 encodings that `isIP()` does not classify.
+  return isPrivateIpv4(address)
 }
 
 type LookupAddress = { address: string; family: 4 | 6 }
@@ -462,24 +483,24 @@ export type WebFetchOptions = {
 
 const WEB_FETCH_RETRY_ATTEMPTS = 3
 
+function isRetriablePublicGetError(err: unknown): boolean {
+  if (isRetriableToolNetworkError(err)) return true
+  const message = err instanceof Error ? err.message : String(err)
+  return /\bHTTP (429|5\d{2})\b/.test(message)
+}
+
 /** Fetch a public URL and return readable text, size- and time-capped. */
 export async function toolWebFetch(
   rawUrl: string,
   options: WebFetchOptions = {},
   signal?: AbortSignal
 ): Promise<string> {
-  let lastError: unknown
-  for (let attempt = 1; attempt <= WEB_FETCH_RETRY_ATTEMPTS; attempt++) {
-    try {
-      return await toolWebFetchOnce(rawUrl, options, signal)
-    } catch (err) {
-      lastError = err
-      if (signal?.aborted) throw err
-      if (!isRetriableToolNetworkError(err) || attempt >= WEB_FETCH_RETRY_ATTEMPTS) throw err
-      await new Promise((resolve) => setTimeout(resolve, 250 * attempt))
-    }
-  }
-  throw lastError ?? new Error('web_fetch failed')
+  return runWithNetworkRetry(() => toolWebFetchOnce(rawUrl, options, signal), {
+    signal,
+    maxAttempts: WEB_FETCH_RETRY_ATTEMPTS,
+    isRetriable: isRetriablePublicGetError,
+    circuitKey: circuitKeyHttp(String(rawUrl ?? '').trim())
+  })
 }
 
 async function toolWebFetchOnce(
@@ -487,8 +508,8 @@ async function toolWebFetchOnce(
   options: WebFetchOptions = {},
   signal?: AbortSignal
 ): Promise<string> {
-  const timeoutMs = Math.min(MAX_TIMEOUT_MS, Math.max(1000, options.timeoutMs ?? DEFAULT_TIMEOUT_MS))
-  const maxChars = Math.max(1000, options.maxChars ?? DEFAULT_MAX_CHARS)
+  const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+  const maxChars = options.maxChars
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -509,10 +530,11 @@ async function toolWebFetchOnce(
       throw new Error(`Unsupported content type ${contentType || 'unknown'} for ${currentUrl.href}`)
     }
 
-    const buffer = await readCapped(res, MAX_BYTES)
+    const buffer = await readBody(res)
     const body = buffer.toString('utf8')
     const text = /html/i.test(contentType) ? htmlToMarkdown(body) : body.trim()
-    const clipped = text.length > maxChars ? `${text.slice(0, maxChars)}\n… (truncated)` : text
+    const clipped =
+      maxChars != null && text.length > maxChars ? `${text.slice(0, maxChars)}\n… (truncated)` : text
     let spaWarning = /html/i.test(contentType) ? spaShellWarning(clipped) : null
     if (!spaWarning && /html/i.test(contentType) && clipped.trim().length < 120) {
       spaWarning =
@@ -533,19 +555,36 @@ async function toolWebFetchOnce(
   }
 }
 
+export type PinnedFetchRequest = {
+  method?: string
+  body?: string
+}
+
 export async function fetchWithValidatedRedirects(
   startUrl: URL,
   signal: AbortSignal,
   headers?: Record<string, string>,
-  allowLocal = false
+  allowLocal = false,
+  request?: PinnedFetchRequest
 ): Promise<{ response: Response; finalUrl: URL }> {
   let currentUrl = startUrl
+  const method = (request?.method ?? 'GET').toUpperCase()
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const { url: validated, addresses } = await resolveAllowedUrl(currentUrl.href, allowLocal)
-    const res = await publicFetchImpl(validated, addresses, signal, headers, allowLocal)
+    const res = await publicFetchImpl(
+      validated,
+      addresses,
+      signal,
+      headers,
+      allowLocal,
+      request
+    )
 
     if (res.status >= 300 && res.status < 400) {
+      if (method !== 'GET' && method !== 'HEAD') {
+        throw new Error(`Refusing to follow ${res.status} redirect on ${method} ${validated.href}`)
+      }
       const location = res.headers.get('location')
       if (!location) {
         throw new Error(`Redirect response missing Location header for ${validated.href}`)
@@ -568,7 +607,8 @@ type PublicFetchImpl = (
   addresses: string[],
   signal: AbortSignal,
   headers?: Record<string, string>,
-  allowLocal?: boolean
+  allowLocal?: boolean,
+  request?: PinnedFetchRequest
 ) => Promise<Response>
 
 /**
@@ -580,7 +620,8 @@ async function fetchPinnedPublic(
   addresses: string[],
   signal: AbortSignal,
   headers?: Record<string, string>,
-  allowLocal = false
+  allowLocal = false,
+  request?: PinnedFetchRequest
 ): Promise<Response> {
   let lookup: NonNullable<RequestOptions['lookup']>
   try {
@@ -591,9 +632,14 @@ async function fetchPinnedPublic(
 
   const defaultPort = url.protocol === 'https:' ? 443 : 80
   const port = url.port ? Number(url.port) : defaultPort
+  const method = (request?.method ?? 'GET').toUpperCase()
+  const body = request?.body
   const requestHeaders: Record<string, string> = {
     ...(headers ?? { accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' }),
     host: url.host
+  }
+  if (body != null && requestHeaders['content-length'] == null && requestHeaders['Content-Length'] == null) {
+    requestHeaders['content-length'] = String(Buffer.byteLength(body))
   }
 
   const options: RequestOptions = {
@@ -601,7 +647,7 @@ async function fetchPinnedPublic(
     hostname: url.hostname,
     port,
     path: `${url.pathname}${url.search}`,
-    method: 'GET',
+    method,
     headers: requestHeaders,
     lookup
   }
@@ -609,49 +655,53 @@ async function fetchPinnedPublic(
   const lib = url.protocol === 'https:' ? https : http
 
   return await new Promise<Response>((resolve, reject) => {
+    let settled = false
+    let onAbort: () => void = () => undefined
+    const finish = (fn: () => void): void => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', onAbort)
+      fn()
+    }
     const req = lib.request(options, (incoming: IncomingMessage) => {
       const chunks: Buffer[] = []
-      let total = 0
       incoming.on('data', (chunk: Buffer | string) => {
         const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
-        total += buf.byteLength
-        if (total <= MAX_BYTES) chunks.push(buf)
+        chunks.push(buf)
       })
       incoming.on('end', () => {
-        const body = Buffer.concat(chunks).subarray(0, MAX_BYTES)
+        const body = Buffer.concat(chunks)
         const headerInit: Record<string, string> = {}
         for (const [key, value] of Object.entries(incoming.headers)) {
           if (value == null) continue
           headerInit[key] = Array.isArray(value) ? value.join(', ') : value
         }
-        resolve(
-          new Response(body, {
-            status: incoming.statusCode ?? 0,
-            statusText: incoming.statusMessage ?? '',
-            headers: headerInit
-          })
+        finish(() =>
+          resolve(
+            new Response(body, {
+              status: incoming.statusCode ?? 0,
+              statusText: incoming.statusMessage ?? '',
+              headers: headerInit
+            })
+          )
         )
       })
-      incoming.on('error', reject)
+      incoming.on('error', (err) => finish(() => reject(err)))
     })
 
-    const onAbort = (): void => {
-      req.destroy(new Error('Aborted'))
+    req.on('error', (err) => {
+      finish(() => reject(err))
+    })
+    onAbort = (): void => {
+      req.destroy()
+      finish(() => reject(abortError()))
     }
     if (signal.aborted) {
       onAbort()
-      reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }))
       return
     }
     signal.addEventListener('abort', onAbort, { once: true })
-    req.on('error', (err) => {
-      signal.removeEventListener('abort', onAbort)
-      reject(err)
-    })
-    req.on('close', () => {
-      signal.removeEventListener('abort', onAbort)
-    })
-    req.end()
+    req.end(body)
   })
 }
 
@@ -662,26 +712,24 @@ export function setPublicFetchForTests(next: PublicFetchImpl | null): void {
   publicFetchImpl = next ?? fetchPinnedPublic
 }
 
-/** Stop reading once the cap is hit rather than buffering an unbounded body. */
-async function readCapped(res: Response, cap: number): Promise<Buffer> {
+/** Read the full response body. */
+async function readBody(res: Response): Promise<Buffer> {
   if (!res.body) return Buffer.alloc(0)
   const reader = res.body.getReader()
   const chunks: Buffer[] = []
-  let total = 0
 
   try {
-    while (total < cap) {
+    while (true) {
       const { done, value } = await reader.read()
       if (done) break
       if (!value) continue
-      total += value.byteLength
       chunks.push(Buffer.from(value))
     }
   } finally {
     await reader.cancel().catch(() => undefined)
   }
 
-  return Buffer.concat(chunks).subarray(0, cap)
+  return Buffer.concat(chunks)
 }
 
 /** Shared marketplace/MCP helper — public SSRF-safe fetch with redirect validation. */
@@ -690,9 +738,41 @@ export async function fetchPublicResponse(
   signal: AbortSignal,
   headers?: Record<string, string>
 ): Promise<{ response: Response; finalUrl: URL; body: Buffer }> {
-  const { response, finalUrl } = await fetchWithValidatedRedirects(startUrl, signal, headers)
-  const body = await readCapped(response, MAX_BYTES)
-  return { response, finalUrl, body }
+  const circuitKey = circuitKeyHttp(startUrl)
+  assertCircuitClosed(circuitKey)
+  try {
+    for (let attempt = 1; attempt <= WEB_FETCH_RETRY_ATTEMPTS; attempt++) {
+      try {
+        const { response, finalUrl } = await fetchWithValidatedRedirects(startUrl, signal, headers)
+        const retriableStatus = response.status >= 500 || response.status === 429
+        if (retriableStatus && attempt < WEB_FETCH_RETRY_ATTEMPTS) {
+          try {
+            await response.body?.cancel()
+          } catch {
+            // Body already consumed or the connection is gone.
+          }
+          await sleepAbortable(httpRetryBackoffMs(attempt), signal)
+          if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+          continue
+        }
+        const body = await readBody(response)
+        if (retriableStatus) recordCircuitFailure(circuitKey)
+        else recordCircuitSuccess(circuitKey)
+        return { response, finalUrl, body }
+      } catch (err) {
+        if (signal.aborted) throw err
+        if (!isRetriableToolNetworkError(err) || attempt >= WEB_FETCH_RETRY_ATTEMPTS) throw err
+        await sleepAbortable(httpRetryBackoffMs(attempt), signal)
+        if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
+      }
+    }
+    throw new Error('fetch failed')
+  } catch (err) {
+    if (!signal.aborted && !isCircuitOpenError(err) && isRetriableToolNetworkError(err)) {
+      recordCircuitFailure(circuitKey)
+    }
+    throw err
+  }
 }
 
 /**
@@ -706,6 +786,23 @@ export async function downloadPublicUrlToFile(
   maxBytes = 100 * 1024 * 1024
 ): Promise<void> {
   const abortSignal = signal ?? AbortSignal.timeout(60_000)
+  await runWithNetworkRetry(
+    () => downloadPublicUrlToFileOnce(rawUrl, destPath, abortSignal, maxBytes),
+    {
+      signal: abortSignal,
+      maxAttempts: WEB_FETCH_RETRY_ATTEMPTS,
+      isRetriable: isRetriablePublicGetError,
+      circuitKey: circuitKeyHttp(String(rawUrl ?? '').trim())
+    }
+  )
+}
+
+async function downloadPublicUrlToFileOnce(
+  rawUrl: string,
+  destPath: string,
+  abortSignal: AbortSignal,
+  maxBytes: number
+): Promise<void> {
   let currentUrl = await assertPublicUrl(String(rawUrl ?? '').trim())
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
@@ -752,6 +849,14 @@ function downloadPinnedHop(
   const lib = url.protocol === 'https:' ? https : http
 
   return new Promise<DownloadHopResult>((resolve, reject) => {
+    let settled = false
+    let onAbort: () => void = () => undefined
+    const finish = (fn: () => void): void => {
+      if (settled) return
+      settled = true
+      signal.removeEventListener('abort', onAbort)
+      fn()
+    }
     const req = lib.request(
       {
         protocol: url.protocol,
@@ -768,15 +873,22 @@ function downloadPinnedHop(
           const location = incoming.headers.location
           incoming.resume()
           if (!location) {
-            reject(new Error(`Redirect response missing Location header for ${url.href}`))
+            finish(() =>
+              reject(new Error(`Redirect response missing Location header for ${url.href}`))
+            )
             return
           }
-          resolve({ kind: 'redirect', location: Array.isArray(location) ? location[0] : location })
+          finish(() =>
+            resolve({
+              kind: 'redirect',
+              location: Array.isArray(location) ? location[0] : location
+            })
+          )
           return
         }
         if (status < 200 || status >= 300) {
           incoming.resume()
-          reject(new Error(`Download failed: HTTP ${status}`))
+          finish(() => reject(new Error(`Download failed: HTTP ${status}`)))
           return
         }
         const chunks: Buffer[] = []
@@ -786,29 +898,28 @@ function downloadPinnedHop(
           total += buf.byteLength
           if (total > maxBytes) {
             req.destroy()
-            reject(new Error(`Download exceeded ${maxBytes} bytes`))
+            finish(() => reject(new Error(`Download exceeded ${maxBytes} bytes`)))
             return
           }
           chunks.push(buf)
         })
-        incoming.on('end', () => resolve({ kind: 'body', body: Buffer.concat(chunks) }))
-        incoming.on('error', reject)
+        incoming.on('end', () => finish(() => resolve({ kind: 'body', body: Buffer.concat(chunks) })))
+        incoming.on('error', (err) => finish(() => reject(err)))
       }
     )
-    const onAbort = (): void => {
-      req.destroy(new Error('Aborted'))
+    req.on('error', (err) => {
+      finish(() => reject(err))
+    })
+    req.on('close', () => signal.removeEventListener('abort', onAbort))
+    onAbort = (): void => {
+      req.destroy()
+      finish(() => reject(abortError()))
     }
     if (signal.aborted) {
       onAbort()
-      reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }))
       return
     }
     signal.addEventListener('abort', onAbort, { once: true })
-    req.on('error', (err) => {
-      signal.removeEventListener('abort', onAbort)
-      reject(err)
-    })
-    req.on('close', () => signal.removeEventListener('abort', onAbort))
     req.end()
   })
 }

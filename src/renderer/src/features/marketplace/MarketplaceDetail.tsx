@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { MarketplaceCatalogEntry, PackageContents } from '@shared/ipc'
+import { marketplaceOverrideKind } from '@shared/domain/marketplaceEnablement'
 import { Button } from '@renderer/lib/ui'
 import { Icon } from '@renderer/lib/icons'
 import { PackageIcon } from './PackageIcon'
@@ -35,13 +36,15 @@ export function MarketplaceDetail({
   onBack: () => void
   onOpenManage: () => void
 }) {
-  const { installed, mcpStatusById, formLocked, installFromCatalog, feedback, setFeedback } =
+  const { installed, mcpStatusById, workspaceEnabledForId, formLocked, installFromCatalog, feedback, setFeedback } =
     controller
   const installedItem = useMemo(
     () => installed.items.find((i) => i.id === entry.id),
     [installed.items, entry.id]
   )
-  const activity = packageActivity(entry, installedItem, mcpStatusById.get(entry.id))
+  const activity = packageActivity(entry, installedItem, mcpStatusById.get(entry.id), {
+    workspaceEnabled: workspaceEnabledForId(marketplaceOverrideKind(entry.kind), entry.id)
+  })
   const comingSoon = activity.kind === 'coming-soon'
   const isInstalled = Boolean(installedItem)
   const [contents, setContents] = useState<PackageContents | null>(null)
@@ -128,7 +131,7 @@ export function MarketplaceDetail({
                   void installFromCatalog(entry)
                 }}
               >
-                {formLocked ? 'Installing…' : 'Add to Vyotiq'}
+                {formLocked ? 'Installing…' : 'Add to Agent V'}
               </Button>
             )}
           </div>

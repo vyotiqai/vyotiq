@@ -1,4 +1,12 @@
+import { isAbortError } from '../../../shared/errors'
+import {
+  isRetriableNetworkError,
+  isRetriableProviderMessage,
+  RetriableStreamError
+} from '../providers/fetchWithRetry'
 import type { LlmProvider, ProviderChatRequest } from '../providers/types'
+import { circuitKeyProvider, isCircuitOpenError } from '../circuitBreaker'
+import { runWithStreamRetry } from '../streamRetry'
 
 export type StructuredParseResult<T> =
   | { ok: true; data: T }
@@ -15,14 +23,55 @@ export async function collectStructuredResponse<T>(
   | { ok: false; rawText: string; error: string }
 > {
   let rawText = ''
-  for await (const chunk of provider.streamChat(req)) {
-    if (req.signal.aborted) {
+  let streamError: string | undefined
+  let aborted = false
+
+  try {
+    await runWithStreamRetry({
+      signal: req.signal,
+      circuitKey: circuitKeyProvider(provider.id, req.baseUrl),
+      onAttemptStart: () => {
+        rawText = ''
+        streamError = undefined
+      },
+      runAttempt: async () => {
+        for await (const chunk of provider.streamChat(req)) {
+          if (req.signal.aborted) {
+            aborted = true
+            return 'terminal'
+          }
+          if (chunk.type === 'text' && chunk.text) rawText += chunk.text
+          if (chunk.type === 'error') {
+            const message = chunk.error ?? 'Provider error'
+            if (isRetriableProviderMessage(message)) {
+              throw new RetriableStreamError(message)
+            }
+            streamError = message
+            return 'terminal'
+          }
+        }
+        return 'complete'
+      }
+    })
+  } catch (err) {
+    if (isAbortError(err) || req.signal.aborted) {
       return { ok: false, rawText, error: 'Request aborted' }
     }
-    if (chunk.type === 'text' && chunk.text) rawText += chunk.text
-    if (chunk.type === 'error') {
-      return { ok: false, rawText, error: chunk.error ?? 'Provider error' }
+    if (err instanceof RetriableStreamError || isRetriableNetworkError(err) || isCircuitOpenError(err)) {
+      return {
+        ok: false,
+        rawText: '',
+        error: err instanceof Error ? err.message : String(err)
+      }
     }
+    throw err
+  }
+
+  if (aborted || req.signal.aborted) {
+    return { ok: false, rawText, error: 'Request aborted' }
+  }
+  if (streamError) {
+    return { ok: false, rawText, error: streamError }
   }
 
   rawText = rawText.trim()

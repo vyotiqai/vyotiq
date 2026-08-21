@@ -17,7 +17,15 @@ const VYOTIQ_INVOKE_MAP: Record<
     | 'onBrowserState'
     | 'onPtyData'
     | 'onPtyExit'
+    | 'onWorkspaceEditorFlushRequest'
+    | 'onCodeIndexStatus'
+    | 'onDictationStatus'
+    | 'onGithubAuthStatus'
+    | 'onSkillsChanged'
+    | 'onNotificationsChanged'
+    | 'onNotificationActivate'
     | 'updateWorkspaceUiStateSync'
+    | 'respondWorkspaceEditorFlush'
   >,
   string
 > = {
@@ -35,6 +43,8 @@ const VYOTIQ_INVOKE_MAP: Record<
   secretStatus: IPC.secretStatus,
   listModels: IPC.listModels,
   chatStart: IPC.chatStart,
+  chatUiSubscribe: IPC.chatUiSubscribe,
+  chatUiSubscribeAdd: IPC.chatUiSubscribeAdd,
   chatRewindAndStart: IPC.chatRewindAndStart,
   chatRewind: IPC.chatRewind,
   chatCancel: IPC.chatCancel,
@@ -55,6 +65,12 @@ const VYOTIQ_INVOKE_MAP: Record<
   respondAgentQuestion: IPC.agentQuestionResponse,
   listPendingAgentQuestions: IPC.agentQuestionListPending,
   extractAttachment: IPC.attachmentExtract,
+  transcribeDictation: IPC.dictationTranscribe,
+  cancelDictation: IPC.dictationCancel,
+  dictationStatus: IPC.dictationStatus,
+  dictationInstall: IPC.dictationInstall,
+  dictationUnload: IPC.dictationUnload,
+  dictationDeleteCache: IPC.dictationDeleteCache,
   listRuns: IPC.listRuns,
   loadRun: IPC.loadRun,
   loadRunEvents: IPC.loadRunEvents,
@@ -66,6 +82,10 @@ const VYOTIQ_INVOKE_MAP: Record<
   browserFocus: IPC.browserFocus,
   browserClose: IPC.browserClose,
   browserSelectTab: IPC.browserSelectTab,
+  browserOpenTab: IPC.browserOpenTab,
+  browserCloseTab: IPC.browserCloseTab,
+  browserTakeControl: IPC.browserTakeControl,
+  browserReleaseControl: IPC.browserReleaseControl,
   browserBack: IPC.browserBack,
   browserForward: IPC.browserForward,
   browserSetBounds: IPC.browserSetBounds,
@@ -74,12 +94,15 @@ const VYOTIQ_INVOKE_MAP: Record<
   browserTakeScreenshot: IPC.browserTakeScreenshot,
   browserClearBrowsingData: IPC.browserClearBrowsingData,
   gitStatus: IPC.gitStatus,
+  gitGenerateCommitMessage: IPC.gitGenerateCommitMessage,
   gitDiff: IPC.gitDiff,
+  gitBlame: IPC.gitBlame,
   gitCommit: IPC.gitCommit,
   gitStageAll: IPC.gitStageAll,
   gitLog: IPC.gitLog,
   gitCommitFiles: IPC.gitCommitFiles,
   prView: IPC.prView,
+  prCreate: IPC.prCreate,
   prMerge: IPC.prMerge,
   prDiff: IPC.prDiff,
   prClose: IPC.prClose,
@@ -98,10 +121,24 @@ const VYOTIQ_INVOKE_MAP: Record<
   githubAuthStart: IPC.githubAuthStart,
   githubAuthCancel: IPC.githubAuthCancel,
   githubAuthLogout: IPC.githubAuthLogout,
+  githubCliInstall: IPC.githubCliInstall,
   shellOpenExternal: IPC.shellOpenExternal,
   workspaceSuggestPaths: IPC.workspaceSuggestPaths,
   workspaceReadText: IPC.workspaceReadText,
-  workspaceReadImage: IPC.workspaceReadImage,
+  workspaceFileList: IPC.workspaceFileList,
+  workspaceFileRead: IPC.workspaceFileRead,
+  workspaceFileSave: IPC.workspaceFileSave,
+  workspaceFileCreate: IPC.workspaceFileCreate,
+  workspaceFileMove: IPC.workspaceFileMove,
+  workspaceFileDelete: IPC.workspaceFileDelete,
+  workspaceFileReveal: IPC.workspaceFileReveal,
+  workspaceFormatterStatus: IPC.workspaceFormatterStatus,
+  workspaceFormatFile: IPC.workspaceFormatFile,
+  workspaceLspStatus: IPC.workspaceLspStatus,
+  workspaceLspRequest: IPC.workspaceLspRequest,
+  workspaceEditorRecoverySave: IPC.workspaceEditorRecoverySave,
+  workspaceEditorRecoveryLoad: IPC.workspaceEditorRecoveryLoad,
+  workspaceEditorRecoveryClear: IPC.workspaceEditorRecoveryClear,
   workspaceListDocs: IPC.workspaceListDocs,
   workspaceListRules: IPC.workspaceListRules,
   workspaceDiagnostics: IPC.workspaceDiagnostics,
@@ -114,6 +151,7 @@ const VYOTIQ_INVOKE_MAP: Record<
   getCrashDiagnostics: IPC.crashDiagnosticsGet,
   consumeCrashRecovery: IPC.crashRecoveryConsume,
   telemetryStatus: IPC.telemetryStatus,
+  getAppInfo: IPC.appInfo,
   mcpStatus: IPC.mcpStatus,
   mcpRefresh: IPC.mcpRefresh,
   mcpSetAuthToken: IPC.mcpSetAuthToken,
@@ -134,12 +172,27 @@ const VYOTIQ_INVOKE_MAP: Record<
   slashCommandsList: IPC.slashCommandsList,
   slashCommandsResolve: IPC.slashCommandsResolve,
   slashCommandsCreateRule: IPC.slashCommandsCreateRule,
+  slashCommandsCreateSkill: IPC.slashCommandsCreateSkill,
   slashCommandsOpenFile: IPC.slashCommandsOpenFile,
+  skillsListLocal: IPC.skillsListLocal,
+  skillsOpenLocal: IPC.skillsOpenLocal,
+  skillsReadLocal: IPC.skillsReadLocal,
+  skillsWriteLocal: IPC.skillsWriteLocal,
+  skillsDeleteLocal: IPC.skillsDeleteLocal,
   getSystemTheme: IPC.getSystemTheme,
-  probeNetwork: IPC.networkProbe
+  probeNetwork: IPC.networkProbe,
+  codeIndexStatus: IPC.codeIndexStatus,
+  codeIndexReindex: IPC.codeIndexReindex,
+  listNotifications: IPC.notificationsList,
+  markNotificationsRead: IPC.notificationsMarkRead,
+  dismissNotifications: IPC.notificationsDismiss
 }
 
 const PRELOAD_INTERNAL_INVOKE_CHANNELS = new Set<string>([IPC.agentQuestionReject])
+const EVENT_CHANNELS = new Set<string>([
+  IPC.workspaceEditorFlushRequest,
+  IPC.workspaceEditorFlushResponse
+])
 
 const PUSH_CHANNELS = new Set<string>([
   IPC.chatEvent,
@@ -149,7 +202,13 @@ const PUSH_CHANNELS = new Set<string>([
   IPC.themeChanged,
   IPC.browserState,
   IPC.ptyData,
-  IPC.ptyExit
+  IPC.ptyExit,
+  IPC.codeIndexStatusEvent,
+  IPC.dictationStatusEvent,
+  IPC.githubAuthStatusEvent,
+  IPC.skillsChanged,
+  IPC.notificationsChanged,
+  IPC.notificationsActivate
 ])
 
 const VYOTIQ_SYNC_SEND_MAP: Record<'updateWorkspaceUiStateSync', string> = {
@@ -164,7 +223,13 @@ const VYOTIQ_PUSH_MAP: Record<
   | 'onSystemThemeChanged'
   | 'onBrowserState'
   | 'onPtyData'
-  | 'onPtyExit',
+  | 'onPtyExit'
+  | 'onCodeIndexStatus'
+  | 'onDictationStatus'
+  | 'onGithubAuthStatus'
+  | 'onSkillsChanged'
+  | 'onNotificationsChanged'
+  | 'onNotificationActivate',
   string
 > = {
   onChatEvent: IPC.chatEvent,
@@ -174,7 +239,13 @@ const VYOTIQ_PUSH_MAP: Record<
   onSystemThemeChanged: IPC.themeChanged,
   onBrowserState: IPC.browserState,
   onPtyData: IPC.ptyData,
-  onPtyExit: IPC.ptyExit
+  onPtyExit: IPC.ptyExit,
+  onCodeIndexStatus: IPC.codeIndexStatusEvent,
+  onDictationStatus: IPC.dictationStatusEvent,
+  onGithubAuthStatus: IPC.githubAuthStatusEvent,
+  onSkillsChanged: IPC.skillsChanged,
+  onNotificationsChanged: IPC.notificationsChanged,
+  onNotificationActivate: IPC.notificationsActivate
 }
 
 describe('main/renderer IPC contract', () => {
@@ -184,7 +255,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(116)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(157)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {
@@ -193,7 +264,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(true)
     }
-    expect(Object.keys(VYOTIQ_PUSH_MAP)).toHaveLength(8)
+    expect(Object.keys(VYOTIQ_PUSH_MAP)).toHaveLength(14)
   })
 
   it('accounts for every IPC channel as invoke or push', () => {
@@ -201,7 +272,8 @@ describe('main/renderer IPC contract', () => {
       ...Object.values(VYOTIQ_INVOKE_MAP),
       ...Object.values(VYOTIQ_PUSH_MAP),
       ...Object.values(VYOTIQ_SYNC_SEND_MAP),
-      ...PRELOAD_INTERNAL_INVOKE_CHANNELS
+      ...PRELOAD_INTERNAL_INVOKE_CHANNELS,
+      ...EVENT_CHANNELS
     ])
     for (const channel of Object.values(IPC)) {
       expect(accounted.has(channel)).toBe(true)

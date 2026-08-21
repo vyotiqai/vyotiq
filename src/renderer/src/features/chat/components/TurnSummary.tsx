@@ -1,10 +1,12 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
-import { cn } from '@renderer/lib/ui'
-import { DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
+import { Tooltip, cn } from '@renderer/lib/ui'
+import { DISCLOSURE_CHEVRON, DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
 import { formatElapsed } from '@shared/utils/timeFormat'
+import type { StepUsageTotals } from '@shared/utils/runTelemetry'
 import type { TurnSpan } from '../utils/transcriptRows'
 import { turnSummaryActiveLabel } from '../utils/runActivity'
+import { buildFooterStats } from '../utils/messageFooterStats'
 import { TextShimmer } from './TextShimmer'
 
 /** Below this the duration is noise; the turn was effectively instant. */
@@ -14,15 +16,20 @@ export const TurnSummary = memo(function TurnSummary({
   span,
   collapsed,
   onToggle,
-  /** Live expanded with tool chrome visible — elapsed + collapse only (no phase label). */
-  suppressPhaseLabel = false
+  controlsId,
+  suppressPhaseLabel = false,
+  usage = null
 }: {
   span: TurnSpan
   collapsed: boolean
-  onToggle: () => void
+  onToggle?: () => void
+  controlsId?: string
+  /** Live expanded with tool chrome visible — elapsed + collapse only. */
   suppressPhaseLabel?: boolean
+  usage?: StepUsageTotals | null
 }) {
   const { startedAt, endedAt, active, activity } = span
+  const terminalStatus = span.status ?? (span.failed ? 'error' : 'done')
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -43,63 +50,120 @@ export const TurnSummary = memo(function TurnSummary({
 
   const hidePhase = suppressPhaseLabel && active && !collapsed
   const phaseLabel = turnSummaryActiveLabel(activity)
+  const receipt = useMemo(
+    () =>
+      buildFooterStats({
+        startedAt: null,
+        endedAt: null,
+        active: false,
+        nowMs: 0,
+        usage,
+        omitDuration: true,
+        omitReceipt: !active && terminalStatus !== 'done'
+      }),
+    [active, terminalStatus, usage]
+  )
+  const receiptCaption = receipt.caption
   const activeText = hidePhase
-    ? turnDuration
-    : turnDuration
-      ? `${phaseLabel} · ${turnDuration}`
-      : phaseLabel
+    ? [turnDuration, receiptCaption].filter(Boolean).join(' · ')
+    : [phaseLabel, turnDuration, receiptCaption].filter(Boolean).join(' · ')
+  const emptyLiveChrome = hidePhase && !turnDuration && !receiptCaption
 
-  const doneLabel = span.failed
-    ? span.failureLabel
-      ? `${span.failureLabel}${turnDuration ? ` · ${turnDuration}` : ''}`
-      : turnDuration
-        ? `Failed · ${turnDuration}`
-        : 'Failed'
-    : turnDuration
-      ? `Worked for ${turnDuration}`
-      : 'Worked'
-  const accessibleName = active
-    ? collapsed
-      ? activeText || phaseLabel
-      : hidePhase
-        ? turnDuration
-          ? `Collapse turn work, ${turnDuration}`
-          : 'Collapse turn work'
-        : `Collapse turn work, ${activeText}`
+  const doneLabel =
+    terminalStatus === 'cancelled'
+      ? 'Cancelled'
+      : terminalStatus === 'interrupted'
+        ? 'Interrupted'
+        : terminalStatus === 'error'
+          ? span.failureLabel?.trim() || 'Failed'
+          : 'Completed'
+  const doneDuration = terminalStatus === 'done' ? (usage ? turnDuration : '') : turnDuration
+  // No closing-answer footer: keep duration + verified usage on this row.
+  const doneText = !active
+    ? [doneLabel, doneDuration, receiptCaption].filter(Boolean).join(' · ')
     : doneLabel
+  const statusTone =
+    terminalStatus === 'error'
+      ? 'text-danger'
+      : terminalStatus === 'cancelled' || terminalStatus === 'interrupted'
+        ? 'text-warning'
+        : undefined
+
+  let accessibleName = doneText
+  if (active) {
+    if (collapsed) {
+      accessibleName = activeText || phaseLabel
+    } else {
+      accessibleName = activeText
+        ? `Collapse turn work, ${activeText}`
+        : 'Collapse turn work'
+    }
+  }
+
+  const receiptMark =
+    receiptCaption ? (
+      receipt.tooltip ? (
+        <Tooltip content={receipt.tooltip}>
+          <span className="shrink-0 tabular-nums">
+            {hidePhase ? (turnDuration ? `· ${receiptCaption}` : receiptCaption) : `· ${receiptCaption}`}
+          </span>
+        </Tooltip>
+      ) : (
+        <span className="shrink-0 tabular-nums">
+          {hidePhase && !turnDuration ? receiptCaption : `· ${receiptCaption}`}
+        </span>
+      )
+    ) : null
 
   return (
     <button
       type="button"
-      className={cn(DISCLOSURE_ROW, 'w-full text-left text-tertiary')}
+      className={cn(DISCLOSURE_ROW, 'group w-full text-left text-tertiary')}
       aria-expanded={!collapsed}
+      aria-controls={controlsId}
       aria-label={accessibleName}
       onClick={onToggle}
+      disabled={!onToggle}
     >
-      {active ? (
-        hidePhase ? (
-          turnDuration ? (
-            <span className="shrink-0 tabular-nums">{turnDuration}</span>
-          ) : null
+      <span className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+        {active ? (
+          hidePhase ? (
+            <>
+              {turnDuration ? (
+                <span className="shrink-0 tabular-nums">{turnDuration}</span>
+              ) : null}
+              {receiptMark}
+            </>
+          ) : (
+            <>
+              {collapsed ? (
+                <TextShimmer className="min-w-0 truncate">{phaseLabel}</TextShimmer>
+              ) : (
+                <span className="min-w-0 truncate">{phaseLabel}</span>
+              )}
+              {turnDuration ? (
+                <span className="shrink-0 tabular-nums">· {turnDuration}</span>
+              ) : null}
+              {receiptMark}
+            </>
+          )
+        ) : receiptCaption && receipt.tooltip ? (
+          <Tooltip content={receipt.tooltip}>
+            <span className={cn('min-w-0 truncate tabular-nums', statusTone)}>{doneText}</span>
+          </Tooltip>
         ) : (
-          <>
-            {collapsed ? (
-              <TextShimmer className="shrink-0">{phaseLabel}</TextShimmer>
-            ) : (
-              <span className="shrink-0">{phaseLabel}</span>
-            )}
-            {turnDuration ? (
-              <span className="shrink-0 tabular-nums">· {turnDuration}</span>
-            ) : null}
-          </>
-        )
-      ) : (
-        <span className={cn('shrink-0 tabular-nums', span.failed && 'text-danger')}>{doneLabel}</span>
-      )}
+          <span className={cn('min-w-0 truncate tabular-nums', statusTone)}>{doneText}</span>
+        )}
+      </span>
       <Icon
         name="chevronRight"
         size={14}
-        className={cn('shrink-0 self-center vy-transition', !collapsed && 'rotate-90')}
+        className={cn(
+          DISCLOSURE_CHEVRON,
+          'self-center',
+          !collapsed && 'rotate-90',
+          emptyLiveChrome && 'opacity-100'
+        )}
       />
     </button>
   )

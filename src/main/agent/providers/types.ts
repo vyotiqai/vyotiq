@@ -16,6 +16,8 @@ export interface ToolDefinition {
 
 export interface TokenUsage {
   inputTokens?: number
+  /** Whether the provider's inputTokens already includes cached input tokens. */
+  inputTokensIncludesCache?: boolean
   outputTokens?: number
   totalTokens?: number
   /** Input tokens served from provider prompt cache (OpenAI, DeepSeek, Groq, Anthropic, Gemini). */
@@ -24,6 +26,10 @@ export interface TokenUsage {
   cacheCreationInputTokens?: number
   /** Reasoning / thinking tokens billed as output (provider-specific). */
   reasoningTokens?: number
+  /** Provider-reported account charge in USD (e.g. OpenRouter `usage.cost`). */
+  billedCost?: number
+  /** Provider-reported cache cost effect (e.g. OpenRouter `cache_discount`; may be negative). */
+  billedCostSaved?: number
 }
 
 /**
@@ -54,8 +60,6 @@ export interface StreamChunk {
   reasoningState?: ProviderReasoningState
   /** Set on `done` chunks so the loop can tell a truncated turn from a finished one. */
   stopReason?: StopReason
-  /** Count of SSE frames dropped because they were not parseable JSON. */
-  malformedChunks?: number
 }
 
 export interface ListModelsRequest {
@@ -94,7 +98,7 @@ export interface ProviderChatRequest {
   /** Anthropic-native context management / caching. */
   anthropicNative?: {
     enableContextManagement: boolean
-    clearToolUsesKeep: number
+    clearToolUsesKeep?: number
     compactTriggerTokens?: number
     /** Server clear_tool_uses input_tokens trigger (Anthropic context editing). */
     clearToolUsesTriggerTokens?: number
@@ -106,8 +110,6 @@ export interface ProviderChatRequest {
   responseFormat?: ResponseFormat
   toolChoice?: 'auto' | 'none' | 'required'
   parallelToolCalls?: boolean
-  /** When tools are present, default true. */
-  strictTools?: boolean
   /** OpenAI prompt-cache routing key (stable per run). */
   promptCacheKey?: string
   /** Extended thinking configuration from user settings. */

@@ -43,7 +43,16 @@ jobs:
         run: pnpm lint
 
       - name: Build
-        run: pnpm build
+        run: pnpm build:vite
+
+      - name: Build landing site
+        run: pnpm landing:build
+
+      - name: Dependency audit
+        run: pnpm audit --audit-level high
+
+      - name: Package unpacked (smoke)
+        run: pnpm exec electron-builder --${{ runner.os == 'Windows' && 'win' || 'linux' }} dir --publish never
 
       - name: GUI e2e
         run: pnpm test:gui-e2e

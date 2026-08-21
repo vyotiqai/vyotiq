@@ -1,8 +1,8 @@
 import { app } from 'electron'
 import {
   existsSync,
+  lstatSync,
   readdirSync,
-  statSync,
   renameSync,
   readFileSync
 } from 'fs'
@@ -32,7 +32,8 @@ function listSessionRunIds(): string[] {
   for (const name of readdirSync(root)) {
     const dir = join(root, name)
     try {
-      if (!statSync(dir).isDirectory()) continue
+      const st = lstatSync(dir)
+      if (st.isSymbolicLink() || !st.isDirectory()) continue
       if (!existsSync(join(dir, 'status.json'))) continue
       ids.push(name)
     } catch (err) {
@@ -117,6 +118,8 @@ export function migrateLegacySessions(): MigrateSessionsResult {
     const from = join(sessionsRoot(), runId)
     const to = join(runsRoot, runId)
     try {
+      const fromSt = lstatSync(from)
+      if (fromSt.isSymbolicLink() || !fromSt.isDirectory()) continue
       if (existsSync(to)) {
         logger.warn('Skipping session migration — destination exists', {
           scope: 'migrateSessions',

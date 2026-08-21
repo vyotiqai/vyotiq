@@ -9,7 +9,7 @@ import {
   useSuppressedChatError
 } from '@renderer/features/chat/hooks/composerShared'
 import type { UiItem } from '@shared/transcript'
-import { DEFAULT_SETTINGS } from '@shared/ipc'
+import { DEFAULT_SETTINGS, emptySecretStatus } from '@shared/ipc'
 import { resolveEffectiveSettings } from '@shared/effectiveSettings'
 
 const root = join(__dirname, '../../../src/renderer/src')
@@ -50,6 +50,7 @@ describe('P3 surfaceKey + composer shared hooks', () => {
       onChatSettingsChange: () => undefined,
       onSend: () => true,
       onStop: () => undefined,
+      secrets: emptySecretStatus(),
       bannerError: null,
       secondaryBannerError: null,
       activeRunId: 'run-1'
@@ -64,7 +65,13 @@ describe('P3 surfaceKey + composer shared hooks', () => {
   it('App wires pane compact + changes handlers into SessionChatColumn', () => {
     const app = readFileSync(join(root, 'app/App.tsx'), 'utf8')
     expect(app).toMatch(/onCompactContext=\{paneCompact\}/)
-    expect(app).toMatch(/onOpenUncommittedChanges=\{onOpenUncommittedChanges\}/)
     expect(app).toMatch(/onOpenChanges=\{onOpenChanges\}/)
+    expect(app).toMatch(/onOpenWorkspaceFile=\{onOpenWorkspaceFile\}/)
+  })
+
+  it('SessionChatColumn puts onOpenWorkspaceFile on the run session', () => {
+    const column = readFileSync(join(root, 'features/chat/SessionChatColumn.tsx'), 'utf8')
+    expect(column).toMatch(/onOpenWorkspaceFile/)
+    expect(column).toMatch(/onOpenWorkspaceFile\s*\n\s*\}\)/)
   })
 })

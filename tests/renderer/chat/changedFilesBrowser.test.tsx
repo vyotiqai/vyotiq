@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import {
   ChangedFilesBrowser,
   type BrowserFileEntry
@@ -123,5 +123,69 @@ describe('ChangedFilesBrowser', () => {
       expect(screen.getByText('No textual diff')).toBeTruthy()
     })
     expect(screen.queryByText('(no unstaged changes)')).toBeNull()
+  })
+
+  it('opens a workspace file from the sibling Open control', () => {
+    const openFile = vi.fn()
+    // @ts-expect-error test bridge
+    window.vyotiq = { slashCommandsOpenFile: openFile }
+    render(
+      <ChangedFilesBrowser
+        files={[entry('src/app.ts')]}
+        expanded={new Set()}
+        onToggleExpand={() => undefined}
+        selectedPath={null}
+        onSelectPath={() => undefined}
+        fetchDiff={async () => ({ content: '' })}
+        layout="unified"
+        wordWrap={false}
+        findQuery=""
+        workspacePath="/ws/demo"
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Open src/app.ts' }))
+    expect(openFile).toHaveBeenCalledWith({ workspacePath: '/ws/demo', path: 'src/app.ts' })
+  })
+
+  it('prefers the internal workspace editor callback when provided', () => {
+    const openFile = vi.fn()
+    render(
+      <ChangedFilesBrowser
+        files={[entry('src/app.ts')]}
+        expanded={new Set()}
+        onToggleExpand={() => undefined}
+        selectedPath={null}
+        onSelectPath={() => undefined}
+        fetchDiff={async () => ({ content: '' })}
+        layout="unified"
+        wordWrap={false}
+        findQuery=""
+        workspacePath="/ws/demo"
+        onOpenFile={openFile}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Open src/app.ts' }))
+    expect(openFile).toHaveBeenCalledWith('src/app.ts')
+  })
+
+  it('opens diff view from expanded rows when the callback supports mode', () => {
+    const openFile = vi.fn()
+    render(
+      <ChangedFilesBrowser
+        files={[entry('src/app.ts')]}
+        expanded={new Set(['src/app.ts'])}
+        onToggleExpand={() => undefined}
+        selectedPath="src/app.ts"
+        onSelectPath={() => undefined}
+        fetchDiff={async () => ({ content: '' })}
+        layout="unified"
+        wordWrap={false}
+        findQuery=""
+        workspacePath="/ws/demo"
+        onOpenFile={openFile}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Open diff for src/app.ts' }))
+    expect(openFile).toHaveBeenCalledWith('src/app.ts', { mode: 'diff' })
   })
 })

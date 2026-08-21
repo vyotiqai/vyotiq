@@ -7,7 +7,7 @@ export function kindLabel(kind: MarketplaceKind): string {
     case 'skill':
       return 'Skill'
     case 'plugin':
-      return 'Plugin'
+      return 'Package'
     default: {
       const _exhaustive: never = kind
       return _exhaustive

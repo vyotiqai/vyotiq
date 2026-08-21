@@ -74,10 +74,11 @@ export function TerminalBody({ tool, loading, loadFailed, timing }: ToolBodyProp
     if (endMs != null && endMs >= startedAt) {
       metaLines.push(`running_for_ms: ${Math.max(0, endMs - startedAt)}`)
     }
-  } else {
-    if (data.cwd) metaLines.push(`cwd: ${data.cwd}`)
-    if (data.shell) metaLines.push(`shell: ${data.shell}`)
   }
+  // Always surface cwd/shell when known — timing must not hide workspace context.
+  if (data.cwd) metaLines.push(`cwd: ${data.cwd}`)
+  if (data.shell) metaLines.push(`shell: ${data.shell}`)
+  if (data.sessionStatus) metaLines.push(`status: ${data.sessionStatus}`)
 
   const hasMeta = metaLines.length > 0
   const hasCommand = Boolean(data.command)

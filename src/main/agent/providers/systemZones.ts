@@ -9,10 +9,12 @@
  *   trailing message = volatile session data (after history)
  */
 
+import { wrapPromptSection } from '../promptSections'
+
 export type ResolvedSystemZones = {
   /** Cacheable instruction prefix (harness, rules, skills metadata, …). */
   stable?: string
-  /** Per-step data (clock, snapshot, memory, loop hints, compaction summary). */
+  /** Per-step data (clock, snapshot, memory, loop hints). */
   volatile?: string
 }
 
@@ -44,7 +46,7 @@ export function volatileSessionMessage(volatile: string): {
 } {
   return {
     role: 'user',
-    content: `## Live session context\n${volatile.trim()}`
+    content: wrapPromptSection('live_session', volatile)
   }
 }
 

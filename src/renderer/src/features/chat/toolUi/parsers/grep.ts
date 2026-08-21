@@ -34,7 +34,10 @@ export function parseGrepData(tool: UiToolRow): GrepParsed {
 
   const lines = content.split('\n')
   const budgetCapped = lines.length > GREP_PARSE_LINE_BUDGET
-  const truncated = (content.includes('stopped at') && content.includes('matches')) || budgetCapped
+  const truncated =
+    (content.includes('stopped at') && content.includes('matches')) ||
+    content.includes('scan cap') ||
+    budgetCapped
 
   const groups: GrepFileGroup[] = []
   let current: GrepFileGroup | null = null
@@ -42,14 +45,21 @@ export function parseGrepData(tool: UiToolRow): GrepParsed {
 
   for (let i = 0; i < Math.min(lines.length, GREP_PARSE_LINE_BUDGET); i += 1) {
     const line = lines[i]!.trimEnd()
-    if (!line || line.startsWith('…')) continue
+    if (!line || line.startsWith('…') || line.startsWith('index=')) continue
 
     const simple = line.match(/^(.+?):(\d+):\s*(.*)$/)
     if (simple) {
       matchCount += 1
       const [, file, lineNum, text] = simple
-      groups.push({ file: file!, matches: [{ line: Number(lineNum), text: text!, isMatch: true }] })
-      current = null
+      if (current && current.file === file) {
+        current.matches.push({ line: Number(lineNum), text: text!, isMatch: true })
+      } else {
+        current = {
+          file: file!,
+          matches: [{ line: Number(lineNum), text: text!, isMatch: true }]
+        }
+        groups.push(current)
+      }
       continue
     }
 

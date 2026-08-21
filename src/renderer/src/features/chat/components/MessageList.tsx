@@ -1,20 +1,35 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { useAppVirtualizer } from '@renderer/lib/hooks/useAppVirtualizer'
+import { Dialog } from '@renderer/lib/a11y'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
-import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
+import {
+  focusComposerMessage,
+  isEditableShortcutTarget,
+  isMainComposerTarget,
+  matchShortcut
+} from '@renderer/lib/shortcuts'
+import {
+  findTranscriptRowMatches,
+  isChangesOrPrDockClaimingFind,
+  wrapMatchIndex
+} from '@renderer/lib/chat/transcriptFind'
+import type { TurnOutcome, UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
 import type { ToolApprovalDecision } from '@shared/ipc'
 import {
   CHAT_COLUMN,
   CHAT_GUTTER,
   CHAT_STAGE_INSET,
+  CHAT_STAGE_TOP_INSET,
+  TRANSCRIPT_CONTAINER,
   TOOL_BODY_CLAMP_PX,
-  TOOL_GROUP_LIST_MAX_PX,
+  TOOL_GROUP_LIST_ESTIMATE_MIN_PX,
   TOOL_TERMINAL_VIEWPORT_MAX_PX,
   TRANSCRIPT_ROW_GAP,
   TRANSCRIPT_TURN_GAP,
   TRANSCRIPT_WORK_PAIR_GAP,
-  TRANSCRIPT_WORK_ROW_GAP
+  TRANSCRIPT_WORK_ROW_GAP,
+  DISCLOSURE_ROW
 } from '@renderer/lib/utils/layout'
 import {
   buildTranscriptRows,
@@ -22,22 +37,43 @@ import {
   rowLeadingGap,
   stabilizeTranscriptRows,
   transcriptRowFingerprint,
+  turnHasClosingAnswer,
   turnHasVisibleToolWork,
-  type TranscriptRow
+  type AssistantItem,
+  type TranscriptRow,
+  timestampMs
 } from '../utils/transcriptRows'
-import { deriveRunActivity, formatRunActivityLabel } from '../utils/runActivity'
+import type { StepUsageTotals } from '@shared/utils/runTelemetry'
+import type { ChatMetaStore } from '../chatStores'
+import { useResolvedTurnUsage } from './ChatStreamLeaves'
+import { resolveTasksAnchorUserId } from '../utils/tasksAnchor'
+import {
+  compactActivityFromRows,
+  formatRunActivityLabel
+} from '../utils/runActivity'
+import { buildFooterStats } from '../utils/messageFooterStats'
 import { ChangeSummary, COMPACT_PREVIEW_COUNT } from './ChangeSummary'
+import { TextShimmer } from './TextShimmer'
 import { MessageFooter } from './MessageFooter'
 import { ThinkingBlock } from './ThinkingBlock'
+import { CompactSummaryBlock } from './CompactSummaryBlock'
 import { ToolApprovalCard } from './ToolApprovalCard'
 import { AskQuestionPanel } from './AskQuestionPanel'
 import { ToolCard } from './ToolCard'
 import { ToolGroup } from './ToolGroup'
 import { TurnSummary } from './TurnSummary'
 import { UserPrompt } from './UserPrompt'
+import { TasksCeilingBand } from './TasksCeilingBand'
 import { MarkdownContent } from '@renderer/lib/ui'
 import { shouldRenderThinking } from '@shared/transcript'
-import { toolHasBody, toolDefaultExpanded } from '../toolUi'
+import {
+  formatCitationsForCopy,
+  resolveInlineCitations,
+  type CitationCatalogEntry
+} from '@shared/utils/inlineCitations'
+import { toolHasBody, toolDefaultExpanded, toolUsesPeekCollapse } from '../toolUi'
+import { collectTurnCitationCatalogs } from '../utils/citationCatalog'
+import { useRunSession } from '../RunSessionContext'
 
 /** Stable id on the first work row of a turn (region landmark / tests). */
 function turnWorkPanelId(
@@ -55,20 +91,28 @@ function turnWorkPanelId(
 
 /** ~chars per visual line in the 840px chat column at text-sm. */
 const CHARS_PER_LINE = 65
+const EMPTY_CITATION_CATALOG: CitationCatalogEntry[] = []
 /** Line height for text-sm + leading-relaxed (1.625 × 13px). */
 const LINE_PX = 21
+
+function appearanceMeasureScale(): number {
+  if (typeof document === 'undefined') return 1
+  const style = getComputedStyle(document.documentElement)
+  const font = Number.parseFloat(style.getPropertyValue('--vy-font-scale')) || 1
+  const density = Number.parseFloat(style.getPropertyValue('--vy-density-scale')) || 1
+  return font * density
+}
 
 /**
  * First-paint height guesses for the virtualizer.
  * Collapsed Thought/Read stay near disclosure height (~44–52). Text/user
  * must not under-estimate — that stacks absolute rows on top of each other.
  */
-export function estimateTranscriptRowSize(
-  row: TranscriptRow | undefined,
-  options?: { liveTurn?: boolean; keepOpenTurn?: boolean }
-): number {
+export function estimateTranscriptRowSize(row: TranscriptRow | undefined): number {
   if (!row) return 48
-  const preferOpen = Boolean(options?.liveTurn || options?.keepOpenTurn)
+  const scale = appearanceMeasureScale()
+  const linePx = LINE_PX * scale
+  const bodyClampPx = TOOL_BODY_CLAMP_PX * scale
   switch (row.kind) {
     case 'turn':
       return 40
@@ -80,7 +124,7 @@ export function estimateTranscriptRowSize(
         (row.item.images?.length ?? 0) + (row.item.attachments?.length ?? 0)
       // UserPrompt clamps body at TOOL_BODY_CLAMP_PX when overflowing.
       const bodyLines = Math.max(1, Math.ceil(len / CHARS_PER_LINE))
-      const body = Math.min(TOOL_BODY_CLAMP_PX, 28 + bodyLines * LINE_PX)
+      const body = Math.min(bodyClampPx, 28 * scale + bodyLines * linePx)
       const chrome = 40 + (media > 0 ? 36 : 0) + (len > 400 ? 22 : 0)
       return chrome + body
     }
@@ -89,24 +133,34 @@ export function estimateTranscriptRowSize(
       const newlines = content.split('\n').length
       const fromChars = Math.ceil(content.length / CHARS_PER_LINE)
       const lines = Math.max(1, newlines, fromChars)
-      const base = 40 + lines * LINE_PX
+      const base = 40 * scale + lines * linePx
       // Prefer slight overestimate over overlap; measureElement corrects mounted rows.
       if (row.item.streaming) return Math.min(1200, base)
       return Math.min(2400, base)
     }
     case 'activity': {
-      const live = preferOpen || row.tools.some((t) => t.tool.status === 'running')
+      const pending = row.tools.some((t) => t.tool.status === 'running')
       const groupExpanded = row.tools[0]?.groupExpanded === true
       const toolExpanded = row.tools.some((t) => t.toolExpanded === true)
+      const hasFailure = row.tools.some((t) => t.tool.status === 'fail')
       const multi = row.tools.length > 1
       if (multi) {
-        // Collapsed multi-tool groups ignore stale per-tool expand flags.
-        if (live || groupExpanded) return 48 + TOOL_GROUP_LIST_MAX_PX
+        // Collapsed multi-tool groups ignore stale per-tool expand flags. The
+        // nested rows stay in the transcript's flow, so estimate from the
+        // number of rows instead of an inner viewport that no longer exists.
+        // Failed tools keep the group open (same policy as ToolGroup / toolDefaultExpanded).
+        if (pending || groupExpanded || hasFailure) {
+          const rowEstimate = Math.max(
+            TOOL_GROUP_LIST_ESTIMATE_MIN_PX,
+            row.tools.length * 32
+          )
+          return 48 + rowEstimate
+        }
         return 48
       }
       const lone = row.tools[0]!
-      const autoOpen = toolDefaultExpanded(lone.tool.name, lone.tool.status, live)
-      // Lone running tools / todo_write auto-expand; file reads stay compact.
+      const autoOpen = toolDefaultExpanded(lone.tool.name, lone.tool.status)
+      // Lone running tools auto-expand; file reads + diffs stay compact.
       if (autoOpen || toolExpanded || groupExpanded) {
         if (lone.tool.name === 'terminal') return 56 + TOOL_TERMINAL_VIEWPORT_MAX_PX
         return 56 + TOOL_BODY_CLAMP_PX
@@ -114,22 +168,23 @@ export function estimateTranscriptRowSize(
       return 48
     }
     case 'card': {
-      const live = preferOpen || row.item.tool.status === 'running'
+      const autoOpen = toolDefaultExpanded(row.item.tool.name, row.item.tool.status)
       const expanded =
-        row.item.toolExpanded === true || (live && row.item.toolExpanded !== false)
+        row.item.toolExpanded === true || (autoOpen && row.item.toolExpanded !== false)
       const hasBody = toolHasBody(row.item.tool, {
         toolProgress: row.item.toolProgress
       })
+      const peekCollapse = toolUsesPeekCollapse(row.item.tool.name)
       // Terminal output is always capped inside TOOL_TERMINAL_VIEWPORT — do not
       // add the old unbounded +80 fudge that assumed growing transcript height.
       if (row.item.tool.name === 'terminal') {
         if (expanded) return 56 + TOOL_TERMINAL_VIEWPORT_MAX_PX
-        if (hasBody) return 56 + Math.min(TOOL_BODY_CLAMP_PX, TOOL_TERMINAL_VIEWPORT_MAX_PX)
+        // Panel fold: collapsed terminal unmounts body (no clamp stub).
         return 56
       }
       if (expanded) return 56 + TOOL_BODY_CLAMP_PX + 80
-      // ProminentChrome still paints clamped body when collapsed + hasBody.
-      if (hasBody) return 56 + TOOL_BODY_CLAMP_PX
+      // Peek tools keep a clamped body when collapsed; panel tools fully fold.
+      if (hasBody && peekCollapse) return 56 + TOOL_BODY_CLAMP_PX
       return 56
     }
     case 'changes': {
@@ -139,11 +194,23 @@ export function estimateTranscriptRowSize(
       return 40 + preview * 28 + moreFooter
     }
     case 'approval':
-      return 120
-    case 'question':
-      return 160
+      return 280
+    case 'question': {
+      // Prefer overestimate — under-sized slots clip tall multi-question gates.
+      // Header+footer ~72; prompt ~28; option row ~28; boolean ~40; text ~72.
+      let body = 0
+      for (const q of row.question.questions) {
+        body += 28
+        if (q.type === 'text') body += 72
+        else if (q.type === 'boolean') body += 40
+        else body += Math.max(2, q.options?.length ?? 2) * 28
+      }
+      return Math.max(320, 72 + body)
+    }
     case 'run_error':
       return 72
+    case 'compaction':
+      return row.expanded === false ? 44 : 280
     default: {
       const _exhaustive: never = row
       return _exhaustive
@@ -159,11 +226,17 @@ export function transcriptRowsContentRevision(rows: readonly TranscriptRow[]): s
 
 /** Minimum pin slack when no dock reserve is known yet. */
 const NEAR_BOTTOM_MIN_PX = 80
+/**
+ * Tail-follow can set scrollTop to a stale scrollHeight; the scroll event then
+ * lands slightly short of the new bottom. Treat that lag as still pinned so the
+ * live user prompt is not left just above the fold with a "Latest N" chip.
+ */
+const FOLLOW_LAG_PX = 240
 
 /**
  * Virtualize only long idle transcripts that never streamed in this mount.
  * Live runs (and the idle view right after them) stay in document flow so a
- * cold virtualizer cannot invent black gaps / overlapping translateY slots.
+ * cold virtualizer cannot invent black gaps / overlapping absolute slots.
  */
 const VIRTUALIZE_MIN_ROWS = 160
 
@@ -173,6 +246,11 @@ const VIRTUALIZE_MIN_ROWS = 160
  * steps otherwise mounts the entire transcript and freezes the renderer.
  */
 const HYBRID_FLOW_TAIL_ROWS = 40
+
+/** Keep document flow briefly after a live run ends so heights settle before virtualizing. */
+const POST_LIVE_FLOW_HOLD_MS = 800
+
+type TranscriptLayoutMode = 'flow' | 'hybrid' | 'full-virtual'
 
 function distanceFromBottom(el: HTMLElement): number {
   return el.scrollHeight - el.scrollTop - el.clientHeight
@@ -187,44 +265,71 @@ function structuralKey(items: UiItem[]): string {
   return items.map((item) => item.id).join('|')
 }
 
+/** Topmost visible row in global displayRows coordinates. */
+export function captureScrollAnchor(
+  el: HTMLElement,
+  flowStartIndex: number,
+  virtualItemIndices: readonly number[]
+): { index: number; offsetPx: number } | null {
+  const containerTop = el.getBoundingClientRect().top
+
+  const liveFlow = el.querySelector('[data-live-turn-flow]')
+  if (liveFlow) {
+    const children = liveFlow.children
+    for (let i = 0; i < children.length; i++) {
+      const rect = children[i]!.getBoundingClientRect()
+      if (rect.bottom > containerTop + 1) {
+        return { index: flowStartIndex + i, offsetPx: containerTop - rect.top }
+      }
+    }
+  }
+
+  for (const index of virtualItemIndices) {
+    const node = el.querySelector(`[data-index="${index}"]`)
+    if (!node) continue
+    const rect = node.getBoundingClientRect()
+    if (rect.bottom > containerTop + 1) {
+      return { index, offsetPx: containerTop - rect.top }
+    }
+  }
+
+  const column = el.querySelector('[data-chat-column]')
+  if (column && column !== liveFlow) {
+    const isVirtualColumn =
+      column instanceof HTMLElement &&
+      column.style.height !== '' &&
+      column.querySelector('.absolute')
+    if (!isVirtualColumn) {
+      const children = column.children
+      for (let i = 0; i < children.length; i++) {
+        const rect = children[i]!.getBoundingClientRect()
+        if (rect.bottom > containerTop + 1) {
+          return { index: i, offsetPx: containerTop - rect.top }
+        }
+      }
+    }
+  }
+
+  return null
+}
+
 function ImageLightbox({ url, label, onClose }: { url: string; label: string; onClose: () => void }) {
   const closeRef = useRef<HTMLButtonElement>(null)
-  const previousFocusRef = useRef<HTMLElement | null>(null)
-
-  useEffect(() => {
-    previousFocusRef.current = document.activeElement as HTMLElement | null
-    closeRef.current?.focus()
-
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
-        e.preventDefault()
-        onClose()
-        return
-      }
-      if (e.key !== 'Tab') return
-      // Single focusable control in the dialog — keep focus trapped on Close.
-      e.preventDefault()
-      closeRef.current?.focus()
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => {
-      window.removeEventListener('keydown', onKeyDown)
-      previousFocusRef.current?.focus?.()
-    }
-  }, [onClose])
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 animate-fade-in"
-      role="dialog"
-      aria-modal="true"
-      aria-label={label}
-      onClick={onClose}
+    <Dialog
+      open
+      onClose={onClose}
+      title={label}
+      useNativeDialog={false}
+      overlayClassName="bg-overlay"
+      className="flex items-center justify-center"
+      initialFocusRef={closeRef}
     >
       <button
         ref={closeRef}
         type="button"
-        className="absolute right-4 top-4 inline-grid size-8 place-items-center rounded-full bg-black/50 text-white vy-transition hover:bg-black/70"
+        className="absolute right-4 top-4 inline-grid size-8 place-items-center rounded-full bg-surface/80 text-fg vy-transition hover:bg-surface"
         aria-label="Close image preview"
         onClick={onClose}
       >
@@ -234,9 +339,8 @@ function ImageLightbox({ url, label, onClose }: { url: string; label: string; on
         src={url}
         alt={label}
         className="max-h-[min(90vh,900px)] max-w-[min(92vw,1200px)] rounded-md object-contain shadow-lg"
-        onClick={(e) => e.stopPropagation()}
       />
-    </div>
+    </Dialog>
   )
 }
 
@@ -261,49 +365,21 @@ function rowSpacingClass(row: TranscriptRow, next?: TranscriptRow): string {
   return cn(gap, rowLeadingGap(row) > 0 && TRANSCRIPT_TURN_GAP)
 }
 
-const TranscriptRowBlock = memo(function TranscriptRowBlock({
-  row,
+/** User bubble; optionally mounts the tasks band directly underneath. */
+function TranscriptUserPrompt({
+  item,
   onImageClick,
-  onLoadToolContent,
-  onThinkingToggle,
-  onToolToggle,
-  onGroupToggle,
-  onTurnToggle,
-  onApprovalDecision,
-  onQuestionSubmit,
-  turnCollapsed = false,
-  showThinking = true,
-  live = false,
-  keepOpen = false,
-  suppressPhaseLabel = false,
-  mcpServerNames,
-  onOpenChanges,
   editingUserMessageIndex = null,
   editComposer,
   onBeginEditUserMessage,
   onRevertUserMessage,
   messageCount = 0,
   running = false,
-  pendingRun = false
+  pendingRun = false,
+  showTasksBand = false
 }: {
-  row: TranscriptRow
+  item: Extract<TranscriptRow, { kind: 'user' }>['item']
   onImageClick: (url: string, label: string) => void
-  onLoadToolContent?: (toolCallId: string) => Promise<string | null>
-  onThinkingToggle?: (messageId: string, expanded: boolean) => void
-  onToolToggle?: (toolCallId: string, expanded: boolean) => void
-  onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
-  onTurnToggle?: (turnIndex: number) => void
-  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
-  onQuestionSubmit?: (requestId: string, answers: UiAgentQuestionAnswer[]) => void | Promise<void>
-  turnCollapsed?: boolean
-  showThinking?: boolean
-  live?: boolean
-  /** Last turn stays expanded after settle so tool chrome remains visible. */
-  keepOpen?: boolean
-  /** Live expanded with tool rows visible — TurnSummary skips duplicate phase label. */
-  suppressPhaseLabel?: boolean
-  mcpServerNames?: ReadonlyMap<string, string>
-  onOpenChanges?: () => void
   editingUserMessageIndex?: number | null
   editComposer?: ReactNode
   onBeginEditUserMessage?: (messageIndex: number) => void
@@ -311,23 +387,24 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   messageCount?: number
   running?: boolean
   pendingRun?: boolean
+  showTasksBand?: boolean
 }) {
-  if (row.kind === 'user') {
-    const match = /^user-(\d+)$/.exec(row.item.id)
-    const userIndex = match ? Number(match[1]) : -1
-    const canRevert =
-      userIndex >= 0 &&
-      messageCount > userIndex + 1 &&
-      !running &&
-      !pendingRun &&
-      editingUserMessageIndex == null
-    return (
+  const match = /^user-(\d+)$/.exec(item.id)
+  const userIndex = match ? Number(match[1]) : -1
+  const canRevert =
+    userIndex >= 0 &&
+    messageCount > userIndex + 1 &&
+    !running &&
+    !pendingRun &&
+    editingUserMessageIndex == null
+  return (
+    <>
       <UserPrompt
-        item={row.item}
+        item={item}
         onImageClick={onImageClick}
-        editing={editingUserMessageIndex != null && row.item.id === `user-${editingUserMessageIndex}`}
+        editing={editingUserMessageIndex != null && item.id === `user-${editingUserMessageIndex}`}
         editComposer={
-          editingUserMessageIndex != null && row.item.id === `user-${editingUserMessageIndex}`
+          editingUserMessageIndex != null && item.id === `user-${editingUserMessageIndex}`
             ? editComposer
             : undefined
         }
@@ -349,6 +426,201 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
             : undefined
         }
       />
+      {showTasksBand ? (
+        <TasksCeilingBand key={item.id} running={running} className="mt-1" />
+      ) : null}
+    </>
+  )
+}
+
+function footerTurnSpan(
+  rows: readonly TranscriptRow[],
+  turnIndex: number,
+  item: AssistantItem,
+  live: boolean,
+  terminalStatus?: TurnOutcome | null
+): {
+  startedAt: number | null
+  endedAt: number | null
+  active: boolean
+  hasTurnSummary: boolean
+  status?: TurnOutcome
+} {
+  for (const row of rows) {
+    if (row.kind === 'turn' && row.turnIndex === turnIndex) {
+      return {
+        startedAt: row.span.startedAt,
+        endedAt: row.span.endedAt,
+        active: row.span.active,
+        hasTurnSummary: true,
+        status: row.span.status
+      }
+    }
+  }
+  let startedAt: number | null = null
+  for (const row of rows) {
+    if (row.kind === 'user' && row.turnIndex === turnIndex) {
+      startedAt = timestampMs(row.item.at)
+      break
+    }
+  }
+  return {
+    startedAt,
+    endedAt: timestampMs(item.at),
+    active: live && item.streaming === true,
+    hasTurnSummary: false,
+    ...(terminalStatus ? { status: terminalStatus } : {})
+  }
+}
+
+function AssistantTextRow({
+  item,
+  final,
+  catalog,
+  onOpenWorkspaceFile,
+  startedAt = null,
+  endedAt = null,
+  active = false,
+  usage = null,
+  turnStatus = null,
+  omitReceipt = false,
+  omitDuration = false
+}: {
+  item: AssistantItem
+  final: boolean
+  catalog: readonly CitationCatalogEntry[]
+  onOpenWorkspaceFile?: (path: string, options?: { line?: number }) => void
+  startedAt?: number | null
+  endedAt?: number | null
+  active?: boolean
+  usage?: StepUsageTotals | null
+  turnStatus?: TurnOutcome | null
+  omitReceipt?: boolean
+  omitDuration?: boolean
+}) {
+  const resolved = useMemo(
+    () => resolveInlineCitations(item.content, catalog),
+    [item.content, catalog]
+  )
+  const copyContent = useMemo(
+    () => formatCitationsForCopy(item.content, catalog),
+    [item.content, catalog]
+  )
+
+  return (
+    <div className="group/message">
+      <MarkdownContent
+        content={resolved.markdown}
+        streaming={item.streaming}
+        linkWorkspacePaths
+        onOpenWorkspaceFile={onOpenWorkspaceFile}
+      />
+      {final ? (
+        <MessageFooter
+          content={item.content}
+          copyContent={copyContent}
+          at={item.at}
+          startedAt={startedAt}
+          endedAt={endedAt}
+          active={active}
+          usage={usage}
+          omitReceipt={omitReceipt}
+          omitDuration={omitDuration}
+          copyHidden={
+            item.streaming === true ||
+            (turnStatus != null && turnStatus !== 'done')
+          }
+        />
+      ) : null}
+    </div>
+  )
+}
+
+const TranscriptRowBlock = memo(function TranscriptRowBlock({
+  row,
+  onImageClick,
+  onLoadToolContent,
+  onThinkingToggle,
+  onToolToggle,
+  onGroupToggle,
+  onTurnToggle,
+  onApprovalDecision,
+  onQuestionSubmit,
+  autoFocusApproval = true,
+  turnCollapsed = false,
+  showThinking = true,
+  live = false,
+  suppressPhaseLabel = false,
+  mcpServerNames,
+  onOpenChanges,
+  editingUserMessageIndex = null,
+  editComposer,
+  onBeginEditUserMessage,
+  onRevertUserMessage,
+  messageCount = 0,
+  running = false,
+  pendingRun = false,
+  showTasksBand = false,
+  citationCatalog = EMPTY_CITATION_CATALOG,
+  footerStartedAt = null,
+  footerEndedAt = null,
+  footerActive = false,
+  footerUsage = null,
+  footerStatus = null,
+  footerOmitReceipt = false,
+  footerOmitDuration = false
+}: {
+  row: TranscriptRow
+  onImageClick: (url: string, label: string) => void
+  onLoadToolContent?: (toolCallId: string) => Promise<string | null>
+  onThinkingToggle?: (messageId: string, expanded: boolean) => void
+  onToolToggle?: (toolCallId: string, expanded: boolean) => void
+  onGroupToggle?: (anchorToolCallId: string, expanded: boolean) => void
+  onTurnToggle?: (turnIndex: number) => void
+  onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  onQuestionSubmit?: (requestId: string, answers: UiAgentQuestionAnswer[]) => void | Promise<void>
+  autoFocusApproval?: boolean
+  turnCollapsed?: boolean
+  showThinking?: boolean
+  live?: boolean
+  /** Live expanded with tool rows visible — TurnSummary skips duplicate phase label. */
+  suppressPhaseLabel?: boolean
+  mcpServerNames?: ReadonlyMap<string, string>
+  onOpenChanges?: () => void
+  editingUserMessageIndex?: number | null
+  editComposer?: ReactNode
+  onBeginEditUserMessage?: (messageIndex: number) => void
+  onRevertUserMessage?: (messageIndex: number) => void
+  messageCount?: number
+  running?: boolean
+  pendingRun?: boolean
+  /** Mount TasksCeilingBand under this user prompt (task-owning turn). */
+  showTasksBand?: boolean
+  citationCatalog?: readonly CitationCatalogEntry[]
+  footerStartedAt?: number | null
+  footerEndedAt?: number | null
+  footerActive?: boolean
+  footerUsage?: StepUsageTotals | null
+  footerStatus?: TurnOutcome | null
+  footerOmitReceipt?: boolean
+  footerOmitDuration?: boolean
+}) {
+  const { onOpenWorkspaceFile } = useRunSession()
+
+  if (row.kind === 'user') {
+    return (
+      <TranscriptUserPrompt
+        item={row.item}
+        onImageClick={onImageClick}
+        editingUserMessageIndex={editingUserMessageIndex}
+        editComposer={editComposer}
+        onBeginEditUserMessage={onBeginEditUserMessage}
+        onRevertUserMessage={onRevertUserMessage}
+        messageCount={messageCount}
+        running={running}
+        pendingRun={pendingRun}
+        showTasksBand={showTasksBand}
+      />
     )
   }
 
@@ -357,8 +629,10 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
       <TurnSummary
         span={row.span}
         collapsed={turnCollapsed}
+        controlsId={`turn-work-${row.turnIndex}`}
         suppressPhaseLabel={suppressPhaseLabel}
-        onToggle={() => onTurnToggle?.(row.turnIndex)}
+        usage={footerUsage}
+        onToggle={onTurnToggle ? () => onTurnToggle(row.turnIndex) : undefined}
       />
     )
   }
@@ -370,24 +644,28 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         content={row.item.thinking ?? ''}
         streaming={row.item.thinkingStreaming}
         expanded={row.item.thinkingExpanded}
-        onToggle={(next) => onThinkingToggle?.(row.item.id, next)}
+        onToggle={
+          onThinkingToggle ? (next) => onThinkingToggle(row.item.id, next) : undefined
+        }
       />
     )
   }
 
   if (row.kind === 'text') {
     return (
-      <div className="group/message">
-        {row.item.reconnecting ? (
-          <p className="m-0 mb-1 text-caption text-secondary" role="status">
-            Reconnecting…
-          </p>
-        ) : null}
-        <MarkdownContent content={row.item.content} streaming={row.item.streaming} />
-        {row.final && !row.item.streaming ? (
-          <MessageFooter content={row.item.content} at={row.item.at} />
-        ) : null}
-      </div>
+      <AssistantTextRow
+        item={row.item}
+        final={row.final}
+        catalog={citationCatalog}
+        onOpenWorkspaceFile={onOpenWorkspaceFile}
+        startedAt={footerStartedAt}
+        endedAt={footerEndedAt}
+        active={footerActive}
+        usage={footerUsage}
+        turnStatus={footerStatus}
+        omitReceipt={footerOmitReceipt}
+        omitDuration={footerOmitDuration}
+      />
     )
   }
 
@@ -402,13 +680,32 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
     )
   }
 
+  if (row.kind === 'compaction') {
+    return (
+      <CompactSummaryBlock
+        summary={row.summary}
+        tokenEstimate={row.tokenEstimate}
+        expanded={row.expanded}
+        verifyStatus={row.verifyStatus}
+        verifyFailures={row.verifyFailures}
+        verifyCoverage={row.verifyCoverage}
+      />
+    )
+  }
+
   if (row.kind === 'changes') {
     // Receipt only — Keep/Discard lives in the Changes panel (Review).
     return <ChangeSummary files={row.files} compact onOpenChanges={onOpenChanges} />
   }
 
   if (row.kind === 'approval') {
-    return <ToolApprovalCard approval={row.approval} onDecide={onApprovalDecision} />
+    return (
+      <ToolApprovalCard
+        approval={row.approval}
+        onDecide={onApprovalDecision}
+        captureFocus={autoFocusApproval}
+      />
+    )
   }
 
   if (row.kind === 'question') {
@@ -416,7 +713,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   }
 
   if (row.kind === 'activity') {
-    // Prefer per-item toolExpanded so siblings keep familyDefaultExpanded when
+    // Prefer per-item toolExpanded so siblings keep toolDefaultExpanded when
     // only one tool has an explicit expand flag (do not pass a Set that blanks them).
     const anchor = row.tools[0]!
     return (
@@ -424,7 +721,6 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         tools={row.tools}
         groupExpanded={anchor.groupExpanded}
         live={live}
-        keepOpen={keepOpen}
         onGroupToggle={
           onGroupToggle ? (expanded) => onGroupToggle(anchor.id, expanded) : undefined
         }
@@ -440,8 +736,6 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
       <ToolCard
         item={row.item}
         expanded={row.item.toolExpanded}
-        live={live}
-        keepOpen={keepOpen}
         // Without a host that persists the choice the card owns its own state,
         // so it still opens instead of swallowing the click.
         onToggle={onToolToggle ? (next) => onToolToggle(row.item.id, next) : undefined}
@@ -467,22 +761,28 @@ export function MessageList({
   onTurnToggle,
   onApprovalDecision,
   onQuestionSubmit,
+  approvalAutoFocus = true,
   collapsedTurns,
   showThinking = true,
   mcpServerNames,
   pendingRun = false,
   running = false,
   networkWait = null,
+  compacting = false,
   turnFailed = false,
   turnFailureLabel = null,
+  turnStatus = null,
   transcriptLoading = false,
+  virtualizeLiveEarly = false,
   onOpenChanges,
-  sideRailPad = true,
+  sideRailPad = false,
   editingUserMessageIndex = null,
   editComposer,
   onBeginEditUserMessage,
   onRevertUserMessage,
-  messageCount = 0
+  messageCount = 0,
+  turnUsage,
+  metaStore
 }: {
   items: UiItem[]
   restoreScrollTop?: number
@@ -496,6 +796,8 @@ export function MessageList({
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
   onQuestionSubmit?: (requestId: string, answers: UiAgentQuestionAnswer[]) => void | Promise<void>
+  /** Autofocus Allow once only when this transcript is the focused visible pane. */
+  approvalAutoFocus?: boolean
   /** Persisted turn-summary collapse state from the chat stream controller. */
   collapsedTurns?: ReadonlySet<number>
   showThinking?: boolean
@@ -508,10 +810,14 @@ export function MessageList({
     retryInMs: number
     code?: string
   } | null
+  compacting?: boolean
   turnFailed?: boolean
   turnFailureLabel?: string | null
+  turnStatus?: TurnOutcome | null
   /** True while the selected chat transcript is still loading. */
   transcriptLoading?: boolean
+  /** Instance pane: hybrid-virtualize live transcripts without waiting for 160 rows. */
+  virtualizeLiveEarly?: boolean
   onOpenChanges?: () => void
   /** When false, use symmetric gutter (immersive Agent — no floating side rail). */
   sideRailPad?: boolean
@@ -520,49 +826,64 @@ export function MessageList({
   onBeginEditUserMessage?: (messageIndex: number) => void
   onRevertUserMessage?: (messageIndex: number) => void
   messageCount?: number
+  /** Per UI-turn usage, aligned with transcript `turnIndex`. */
+  turnUsage?: readonly StepUsageTotals[]
+  /** Live meta store — receipt updates without waiting for ChatView to re-render. */
+  metaStore?: ChatMetaStore
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
-  const restoreScrollTopRef = useRef(restoreScrollTop ?? 0)
-  const restorePendingRef = useRef(Boolean(restoreScrollTop && restoreScrollTop > 0))
-  const pinnedToBottomRef = useRef(true)
-  const programmaticScrollRef = useRef(false)
-  const autoScrollRafRef = useRef<number | null>(null)
-  const [scrollRestored, setScrollRestored] = useState(
-    () => !restoreScrollTop || restoreScrollTop <= 0
+  const restoreScrollTopRef = useRef<number | null>(
+    typeof restoreScrollTop === 'number' ? restoreScrollTop : null
   )
+  const restorePendingRef = useRef(typeof restoreScrollTop === 'number')
+  const pinnedToBottomRef = useRef(typeof restoreScrollTop !== 'number')
+  const hasPendingQuestionRef = useRef(false)
+  const programmaticScrollRef = useRef(false)
+  const lastScrollTopRef = useRef(0)
+  const seenUserRowIdRef = useRef<string | null | undefined>(undefined)
+  const autoScrollRafRef = useRef<number | null>(null)
+  const [scrollRestored, setScrollRestored] = useState(() => typeof restoreScrollTop !== 'number')
   const [isUnpinned, setIsUnpinned] = useState(false)
+  const [unpinnedNewCount, setUnpinnedNewCount] = useState(0)
+  const unpinnedSeenIdsRef = useRef<Set<string> | null>(null)
+  const [findOpen, setFindOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState('')
+  const [matchIndex, setMatchIndex] = useState(0)
+  const findInputRef = useRef<HTMLInputElement | null>(null)
+  const openedFindFromComposerRef = useRef(false)
   const [lightbox, setLightbox] = useState<{ url: string; label: string } | null>(null)
   /** Topmost visible row while in flow layout — restores position after virtualization flips on. */
   const flowAnchorRef = useRef<{ index: number; offsetPx: number } | null>(null)
   const shouldVirtualizeRef = useRef(false)
+  const flowStartIndexRef = useRef(0)
+  const rowVirtualizerRef = useRef<ReturnType<typeof useAppVirtualizer> | null>(null)
+  const prevLayoutModeRef = useRef<TranscriptLayoutMode>('flow')
+  const scrollBeforeLayoutChangeRef = useRef(0)
+  const pendingFullVirtualScrollRef = useRef<number | null>(null)
   const collapsedTurnSet = useMemo(
     () => collapsedTurns ?? new Set<number>(),
     [collapsedTurns]
   )
   const prevStructuralKeyRef = useRef<string | null>(null)
   const prevRowsRef = useRef<TranscriptRow[] | null>(null)
-  /** After a live run ends, keep flow layout briefly so height settles before virtualizing. */
-  const [stayInFlowAfterLive, setStayInFlowAfterLive] = useState(false)
   const wasLiveRef = useRef(false)
-  useEffect(() => {
-    const live = pendingRun || running
-    if (live) {
-      wasLiveRef.current = true
-      setStayInFlowAfterLive(false)
-      return
-    }
-    if (!wasLiveRef.current) {
-      setStayInFlowAfterLive(false)
-      return
-    }
-    setStayInFlowAfterLive(true)
+  const [, setPostLiveHoldGeneration] = useState(0)
+  const live = pendingRun || running
+  if (live) {
+    wasLiveRef.current = true
+  }
+  const postLiveHold = wasLiveRef.current && !live
+
+  useLayoutEffect(() => {
+    if (live) return
+    if (!wasLiveRef.current) return
     const timer = window.setTimeout(() => {
-      setStayInFlowAfterLive(false)
       wasLiveRef.current = false
-    }, 800)
+      setPostLiveHoldGeneration((generation) => generation + 1)
+    }, POST_LIVE_FLOW_HOLD_MS)
     return () => window.clearTimeout(timer)
-  }, [pendingRun, running])
+  }, [live, pendingRun, running])
 
   const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
   const allRows = useMemo(() => {
@@ -571,14 +892,28 @@ export function MessageList({
       running,
       showThinking,
       networkWait,
+      compacting,
       turnFailed,
-      turnFailureLabel
+      turnFailureLabel,
+      turnStatus
     })
     return stabilizeTranscriptRows(prevRowsRef.current, next)
-  }, [items, pendingRun, running, showThinking, networkWait, turnFailed, turnFailureLabel])
+  }, [
+    items,
+    pendingRun,
+    running,
+    showThinking,
+    networkWait,
+    compacting,
+    turnFailed,
+    turnFailureLabel,
+    turnStatus
+  ])
   useLayoutEffect(() => {
     prevRowsRef.current = allRows
   }, [allRows])
+  const citationCatalogs = useMemo(() => collectTurnCitationCatalogs(allRows), [allRows])
+  const resolvedTurnUsage = useResolvedTurnUsage(metaStore, turnUsage)
   const activeLiveTurnIndex = useMemo(() => {
     if (!(pendingRun || running)) return null
     let max = -1
@@ -587,6 +922,13 @@ export function MessageList({
     }
     return max < 0 ? null : max
   }, [allRows, pendingRun, running])
+  const latestTurnIndex = useMemo(() => {
+    let latest = -1
+    for (const row of allRows) latest = Math.max(latest, row.turnIndex)
+    return latest
+  }, [allRows])
+
+  const tasksAnchorUserId = useMemo(() => resolveTasksAnchorUserId(items), [items])
 
   const displayRows = useMemo(() => {
     const visible = allRows.filter((row) => {
@@ -603,19 +945,29 @@ export function MessageList({
     })
   }, [allRows, collapsedTurnSet, showThinking])
 
-  const lastTurnIndex = useMemo(() => {
-    let max = -1
-    for (const row of allRows) {
-      if (row.turnIndex > max) max = row.turnIndex
+  const latestUserRowId = useMemo(() => {
+    for (let i = displayRows.length - 1; i >= 0; i--) {
+      const row = displayRows[i]!
+      if (row.kind === 'user') return row.id
     }
-    return max
-  }, [allRows])
+    return null
+  }, [displayRows])
+
+  const findMatches = useMemo(
+    () => findTranscriptRowMatches(displayRows, findQuery),
+    [displayRows, findQuery]
+  )
+  const currentFindRow =
+    findOpen && findMatches.length > 0
+      ? findMatches[wrapMatchIndex(matchIndex, findMatches.length)]!
+      : null
 
   const nearBottomPx = nearBottomThreshold()
   const nearBottomPxRef = useRef(nearBottomPx)
   nearBottomPxRef.current = nearBottomPx
 
-  restoreScrollTopRef.current = restoreScrollTop ?? 0
+  restoreScrollTopRef.current =
+    typeof restoreScrollTop === 'number' ? restoreScrollTop : null
 
   const onImageClick = useCallback((url: string, label: string) => {
     setLightbox({ url, label })
@@ -632,13 +984,15 @@ export function MessageList({
   useLayoutEffect(() => {
     appliedRestoreRef.current = null
     const top = restoreScrollTopRef.current
-    restorePendingRef.current = Boolean(top && top > 0)
-    setScrollRestored(!top || top <= 0)
+    const hasRestore = typeof top === 'number'
+    restorePendingRef.current = hasRestore
+    setScrollRestored(!hasRestore)
+    if (!hasRestore) pinnedToBottomRef.current = true
   }, [scrollRestoreToken])
 
   useLayoutEffect(() => {
     const top = restoreScrollTopRef.current
-    if (!top || top <= 0) {
+    if (typeof top !== 'number') {
       restorePendingRef.current = false
       setScrollRestored(true)
       pinnedToBottomRef.current = true
@@ -673,7 +1027,7 @@ export function MessageList({
     const ro = new ResizeObserver(() => {
       if (!restorePendingRef.current) return
       const top = restoreScrollTopRef.current
-      if (!top || top <= 0) {
+      if (typeof top !== 'number') {
         restorePendingRef.current = false
         return
       }
@@ -710,22 +1064,229 @@ export function MessageList({
       el.scrollTop = top
     }
     pinnedToBottomRef.current = true
+    lastScrollTopRef.current = el.scrollTop
     window.requestAnimationFrame(() => {
       programmaticScrollRef.current = false
     })
   }, [])
 
+  useLayoutEffect(() => {
+    seenUserRowIdRef.current = undefined
+  }, [scrollRestoreToken])
+
+  useLayoutEffect(() => {
+    const id = latestUserRowId
+    const prev = seenUserRowIdRef.current
+    if (prev === undefined) {
+      seenUserRowIdRef.current = id
+      return
+    }
+    seenUserRowIdRef.current = id
+    if (id == null || id === prev || findOpen) return
+    restorePendingRef.current = false
+    unpinnedSeenIdsRef.current = null
+    setUnpinnedNewCount(0)
+    setIsUnpinned(false)
+    pinnedToBottomRef.current = true
+    const el = containerRef.current
+    if (!el) return
+    // Pin to the live tail so the just-sent prompt sits at the bottom edge with
+    // the streaming response below it. A top-scroll here would fight the
+    // tail-follow below and bury the prompt above the fold during long streams.
+    followTail('auto')
+    lastScrollTopRef.current = el.scrollTop
+    window.requestAnimationFrame(() => {
+      programmaticScrollRef.current = false
+    })
+  }, [latestUserRowId, findOpen, followTail])
+
   const jumpToBottom = useCallback(() => {
     restorePendingRef.current = false
+    unpinnedSeenIdsRef.current = null
+    setUnpinnedNewCount(0)
     setIsUnpinned(false)
     followTail('smooth')
   }, [followTail])
+
+  const jumpToTop = useCallback(() => {
+    const el = containerRef.current
+    if (!el) return
+    programmaticScrollRef.current = true
+    restorePendingRef.current = false
+    if (typeof el.scrollTo === 'function') {
+      el.scrollTo({ top: 0, behavior: 'smooth' })
+    } else {
+      el.scrollTop = 0
+    }
+    pinnedToBottomRef.current = false
+    setIsUnpinned(true)
+    lastScrollTopRef.current = el.scrollTop
+    window.requestAnimationFrame(() => {
+      programmaticScrollRef.current = false
+    })
+  }, [])
+
+  const closeTranscriptFind = useCallback(() => {
+    setFindOpen(false)
+    setFindQuery('')
+    setMatchIndex(0)
+    if (openedFindFromComposerRef.current) {
+      openedFindFromComposerRef.current = false
+      focusComposerMessage()
+    }
+  }, [])
+
+  const openTranscriptFind = useCallback((fromComposer: boolean) => {
+    openedFindFromComposerRef.current = fromComposer
+    setFindOpen(true)
+  }, [])
+
+  const stepFindMatch = useCallback((delta: number) => {
+    setMatchIndex((i) => i + delta)
+  }, [])
+
+  const scrollToDisplayRow = useCallback((index: number) => {
+    const el = containerRef.current
+    if (!el) return
+    programmaticScrollRef.current = true
+    const flowStart = flowStartIndexRef.current
+    const virtualizer = rowVirtualizerRef.current
+    if (shouldVirtualizeRef.current && virtualizer && index < flowStart) {
+      virtualizer.scrollToIndex(index, { align: 'center' })
+    } else {
+      const node = el.querySelector(`[data-transcript-row="${index}"]`)
+      if (node instanceof HTMLElement && typeof node.scrollIntoView === 'function') {
+        node.scrollIntoView({ block: 'center', inline: 'nearest' })
+      } else if (index === 0) {
+        el.scrollTop = 0
+      }
+    }
+    window.requestAnimationFrame(() => {
+      programmaticScrollRef.current = false
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!isUnpinned) {
+      unpinnedSeenIdsRef.current = null
+      setUnpinnedNewCount(0)
+      return
+    }
+    if (unpinnedSeenIdsRef.current == null) {
+      unpinnedSeenIdsRef.current = new Set(items.map((item) => item.id))
+      setUnpinnedNewCount(0)
+      return
+    }
+    const seen = unpinnedSeenIdsRef.current
+    let added = 0
+    for (const item of items) {
+      if (!seen.has(item.id)) {
+        seen.add(item.id)
+        added += 1
+      }
+    }
+    if (added > 0) setUnpinnedNewCount((n) => n + added)
+  }, [isUnpinned, items])
+
+  useEffect(() => {
+    setMatchIndex(0)
+  }, [findQuery])
+
+  useEffect(() => {
+    if (!findOpen) return
+    findInputRef.current?.focus()
+    findInputRef.current?.select()
+  }, [findOpen])
+
+  useEffect(() => {
+    if (!findOpen || currentFindRow == null) return
+    scrollToDisplayRow(currentFindRow)
+  }, [findOpen, currentFindRow, scrollToDisplayRow])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'End' && e.key !== 'Home') return
+      if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return
+      if (e.defaultPrevented) return
+      if (isEditableShortcutTarget(e.target)) return
+      const target = e.target instanceof Element ? e.target : null
+      if (
+        target?.closest(
+          'aside[aria-label="Sidebar"], [id^="dock-panel-"], [data-chat-side-rail]'
+        )
+      ) {
+        return
+      }
+      const list = containerRef.current
+      if (!list) return
+      const pane = list.closest('[data-chat-pane]')
+      if (pane?.getAttribute('data-chat-pane-focused') === '0') return
+      const otherList = target?.closest('[data-transcript-scroll]')
+      if (otherList && otherList !== list) return
+      e.preventDefault()
+      if (e.key === 'End') jumpToBottom()
+      else jumpToTop()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [jumpToBottom, jumpToTop])
+
+  useEffect(() => {
+    const paneOwnsEvent = (e: KeyboardEvent): boolean => {
+      const target = e.target instanceof Element ? e.target : null
+      const list = containerRef.current
+      if (!list) return false
+      const pane = list.closest('[data-chat-pane]')
+      if (pane?.getAttribute('data-chat-pane-focused') === '0') return false
+      const otherList = target?.closest('[data-transcript-scroll]')
+      if (otherList && otherList !== list) return false
+      return true
+    }
+
+    const onFindKey = (e: KeyboardEvent): void => {
+      if (matchShortcut(e, 'find')) {
+        const target = e.target
+        if (target instanceof Element && target.closest('[data-transcript-find]')) {
+          e.preventDefault()
+          findInputRef.current?.select()
+          return
+        }
+        if (isEditableShortcutTarget(target) && !isMainComposerTarget(target)) return
+        if (isChangesOrPrDockClaimingFind() && !isMainComposerTarget(target)) return
+        if (!paneOwnsEvent(e)) return
+        e.preventDefault()
+        openTranscriptFind(isMainComposerTarget(target))
+        return
+      }
+      if (!findOpen) return
+      if (e.key === 'F3') {
+        if (!paneOwnsEvent(e)) return
+        e.preventDefault()
+        stepFindMatch(e.shiftKey ? -1 : 1)
+      }
+    }
+    window.addEventListener('keydown', onFindKey)
+    return () => window.removeEventListener('keydown', onFindKey)
+  }, [findOpen, openTranscriptFind, stepFindMatch])
+
+  useEffect(() => {
+    if (!findOpen) return undefined
+    const onEsc = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      closeTranscriptFind()
+    }
+    window.addEventListener('keydown', onEsc, true)
+    return () => window.removeEventListener('keydown', onEsc, true)
+  }, [findOpen, closeTranscriptFind])
 
   const scheduleTailFollow = useCallback(() => {
     if (autoScrollRafRef.current) window.cancelAnimationFrame(autoScrollRafRef.current)
     autoScrollRafRef.current = window.requestAnimationFrame(() => {
       autoScrollRafRef.current = null
       if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
+      if (hasPendingQuestionRef.current) return
       const el = containerRef.current
       // Only skip when already flush at the absolute bottom. Skipping for the
       // whole dock slack can leave streaming growth below the visible fold.
@@ -735,11 +1296,17 @@ export function MessageList({
   }, [followTail, scrollRestored])
 
   useEffect(() => {
+    hasPendingQuestionRef.current = items.some((item) => item.kind === 'question')
+  }, [items])
+
+  useEffect(() => {
     if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
     if (prevStructuralKeyRef.current === itemsStructuralKey) return
     prevStructuralKeyRef.current = itemsStructuralKey
+    // AskQuestionPanel scrolls the gate to show its header; pin-follow would bury it.
+    if (items.some((item) => item.kind === 'question')) return
     scheduleTailFollow()
-  }, [itemsStructuralKey, scheduleTailFollow, scrollRestored])
+  }, [items, itemsStructuralKey, scheduleTailFollow, scrollRestored])
 
   useEffect(() => {
     const el = containerRef.current
@@ -754,60 +1321,61 @@ export function MessageList({
     return () => ro.disconnect()
   }, [scheduleTailFollow, scrollRestored])
 
-  const captureFlowAnchor = useCallback((el: HTMLElement): void => {
-    const column = el.querySelector('[data-chat-column], [data-live-turn-flow]')
-    if (!column) return
-    const containerTop = el.getBoundingClientRect().top
-    const children = column.children
-    for (let i = 0; i < children.length; i++) {
-      const rect = children[i]!.getBoundingClientRect()
-      if (rect.bottom > containerTop + 1) {
-        flowAnchorRef.current = { index: i, offsetPx: containerTop - rect.top }
-        return
-      }
-    }
-    flowAnchorRef.current = null
-  }, [])
-
-  const handleScroll = useCallback(
-    (scrollTop: number) => {
-      const el = containerRef.current
-      if (el && !programmaticScrollRef.current) {
-        const pinned = distanceFromBottom(el) <= nearBottomPxRef.current
-        pinnedToBottomRef.current = pinned
-        restorePendingRef.current = false
-        setIsUnpinned((prev) => (prev === !pinned ? prev : !pinned))
-        if (!shouldVirtualizeRef.current) captureFlowAnchor(el)
-      }
-      onScrollTopChange?.(scrollTop)
-    },
-    [captureFlowAnchor, onScrollTopChange]
-  )
-
   const streamingAnnouncement = useMemo(() => {
-    for (const row of displayRows) {
-      if (row.kind === 'text' && row.item.streaming) {
-        return `Assistant: ${formatRunActivityLabel({ kind: 'writing' })}`
-      }
-      if (row.kind === 'thinking' && row.item.thinkingStreaming) {
-        return `Assistant: ${formatRunActivityLabel({ kind: 'thinking' })}`
+    if (activeLiveTurnIndex != null) {
+      const turnRow = allRows.find(
+        (row) => row.kind === 'turn' && row.turnIndex === activeLiveTurnIndex
+      )
+      if (turnRow?.kind === 'turn' && turnRow.span.activity) {
+        const suppressPhase =
+          turnRow.span.active === true &&
+          !collapsedTurnSet.has(turnRow.turnIndex) &&
+          turnHasVisibleToolWork(allRows, turnRow.turnIndex) &&
+          !compacting
+        if (suppressPhase) return ''
+        return `Assistant: ${formatRunActivityLabel(turnRow.span.activity)}`
       }
     }
-    // Prefer phase from visible tool chrome over the turn-summary span.
-    if (activeLiveTurnIndex != null) {
-      const turnVisible = displayRows.filter((row) => row.turnIndex === activeLiveTurnIndex)
-      if (turnVisible.some((row) => row.kind === 'activity' || row.kind === 'card')) {
-        const phase = deriveRunActivity(turnVisible, false)
-        return `Assistant: ${formatRunActivityLabel(phase)}`
+    if (compacting) {
+      const hasCompactionRow = allRows.some((row) => row.kind === 'compaction')
+      if (!hasCompactionRow) {
+        return `Assistant: ${formatRunActivityLabel(compactActivityFromRows(allRows))}`
       }
+      return ''
     }
     for (let i = allRows.length - 1; i >= 0; i--) {
       const row = allRows[i]
       if (row?.kind !== 'turn' || !row.span.activity) continue
       return `Assistant: ${formatRunActivityLabel(row.span.activity)}`
     }
+    if (turnStatus) {
+      const label =
+        turnStatus === 'done'
+          ? 'Completed'
+          : turnStatus === 'cancelled'
+            ? 'Cancelled'
+            : turnStatus === 'interrupted'
+              ? 'Interrupted'
+              : 'Failed'
+      return `Assistant: ${label}`
+    }
     return ''
-  }, [displayRows, allRows, activeLiveTurnIndex])
+  }, [allRows, activeLiveTurnIndex, compacting, collapsedTurnSet, turnStatus])
+
+  const liveReceiptAnnouncement = useMemo(() => {
+    if (activeLiveTurnIndex == null) return ''
+    const usage = resolvedTurnUsage?.[activeLiveTurnIndex]
+    if (!usage) return ''
+    const stats = buildFooterStats({
+      startedAt: null,
+      endedAt: null,
+      active: false,
+      nowMs: 0,
+      usage,
+      omitDuration: true
+    })
+    return stats.caption ? `Assistant usage: ${stats.caption}` : ''
+  }, [activeLiveTurnIndex, resolvedTurnUsage])
 
   const rowsContentRevision = useMemo(
     () => transcriptRowsContentRevision(displayRows),
@@ -822,10 +1390,11 @@ export function MessageList({
     scheduleTailFollow()
   }, [rowsContentRevision, running, pendingRun, scheduleTailFollow, scrollRestored])
 
+  const virtualizeMinRows = virtualizeLiveEarly ? 0 : VIRTUALIZE_MIN_ROWS
+
   const useHybridVirtualize =
-    (pendingRun || running) &&
-    !stayInFlowAfterLive &&
-    displayRows.length >= VIRTUALIZE_MIN_ROWS &&
+    live &&
+    displayRows.length >= virtualizeMinRows &&
     activeLiveTurnIndex != null
 
   const flowStartIndex = useMemo(() => {
@@ -837,7 +1406,9 @@ export function MessageList({
   }, [useHybridVirtualize, displayRows, activeLiveTurnIndex])
 
   const useFullVirtualize =
-    !pendingRun && !running && !stayInFlowAfterLive && displayRows.length >= VIRTUALIZE_MIN_ROWS
+    !live &&
+    !postLiveHold &&
+    displayRows.length >= (virtualizeLiveEarly ? HYBRID_FLOW_TAIL_ROWS : VIRTUALIZE_MIN_ROWS)
 
   const virtualizedRows = useMemo(() => {
     if (useHybridVirtualize && flowStartIndex > 0) {
@@ -860,19 +1431,12 @@ export function MessageList({
   )
 
   const estimateSize = useCallback(
-    (index: number) => {
-      const row = virtualizedRows[index]
-      const turnIndex = row?.turnIndex
-      return estimateTranscriptRowSize(row, {
-        liveTurn: activeLiveTurnIndex != null && turnIndex === activeLiveTurnIndex,
-        keepOpenTurn: lastTurnIndex >= 0 && turnIndex === lastTurnIndex
-      })
-    },
-    [virtualizedRows, activeLiveTurnIndex, lastTurnIndex]
+    (index: number) => estimateTranscriptRowSize(virtualizedRows[index]),
+    [virtualizedRows]
   )
 
   const measureElementHeight = useCallback((element: Element) => {
-    // offsetHeight includes padding/border and avoids transform-skewed rects.
+  // offsetHeight includes padding/border (layout box, not compositor-skewed).
     if (element instanceof HTMLElement && element.offsetHeight > 0) {
       return element.offsetHeight
     }
@@ -881,8 +1445,16 @@ export function MessageList({
 
   const shouldVirtualize = virtualizedRows.length > 0
   shouldVirtualizeRef.current = shouldVirtualize
+  flowStartIndexRef.current = flowStartIndex
 
-  const rowVirtualizer = useVirtualizer({
+  const layoutMode: TranscriptLayoutMode =
+    useHybridVirtualize && flowStartIndex > 0
+      ? 'hybrid'
+      : useFullVirtualize
+        ? 'full-virtual'
+        : 'flow'
+
+  const rowVirtualizer = useAppVirtualizer({
     count: shouldVirtualize ? virtualizedRows.length : 0,
     getScrollElement: () => containerRef.current,
     estimateSize,
@@ -896,6 +1468,48 @@ export function MessageList({
     // jsdom / first paint often report 0×0 until layout; seed a viewport so rows mount.
     initialRect: { width: 720, height: 800 }
   })
+  rowVirtualizerRef.current = rowVirtualizer
+
+  const recordScrollAnchor = useCallback((): void => {
+    const el = containerRef.current
+    if (!el) return
+    const virtualIndices = rowVirtualizerRef.current?.getVirtualItems().map((item) => item.index) ?? []
+    flowAnchorRef.current = captureScrollAnchor(el, flowStartIndexRef.current, virtualIndices)
+  }, [])
+
+  const handleScroll = useCallback(
+    (scrollTop: number) => {
+      const el = containerRef.current
+      const prevTop = lastScrollTopRef.current
+      lastScrollTopRef.current = scrollTop
+      if (el && !programmaticScrollRef.current) {
+        const dist = distanceFromBottom(el)
+        const near = dist <= nearBottomPxRef.current
+        let pinned = pinnedToBottomRef.current
+        if (near) {
+          pinned = true
+        } else if (
+          pinned &&
+          dist <= FOLLOW_LAG_PX &&
+          scrollTop >= prevTop
+        ) {
+          // Stale follow: scrollTop moved toward the tail but height grew first.
+          pinned = true
+        } else {
+          pinned = false
+        }
+        pinnedToBottomRef.current = pinned
+        restorePendingRef.current = false
+        setIsUnpinned((prev) => (prev === !pinned ? prev : !pinned))
+        recordScrollAnchor()
+        scrollBeforeLayoutChangeRef.current = el.scrollTop
+      }
+      if (!programmaticScrollRef.current) {
+        onScrollTopChange?.(scrollTop)
+      }
+    },
+    [onScrollTopChange, recordScrollAnchor]
+  )
 
   const remasureMountedRows = useCallback(() => {
     const root = containerRef.current
@@ -913,24 +1527,75 @@ export function MessageList({
     remasureMountedRows()
   }, [displayRows.length, scrollRestored, shouldVirtualize, remasureMountedRows])
 
-  // Flow → virtualized flip: keep the topmost visible row at the same offset so
-  // an unpinned reader does not jump when estimates replace real heights.
-  const wasVirtualizingRef = useRef(false)
+  const restoreScrollAfterLayoutChange = useCallback(
+    (mode: TranscriptLayoutMode): void => {
+      const el = containerRef.current
+      if (!el) return
+      programmaticScrollRef.current = true
+      const savedTop = scrollBeforeLayoutChangeRef.current
+      const bottomTop = Math.max(0, el.scrollHeight - el.clientHeight)
+      const wasAtBottom =
+        savedTop > 0
+          ? savedTop >= bottomTop - nearBottomPxRef.current
+          : distanceFromBottom(el) <= nearBottomPxRef.current
+      if (wasAtBottom) {
+        el.scrollTop = el.scrollHeight
+        pinnedToBottomRef.current = true
+      } else if (mode === 'full-virtual') {
+        if (!wasAtBottom && savedTop > 0) {
+          pendingFullVirtualScrollRef.current = savedTop
+          remasureMountedRows()
+          rowVirtualizer.scrollToOffset(savedTop)
+        } else {
+          const anchor = flowAnchorRef.current
+          if (anchor) {
+            remasureMountedRows()
+            rowVirtualizer.scrollToIndex(anchor.index, { align: 'start' })
+            el.scrollTop += anchor.offsetPx
+          } else if (savedTop > 0) {
+            el.scrollTop = savedTop
+          }
+        }
+      } else if (savedTop > 0) {
+        el.scrollTop = savedTop
+        pinnedToBottomRef.current = false
+      }
+      window.requestAnimationFrame(() => {
+        programmaticScrollRef.current = false
+      })
+    },
+    [remasureMountedRows, rowVirtualizer]
+  )
+
   useLayoutEffect(() => {
-    const turnedOn = shouldVirtualize && !wasVirtualizingRef.current
-    wasVirtualizingRef.current = shouldVirtualize
-    if (!turnedOn || pinnedToBottomRef.current) return
-    const anchor = flowAnchorRef.current
-    if (!anchor) return
-    remasureMountedRows()
-    programmaticScrollRef.current = true
-    rowVirtualizer.scrollToIndex(anchor.index, { align: 'start' })
+    const prevMode = prevLayoutModeRef.current
+    const mode = layoutMode
+    if (prevMode !== mode) {
+      restoreScrollAfterLayoutChange(mode)
+    }
+    prevLayoutModeRef.current = mode
+  }, [layoutMode, restoreScrollAfterLayoutChange])
+
+  useLayoutEffect(() => {
+    if (!useFullVirtualize) return
+    const saved = pendingFullVirtualScrollRef.current
+    if (saved == null || saved <= 0) return
     const el = containerRef.current
-    if (el) el.scrollTop += anchor.offsetPx
+    if (!el) return
+    const bottomTop = Math.max(0, el.scrollHeight - el.clientHeight)
+    if (saved >= bottomTop - nearBottomPxRef.current) {
+      pendingFullVirtualScrollRef.current = null
+      return
+    }
+    programmaticScrollRef.current = true
+    remasureMountedRows()
+    el.scrollTop = saved
+    rowVirtualizer.scrollToOffset(saved)
+    pendingFullVirtualScrollRef.current = null
     window.requestAnimationFrame(() => {
       programmaticScrollRef.current = false
     })
-  }, [shouldVirtualize, remasureMountedRows, rowVirtualizer])
+  }, [useFullVirtualize, remasureMountedRows, rowVirtualizer])
 
   useLayoutEffect(() => {
     if (!shouldVirtualize) return
@@ -939,27 +1604,48 @@ export function MessageList({
 
   useLayoutEffect(() => {
     if (!scrollRestored || displayRows.length === 0) return
-    if (restoreScrollTop && restoreScrollTop > 0) return
+    // Honor explicit restore only when the reader is not pinned to the tail.
+    if (typeof restoreScrollTop === 'number' && !pinnedToBottomRef.current) return
     if (shouldVirtualize) {
       // Remasure visible rows first so end scroll uses real heights, not cold estimates.
       remasureMountedRows()
     }
-    // Scroll to scrollHeight (includes paddingBottom when reserved). Avoid
-    // virtualizer scrollToEnd — it aligns to the client bottom and can undershoot
-    // when padding is reserved. Do not use followTail here: it sets
-    // programmaticScrollRef and can swallow the user's immediate unpin scroll.
-    // Only force the pin when the user is already at the tail — shouldVirtualize
-    // can flip long after mount and must not yank a scrolled-up reader down.
     const el = containerRef.current
     if (el && pinnedToBottomRef.current) {
-      el.scrollTop = el.scrollHeight
-      pinnedToBottomRef.current = true
+      const saved = scrollBeforeLayoutChangeRef.current
+      const bottomTop = Math.max(0, el.scrollHeight - el.clientHeight)
+      const atBottom =
+        distanceFromBottom(el) <= nearBottomPxRef.current ||
+        saved >= bottomTop - nearBottomPxRef.current
+      if (atBottom) {
+        el.scrollTop = el.scrollHeight
+        pinnedToBottomRef.current = true
+      }
     }
     // Pin once after restore/surface — followOnAppend handles stream growth.
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot pin
   }, [scrollRestored, scrollRestoreToken, shouldVirtualize])
 
-  const renderRow = (row: TranscriptRow): ReactNode => (
+  const renderRow = (row: TranscriptRow): ReactNode => {
+    const footerSpan =
+      row.kind === 'text' && row.final
+        ? footerTurnSpan(
+            allRows,
+            row.turnIndex,
+            row.item,
+            activeLiveTurnIndex != null && row.turnIndex === activeLiveTurnIndex,
+            row.turnIndex === latestTurnIndex ? turnStatus : null
+          )
+        : null
+    const closingAnswer = turnHasClosingAnswer(allRows, row.turnIndex)
+    const liveTurn = activeLiveTurnIndex != null && row.turnIndex === activeLiveTurnIndex
+    const rowUsage =
+      row.kind === 'turn' || (row.kind === 'text' && row.final)
+        ? row.kind === 'turn' && !liveTurn && closingAnswer
+          ? null
+          : (resolvedTurnUsage?.[row.turnIndex] ?? null)
+        : null
+    return (
     <TranscriptRowBlock
       row={row}
       onImageClick={onImageClick}
@@ -970,15 +1656,16 @@ export function MessageList({
       onTurnToggle={handleTurnToggle}
       onApprovalDecision={onApprovalDecision}
       onQuestionSubmit={onQuestionSubmit}
+      autoFocusApproval={approvalAutoFocus}
       turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
       showThinking={showThinking}
       live={activeLiveTurnIndex != null && row.turnIndex === activeLiveTurnIndex}
-      keepOpen={lastTurnIndex >= 0 && row.turnIndex === lastTurnIndex}
       suppressPhaseLabel={
         row.kind === 'turn' &&
         row.span.active === true &&
         !collapsedTurnSet.has(row.turnIndex) &&
-        turnHasVisibleToolWork(allRows, row.turnIndex)
+        turnHasVisibleToolWork(allRows, row.turnIndex) &&
+        !compacting
       }
       mcpServerNames={mcpServerNames}
       onOpenChanges={onOpenChanges}
@@ -989,17 +1676,79 @@ export function MessageList({
       messageCount={messageCount}
       running={running}
       pendingRun={pendingRun}
+      showTasksBand={
+        row.kind === 'user' && tasksAnchorUserId != null && row.item.id === tasksAnchorUserId
+      }
+      citationCatalog={citationCatalogs.get(row.turnIndex) ?? EMPTY_CITATION_CATALOG}
+      footerStartedAt={footerSpan?.startedAt ?? null}
+      footerEndedAt={footerSpan?.endedAt ?? null}
+      footerActive={footerSpan?.active ?? false}
+      footerStatus={footerSpan?.status ?? null}
+      footerUsage={rowUsage}
+      footerOmitReceipt={Boolean(
+        (footerSpan?.hasTurnSummary && footerSpan.active) ||
+          (footerSpan?.status != null && footerSpan.status !== 'done')
+      )}
+      footerOmitDuration={Boolean(
+        (footerSpan?.hasTurnSummary && footerSpan.active) ||
+          (footerSpan?.status != null && footerSpan.status !== 'done')
+      )}
     />
-  )
+    )
+  }
 
   return (
     <>
       <div className="flex min-h-0 flex-1 flex-col">
+        {findOpen ? (
+          <div className="flex shrink-0 items-center gap-1.5 border-b border-border/40 px-3 py-1">
+            <Icon name="search" size={12} className="shrink-0 text-muted" />
+            <input
+              ref={findInputRef}
+              type="search"
+              data-transcript-find=""
+              value={findQuery}
+              onChange={(e) => setFindQuery(e.target.value)}
+              placeholder="Find in transcript"
+              aria-label="Find in transcript"
+              className="min-w-0 flex-1 bg-transparent text-caption text-fg outline-none placeholder:text-muted"
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  e.stopPropagation()
+                  closeTranscriptFind()
+                  return
+                }
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  stepFindMatch(e.shiftKey ? -1 : 1)
+                }
+              }}
+            />
+            {findQuery.trim() ? (
+              <span className="shrink-0 tabular-nums text-2xs text-muted">
+                {findMatches.length === 0
+                  ? 'No matches'
+                  : `${wrapMatchIndex(matchIndex, findMatches.length) + 1} of ${findMatches.length}`}
+              </span>
+            ) : null}
+            <button
+              type="button"
+              className="rounded px-1 text-2xs text-muted hover:text-fg"
+              aria-label="Close find"
+              onClick={closeTranscriptFind}
+            >
+              Esc
+            </button>
+          </div>
+        ) : null}
         <div
           ref={containerRef}
           data-transcript-scroll
           className={cn(
-            'relative min-h-0 flex-1 overflow-auto pt-4 [scrollbar-gutter:stable]',
+            TRANSCRIPT_CONTAINER,
+            'relative min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable]',
+            CHAT_STAGE_TOP_INSET,
             sideRailPad ? CHAT_STAGE_INSET : CHAT_GUTTER
           )}
           onScroll={(e) => handleScroll(e.currentTarget.scrollTop)}
@@ -1008,6 +1757,14 @@ export function MessageList({
         >
           <div className="sr-only" role="status" aria-live="polite">
             {streamingAnnouncement}
+          </div>
+          <div
+            className="sr-only"
+            role="status"
+            aria-live="polite"
+            data-live-receipt-announcement
+          >
+            {liveReceiptAnnouncement}
           </div>
           {transcriptLoading && items.length === 0 ? (
             <div
@@ -1023,7 +1780,7 @@ export function MessageList({
             </div>
           ) : (
             (() => {
-              // Short transcripts: normal flow — no absolute translateY collision risk.
+              // Short transcripts: normal flow — no absolute top collision risk.
               // Long transcripts / Vitest empty-range: virtualize or full-DOM test fallback.
               const virtualItems = shouldVirtualize ? rowVirtualizer.getVirtualItems() : []
               const allowFullFallback =
@@ -1050,6 +1807,26 @@ export function MessageList({
                   </div>
                 ) : null
 
+              const liveCompactCard = displayRows.some(
+                (row) =>
+                  row.kind === 'compaction' &&
+                  (row.verifyStatus === 'verifying' || row.verifyStatus === 'retrying')
+              )
+              const hasCompactionRow = displayRows.some((row) => row.kind === 'compaction')
+              const compactStatus =
+                compacting && !live && !liveCompactCard && !hasCompactionRow ? (
+                  <div className={cn('flex w-full flex-col', CHAT_COLUMN)} data-compact-status>
+                    <div
+                      className={cn(DISCLOSURE_ROW, 'text-tertiary', TRANSCRIPT_ROW_GAP)}
+                      role="status"
+                    >
+                      <TextShimmer className="shrink-0">
+                        {formatRunActivityLabel(compactActivityFromRows(allRows))}
+                      </TextShimmer>
+                    </div>
+                  </div>
+                ) : null
+
               if (useFlowLayout) {
                 return (
                   <>
@@ -1058,13 +1835,19 @@ export function MessageList({
                       {displayRows.map((row, index) => (
                         <div
                           key={row.id}
+                          data-transcript-row={index}
+                          data-find-current={currentFindRow === index ? '' : undefined}
                           id={turnWorkPanelId(row, displayRows, index)}
-                          className={rowSpacingClass(row, displayRows[index + 1])}
+                          className={cn(
+                            rowSpacingClass(row, displayRows[index + 1]),
+                            currentFindRow === index && 'rounded-md ring-1 ring-accent/40'
+                          )}
                         >
                           {renderRow(row)}
                         </div>
                       ))}
                     </div>
+                    {compactStatus}
                   </>
                 )
               }
@@ -1083,13 +1866,19 @@ export function MessageList({
                           <div
                             key={virtualItem.key}
                             data-index={virtualItem.index}
+                            data-transcript-row={virtualItem.index}
+                            data-find-current={
+                              currentFindRow === virtualItem.index ? '' : undefined
+                            }
                             ref={rowVirtualizer.measureElement}
                             id={turnWorkPanelId(row, displayRows, virtualItem.index)}
                             className={cn(
-                              'absolute left-0 top-0 w-full',
-                              rowSpacingClass(row, displayRows[virtualItem.index + 1])
+                              'absolute left-0 w-full',
+                              rowSpacingClass(row, displayRows[virtualItem.index + 1]),
+                              currentFindRow === virtualItem.index &&
+                                'rounded-md ring-1 ring-accent/40'
                             )}
-                            style={{ transform: `translateY(${virtualItem.start}px)` }}
+                            style={{ top: `${virtualItem.start}px` }}
                           >
                             {renderRow(row)}
                           </div>
@@ -1102,14 +1891,20 @@ export function MessageList({
                         return (
                           <div
                             key={row.id}
+                            data-transcript-row={index}
+                            data-find-current={currentFindRow === index ? '' : undefined}
                             id={turnWorkPanelId(row, displayRows, index)}
-                            className={rowSpacingClass(row, displayRows[index + 1])}
+                            className={cn(
+                              rowSpacingClass(row, displayRows[index + 1]),
+                              currentFindRow === index && 'rounded-md ring-1 ring-accent/40'
+                            )}
                           >
                             {renderRow(row)}
                           </div>
                         )
                       })}
                     </div>
+                    {compactStatus}
                   </>
                 )
               }
@@ -1127,19 +1922,26 @@ export function MessageList({
                         <div
                           key={virtualItem.key}
                           data-index={virtualItem.index}
+                          data-transcript-row={virtualItem.index}
+                          data-find-current={
+                            currentFindRow === virtualItem.index ? '' : undefined
+                          }
                           ref={rowVirtualizer.measureElement}
                           id={turnWorkPanelId(row, displayRows, virtualItem.index)}
                           className={cn(
-                            'absolute left-0 top-0 w-full',
-                            rowSpacingClass(row, displayRows[virtualItem.index + 1])
+                            'absolute left-0 w-full',
+                            rowSpacingClass(row, displayRows[virtualItem.index + 1]),
+                            currentFindRow === virtualItem.index &&
+                              'rounded-md ring-1 ring-accent/40'
                           )}
-                          style={{ transform: `translateY(${virtualItem.start}px)` }}
+                          style={{ top: `${virtualItem.start}px` }}
                         >
                           {renderRow(row)}
                         </div>
                       )
                     })}
                   </div>
+                  {compactStatus}
                 </>
               )
             })()
@@ -1152,11 +1954,16 @@ export function MessageList({
               <button
                 type="button"
                 onClick={jumpToBottom}
-                aria-label="Jump to latest messages"
+                aria-label={
+                  unpinnedNewCount > 0
+                    ? `Jump to latest messages, ${unpinnedNewCount} new`
+                    : 'Jump to latest messages'
+                }
+                title="Jump to latest (End)"
                 className="pointer-events-auto inline-flex -translate-y-full items-center gap-1.5 rounded-full border border-border bg-surface px-2.5 py-1.5 text-caption text-secondary shadow-md vy-transition hover:bg-surface-2 hover:text-fg"
               >
                 <Icon name="chevron" size={12} />
-                Latest
+                {unpinnedNewCount > 0 ? `Latest · ${unpinnedNewCount}` : 'Latest'}
               </button>
             </div>
           ) : null}

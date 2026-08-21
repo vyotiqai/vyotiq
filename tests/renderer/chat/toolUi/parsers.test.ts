@@ -4,7 +4,7 @@ import { parseListDirData } from '@renderer/features/chat/toolUi/parsers/listDir
 import { parseGlobData } from '@renderer/features/chat/toolUi/parsers/glob'
 import { parseSearchData } from '@renderer/features/chat/toolUi/parsers/search'
 import { parseDeleteData } from '@renderer/features/chat/toolUi/parsers/delete'
-import { parseTodoData } from '@renderer/features/chat/toolUi/parsers/todo'
+import { parseTodoData, parseTodosJson, pickCurrentTask } from '@renderer/features/chat/toolUi/parsers/todo'
 import { parseWebSearchData } from '@renderer/features/chat/toolUi/parsers/webSearch'
 import { parseGitCommitData, parseGitDiffData, parseGitStatusData } from '@renderer/features/chat/toolUi/parsers/git'
 import {
@@ -17,6 +17,8 @@ import { parseMcpIntrospectData } from '@renderer/features/chat/toolUi/parsers/m
 import { parseMcpPinData } from '@renderer/features/chat/toolUi/parsers/mcpPin'
 import { parseSkillData } from '@renderer/features/chat/toolUi/parsers/skill'
 import { parseStatusMessageData } from '@renderer/features/chat/toolUi/parsers/status'
+import { parseCodebaseSearchData } from '@renderer/features/chat/toolUi/parsers/codebaseSearch'
+import { parseMemoryListData } from '@renderer/features/chat/toolUi/parsers/memory'
 import type { UiToolRow } from '@shared/transcript'
 
 function tool(overrides: Partial<UiToolRow> & Pick<UiToolRow, 'name'>): UiToolRow {
@@ -34,6 +36,21 @@ describe('grep parser', () => {
     )
     expect(data.matchCount).toBeGreaterThan(0)
     expect(data.groups[0]?.file).toBe('src/a.ts')
+  })
+
+  it('merges simple file:line hits into one group per file', () => {
+    const data = parseGrepData(
+      tool({
+        name: 'grep',
+        argsPreview: JSON.stringify({ pattern: 'alpha' }),
+        content: 'src/a.ts:1: alpha\nsrc/a.ts:3: alpha again\nsrc/b.ts:2: alpha\nindex=trigram'
+      })
+    )
+    expect(data.groups).toHaveLength(2)
+    expect(data.groups[0]?.file).toBe('src/a.ts')
+    expect(data.groups[0]?.matches).toHaveLength(2)
+    expect(data.groups[1]?.file).toBe('src/b.ts')
+    expect(data.matchCount).toBe(3)
   })
 })
 
@@ -59,6 +76,29 @@ describe('list_dir parser', () => {
       })
     )
     expect(data.entries[0]?.size).toBe('1K')
+  })
+})
+
+describe('memory parser', () => {
+  it('parses memory section headings case-insensitively', () => {
+    const data = parseMemoryListData(
+      tool({
+        name: 'memory_list',
+        content: [
+          '## INDEX.MD (excerpt)',
+          'Saved context',
+          '',
+          '## NOTES/',
+          '- Keep the release note',
+          '',
+          'STATE.MD: present'
+        ].join('\n')
+      })
+    )
+
+    expect(data.indexExcerpt).toBe('Saved context')
+    expect(data.notes).toEqual(['Keep the release note'])
+    expect(data.hasState).toBe(true)
   })
 })
 
@@ -142,6 +182,78 @@ describe('todo parser', () => {
     expect(data.items).toHaveLength(2)
     expect(data.items[1]?.status).toBe('completed')
   })
+
+  it('parses todos.json for the Tasks dock', () => {
+    const data = parseTodosJson(
+      JSON.stringify({
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        todos: [
+          { id: '1', content: 'Map project', status: 'completed' },
+          { id: '2', content: 'Run tests', status: 'in_progress' }
+        ]
+      })
+    )
+    expect(data?.total).toBe(2)
+    expect(data?.done).toBe(1)
+    expect(data?.items[1]).toMatchObject({ id: '2', status: 'in_progress', content: 'Run tests' })
+  })
+
+  it('rejects invalid todos.json', () => {
+    expect(parseTodosJson('not-json')).toBeNull()
+    expect(parseTodosJson('{"todos":"nope"}')).toBeNull()
+  })
+
+  it('picks the in-progress task as current', () => {
+    expect(
+      pickCurrentTask([
+        { id: '1', content: 'Done', status: 'completed' },
+        { id: '2', content: 'Now', status: 'in_progress' },
+        { id: '3', content: 'Later', status: 'pending' }
+      ])?.content
+    ).toBe('Now')
+  })
+
+  it('parses ids from serialized checklist lines', () => {
+    const data = parseTodoData(
+      tool({
+        name: 'todo_write',
+        content: '1/2 complete\n[ ] (a) First\n[x] (b) Second'
+      })
+    )
+    expect(data.items[0]).toMatchObject({ id: 'a', status: 'pending', content: 'First' })
+    expect(data.items[1]).toMatchObject({ id: 'b', status: 'completed', content: 'Second' })
+  })
+
+  it('finds progress after a coerce notice and parses all markers', () => {
+    const data = parseTodoData(
+      tool({
+        name: 'todo_write',
+        content: [
+          'Note: only one task may be in_progress; demoted 1 to pending (kept 2).',
+          '1/4 complete',
+          '[ ] First',
+          '[~] Second',
+          '[x] Third',
+          '[-] Fourth'
+        ].join('\n')
+      })
+    )
+    expect(data.done).toBe(1)
+    expect(data.total).toBe(4)
+    expect(data.items.map((item) => item.status)).toEqual([
+      'pending',
+      'in_progress',
+      'completed',
+      'cancelled'
+    ])
+  })
+
+  it('returns empty items for blank content', () => {
+    const data = parseTodoData(tool({ name: 'todo_write', content: '' }))
+    expect(data.done).toBe(0)
+    expect(data.total).toBe(0)
+    expect(data.items).toEqual([])
+  })
 })
 
 describe('web_search parser', () => {
@@ -223,6 +335,35 @@ describe('git parsers', () => {
     expect(data.lines.some((l) => l.kind === 'add')).toBe(true)
   })
 
+  it('caps git_diff parse at 201 lines', () => {
+    const body = Array.from({ length: 300 }, (_, i) => `+line ${i}`).join('\n')
+    const data = parseGitDiffData(
+      tool({
+        name: 'git_diff',
+        content: `@@ -0,0 +1,300 @@\n${body}`
+      })
+    )
+    expect(data.lines.length).toBe(201)
+    expect(data.added).toBe(300)
+  })
+
+  it('recovers git_diff path from unified headers when args omit path', () => {
+    const data = parseGitDiffData(
+      tool({
+        name: 'git_diff',
+        content: [
+          'diff --git a/src/App.tsx b/src/App.tsx',
+          '--- a/src/App.tsx',
+          '+++ b/src/App.tsx',
+          '@@ -1 +1 @@',
+          '-old',
+          '+new'
+        ].join('\n')
+      })
+    )
+    expect(data.path).toBe('src/App.tsx')
+  })
+
   it('parses git_commit message and flags from args/content', () => {
     const data = parseGitCommitData(
       tool({
@@ -252,6 +393,21 @@ describe('git parsers', () => {
 })
 
 describe('browser parsers', () => {
+  it('does not infer snapshot path when screenshot capture failed', () => {
+    const data = parseBrowserSnapshotData(
+      tool({
+        name: 'browser_snapshot',
+        content: [
+          'URL: https://example.com',
+          'Title: Example',
+          '[Screenshot capture failed: timeout]'
+        ].join('\n')
+      })
+    )
+    expect(data.screenshotNote).toContain('capture failed')
+    expect(data.screenshotPath).toBe('')
+  })
+
   it('parses browser_snapshot refs and body', () => {
     const data = parseBrowserSnapshotData(
       tool({
@@ -304,6 +460,31 @@ describe('browser parsers', () => {
     })
   })
 
+  it('parses legacy browser snapshot refs and keeps page text separate', () => {
+    const data = parseBrowserSnapshotData(
+      tool({
+        name: 'browser_snapshot',
+        content: [
+          'URL: https://example.com',
+          'tl 2 refs',
+          'Showing truncated preview...',
+          '@e1 link Skip to main content',
+          '@e2 textbox Search this site',
+          '',
+          'About this page',
+          'Page text remains readable.'
+        ].join('\n')
+      })
+    )
+    expect(data.refs).toEqual([
+      { id: 'e1', role: 'link', name: 'Skip to main content', css: '' },
+      { id: 'e2', role: 'textbox', name: 'Search this site', css: '' }
+    ])
+    expect(data.body).toContain('About this page')
+    expect(data.body).toContain('Page text remains readable.')
+    expect(data.body).not.toContain('@e1')
+  })
+
   it('parses browser_tabs list rows', () => {
     const data = parseBrowserTabsData(
       tool({
@@ -316,6 +497,25 @@ describe('browser parsers', () => {
     expect(data.tabs).toEqual([
       { id: 't1', title: 'Example', url: 'https://example.com' },
       { id: 't2', title: '(untitled)', url: '(blank)' }
+    ])
+  })
+
+  it('parses tab-delimited browser_tabs rows and titles with double spaces', () => {
+    const data = parseBrowserTabsData(
+      tool({
+        name: 'browser_tabs',
+        argsPreview: JSON.stringify({ action: 'list' }),
+        content: [
+          '* tid-1\tDocs  Home\thttps://docs.example/home',
+          '  tid-2\t(untitled)\t(blank)',
+          '* legacy  Title  with  spaces  https://legacy.example'
+        ].join('\n')
+      })
+    )
+    expect(data.tabs).toEqual([
+      { id: 'tid-1', title: 'Docs  Home', url: 'https://docs.example/home' },
+      { id: 'tid-2', title: '(untitled)', url: '(blank)' },
+      { id: 'legacy', title: 'Title  with  spaces', url: 'https://legacy.example' }
     ])
   })
 
@@ -343,6 +543,36 @@ describe('browser parsers', () => {
     expect(data.target).toBe('agent browser SSRF')
   })
 
+  it('parses browser_search navigate+snapshot payload as structured snapshot', () => {
+    const data = parseBrowserSnapshotData(
+      tool({
+        name: 'browser_search',
+        argsPreview: JSON.stringify({ query: 'exFAT BootChecksum' }),
+        content: [
+          'Navigated to https://duckduckgo.com/?q=exFAT',
+          'Title: exFAT at DuckDuckGo',
+          'tab_id: tab-1',
+          '',
+          'URL: https://duckduckgo.com/?q=exFAT',
+          'Title: exFAT at DuckDuckGo',
+          'tab_id: tab-1',
+          'Viewport: 1280x720',
+          '',
+          'Interactive elements (use @eN with browser_click / browser_type):',
+          '- @e1 role="link" name="Home" css="#logo"',
+          '- @e2 role="link" name="Result" css="ol > li:nth-of-type(1) > a"',
+          '',
+          'Search result snippet about BootChecksum'
+        ].join('\n')
+      })
+    )
+    expect(data.url).toBe('https://duckduckgo.com/?q=exFAT')
+    expect(data.message).toMatch(/^Navigated to/)
+    expect(data.refs).toHaveLength(2)
+    expect(data.refs[0]?.id).toBe('e1')
+    expect(data.body).toContain('BootChecksum')
+  })
+
   it('parses browser_wait_for_url match as target', () => {
     const data = parseBrowserActionData(
       tool({
@@ -352,6 +582,18 @@ describe('browser parsers', () => {
       })
     )
     expect(data.target).toBe('example.com/ready')
+  })
+
+  it('marks ERR_CONNECTION_REFUSED navigate content as failed', () => {
+    const data = parseBrowserActionData(
+      tool({
+        name: 'browser_navigate',
+        argsPreview: JSON.stringify({ url: 'http://localhost:3000/' }),
+        content: "ERR_CONNECTION_REFUSED (-102) loading 'http://localhost:3000/'"
+      })
+    )
+    expect(data.failed).toBe(true)
+    expect(data.target).toBe('http://localhost:3000/')
   })
 })
 
@@ -390,7 +632,44 @@ describe('mcp introspect parser', () => {
     expect(data.kind).toBe('tools')
     expect(data.tools).toHaveLength(2)
     expect(data.tools[0]?.readOnly).toBe(true)
+    expect(data.tools[0]?.omitted).toBe(false)
     expect(data.tools[1]?.readOnly).toBe(false)
+    expect(data.tools[1]?.omitted).toBe(false)
+  })
+
+  it('parses omitted-from-catalog markers without dropping the row', () => {
+    const data = parseMcpIntrospectData(
+      tool({
+        name: 'mcp_list_tools',
+        content: [
+          '- mcp__filesystem__read_file readOnlyHint=true [omitted from this step catalog]: DEPRECATED: Use read_text_file instead.',
+          '- mcp__sequential-thinking__sequentialthinking [omitted from this step catalog]: Reflect'
+        ].join('\n')
+      })
+    )
+    expect(data.tools).toHaveLength(2)
+    expect(data.message).toBe('')
+    expect(data.tools[0]).toEqual({
+      name: 'mcp__filesystem__read_file',
+      readOnly: true,
+      omitted: true,
+      description: 'DEPRECATED: Use read_text_file instead.'
+    })
+    expect(data.tools[1]?.omitted).toBe(true)
+    expect(data.tools[1]?.readOnly).toBeNull()
+  })
+
+  it('parses a collapsed single-line mcp_list_tools dump', () => {
+    const data = parseMcpIntrospectData(
+      tool({
+        name: 'mcp_list_tools',
+        content:
+          '- mcp__filesystem__read_file readOnlyHint=true [omitted from this step catalog]: Read a file - mcp__filesystem__write_file [omitted from this step catalog]: Write'
+      })
+    )
+    expect(data.tools).toHaveLength(2)
+    expect(data.tools[0]?.name).toBe('mcp__filesystem__read_file')
+    expect(data.tools[1]?.name).toBe('mcp__filesystem__write_file')
   })
 
   it('parses mcp_list_resources bracket rows', () => {
@@ -490,6 +769,73 @@ describe('status message parser', () => {
     expect(data.chip).toBe('Answered')
     expect(data.answers).toEqual(['Mode?: Ask', 'Continue?: Yes'])
   })
+
+  it('chips Invalid arguments for Zod-style ask_question errors (T1)', () => {
+    const data = parseStatusMessageData(
+      tool({
+        name: 'ask_question',
+        status: 'fail',
+        content: 'questions: Expected array, received string'
+      })
+    )
+    expect(data.chip).toBe('Invalid arguments')
+    expect(data.message).toContain('Expected array')
+  })
+
+  it('chips Timed out for dismissed ask_question (T1)', () => {
+    const data = parseStatusMessageData(
+      tool({
+        name: 'ask_question',
+        status: 'done',
+        content:
+          'Question timed out or was dismissed without answers. Continue with a reasonable default.'
+      })
+    )
+    expect(data.chip).toBe('Timed out')
+  })
+
+  it('chips Skipped for autonomous ask_question skip', () => {
+    const data = parseStatusMessageData(
+      tool({
+        name: 'ask_question',
+        status: 'done',
+        content: 'Question skipped (autonomous mode). Continue with a reasonable default.'
+      })
+    )
+    expect(data.chip).toBe('Skipped')
+    expect(data.message).toMatch(/autonomous mode/i)
+  })
+
+  it('chips Invalid arguments for empty questions[] and required-field errors', () => {
+    const empty = parseStatusMessageData(
+      tool({
+        name: 'ask_question',
+        status: 'fail',
+        content: 'questions must contain at least 1 item. Pass questions: [{ id, prompt, type... }]...'
+      })
+    )
+    expect(empty.chip).toBe('Invalid arguments')
+
+    const required = parseStatusMessageData(
+      tool({
+        name: 'ask_question',
+        status: 'fail',
+        content: 'question or questions is required. Pass questions: [{ id, prompt, type... }]'
+      })
+    )
+    expect(required.chip).toBe('Invalid arguments')
+  })
+
+  it('chips Interrupted for interrupted ask_question (T2)', () => {
+    const data = parseStatusMessageData(
+      tool({
+        name: 'ask_question',
+        status: 'fail',
+        content: 'Interrupted'
+      })
+    )
+    expect(data.chip).toBe('Interrupted')
+  })
 })
 
 describe('skill parser', () => {
@@ -566,7 +912,7 @@ describe('mcp pin/release parser', () => {
           'Pinned for next step (2): mcp__gh__list_issues, mcp__gh__create_issue',
           'Already pinned: mcp__gh__get_issue',
           'Unknown / unresolved: nope',
-          'Definitions are append-admitted into the sticky catalog on the next model step (prior tool order kept). Idle pins may later unload (TTL / soft max); call release_mcp_tools when done.'
+          'Definitions are append-admitted into the sticky catalog on the next model step (prior tool order kept). Call release_mcp_tools when finished so schema tokens are not paid every later step.'
         ].join('\n')
       })
     )
@@ -627,6 +973,25 @@ describe('mcp pin/release parser', () => {
     expect(release.noneMessage).toBe('No pinned tools released.')
   })
 
+  it('parses live no-op output with server notes and optional-pin footer', () => {
+    const data = parseMcpPinData(
+      tool({
+        name: 'request_mcp_tools',
+        argsPreview: JSON.stringify({ serverId: 'missing-server' }),
+        content: [
+          'No new tools pinned.',
+          'No connected MCP tools for serverId=missing-server.',
+          'Connected MCP tools are already in the step catalog. Pins are optional bookkeeping; call release_mcp_tools when finished.'
+        ].join('\n')
+      })
+    )
+    expect(data.filter).toBe('missing-server')
+    expect(data.noneMessage).toBe('No new tools pinned.')
+    expect(data.note).toMatch(/No connected MCP tools for serverId=missing-server/)
+    expect(data.note).toMatch(/optional bookkeeping/)
+    expect(data.message).toBe('')
+  })
+
   it('falls back to raw text for failures and unknown line formats', () => {
     const data = parseMcpPinData(
       tool({
@@ -642,5 +1007,62 @@ describe('mcp pin/release parser', () => {
       tool({ name: 'release_mcp_tools', content: 'some totally new output format' })
     )
     expect(unknown.message).toBe('some totally new output format')
+  })
+})
+
+describe('codebase_search parser', () => {
+  it('parses header model/fallback and hit paths (not SearchBody format)', () => {
+    const data = parseCodebaseSearchData(
+      tool({
+        name: 'codebase_search',
+        summary: 'where is auth validated',
+        argsPreview: JSON.stringify({ query: 'where is auth validated' }),
+        content: [
+          'index: 2 chunks / 1 files · model=local-hash-v1 · fallback=hash · hits=1',
+          '',
+          '1. src/auth.ts:1-8 [function validateAuthToken] score=0.5000',
+          'export function validateAuthToken(t: string) {',
+          '  return t.length > 0',
+          '}'
+        ].join('\n')
+      })
+    )
+    expect(data.query).toBe('where is auth validated')
+    expect(data.modelId).toBe('local-hash-v1')
+    expect(data.fallbackHash).toBe(true)
+    expect(data.hits).toHaveLength(1)
+    expect(data.hits[0]?.path).toBe('src/auth.ts')
+    expect(data.hits[0]?.name).toBe('validateAuthToken')
+    expect(data.hits[0]?.snippet).toContain('export function validateAuthToken')
+  })
+
+  it('returns empty hits when tool reports no matches', () => {
+    const data = parseCodebaseSearchData(
+      tool({
+        name: 'codebase_search',
+        content: 'index: 0 chunks / 0 files · model=local-hash-v1 · fallback=hash · hits=0\n\nNo codebase_search hits.'
+      })
+    )
+    expect(data.hits).toHaveLength(0)
+    expect(data.fallbackHash).toBe(true)
+  })
+
+  it('still parses fallback=hash when the neural-unavailable sentence is present', () => {
+    const data = parseCodebaseSearchData(
+      tool({
+        name: 'codebase_search',
+        content: [
+          'index: 2 chunks / 1 files · model=local-hash-v1 · fallback=hash · hits=1',
+          'Neural embeddings are unavailable; hits are lexical/hash only (not dense semantic search).',
+          '',
+          '1. src/auth.ts:1-8 [function validateAuthToken] score=0.5000',
+          'export function validateAuthToken(t: string) { return t.length > 0 }'
+        ].join('\n')
+      })
+    )
+    expect(data.fallbackHash).toBe(true)
+    expect(data.modelId).toBe('local-hash-v1')
+    expect(data.hits).toHaveLength(1)
+    expect(data.hits[0]?.path).toBe('src/auth.ts')
   })
 })

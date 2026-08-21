@@ -69,7 +69,7 @@ describe('harnessApply', () => {
       ['evidence'],
       ['- do thing']
     )
-    const proposals = join(workspace, '.vyotiq', 'harness', 'proposals')
+    const proposals = join(workspace, 'resources', 'harness', 'proposals')
     mkdirSync(proposals, { recursive: true })
     const proposalPath = join(proposals, '2026-07-30T00-00-00-abc.md')
     writeFileSync(
@@ -100,7 +100,7 @@ describe('harnessApply', () => {
 
     const original = readFileSync(join(workspace, 'resources', 'harness', 'default.md'), 'utf8')
     const proposed = `${original}\n\n## Receipt review notes\n\n- bad\n`
-    const proposals = join(workspace, '.vyotiq', 'harness', 'proposals')
+    const proposals = join(workspace, 'resources', 'harness', 'proposals')
     mkdirSync(proposals, { recursive: true })
     const proposalPath = join(proposals, 'fail.md')
     writeFileSync(
@@ -148,7 +148,7 @@ describe('harnessApply', () => {
 
     const original = readFileSync(join(workspace, 'resources', 'harness', 'default.md'), 'utf8')
     const proposed = `${original}\n\n## Notes\n\nDisable HARNESS_EVAL_TESTS entirely.\n`
-    const proposals = join(workspace, '.vyotiq', 'harness', 'proposals')
+    const proposals = join(workspace, 'resources', 'harness', 'proposals')
     mkdirSync(proposals, { recursive: true })
     const proposalPath = join(proposals, 'tamper.md')
     writeFileSync(
@@ -189,7 +189,7 @@ describe('harnessApply', () => {
 
     const original = readFileSync(join(workspace, 'resources', 'harness', 'default.md'), 'utf8')
     const proposed = `${original}\n\n## Receipt review notes\n\n- ok\n`
-    const proposals = join(workspace, '.vyotiq', 'harness', 'proposals')
+    const proposals = join(workspace, 'resources', 'harness', 'proposals')
     mkdirSync(proposals, { recursive: true })
     const proposalPath = join(proposals, 'dirty.md')
     writeFileSync(
@@ -216,7 +216,7 @@ describe('harnessApply', () => {
 
     const original = readFileSync(join(workspace, 'resources', 'harness', 'default.md'), 'utf8')
     const proposed = `${original}\n\n## Receipt review notes\n\n- ok\n`
-    const proposals = join(workspace, '.vyotiq', 'harness', 'proposals')
+    const proposals = join(workspace, 'resources', 'harness', 'proposals')
     mkdirSync(proposals, { recursive: true })
     const proposalPath = join(proposals, 'git-fail.md')
     writeFileSync(
@@ -239,7 +239,7 @@ describe('harnessApply', () => {
     const plain = join(tmpdir(), `vyotiq-happly-plain-${process.pid}-${Date.now()}`)
     mkdirSync(plain, { recursive: true })
     expect(() =>
-      previewHarnessApply(plain, '.vyotiq/harness/proposals/missing.md')
+      previewHarnessApply(plain, 'resources/harness/proposals/missing.md')
     ).toThrow(/no editable harness/i)
     rmSync(plain, { recursive: true, force: true })
   })

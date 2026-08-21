@@ -1,15 +1,23 @@
 import { randomUUID } from 'crypto'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
+import type { IPty } from 'node-pty'
 import type { BrowserWindow } from 'electron'
 import { IPC } from '../../shared/ipc/channels'
-import { workspacePathsEqual } from '../../shared/workspacePath'
+import { workspacePathIsInside, workspacePathsEqual } from '../../shared/workspacePath'
 import { getSettings } from '../settings/settings'
-import { resolveTerminalShell, sanitizedTerminalEnv } from '../agent/tools/terminal'
+import {
+  commandOnPath,
+  killProcessTreeAndWait,
+  resolveTerminalShell,
+  sanitizedTerminalEnv
+} from '../agent/tools/terminal'
 import type { PtySessionInfo } from '../../shared/ipc'
 import { getMainWindow } from './window'
 
+// `IPty` is a type-only import — erased at runtime, so the optional node-pty
+// dependency still loads lazily via tryLoadPty() with the pipe fallback.
 type SessionBackend =
-  | { kind: 'pty'; pty: any }
+  | { kind: 'pty'; pty: IPty }
   | { kind: 'pipe'; child: ChildProcessWithoutNullStreams }
 
 type PtyHandle = {
@@ -35,7 +43,7 @@ function appendScrollback(handle: PtyHandle, data: string): void {
 
 function shellTitle(): string {
   const resolved = resolveTerminalShell(getSettings().terminalShell ?? 'auto')
-  if (resolved === 'powershell') return 'powershell'
+  if (resolved === 'powershell') return 'PowerShell'
   if (resolved === 'cmd') return 'cmd'
   return 'bash'
 }
@@ -44,8 +52,14 @@ function shellBinAndArgs(): { file: string; args: string[] } {
   const preference = getSettings().terminalShell ?? 'auto'
   const resolved = resolveTerminalShell(preference)
   if (resolved === 'powershell') {
-    const pwsh = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
-    return { file: pwsh, args: ['-NoLogo'] }
+    // Prefer pwsh on PATH (same as agent terminal tool), else Windows PowerShell 5.x.
+    const file =
+      process.platform === 'win32'
+        ? commandOnPath('pwsh')
+          ? 'pwsh'
+          : 'powershell.exe'
+        : 'pwsh'
+    return { file, args: ['-NoLogo'] }
   }
   if (resolved === 'cmd') {
     return { file: 'cmd.exe', args: [] }
@@ -245,6 +259,15 @@ export function resizePty(id: string, cols: number, rows: number, workspacePath?
   }
 }
 
+function backendPid(backend: SessionBackend): number | undefined {
+  if (backend.kind === 'pty') {
+    const pid = backend.pty.pid
+    return typeof pid === 'number' && Number.isFinite(pid) && pid > 0 ? pid : undefined
+  }
+  const pid = backend.child.pid
+  return typeof pid === 'number' && Number.isFinite(pid) && pid > 0 ? pid : undefined
+}
+
 export function killPty(id: string, workspacePath?: string): boolean {
   const s = sessions.get(id)
   if (!s) return false
@@ -265,6 +288,24 @@ export function disposePtySessionsForWorkspace(workspacePath: string): number {
     if (!workspacePathsEqual(s.workspacePath, workspacePath)) continue
     if (killPty(s.id)) n += 1
   }
+  return n
+}
+
+/** Kill PTY/pipe shells whose cwd or workspace sits under `root` (instance worktree teardown). */
+export async function disposePtySessionsUnderPath(root: string): Promise<number> {
+  const trimmed = root.trim()
+  if (!trimmed) return 0
+  const pids: number[] = []
+  let n = 0
+  for (const s of [...sessions.values()]) {
+    if (!workspacePathIsInside(trimmed, s.cwd) && !workspacePathIsInside(trimmed, s.workspacePath)) {
+      continue
+    }
+    const pid = backendPid(s.backend)
+    if (pid) pids.push(pid)
+    if (killPty(s.id)) n += 1
+  }
+  await Promise.all(pids.map((pid) => killProcessTreeAndWait(pid, 'worktree-pty-teardown')))
   return n
 }
 

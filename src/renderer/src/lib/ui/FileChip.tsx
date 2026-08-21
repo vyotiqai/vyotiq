@@ -1,5 +1,6 @@
 import { Icon } from '@renderer/lib/icons'
 import { FileTypeIcon } from '@renderer/lib/fileIcons'
+import { cn } from './cn'
 import { Tooltip } from './Tooltip'
 
 function shortSize(chars: number): string {
@@ -12,25 +13,47 @@ function shortSize(chars: number): string {
 export function FileChip({
   name,
   chars,
+  onOpen,
   onRemove,
   disabled
 }: {
   name: string
   chars?: number
+  onOpen?: () => void
   onRemove?: () => void
   disabled?: boolean
 }) {
   const title = chars === undefined ? name : `${name} · ${shortSize(chars)}`
-  return (
-    <span
-      className="inline-flex max-w-56 items-center gap-1 rounded-xl border border-border bg-surface px-1.5 py-0.5 text-xs text-muted"
-      title={title}
-    >
+  const label = (
+    <>
       <FileTypeIcon path={name} size={14} />
       <span className="truncate">{name}</span>
       {chars !== undefined ? (
         <span className="shrink-0 text-secondary">{shortSize(chars)}</span>
       ) : null}
+    </>
+  )
+  return (
+    <span
+      className="inline-flex max-w-56 items-center gap-1 rounded-xl border border-border bg-surface px-1.5 py-0.5 text-xs text-muted"
+      title={title}
+    >
+      {onOpen ? (
+        <button
+          type="button"
+          className={cn(
+            'inline-flex min-w-0 items-center gap-1 text-left text-muted',
+            'underline-offset-2 hover:text-fg hover:underline',
+            'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
+          )}
+          disabled={disabled}
+          onClick={onOpen}
+        >
+          {label}
+        </button>
+      ) : (
+        label
+      )}
       {onRemove ? (
         <Tooltip content={`Remove ${name}`}>
           <button

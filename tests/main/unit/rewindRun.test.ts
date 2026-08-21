@@ -254,4 +254,142 @@ describe('prepareRewindToUserMessage', () => {
     expect(receipt.status).toBe('done')
     expect(existsSync(join(runDir, 'trajectory.jsonl'))).toBe(true)
   })
+
+  it('clears orphaned todos.json when rewind drops every todo_write', async () => {
+    const { toolTodoWrite } = await import('@main/agent/tools/todo')
+    const messages = [
+      { role: 'user' as const, content: 'plan work' },
+      {
+        role: 'assistant' as const,
+        content: '',
+        toolCalls: [{ id: 'todo1', name: 'todo_write', arguments: '{}' }]
+      },
+      {
+        role: 'tool' as const,
+        toolCallId: 'todo1',
+        toolName: 'todo_write',
+        content: '0/1 complete',
+        ok: true
+      },
+      { role: 'user' as const, content: 'follow-up' }
+    ]
+    await syncMessagesAsync(runDir, messages)
+    toolTodoWrite(runDir, [{ id: '1', content: 'Ship', status: 'pending' }])
+    expect(existsSync(join(runDir, 'todos.json'))).toBe(true)
+
+    await prepareRewindToUserMessage({
+      workspacePath: workspace,
+      runId,
+      userMessageIndex: 0
+    })
+
+    expect(existsSync(join(runDir, 'todos.json'))).toBe(false)
+    expect(loadMessages(workspace, runId)).toEqual([{ role: 'user', content: 'plan work' }])
+  })
+
+  it('keeps todos.json when rewind still retains a todo_write', async () => {
+    const { toolTodoWrite } = await import('@main/agent/tools/todo')
+    const messages = [
+      { role: 'user' as const, content: 'plan work' },
+      {
+        role: 'assistant' as const,
+        content: '',
+        toolCalls: [{ id: 'todo1', name: 'todo_write', arguments: '{}' }]
+      },
+      {
+        role: 'tool' as const,
+        toolCallId: 'todo1',
+        toolName: 'todo_write',
+        content: '0/1 complete\n[ ] (1) Ship',
+        ok: true
+      },
+      { role: 'user' as const, content: 'follow-up' },
+      {
+        role: 'assistant' as const,
+        content: '',
+        toolCalls: [{ id: 'todo2', name: 'todo_write', arguments: '{}' }]
+      },
+      {
+        role: 'tool' as const,
+        toolCallId: 'todo2',
+        toolName: 'todo_write',
+        content: '0/1 complete\n[ ] (1) Later task',
+        ok: true
+      }
+    ]
+    await syncMessagesAsync(runDir, messages)
+    toolTodoWrite(runDir, [{ id: '1', content: 'Later task', status: 'pending' }])
+
+    await prepareRewindToUserMessage({
+      workspacePath: workspace,
+      runId,
+      userMessageIndex: 3
+    })
+
+    expect(existsSync(join(runDir, 'todos.json'))).toBe(true)
+    expect(loadMessages(workspace, runId).some((m) => m.toolName === 'todo_write')).toBe(true)
+    const todos = JSON.parse(readFileSync(join(runDir, 'todos.json'), 'utf8')) as {
+      todos: Array<{ content: string }>
+    }
+    expect(todos.todos[0]?.content).toBe('Ship')
+  })
+
+  it('does not truncate history when an undoable checkpoint restore fails', async () => {
+    const messages = [
+      { role: 'user' as const, content: 'first' },
+      { role: 'assistant' as const, content: 'ok' },
+      { role: 'user' as const, content: 'second' }
+    ]
+    await syncMessagesAsync(runDir, messages)
+
+    const cp = beginWriteCheckpoint(runDir, workspace, 2)
+    cp.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'after-second\n', 'utf8')
+    finalizeWriteCheckpoint(runDir)
+    writeFileSync(join(workspace, 'a.txt'), 'user-edit\n', 'utf8')
+
+    await expect(
+      prepareRewindToUserMessage({
+        workspacePath: workspace,
+        runId,
+        userMessageIndex: 2
+      })
+    ).rejects.toThrow(/history was not truncated/)
+
+    expect(loadMessages(workspace, runId)).toEqual(messages)
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('user-edit\n')
+  })
+
+  it('drops todos.json when the kept todo_write snapshot is unparseable', async () => {
+    const { toolTodoWrite } = await import('@main/agent/tools/todo')
+    const messages = [
+      { role: 'user' as const, content: 'plan work' },
+      {
+        role: 'assistant' as const,
+        content: '',
+        toolCalls: [{ id: 'todo1', name: 'todo_write', arguments: '{}' }]
+      },
+      {
+        role: 'tool' as const,
+        toolCallId: 'todo1',
+        toolName: 'todo_write',
+        content: 'garbled snapshot',
+        ok: true
+      },
+      { role: 'user' as const, content: 'follow-up' }
+    ]
+    await syncMessagesAsync(runDir, messages)
+    toolTodoWrite(runDir, [{ id: '1', content: 'Ship', status: 'pending' }])
+    expect(existsSync(join(runDir, 'todos.json'))).toBe(true)
+
+    await prepareRewindToUserMessage({
+      workspacePath: workspace,
+      runId,
+      userMessageIndex: 3
+    })
+
+    expect(existsSync(join(runDir, 'todos.json'))).toBe(false)
+    expect(loadMessages(workspace, runId).some((m) => m.toolName === 'todo_write')).toBe(true)
+  })
+
 })

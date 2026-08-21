@@ -1,6 +1,18 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { clipboard, contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import { IPC } from '../shared/channels'
-import { AgentEventSchema, ToolApprovalRequestSchema, AgentQuestionRequestSchema, AgentQuestionRejectSchema, AgentBrowserStateSchema } from '../shared/ipc'
+import {
+  parseRendererChatEvent,
+  ToolApprovalRequestSchema,
+  AgentQuestionRequestSchema,
+  AgentQuestionRejectSchema,
+  AgentBrowserStateSchema,
+  CodeIndexRuntimeStatusSchema,
+  DictationRuntimeStatusSchema,
+  GithubAuthStatusSchema,
+  SkillsChangedPayloadSchema,
+  NotificationListSchema,
+  NotificationActionSchema
+} from '../shared/ipc'
 import type { VyotiqApi } from '../shared/vyotiqApi'
 
 export type { HostPlatform, VyotiqApi } from '../shared/vyotiqApi'
@@ -28,6 +40,8 @@ const api: VyotiqApi = {
   secretStatus: () => ipcRenderer.invoke(IPC.secretStatus),
   listModels: (payload) => ipcRenderer.invoke(IPC.listModels, payload),
   chatStart: (payload) => ipcRenderer.invoke(IPC.chatStart, payload),
+  chatUiSubscribe: (payload) => ipcRenderer.invoke(IPC.chatUiSubscribe, payload),
+  chatUiSubscribeAdd: (payload) => ipcRenderer.invoke(IPC.chatUiSubscribeAdd, payload),
   chatRewindAndStart: (payload) => ipcRenderer.invoke(IPC.chatRewindAndStart, payload),
   chatRewind: (payload) => ipcRenderer.invoke(IPC.chatRewind, payload),
   chatCancel: (runId) => ipcRenderer.invoke(IPC.chatCancel, { runId }),
@@ -36,8 +50,12 @@ const api: VyotiqApi = {
   chatFollowUpUpdate: (payload) => ipcRenderer.invoke(IPC.chatFollowUpUpdate, payload),
   chatFollowUpPromote: (payload) => ipcRenderer.invoke(IPC.chatFollowUpPromote, payload),
   chatQueueMode: (payload) => ipcRenderer.invoke(IPC.chatQueueMode, payload),
-  chatCompact: (workspacePath, runId) =>
-    ipcRenderer.invoke(IPC.chatCompact, { workspacePath, runId }),
+  chatCompact: (workspacePath, runId, focus) =>
+    ipcRenderer.invoke(IPC.chatCompact, {
+      workspacePath,
+      runId,
+      ...(focus?.trim() ? { focus: focus.trim() } : {})
+    }),
   undoWrites: (workspacePath, runId, checkpointId) =>
     ipcRenderer.invoke(IPC.runsUndoWrites, {
       workspacePath,
@@ -51,12 +69,16 @@ const api: VyotiqApi = {
   harnessApply: (payload) => ipcRenderer.invoke(IPC.harnessApply, payload),
   onChatEvent: (handler) => {
     const listener = (_: IpcRendererEvent, raw: unknown): void => {
-      const parsed = AgentEventSchema.safeParse(raw)
-      if (!parsed.success) {
-        console.warn('[vyotiq] Invalid chat event dropped', parsed.error.issues[0]?.message)
+      const parsed = parseRendererChatEvent(raw)
+      if (!parsed) {
+        const kind =
+          raw && typeof raw === 'object' && !Array.isArray(raw)
+            ? (raw as { type?: unknown }).type
+            : undefined
+        console.warn('[vyotiq] Invalid chat event dropped', typeof kind === 'string' ? kind : '(unknown type)')
         return
       }
-      handler(parsed.data)
+      handler(parsed)
     }
     ipcRenderer.on(IPC.chatEvent, listener)
     return () => {
@@ -127,6 +149,23 @@ const api: VyotiqApi = {
   listPendingAgentQuestions: (runId) =>
     ipcRenderer.invoke(IPC.agentQuestionListPending, { runId }),
   extractAttachment: (payload) => ipcRenderer.invoke(IPC.attachmentExtract, payload),
+  transcribeDictation: (payload) => ipcRenderer.invoke(IPC.dictationTranscribe, payload),
+  cancelDictation: (requestId) => ipcRenderer.invoke(IPC.dictationCancel, { requestId }),
+  dictationStatus: () => ipcRenderer.invoke(IPC.dictationStatus),
+  dictationInstall: (payload) => ipcRenderer.invoke(IPC.dictationInstall, payload),
+  dictationUnload: () => ipcRenderer.invoke(IPC.dictationUnload),
+  dictationDeleteCache: (payload) => ipcRenderer.invoke(IPC.dictationDeleteCache, payload),
+  onDictationStatus: (handler) => {
+    const listener = (_: IpcRendererEvent, status: unknown): void => {
+      const parsed = DictationRuntimeStatusSchema.safeParse(status)
+      if (!parsed.success) return
+      handler(parsed.data)
+    }
+    ipcRenderer.on(IPC.dictationStatusEvent, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.dictationStatusEvent, listener)
+    }
+  },
   listRuns: (workspacePath) => {
     const path = workspacePath?.trim() ?? ''
     if (!path) {
@@ -145,6 +184,8 @@ const api: VyotiqApi = {
     ipcRenderer.invoke(IPC.runsRename, { workspacePath, runId, goal }),
   listActiveRuns: () => ipcRenderer.invoke(IPC.runsActive),
   gitStatus: (workspacePath) => ipcRenderer.invoke(IPC.gitStatus, { workspacePath }),
+  gitGenerateCommitMessage: (payload) =>
+    ipcRenderer.invoke(IPC.gitGenerateCommitMessage, payload),
   gitCommit: (workspacePath, message, push, mode) =>
     ipcRenderer.invoke(IPC.gitCommit, { workspacePath, message, push, mode }),
   gitStageAll: (workspacePath) => ipcRenderer.invoke(IPC.gitStageAll, { workspacePath }),
@@ -156,17 +197,34 @@ const api: VyotiqApi = {
   gitLog: (payload) => ipcRenderer.invoke(IPC.gitLog, payload),
   gitCommitFiles: (payload) => ipcRenderer.invoke(IPC.gitCommitFiles, payload),
   gitDiff: (payload) => ipcRenderer.invoke(IPC.gitDiff, payload),
+  gitBlame: (workspacePath, path) =>
+    ipcRenderer.invoke(IPC.gitBlame, { workspacePath, path }),
   prView: (workspacePath) => ipcRenderer.invoke(IPC.prView, { workspacePath }),
-  prMerge: (workspacePath, method) =>
-    ipcRenderer.invoke(IPC.prMerge, { workspacePath, method }),
+  prCreate: (workspacePath, options) =>
+    ipcRenderer.invoke(IPC.prCreate, { workspacePath, ...options }),
+  prMerge: (workspacePath, method, number) =>
+    ipcRenderer.invoke(IPC.prMerge, { workspacePath, method, number }),
   prDiff: (payload) => ipcRenderer.invoke(IPC.prDiff, payload),
-  prClose: (workspacePath) => ipcRenderer.invoke(IPC.prClose, { workspacePath }),
-  prEditTitle: (workspacePath, title) =>
-    ipcRenderer.invoke(IPC.prEditTitle, { workspacePath, title }),
+  prClose: (workspacePath, number) =>
+    ipcRenderer.invoke(IPC.prClose, { workspacePath, number }),
+  prEditTitle: (workspacePath, title, number) =>
+    ipcRenderer.invoke(IPC.prEditTitle, { workspacePath, title, number }),
   githubAuthStatus: () => ipcRenderer.invoke(IPC.githubAuthStatus),
   githubAuthStart: () => ipcRenderer.invoke(IPC.githubAuthStart),
   githubAuthCancel: () => ipcRenderer.invoke(IPC.githubAuthCancel),
   githubAuthLogout: () => ipcRenderer.invoke(IPC.githubAuthLogout),
+  onGithubAuthStatus: (handler) => {
+    const listener = (_: IpcRendererEvent, status: unknown): void => {
+      const parsed = GithubAuthStatusSchema.safeParse(status)
+      if (!parsed.success) return
+      handler(parsed.data)
+    }
+    ipcRenderer.on(IPC.githubAuthStatusEvent, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.githubAuthStatusEvent, listener)
+    }
+  },
+  githubCliInstall: () => ipcRenderer.invoke(IPC.githubCliInstall),
   shellOpenExternal: (url) => ipcRenderer.invoke(IPC.shellOpenExternal, { url }),
   ptyCreate: (payload) => ipcRenderer.invoke(IPC.ptyCreate, payload),
   ptyList: (workspacePath) =>
@@ -228,15 +286,35 @@ const api: VyotiqApi = {
       ipcRenderer.removeListener(IPC.browserState, listener)
     }
   },
-  browserGetState: () => ipcRenderer.invoke(IPC.browserGetState),
+  browserGetState: async () => {
+    const res = await ipcRenderer.invoke(IPC.browserGetState)
+    if (!res?.ok) return res
+    const parsed = AgentBrowserStateSchema.safeParse(res.data)
+    if (!parsed.success) {
+      return { ok: false as const, error: 'Invalid browser state' }
+    }
+    return { ok: true as const, data: parsed.data }
+  },
   browserFocus: () => ipcRenderer.invoke(IPC.browserFocus),
   browserClose: () => ipcRenderer.invoke(IPC.browserClose),
-  browserSelectTab: (tabId: string) => ipcRenderer.invoke(IPC.browserSelectTab, { tabId }),
-  browserBack: () => ipcRenderer.invoke(IPC.browserBack),
-  browserForward: () => ipcRenderer.invoke(IPC.browserForward),
+  browserSelectTab: (tabId: string, workspacePath?: string) =>
+    ipcRenderer.invoke(IPC.browserSelectTab, workspacePath ? { tabId, workspacePath } : { tabId }),
+  browserOpenTab: (payload) => ipcRenderer.invoke(IPC.browserOpenTab, payload ?? {}),
+  browserCloseTab: (tabId?: string, workspacePath?: string) =>
+    ipcRenderer.invoke(IPC.browserCloseTab, {
+      ...(tabId ? { tabId } : {}),
+      ...(workspacePath ? { workspacePath } : {})
+    }),
+  browserTakeControl: () => ipcRenderer.invoke(IPC.browserTakeControl),
+  browserReleaseControl: () => ipcRenderer.invoke(IPC.browserReleaseControl),
+  browserBack: (workspacePath?: string) =>
+    ipcRenderer.invoke(IPC.browserBack, workspacePath ? { workspacePath } : undefined),
+  browserForward: (workspacePath?: string) =>
+    ipcRenderer.invoke(IPC.browserForward, workspacePath ? { workspacePath } : undefined),
   browserSetBounds: (bounds) => ipcRenderer.invoke(IPC.browserSetBounds, bounds),
   browserNavigate: (url: string, workspacePath?: string) => ipcRenderer.invoke(IPC.browserNavigate, workspacePath ? { url, workspacePath } : url),
-  browserReload: () => ipcRenderer.invoke(IPC.browserReload),
+  browserReload: (workspacePath?: string) =>
+    ipcRenderer.invoke(IPC.browserReload, workspacePath ? { workspacePath } : undefined),
   browserTakeScreenshot: (payload) => ipcRenderer.invoke(IPC.browserTakeScreenshot, payload),
   browserClearBrowsingData: (payload) =>
     ipcRenderer.invoke(IPC.browserClearBrowsingData, payload),
@@ -245,6 +323,7 @@ const api: VyotiqApi = {
   getCrashDiagnostics: () => ipcRenderer.invoke(IPC.crashDiagnosticsGet),
   consumeCrashRecovery: () => ipcRenderer.invoke(IPC.crashRecoveryConsume),
   telemetryStatus: () => ipcRenderer.invoke(IPC.telemetryStatus),
+  getAppInfo: () => ipcRenderer.invoke(IPC.appInfo),
   mcpStatus: (payload) => ipcRenderer.invoke(IPC.mcpStatus, payload ?? {}),
   mcpRefresh: (payload) => ipcRenderer.invoke(IPC.mcpRefresh, payload ?? {}),
   mcpSetAuthToken: (serverId, token) =>
@@ -271,14 +350,101 @@ const api: VyotiqApi = {
     ipcRenderer.invoke(IPC.marketplaceAckRemoteInstall, { acked }),
   getSystemTheme: () => ipcRenderer.invoke(IPC.getSystemTheme),
   probeNetwork: () => ipcRenderer.invoke(IPC.networkProbe),
+  codeIndexStatus: () => ipcRenderer.invoke(IPC.codeIndexStatus),
+  codeIndexReindex: (payload) => ipcRenderer.invoke(IPC.codeIndexReindex, payload ?? {}),
+  onCodeIndexStatus: (handler) => {
+    const listener = (_: IpcRendererEvent, status: unknown): void => {
+      const parsed = CodeIndexRuntimeStatusSchema.safeParse(status)
+      if (!parsed.success) return
+      handler(parsed.data)
+    }
+    ipcRenderer.on(IPC.codeIndexStatusEvent, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.codeIndexStatusEvent, listener)
+    }
+  },
   slashCommandsList: (payload) => ipcRenderer.invoke(IPC.slashCommandsList, payload ?? {}),
   slashCommandsResolve: (payload) => ipcRenderer.invoke(IPC.slashCommandsResolve, payload),
   slashCommandsCreateRule: (payload) =>
     ipcRenderer.invoke(IPC.slashCommandsCreateRule, payload),
+  slashCommandsCreateSkill: (payload) =>
+    ipcRenderer.invoke(IPC.slashCommandsCreateSkill, payload),
   slashCommandsOpenFile: (payload) => ipcRenderer.invoke(IPC.slashCommandsOpenFile, payload),
+  skillsListLocal: (payload) => ipcRenderer.invoke(IPC.skillsListLocal, payload ?? {}),
+  skillsOpenLocal: (payload) => ipcRenderer.invoke(IPC.skillsOpenLocal, payload),
+  skillsReadLocal: (payload) => ipcRenderer.invoke(IPC.skillsReadLocal, payload),
+  skillsWriteLocal: (payload) => ipcRenderer.invoke(IPC.skillsWriteLocal, payload),
+  skillsDeleteLocal: (payload) => ipcRenderer.invoke(IPC.skillsDeleteLocal, payload),
+  onSkillsChanged: (handler) => {
+    const listener = (_: IpcRendererEvent, raw: unknown): void => {
+      const parsed = SkillsChangedPayloadSchema.safeParse(raw)
+      if (!parsed.success) return
+      handler(parsed.data)
+    }
+    ipcRenderer.on(IPC.skillsChanged, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.skillsChanged, listener)
+    }
+  },
+  listNotifications: () => ipcRenderer.invoke(IPC.notificationsList),
+  markNotificationsRead: (payload) => ipcRenderer.invoke(IPC.notificationsMarkRead, payload),
+  dismissNotifications: (payload) => ipcRenderer.invoke(IPC.notificationsDismiss, payload),
+  onNotificationsChanged: (handler) => {
+    const listener = (_: IpcRendererEvent, raw: unknown): void => {
+      const parsed = NotificationListSchema.safeParse(raw)
+      if (!parsed.success) return
+      handler(parsed.data)
+    }
+    ipcRenderer.on(IPC.notificationsChanged, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.notificationsChanged, listener)
+    }
+  },
+  onNotificationActivate: (handler) => {
+    const listener = (_: IpcRendererEvent, raw: unknown): void => {
+      const parsed = NotificationActionSchema.safeParse(raw)
+      if (!parsed.success) return
+      handler(parsed.data)
+    }
+    ipcRenderer.on(IPC.notificationsActivate, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.notificationsActivate, listener)
+    }
+  },
   workspaceSuggestPaths: (payload) => ipcRenderer.invoke(IPC.workspaceSuggestPaths, payload),
   workspaceReadText: (payload) => ipcRenderer.invoke(IPC.workspaceReadText, payload),
-  workspaceReadImage: (payload) => ipcRenderer.invoke(IPC.workspaceReadImage, payload),
+  workspaceFileList: (payload) => ipcRenderer.invoke(IPC.workspaceFileList, payload),
+  workspaceFileRead: (payload) => ipcRenderer.invoke(IPC.workspaceFileRead, payload),
+  workspaceFileSave: (payload) => ipcRenderer.invoke(IPC.workspaceFileSave, payload),
+  workspaceFileCreate: (payload) => ipcRenderer.invoke(IPC.workspaceFileCreate, payload),
+  workspaceFileMove: (payload) => ipcRenderer.invoke(IPC.workspaceFileMove, payload),
+  workspaceFileDelete: (payload) => ipcRenderer.invoke(IPC.workspaceFileDelete, payload),
+  workspaceFileReveal: (payload) => ipcRenderer.invoke(IPC.workspaceFileReveal, payload),
+  workspaceFormatterStatus: (payload) =>
+    ipcRenderer.invoke(IPC.workspaceFormatterStatus, payload),
+  workspaceFormatFile: (payload) => ipcRenderer.invoke(IPC.workspaceFormatFile, payload),
+  workspaceLspStatus: (payload) => ipcRenderer.invoke(IPC.workspaceLspStatus, payload),
+  workspaceLspRequest: (payload) => ipcRenderer.invoke(IPC.workspaceLspRequest, payload),
+  workspaceEditorRecoverySave: (payload) =>
+    ipcRenderer.invoke(IPC.workspaceEditorRecoverySave, payload),
+  workspaceEditorRecoveryLoad: (payload) =>
+    ipcRenderer.invoke(IPC.workspaceEditorRecoveryLoad, payload),
+  workspaceEditorRecoveryClear: (payload) =>
+    ipcRenderer.invoke(IPC.workspaceEditorRecoveryClear, payload),
+  onWorkspaceEditorFlushRequest: (handler) => {
+    const listener = (_: IpcRendererEvent, raw: unknown): void => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+      const requestId = (raw as { requestId?: unknown }).requestId
+      if (typeof requestId === 'string' && requestId.length > 0) handler(requestId)
+    }
+    ipcRenderer.on(IPC.workspaceEditorFlushRequest, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.workspaceEditorFlushRequest, listener)
+    }
+  },
+  respondWorkspaceEditorFlush: (requestId, ok) => {
+    ipcRenderer.send(IPC.workspaceEditorFlushResponse, { requestId, ok })
+  },
   workspaceListDocs: (payload) => ipcRenderer.invoke(IPC.workspaceListDocs, payload),
   workspaceListRules: (payload) => ipcRenderer.invoke(IPC.workspaceListRules, payload),
   workspaceDiagnostics: (payload) => ipcRenderer.invoke(IPC.workspaceDiagnostics, payload),
@@ -287,6 +453,15 @@ const api: VyotiqApi = {
     ipcRenderer.on(IPC.themeChanged, listener)
     return () => {
       ipcRenderer.removeListener(IPC.themeChanged, listener)
+    }
+  },
+  writeClipboard: (text) => {
+    if (typeof text !== 'string') return false
+    try {
+      clipboard.writeText(text)
+      return true
+    } catch {
+      return false
     }
   }
 }

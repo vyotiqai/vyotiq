@@ -1,12 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefCallback } from 'react'
+import type { RunSummary } from '@shared/ipc'
 import { Icon } from '@renderer/lib/icons'
-import { Tooltip, cn } from '@renderer/lib/ui'
+import { Button, Tooltip, cn } from '@renderer/lib/ui'
+import { useRovingTabIndex } from '@renderer/lib/a11y'
 import {
   RUN_LIST_CAP,
   SIDEBAR_INDENT,
   SIDEBAR_PAD_X,
   SIDEBAR_ROW,
-  SIDEBAR_ROW_ACTIVE,
   SIDEBAR_ROW_HOVER,
   SIDEBAR_SECTION_LABEL,
   SIDEBAR_WORKSPACE_GROUP,
@@ -17,7 +18,132 @@ import {
 import { workspacePathsEqual } from '@shared/workspacePathMatch'
 import { ChatRow } from './ChatRow'
 import { InlineConfirmActions } from './InlineConfirmActions'
+import { runTitle, uniqueInstanceTitles } from './runTitle'
 import type { WorkspaceSidebarGroup } from './types'
+
+function instanceFoldKey(workspacePath: string, parentRunId: string): string {
+  return `${workspacePath}:${parentRunId}`
+}
+
+/** Expand when a child is open/running or the parent chat is focused; otherwise stay folded. */
+function shouldAutoExpandInstances(opts: {
+  children: RunSummary[]
+  openInstanceRunId: string | null | undefined
+  parentFocused: boolean
+}): boolean {
+  const { children, openInstanceRunId, parentFocused } = opts
+  if (children.length === 0) return false
+  if (parentFocused) return true
+  if (openInstanceRunId && children.some((c) => c.runId === openInstanceRunId)) return true
+  return children.some((c) => c.status === 'running')
+}
+
+function FoldableInstanceChildren({
+  workspacePath,
+  parentRunId,
+  parentTitle,
+  childRuns,
+  openInstanceRunId,
+  expanded,
+  onToggle,
+  autoExpand,
+  onClearManual,
+  onSelectRun,
+  onRenameRun,
+  onDeleteRun,
+  tabIndexFor,
+  setOptionRef,
+  navIndexOf,
+  onNavKeyDown
+}: {
+  workspacePath: string
+  parentRunId: string
+  parentTitle: string
+  childRuns: RunSummary[]
+  openInstanceRunId: string | null | undefined
+  expanded: boolean
+  onToggle: () => void
+  autoExpand: boolean
+  onClearManual: () => void
+  onSelectRun: (path: string, runId: string) => void
+  onRenameRun: (path: string, runId: string, goal: string) => void
+  onDeleteRun: (path: string, runId: string) => void
+  tabIndexFor: (index: number) => number
+  setOptionRef: (index: number) => RefCallback<HTMLElement>
+  navIndexOf: (runId: string) => number
+  onNavKeyDown: (event: KeyboardEvent<HTMLElement>) => void
+}) {
+  const prevAuto = useRef(autoExpand)
+
+  useEffect(() => {
+    if (prevAuto.current !== autoExpand) {
+      onClearManual()
+      prevAuto.current = autoExpand
+    }
+  }, [autoExpand, onClearManual])
+
+  const titles = uniqueInstanceTitles(childRuns)
+  const runningCount = childRuns.filter((c) => c.status === 'running').length
+  const summary =
+    runningCount > 0
+      ? `${runningCount} running · ${childRuns.length} instances`
+      : `${childRuns.length} instance${childRuns.length === 1 ? '' : 's'}`
+
+  return (
+    <div className="ml-2 flex flex-col gap-px border-l border-border/40 pl-1.5">
+      <button
+        type="button"
+        className={cn(
+          'app-region-no-drag flex w-full min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-left text-xs text-muted vy-transition',
+          SIDEBAR_ROW_HOVER,
+          'hover:text-fg'
+        )}
+        aria-expanded={expanded}
+        aria-label={`${summary} — ${parentTitle}`}
+        {...(expanded ? { 'aria-controls': `instance-children-${parentRunId}` } : {})}
+        onClick={onToggle}
+      >
+        <Icon
+          name={expanded ? 'chevron' : 'chevronRight'}
+          size={11}
+          className="shrink-0 opacity-80"
+          aria-hidden
+        />
+        <span className="min-w-0 flex-1 truncate">{summary}</span>
+      </button>
+      {expanded ? (
+        <div
+          id={`instance-children-${parentRunId}`}
+          className="flex flex-col gap-px"
+          role="group"
+          aria-label={`Instances of ${parentTitle}`}
+        >
+          {childRuns.map((child) => {
+            const childSelected = openInstanceRunId === child.runId
+            const navIndex = navIndexOf(child.runId)
+            return (
+              <ChatRow
+                key={`${workspacePath}:${child.runId}`}
+                run={child}
+                workspacePath={workspacePath}
+                active={childSelected}
+                focused={childSelected}
+                nested
+                titleOverride={titles.get(child.runId)}
+                onSelect={() => onSelectRun(workspacePath, child.runId)}
+                onRename={(goal) => onRenameRun(workspacePath, child.runId, goal)}
+                onDelete={() => onDeleteRun(workspacePath, child.runId)}
+                tabIndex={navIndex >= 0 ? tabIndexFor(navIndex) : undefined}
+                rowRef={navIndex >= 0 ? setOptionRef(navIndex) : undefined}
+                onNavKeyDown={onNavKeyDown}
+              />
+            )
+          })}
+        </div>
+      ) : null}
+    </div>
+  )
+}
 
 function WorkspaceHeader({
   name,
@@ -142,7 +268,9 @@ export function ChatList({
   onRenameRun,
   onDeleteRun,
   isRunOpenInPane,
-  isRunFocusedInPane
+  isRunFocusedInPane,
+  openInstanceRunId = null,
+  hideSessionRuns = false
 }: {
   workspaceReady: boolean
   sessionQuery: string
@@ -160,13 +288,89 @@ export function ChatList({
   onDeleteRun: (path: string, runId: string) => void
   isRunOpenInPane?: (path: string, runId: string) => boolean
   isRunFocusedInPane?: (path: string, runId: string) => boolean
+  /** Currently viewed inline instance sub-session (sidebar highlight). */
+  openInstanceRunId?: string | null
+  /** Immersive dock: keep workspace chrome, hide chat rows (tabs own selection). */
+  hideSessionRuns?: boolean
 }) {
+  const [instanceManualExpand, setInstanceManualExpand] = useState<Record<string, boolean>>({})
+  const [navIndex, setNavIndex] = useState(0)
+
+  const sessionRows = useMemo(() => {
+    const rows: { workspacePath: string; runId: string }[] = []
+    if (hideSessionRuns) return rows
+    for (const workspace of workspaceGroups) {
+      if (!workspace.expanded) continue
+      for (const group of workspace.groupedRuns) {
+        for (const run of group.runs) {
+          rows.push({ workspacePath: workspace.path, runId: run.runId })
+          const children = workspace.instanceRuns.filter((child) => child.parentRunId === run.runId)
+          if (children.length === 0) continue
+          const parentFocused =
+            openInstanceRunId == null &&
+            (isRunFocusedInPane?.(workspace.path, run.runId) ??
+              workspace.activeRunId === run.runId)
+          const autoExpand = shouldAutoExpandInstances({
+            children,
+            openInstanceRunId,
+            parentFocused
+          })
+          const key = instanceFoldKey(workspace.path, run.runId)
+          const expanded = instanceManualExpand[key] ?? autoExpand
+          if (!expanded) continue
+          for (const child of children) {
+            rows.push({ workspacePath: workspace.path, runId: child.runId })
+          }
+        }
+      }
+    }
+    return rows
+  }, [
+    hideSessionRuns,
+    workspaceGroups,
+    openInstanceRunId,
+    isRunFocusedInPane,
+    instanceManualExpand
+  ])
+
+  const focusedNavIndex = sessionRows.findIndex((row) => {
+    if (openInstanceRunId) return row.runId === openInstanceRunId
+    return isRunFocusedInPane?.(row.workspacePath, row.runId) ?? false
+  })
+
+  useEffect(() => {
+    if (focusedNavIndex >= 0) setNavIndex(focusedNavIndex)
+  }, [focusedNavIndex])
+
+  const { tabIndexFor, setOptionRef, onContainerKeyDown } = useRovingTabIndex({
+    count: sessionRows.length,
+    activeIndex: navIndex,
+    onActiveIndexChange: setNavIndex,
+    orientation: 'vertical'
+  })
+
+  const navIndexOf = (workspacePath: string, runId: string): number =>
+    sessionRows.findIndex(
+      (row) => row.workspacePath === workspacePath && row.runId === runId
+    )
+
   return (
-    <div className={cn(SIDEBAR_PAD_X, 'py-2')} role="region" aria-label="Workspace sessions">
+    <div
+      className={cn(SIDEBAR_PAD_X, 'py-2')}
+      role="region"
+      aria-label="Workspace sessions"
+    >
       {!workspaceReady ? (
-        <p className="m-0 py-6 text-center text-sm text-muted">
-          Open a workspace to see chats
-        </p>
+        <div className="flex flex-col items-center gap-2 px-2 py-6 text-center">
+          <p className="m-0 text-sm text-muted">Open a workspace to see chats</p>
+          <Button
+            variant="subtle"
+            className="min-h-8 px-3 text-xs"
+            onClick={onAddWorkspace}
+          >
+            Open workspace
+          </Button>
+        </div>
       ) : (
         <>
           <div className="mb-2 flex items-center justify-between gap-2 px-1">
@@ -182,7 +386,7 @@ export function ChatList({
             </button>
           </div>
 
-          {filteredRunsCount === 0 && sessionQuery.trim() ? (
+          {filteredRunsCount === 0 && sessionQuery.trim() && !hideSessionRuns ? (
             <p className="m-0 py-4 text-center text-sm text-muted">
               No matching chats
             </p>
@@ -230,7 +434,7 @@ export function ChatList({
                   </div>
                 ) : null}
 
-                {workspace.expanded ? (
+                {workspace.expanded && !hideSessionRuns ? (
                   workspace.runsLoaded === false && !workspace.runsError ? (
                     <div className={cn(SIDEBAR_INDENT, 'flex flex-col gap-1 py-1')} aria-busy="true" role="status">
                       <span className="sr-only">Loading chats…</span>
@@ -257,24 +461,78 @@ export function ChatList({
                             </div>
                           )}
                           <div className="flex flex-col gap-px" role="list">
-                            {group.runs.map((run) => (
-                              <ChatRow
-                                key={`${workspace.path}:${run.runId}`}
-                                run={run}
-                                workspacePath={workspace.path}
-                                active={
-                                  isRunOpenInPane?.(workspace.path, run.runId) ??
-                                  workspace.activeRunId === run.runId
-                                }
-                                focused={
-                                  isRunFocusedInPane?.(workspace.path, run.runId) ??
-                                  workspace.activeRunId === run.runId
-                                }
-                                onSelect={() => onSelectRun(workspace.path, run.runId)}
-                                onRename={(goal) => onRenameRun(workspace.path, run.runId, goal)}
-                                onDelete={() => onDeleteRun(workspace.path, run.runId)}
-                              />
-                            ))}
+                            {group.runs.map((run) => {
+                              const children = workspace.instanceRuns.filter(
+                                (child) => child.parentRunId === run.runId
+                              )
+                              const parentOpen =
+                                isRunOpenInPane?.(workspace.path, run.runId) ??
+                                workspace.activeRunId === run.runId
+                              const parentFocused =
+                                openInstanceRunId == null &&
+                                (isRunFocusedInPane?.(workspace.path, run.runId) ??
+                                  workspace.activeRunId === run.runId)
+                              const autoExpand = shouldAutoExpandInstances({
+                                children,
+                                openInstanceRunId,
+                                parentFocused
+                              })
+                              const foldKey = instanceFoldKey(workspace.path, run.runId)
+                              const instancesExpanded = instanceManualExpand[foldKey] ?? autoExpand
+                              const parentNavIndex = navIndexOf(workspace.path, run.runId)
+                              return (
+                                <div key={`${workspace.path}:${run.runId}`} className="flex flex-col gap-px">
+                                  <ChatRow
+                                    run={run}
+                                    workspacePath={workspace.path}
+                                    active={parentOpen}
+                                    focused={parentFocused}
+                                    onSelect={() => onSelectRun(workspace.path, run.runId)}
+                                    onRename={(goal) => onRenameRun(workspace.path, run.runId, goal)}
+                                    onDelete={() => onDeleteRun(workspace.path, run.runId)}
+                                    tabIndex={
+                                      parentNavIndex >= 0 ? tabIndexFor(parentNavIndex) : undefined
+                                    }
+                                    rowRef={
+                                      parentNavIndex >= 0 ? setOptionRef(parentNavIndex) : undefined
+                                    }
+                                    onNavKeyDown={onContainerKeyDown}
+                                  />
+                                  {children.length > 0 ? (
+                                    <FoldableInstanceChildren
+                                      workspacePath={workspace.path}
+                                      parentRunId={run.runId}
+                                      parentTitle={runTitle(run)}
+                                      childRuns={children}
+                                      openInstanceRunId={openInstanceRunId}
+                                      expanded={instancesExpanded}
+                                      autoExpand={autoExpand}
+                                      onToggle={() =>
+                                        setInstanceManualExpand((prev) => ({
+                                          ...prev,
+                                          [foldKey]: !instancesExpanded
+                                        }))
+                                      }
+                                      onClearManual={() =>
+                                        setInstanceManualExpand((prev) => {
+                                          if (!(foldKey in prev)) return prev
+                                          const next = { ...prev }
+                                          delete next[foldKey]
+                                          return next
+                                        })
+                                      }
+                                      onSelectRun={onSelectRun}
+                                      onRenameRun={onRenameRun}
+                                      onDeleteRun={onDeleteRun}
+                                      tabIndexFor={tabIndexFor}
+                                      setOptionRef={setOptionRef}
+                                      navIndexOf={(runId) => navIndexOf(workspace.path, runId)}
+                                      onNavKeyDown={onContainerKeyDown}
+                                    />
+                                  ) : null}
+                                </div>
+                              )
+                            })}
                           </div>
                         </div>
                       ))}

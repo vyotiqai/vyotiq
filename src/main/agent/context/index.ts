@@ -3,8 +3,18 @@ export {
   clearSystemPromptCache,
   estimateToolsJson
 } from './assemble'
-export { allocateBudget, contextWindowFor, effectiveWindow, compactionTriggerTokens, contentWindow, toolsBudgetTokens } from './budget'
-export { compactMessages, preserveRecentMessages, preserveRecentMessagesAsync } from './compact'
+export { allocateBudget, contextWindowFor, effectiveWindow, contentWindow, toolsBudgetTokens } from './budget'
+export {
+  compactMessages,
+  countUserTurns,
+  forceCompactKeepTail,
+  applyTriggerFold,
+  ensureSubstantialFold,
+  manualKeepRecentTurns,
+  buildCompactionSystemPrompt,
+  preserveRecentMessages,
+  preserveRecentMessagesAsync
+} from './compact'
 export {
   estimateContentTokens,
   estimateContentTokensAsync,
@@ -36,36 +46,61 @@ export {
   writeMemoryFile,
   memoryRoot
 } from './memory'
-export { trimToolsToBudget, toolCatalogFingerprint, selectMcpPinsToEvict } from './toolsBudget'
-export { trimToolResults } from './toolTrim'
 export {
-  DURABLE_TOOL_RESULT_NAMES,
-  CLEARED_TOOL_RESULT_STUB,
-  isDurableToolResultName
-} from './durableToolResults'
+  buildStepToolCatalog,
+  toolCatalogFingerprint,
+  omittedOptionalBuiltinNames,
+  loopHintForDeferredBuiltins,
+  loopHintForDeferredMcpTools,
+  isOptionalBuiltinName,
+  OPTIONAL_BUILTIN_NAMES
+} from './toolsBudget'
 export {
   extractAskQuestionDecisions,
-  loopHintForRetainedDecisions
+  parseAskQuestionResult,
+  loopHintForRetainedDecisions,
+  mergeCompactionFocus
 } from './retainedDecisions'
 export {
-  COMPACTION_LLM_MIN_FOLD_TOKENS,
-  residualFloorAfterFold,
-  shouldInvokeCompactionLlm
-} from './compactionPayback'
+  extractFoldFacts,
+  parseContractGoal,
+  parseContractDoneWhen,
+  collectPathsFromText,
+  isPlausibleWorkspaceFilePath
+} from './foldFacts'
+export type { FoldFacts, FoldFactsExtras } from './foldFacts'
+export {
+  verifyCompactionSummary,
+  formatCompactionVerifyFailure,
+  missingFactsFocus,
+  requiredFoldFactsFocus,
+  expandBraceGlobs,
+  extractClaimedPaths,
+  pathMentionedInText,
+  FILE_COVERAGE_RATIO,
+  FILE_COVERAGE_MAX_NEEDED,
+  MAX_VERIFY_FAILURES,
+  clipVerifyFailures
+} from './verifyCompaction'
+export type {
+  CompactionVerifyResult,
+  CompactionVerifyFailure,
+  CompactionVerifyFailureKind
+} from './verifyCompaction'
 export {
   applyFoldedMessagesWatermark,
-  dropOldestTurn,
   stripLeadingOrphanToolMessages,
-  trimHistoryToBudget,
-  trimHistoryToBudgetAsync
-} from './historyTrim'
+  stripOrphanToolMessages
+} from './foldWatermark'
 export { stripImagesFromMessages } from './stripImages'
 export { buildWorkspaceSnapshot, buildWorkspaceSnapshotAsync, clearWorkspaceSnapshotCache } from './workspaceSnapshot'
 export {
   buildWorkspaceRulesSection,
   clearRulesCache,
   formatWorkspaceRules,
+  isRuleRelatedRelPath,
   readWorkspaceRules
 } from './rules'
+export { formatUserRules } from './userRules'
 export { buildSessionEnvSection } from './sessionEnv'
 export type { AssembleResult, CompactionRecord, AssembleInput } from './types'

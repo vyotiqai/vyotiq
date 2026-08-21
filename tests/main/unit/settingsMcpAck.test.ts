@@ -114,6 +114,34 @@ describe('setSettings mcpServers ack gate', () => {
     ).toThrow(/Acknowledge marketplace/i)
   })
 
+  it('clears remoteInstallAcked when registryUrl changes via setSettings', async () => {
+    const {
+      clearSettingsCacheForTests,
+      setSettings,
+      getSettings,
+      setMarketplaceRemoteInstallAcked
+    } = await import('@main/settings/settings')
+    clearSettingsCacheForTests()
+    setMarketplaceRemoteInstallAcked(true)
+    setSettings({ marketplace: { registryUrl: 'https://registry.example.com' } })
+    expect(getSettings().marketplace?.registryUrl).toBe('https://registry.example.com')
+    expect(getSettings().marketplace?.remoteInstallAcked).toBe(false)
+  })
+
+  it('preserves remoteInstallAcked when registryUrl is unchanged', async () => {
+    const {
+      clearSettingsCacheForTests,
+      setSettings,
+      getSettings,
+      setMarketplaceRemoteInstallAcked
+    } = await import('@main/settings/settings')
+    clearSettingsCacheForTests()
+    setSettings({ marketplace: { registryUrl: 'https://registry.example.com' } })
+    setMarketplaceRemoteInstallAcked(true)
+    setSettings({ marketplace: { registryUrl: 'https://registry.example.com' } })
+    expect(getSettings().marketplace?.remoteInstallAcked).toBe(true)
+  })
+
   it('restores Authorization when renderer echoes [redacted] back', async () => {
     const {
       clearSettingsCacheForTests,

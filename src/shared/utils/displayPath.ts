@@ -33,6 +33,30 @@ export function truncateMiddle(text: string, maxLen: number): string {
   return `${text.slice(0, keep)}…${text.slice(-keep)}`
 }
 
+/** Compact http(s) URLs for one-line tool headers; other text unchanged. */
+export function formatUrlLabel(text: string, maxLen = 56): string {
+  const trimmed = text.trim()
+  if (!/^https?:\/\//i.test(trimmed)) return text
+  try {
+    const u = new URL(trimmed)
+    const host = u.hostname.replace(/^www\./, '')
+    const path = `${u.pathname}${u.search}${u.hash}`
+    const label = path && path !== '/' ? `${host}${path}` : host
+    return label.length > maxLen ? truncateMiddle(label, maxLen) : label
+  } catch {
+    return text
+  }
+}
+
+/** Join a listing basename onto its directory for workspace-relative open. */
+export function joinWorkspaceRel(basePath: string, name: string): string {
+  const base = sanitizeDisplayPath(basePath).replace(/\\/g, '/').replace(/\/+$/, '')
+  const leaf = sanitizeDisplayPath(name).replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!leaf) return !base || base === '.' ? '' : base
+  if (!base || base === '.') return leaf
+  return `${base}/${leaf}`
+}
+
 /** Human label for a directory path in listings (avoids `. · N` looking like `.. N`). */
 export function formatListDirPathLabel(path: string): string {
   const normalized = sanitizeDisplayPath(path).replace(/\\/g, '/').replace(/\/+$/, '')

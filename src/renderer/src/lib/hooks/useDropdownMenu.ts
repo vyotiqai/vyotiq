@@ -6,6 +6,7 @@ import {
   useState,
   type RefObject
 } from 'react'
+import { getFocusableElements } from '@renderer/lib/a11y'
 
 const DROPDOWN_GAP_PX = 6
 const VIEWPORT_PAD_PX = 8
@@ -31,7 +32,9 @@ export function useDropdownMenu({
   panelRef,
   placement = 'up',
   align = 'start',
-  disabled
+  disabled,
+  trapFocus = false,
+  autoFocusFirst = false
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -40,6 +43,10 @@ export function useDropdownMenu({
   placement?: DropdownPlacement
   align?: DropdownAlign
   disabled?: boolean
+  /** Keep Tab focus inside the open menu panel. */
+  trapFocus?: boolean
+  /** Focus the first focusable control when the menu opens. */
+  autoFocusFirst?: boolean
 }): {
   position: DropdownPosition | null
   close: (restoreFocus?: boolean) => void
@@ -126,6 +133,39 @@ export function useDropdownMenu({
       document.removeEventListener('keydown', onKey)
     }
   }, [open, close, triggerRef, panelRef])
+
+  useEffect(() => {
+    if (!open || !autoFocusFirst) return
+    const t = window.setTimeout(() => {
+      const panel = panelRef?.current
+      if (!panel) return
+      const focusable = getFocusableElements(panel)
+      if (focusable.length > 0) focusable[0]!.focus()
+      else panel.focus()
+    }, 0)
+    return () => window.clearTimeout(t)
+  }, [open, autoFocusFirst, panelRef])
+
+  useEffect(() => {
+    if (!open || !trapFocus || !panelRef?.current) return
+    const panel = panelRef.current
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Tab') return
+      const focusable = getFocusableElements(panel)
+      if (focusable.length === 0) return
+      const first = focusable[0]!
+      const last = focusable[focusable.length - 1]!
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault()
+        last.focus()
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKeyDown)
+    return () => document.removeEventListener('keydown', onKeyDown)
+  }, [open, trapFocus, panelRef])
 
   return { position, close }
 }

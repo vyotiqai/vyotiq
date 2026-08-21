@@ -5,6 +5,8 @@ import { tmpdir } from 'os'
 import {
   atomicWriteJson,
   atomicWriteJsonAsync,
+  atomicWriteFileAsync,
+  atomicWriteBufferAsync,
   isTransientRenameError,
   renameSyncWithRetry,
   renameWithRetry
@@ -112,6 +114,32 @@ describe('atomicWrite Windows rename retry', () => {
       await atomicWriteJsonAsync(target, { status: 'done', step: 3 })
       expect(JSON.parse(readFileSync(target, 'utf8'))).toMatchObject({ status: 'done', step: 3 })
       expect(readdirSync(dir).filter((n) => n.endsWith('.tmp'))).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('async text and binary writers replace targets without temp leftovers', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-atomic-write-'))
+    try {
+      const textPath = join(dir, 'note.txt')
+      const binaryPath = join(dir, 'data.bin')
+      await atomicWriteFileAsync(textPath, 'hello\r\n')
+      await atomicWriteBufferAsync(binaryPath, Buffer.from([0, 1, 255]))
+      expect(readFileSync(textPath, 'utf8')).toBe('hello\r\n')
+      expect(readFileSync(binaryPath)).toEqual(Buffer.from([0, 1, 255]))
+      expect(readdirSync(dir).filter((n) => n.endsWith('.tmp'))).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('runs an atomic-write guard before writing and replacing', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-atomic-write-'))
+    try {
+      const guard = vi.fn()
+      await atomicWriteBufferAsync(join(dir, 'guarded.bin'), Buffer.from([1, 2, 3]), 0o644, guard)
+      expect(guard).toHaveBeenCalledTimes(2)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

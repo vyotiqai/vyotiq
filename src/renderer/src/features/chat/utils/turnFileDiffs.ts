@@ -11,8 +11,74 @@ import type { ChangedFile, ToolItem, TranscriptRow } from './transcriptRows'
 
 export const WRITING_TOOLS = new Set(['edit', 'multi_edit', 'str_replace', 'delete'])
 
+export function mergeChangedFileAction(
+  existing?: 'created' | 'modified' | 'deleted',
+  incoming?: 'created' | 'modified' | 'deleted'
+): 'created' | 'modified' | 'deleted' | undefined {
+  if (incoming === 'deleted') return 'deleted'
+  if (existing === 'deleted') return incoming === 'created' ? 'created' : 'deleted'
+  if (existing === 'created' || incoming === 'created') return 'created'
+  if (existing === 'modified' || incoming === 'modified') return 'modified'
+  return undefined
+}
+
 export function normalizeRelPath(path: string): string {
   return path.replace(/\\/g, '/').replace(/^\.\//, '')
+}
+
+export type CheckpointChangedFile = {
+  path: string
+  action: 'created' | 'modified' | 'deleted'
+}
+
+/** Merge writes_checkpoint paths into tool-arg changed files (terminal/MCP writes). */
+export function mergeCheckpointChangedFiles(
+  toolFiles: ChangedFile[],
+  checkpointFiles: readonly CheckpointChangedFile[] | null | undefined
+): ChangedFile[] {
+  if (!checkpointFiles?.length) return toolFiles
+  const map = new Map<string, ChangedFile>()
+  for (const file of toolFiles) {
+    const key = normalizeRelPath(file.path)
+    map.set(key, { ...file, path: key })
+  }
+  for (const cp of checkpointFiles) {
+    const key = normalizeRelPath(cp.path)
+    const existing = map.get(key)
+    if (existing) {
+      existing.action = mergeChangedFileAction(existing.action, cp.action)
+      if (!existing.action) delete existing.action
+      continue
+    }
+    map.set(key, {
+      path: key,
+      added: 0,
+      removed: cp.action === 'deleted' ? 1 : 0,
+      action: cp.action
+    })
+  }
+  return [...map.values()].sort((a, b) => a.path.localeCompare(b.path))
+}
+
+/** Checkpoint paths with no matching writing-tool row in the same scope. */
+export function checkpointOnlyChangedFiles(
+  toolFiles: ChangedFile[],
+  checkpointFiles: readonly CheckpointChangedFile[] | null | undefined
+): ChangedFile[] {
+  if (!checkpointFiles?.length) return []
+  const toolPaths = new Set(toolFiles.map((f) => normalizeRelPath(f.path)))
+  return checkpointFiles
+    .filter((cp) => !toolPaths.has(normalizeRelPath(cp.path)))
+    .map((cp) => {
+      const key = normalizeRelPath(cp.path)
+      return {
+        path: key,
+        added: 0,
+        removed: cp.action === 'deleted' ? 1 : 0,
+        action: cp.action
+      }
+    })
+    .sort((a, b) => a.path.localeCompare(b.path))
 }
 
 function isToolItem(item: UiItem): item is ToolItem {
@@ -128,8 +194,13 @@ export function collectSessionChangedFiles(items: UiItem[]): ChangedFile[] {
       if (!path) continue
       const key = normalizeRelPath(path)
       const existing = totals.get(key)
-      if (existing) existing.removed += 1
-      else totals.set(key, { path: key, added: 0, removed: 1 })
+      if (existing) {
+        existing.removed += 1
+        existing.action = mergeChangedFileAction(existing.action, 'deleted')
+        if (!existing.action) delete existing.action
+      } else {
+        totals.set(key, { path: key, added: 0, removed: 1, action: 'deleted' })
+      }
       continue
     }
     if (
@@ -145,8 +216,15 @@ export function collectSessionChangedFiles(items: UiItem[]): ChangedFile[] {
       if (existing) {
         existing.added += change.added
         existing.removed += change.removed
+        existing.action = mergeChangedFileAction(existing.action, change.action)
+        if (!existing.action) delete existing.action
       } else {
-        totals.set(key, { path: key, added: change.added, removed: change.removed })
+        totals.set(key, {
+          path: key,
+          added: change.added,
+          removed: change.removed,
+          ...(change.action ? { action: change.action } : {})
+        })
       }
     }
   }

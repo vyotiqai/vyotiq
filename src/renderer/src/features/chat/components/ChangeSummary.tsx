@@ -6,12 +6,51 @@ import { basename } from '../toolUi'
 import type { DiffLine } from '../toolUi'
 import { normalizeRelPath } from '../utils/turnFileDiffs'
 import { FileBadge } from './FileBadge'
-import { DiffPreview } from './DiffPreview'
+import { DiffPreview, type DiffLayout } from './DiffPreview'
+import { useRunSession } from '../RunSessionContext'
 
 export type ChangeSummaryFileResolution = 'kept' | 'discarded' | undefined
 
 /** Transcript compact receipt: first N rows, then “… Show N more”. */
 export const COMPACT_PREVIEW_COUNT = 4
+
+function ChangeFileName({ path }: { path: string }) {
+  const { onOpenWorkspaceFile } = useRunSession()
+  const label = basename(path)
+  if (!onOpenWorkspaceFile) {
+    return (
+      <span className="min-w-0 truncate text-fg" title={path}>
+        {label}
+      </span>
+    )
+  }
+  return (
+    <button
+      type="button"
+      className="min-w-0 truncate text-left text-fg underline-offset-2 hover:underline"
+      title={path}
+      onClick={() => {
+        onOpenWorkspaceFile(path)
+      }}
+    >
+      {label}
+    </button>
+  )
+}
+
+function FileActionBadge({
+  action
+}: {
+  action?: ChangedFile['action']
+}) {
+  if (action === 'created') {
+    return <span className="text-2xs text-success">New</span>
+  }
+  if (action === 'deleted') {
+    return <span className="text-2xs text-muted">Deleted</span>
+  }
+  return null
+}
 
 export const ChangeSummary = memo(function ChangeSummary({
   files,
@@ -27,7 +66,10 @@ export const ChangeSummary = memo(function ChangeSummary({
   onDiscardAll,
   onDiffExpandChange,
   compact = false,
-  onOpenChanges
+  onOpenChanges,
+  layout = 'unified',
+  wordWrap = false,
+  findQuery = ''
 }: {
   files: ChangedFile[]
   /** Path → tool-arg diff lines for this turn (optional). */
@@ -52,6 +94,9 @@ export const ChangeSummary = memo(function ChangeSummary({
   /** Transcript receipt — no Keep/Discard; Review opens Changes. */
   compact?: boolean
   onOpenChanges?: () => void
+  layout?: DiffLayout
+  wordWrap?: boolean
+  findQuery?: string
 }) {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set())
   const [showAll, setShowAll] = useState(false)
@@ -60,6 +105,12 @@ export const ChangeSummary = memo(function ChangeSummary({
     if (!resolvablePaths) return null
     return new Set(Array.from(resolvablePaths).map((p) => normalizeRelPath(p)))
   }, [resolvablePaths])
+
+  const visibleFiles = useMemo(() => {
+    const q = findQuery.trim().toLowerCase()
+    if (!q) return files
+    return files.filter((f) => f.path.toLowerCase().includes(q))
+  }, [files, findQuery])
 
   if (files.length === 0) return null
 
@@ -70,15 +121,21 @@ export const ChangeSummary = memo(function ChangeSummary({
     return resolvablePaths.has(path) || normalizedResolvablePaths.has(normalizeRelPath(path))
   }
 
-  const totalAdded = files.reduce((sum, file) => sum + file.added, 0)
-  const totalRemoved = files.reduce((sum, file) => sum + file.removed, 0)
-  const unresolved = files.filter((f) => {
+  const totalAdded = visibleFiles.reduce((sum, file) => sum + file.added, 0)
+  const totalRemoved = visibleFiles.reduce((sum, file) => sum + file.removed, 0)
+  const unresolved = visibleFiles.filter((f) => {
     if (!isResolvablePath(f.path)) return false
     const norm = normalizeRelPath(f.path)
     return !(fileResolutions?.get(norm) ?? fileResolutions?.get(f.path))
   })
 
-  const title = `${files.length} ${files.length === 1 ? 'File Changed' : 'Files Changed'}`
+  const allCreated = visibleFiles.length > 0 && visibleFiles.every((file) => file.action === 'created')
+  const allDeleted = visibleFiles.length > 0 && visibleFiles.every((file) => file.action === 'deleted')
+  const title = allCreated
+    ? `${visibleFiles.length} ${visibleFiles.length === 1 ? 'File Created' : 'Files Created'}`
+    : allDeleted
+      ? `${visibleFiles.length} ${visibleFiles.length === 1 ? 'File Deleted' : 'Files Deleted'}`
+      : `${visibleFiles.length} ${visibleFiles.length === 1 ? 'File Changed' : 'Files Changed'}`
   /** Match ChangedFilesBrowser shell when embedded in the Changes panel. */
   const panelSurface =
     'w-full overflow-hidden rounded-md border border-border/50 bg-surface'
@@ -86,8 +143,8 @@ export const ChangeSummary = memo(function ChangeSummary({
     'flex shrink-0 items-center border-b border-border/40 px-3 py-1.5 text-caption text-fg'
 
   if (compact) {
-    const visible = showAll ? files : files.slice(0, COMPACT_PREVIEW_COUNT)
-    const hiddenCount = files.length - COMPACT_PREVIEW_COUNT
+    const visible = showAll ? visibleFiles : visibleFiles.slice(0, COMPACT_PREVIEW_COUNT)
+    const hiddenCount = visibleFiles.length - COMPACT_PREVIEW_COUNT
     const canToggleMore = hiddenCount > 0
 
     return (
@@ -110,12 +167,11 @@ export const ChangeSummary = memo(function ChangeSummary({
             <li key={file.path} className="min-w-0 [&+&]:border-t [&+&]:border-border/60">
               <div className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-xs">
                 <FileBadge path={file.path} />
-                <span className="min-w-0 truncate text-fg" title={file.path}>
-                  {basename(file.path)}
-                </span>
+                <ChangeFileName path={file.path} />
                 <span className="ml-auto flex shrink-0 items-center gap-2 tabular-nums">
                   {file.added > 0 ? <span className="text-success">+{file.added}</span> : null}
                   {file.removed > 0 ? <span className="text-danger">-{file.removed}</span> : null}
+                  <FileActionBadge action={file.action} />
                 </span>
               </div>
             </li>
@@ -193,7 +249,7 @@ export const ChangeSummary = memo(function ChangeSummary({
         </span>
       </div>
       <ul className="m-0 list-none p-0">
-        {files.map((file) => {
+        {visibleFiles.map((file) => {
           const norm = normalizeRelPath(file.path)
           const resolution = fileResolutions?.get(norm) ?? fileResolutions?.get(file.path)
           const lines = fileDiffs?.get(norm) ?? fileDiffs?.get(file.path)
@@ -225,12 +281,11 @@ export const ChangeSummary = memo(function ChangeSummary({
                   <span className="w-3 shrink-0" aria-hidden />
                 )}
                 <FileBadge path={file.path} />
-                <span className="min-w-0 truncate text-fg" title={file.path}>
-                  {basename(file.path)}
-                </span>
+                <ChangeFileName path={file.path} />
                 <span className="ml-auto flex shrink-0 items-center gap-2 tabular-nums">
                   {file.added > 0 ? <span className="text-success">+{file.added}</span> : null}
                   {file.removed > 0 ? <span className="text-danger">-{file.removed}</span> : null}
+                  <FileActionBadge action={file.action} />
                   {resolution === 'kept' ? (
                     <span className="text-tertiary">Kept</span>
                   ) : resolution === 'discarded' ? (
@@ -270,7 +325,14 @@ export const ChangeSummary = memo(function ChangeSummary({
               {expanded ? (
                 <div className="bg-surface-2/30 px-3 py-1">
                   {lines && lines.length > 0 ? (
-                    <DiffPreview lines={lines} path={file.path} expanded />
+                    <DiffPreview
+                      lines={lines}
+                      path={file.path}
+                      expanded
+                      layout={layout}
+                      wordWrap={wordWrap}
+                      findQuery={findQuery}
+                    />
                   ) : (
                     <p className="m-0 py-1 text-caption text-muted">File deleted</p>
                   )}

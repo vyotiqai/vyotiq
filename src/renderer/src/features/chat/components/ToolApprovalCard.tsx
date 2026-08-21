@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
 import { QUESTION_GATE_BODY, QUESTION_GATE_FOOTER, QUESTION_GATE_HEADER, QUESTION_GATE_SURFACE } from '@renderer/lib/utils/layout'
@@ -12,16 +12,42 @@ const CHOICES: { decision: ToolApprovalDecision; label: string; primary?: boolea
   { decision: 'always', label: 'Always allow' }
 ]
 
+/** Browse-only agent browser tools — egress, not workspace mutation. */
+const NETWORK_BROWSE_TOOLS = new Set([
+  'browser_search',
+  'browser_navigate',
+  'browser_snapshot',
+  'browser_scroll',
+  'browser_tabs',
+  'browser_back',
+  'browser_forward',
+  'browser_wait_for_selector',
+  'browser_wait_for_url',
+  'browser_wait_for_text',
+  'browser_hover'
+  // Legacy web_fetch / web_search: transcript-only; not in TOOL_REGISTRY
+])
+
+function approvalKindLabel(toolName: string, mutating: boolean): string {
+  if (NETWORK_BROWSE_TOOLS.has(toolName)) return 'browse'
+  if (mutating) return 'mutating / network'
+  return 'read-only'
+}
+
 export const ToolApprovalCard = memo(function ToolApprovalCard({
   approval,
-  onDecide
+  onDecide,
+  captureFocus = true
 }: {
   approval: UiToolApproval
   onDecide?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
+  /** Focus Allow once only on the focused visible pane. */
+  captureFocus?: boolean
 }) {
   const [phase, setPhase] = useState<'idle' | 'pending' | 'done'>('idle')
   const [pendingDecision, setPendingDecision] = useState<ToolApprovalDecision | null>(null)
   const [localError, setLocalError] = useState<string | null>(null)
+  const allowOnceRef = useRef<HTMLButtonElement>(null)
   const mountedRef = useRef(true)
 
   useEffect(() => {
@@ -30,33 +56,60 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
     }
   }, [])
 
-  const decide = (decision: ToolApprovalDecision): void => {
-    if (phase !== 'idle' || !onDecide) return
-    setPhase('pending')
-    setPendingDecision(decision)
-    setLocalError(null)
-    void Promise.resolve(onDecide(approval.requestId, decision))
-      .then(() => {
-        if (!mountedRef.current) return
-        // Stay locked; parent usually removes the card on success.
-        setPhase('done')
-      })
-      .catch((err: unknown) => {
-        if (!mountedRef.current) return
-        setPhase('idle')
-        setPendingDecision(null)
-        setLocalError(err instanceof Error ? err.message : 'Could not send decision')
-      })
-  }
+  const decide = useCallback(
+    (decision: ToolApprovalDecision): void => {
+      if (phase !== 'idle' || !onDecide) return
+      setPhase('pending')
+      setPendingDecision(decision)
+      setLocalError(null)
+      void Promise.resolve(onDecide(approval.requestId, decision))
+        .then(() => {
+          if (!mountedRef.current) return
+          // Stay locked; parent usually removes the card on success.
+          setPhase('done')
+        })
+        .catch((err: unknown) => {
+          if (!mountedRef.current) return
+          setPhase('idle')
+          setPendingDecision(null)
+          setLocalError(err instanceof Error ? err.message : 'Could not send decision')
+        })
+    },
+    [phase, onDecide, approval.requestId]
+  )
 
   const busy = phase !== 'idle'
   const canDecide = Boolean(onDecide) && !busy
   const label = toolLabel(approval.toolName, 'running')
 
+  useEffect(() => {
+    if (!onDecide || !captureFocus) return
+    allowOnceRef.current?.focus()
+  }, [approval.requestId, onDecide, captureFocus])
+
+  useEffect(() => {
+    if (!canDecide || !captureFocus) return undefined
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key !== 'Escape') return
+      if (e.defaultPrevented) return
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      if (document.querySelector('[aria-expanded="true"][aria-haspopup]')) return
+      if (document.querySelector('[role="dialog"][aria-modal="true"]')) return
+      if (document.querySelector('[role="listbox"][aria-label="Slash commands"]')) return
+      if (document.querySelector('[role="listbox"][aria-label="Mentions"]')) return
+      e.preventDefault()
+      e.stopPropagation()
+      decide('deny')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [canDecide, decide, captureFocus])
+
   return (
     <div
       className={cn(QUESTION_GATE_SURFACE, 'w-full')}
       role="group"
+      data-tool-approval=""
       aria-busy={phase === 'pending' ? true : undefined}
     >
       <div className={cn(QUESTION_GATE_HEADER, 'text-fg')}>
@@ -69,7 +122,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
           {approval.summary}
         </span>
         <span className="ml-auto shrink-0 text-tertiary">
-          {approval.mutating ? 'mutating / network' : 'read-only'}
+          {approvalKindLabel(approval.toolName, approval.mutating)}
         </span>
       </div>
       {approval.argsPreview ? (
@@ -86,8 +139,10 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
         {CHOICES.map((choice) => (
           <button
             key={choice.decision}
+            ref={choice.primary ? allowOnceRef : undefined}
             type="button"
             disabled={!canDecide}
+            title={choice.primary ? `${choice.label} (Enter)` : undefined}
             className={cn(
               'rounded-md border px-2 py-1 text-xs vy-transition disabled:opacity-[var(--vy-disabled-opacity)]',
               choice.primary
@@ -102,6 +157,7 @@ export const ToolApprovalCard = memo(function ToolApprovalCard({
         <button
           type="button"
           disabled={!canDecide}
+          title="Deny (Esc)"
           className="ml-auto rounded-md border border-border px-2 py-1 text-xs text-danger vy-transition hover:bg-surface disabled:opacity-[var(--vy-disabled-opacity)]"
           onClick={() => decide('deny')}
         >

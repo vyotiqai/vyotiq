@@ -2,10 +2,17 @@ import { execFile as execFileCb } from 'child_process'
 import { existsSync, statSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { promisify } from 'util'
-import type { GitChangedFile, GitStatus, GitStatusResult } from '../../shared/ipc'
+import type {
+  GitBlameLine,
+  GitBlameResult,
+  GitChangedFile,
+  GitStatus,
+  GitStatusResult
+} from '../../shared/ipc'
 import { namedGitBranch } from '../../shared/utils/gitBranch'
 import { isSafeWorkspaceRelPath } from '../../shared/utils/workspacePath'
 import { resolveInsideWorkspace } from '../workspace/safePath'
+import { sanitizedTerminalEnv } from '../agent/tools/terminal'
 
 const execFile = promisify(execFileCb)
 
@@ -28,7 +35,7 @@ export async function gitAvailable(): Promise<boolean> {
       encoding: 'utf8',
       timeout: 5_000,
       windowsHide: true,
-      env: GIT_ENV
+      env: buildGitEnv()
     })
     gitBinaryCache = { ok: true, checkedAt: now }
     return true
@@ -43,24 +50,41 @@ export function resetGitAvailableCacheForTests(): void {
   gitBinaryCache = null
 }
 
-/** Beyond this the list stops being a summary and starts being a file tree. */
-const MAX_FILES = 200
 /** Counting lines means reading the file, so only do it for plausible source. */
 const UNTRACKED_LINE_COUNT_MAX_BYTES = 512 * 1024
 
 /**
  * Git never runs interactively here. A credential or editor prompt in a process
  * with no terminal would hang until the timeout instead of failing cleanly.
+ * Env matches terminal/MCP scrubbing so main-process secrets are not inherited.
+ * `GIT_PAGER=cat` keeps `git log` / `git show` from blocking on a pager.
  */
-const GIT_ENV = {
-  ...process.env,
-  GIT_TERMINAL_PROMPT: '0',
-  GIT_OPTIONAL_LOCKS: '0',
-  GCM_INTERACTIVE: 'never'
+function buildGitEnv(): NodeJS.ProcessEnv {
+  return {
+    ...sanitizedTerminalEnv(),
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_OPTIONAL_LOCKS: '0',
+    GCM_INTERACTIVE: 'never',
+    GIT_PAGER: 'cat'
+  }
 }
 
 export function isGitRepo(cwd: string): boolean {
   return existsSync(join(cwd, '.git'))
+}
+
+/** Current local branch, or null for a detached HEAD / non-repository. */
+export async function currentGitBranch(cwd: string): Promise<string | null> {
+  if (!isGitRepo(cwd)) return null
+  const raw = await gitQuiet(['symbolic-ref', '--quiet', '--short', 'HEAD'], cwd, READ_TIMEOUT_MS)
+  const branch = raw?.trim()
+  return branch || null
+}
+
+/** Whether the repository has at least one commit. */
+export async function hasGitCommits(cwd: string): Promise<boolean> {
+  if (!isGitRepo(cwd)) return false
+  return (await gitQuiet(['rev-parse', '--verify', 'HEAD'], cwd, READ_TIMEOUT_MS)) != null
 }
 
 async function git(args: string[], cwd: string, timeout: number): Promise<string> {
@@ -70,7 +94,7 @@ async function git(args: string[], cwd: string, timeout: number): Promise<string
     timeout,
     maxBuffer: MAX_BUFFER,
     windowsHide: true,
-    env: GIT_ENV
+    env: buildGitEnv()
   })
   return stdout
 }
@@ -111,11 +135,19 @@ function splitNul(out: string): string[] {
   return out.split('\0').filter((part) => part.length > 0)
 }
 
+const GIT_OBJECT_ID_RE = /^[0-9a-fA-F]{7,64}$/
+
+/** Accept only hex object ids so values like `--output=` cannot become git options. */
+export function parseGitObjectId(raw: string | null | undefined): string | null {
+  const sha = raw?.trim() ?? ''
+  return GIT_OBJECT_ID_RE.test(sha) ? sha : null
+}
+
 function countFileLines(cwd: string, relPath: string): number {
   try {
     // Directory placeholders from `git status -unormal` (e.g. `node_modules/`).
     if (relPath.endsWith('/') || relPath.endsWith('\\')) return 0
-    const full = join(cwd, relPath)
+    const full = resolveInsideWorkspace(cwd, relPath)
     const stat = statSync(full)
     if (!stat.isFile() || stat.size > UNTRACKED_LINE_COUNT_MAX_BYTES) return 0
     const text = readFileSync(full, 'utf8')
@@ -233,7 +265,7 @@ export async function readGitStatus(cwd: string): Promise<GitStatusResult> {
 
   const branchRaw = await gitQuiet(['rev-parse', '--abbrev-ref', 'HEAD'], cwd, READ_TIMEOUT_MS)
   const branch = namedGitBranch(branchRaw)
-  const hasCommits = (await gitQuiet(['rev-parse', '--verify', 'HEAD'], cwd, READ_TIMEOUT_MS)) != null
+  const hasCommits = await hasGitCommits(cwd)
 
   const stagedArgs = hasCommits
     ? ['diff', '--numstat', '--no-renames', '-z', '--cached', 'HEAD']
@@ -279,7 +311,6 @@ export async function readGitStatus(cwd: string): Promise<GitStatusResult> {
     READ_TIMEOUT_MS
   )
   if (porcelain != null) {
-    let untrackedCounted = 0
     for (const record of splitNul(porcelain)) {
       const code = record.slice(0, 2)
       const path = record.slice(3)
@@ -288,10 +319,8 @@ export async function readGitStatus(cwd: string): Promise<GitStatusResult> {
       const flags = flagsFromPorcelain(code)
 
       if (code === '??') {
-        const canCount =
-          shouldCountUntrackedLines(path) && untrackedCounted < MAX_FILES
+        const canCount = shouldCountUntrackedLines(path)
         const added = canCount ? countFileLines(cwd, path) : 0
-        if (canCount) untrackedCounted += 1
         tracked.set(path, {
           ...emptyFile(path, 'untracked'),
           added,
@@ -321,7 +350,7 @@ export async function readGitStatus(cwd: string): Promise<GitStatusResult> {
   const all = [...tracked.values()]
     .filter((file) => !isNoisePath(file.path))
     .sort((a, b) => a.path.localeCompare(b.path))
-  const files = all.slice(0, MAX_FILES)
+  const files = all
 
   let added = 0
   let removed = 0
@@ -345,18 +374,16 @@ export async function readGitStatus(cwd: string): Promise<GitStatusResult> {
   return { kind: 'ok', status }
 }
 
-const DIFF_CAP_CHARS = 100_000
-
 export type GitDiffOptions = {
   path?: string
   staged?: boolean
   ignoreWhitespace?: boolean
   sha?: string
+  vsHead?: boolean
 }
 
 function capDiff(text: string): string {
-  if (text.length <= DIFF_CAP_CHARS) return text
-  return text.slice(0, DIFF_CAP_CHARS) + `\n… (diff truncated at ${DIFF_CAP_CHARS} chars)`
+  return text
 }
 
 /**
@@ -414,16 +441,15 @@ export async function readGitDiff(
   const path = requestedPath ? sanitizeRelativePaths([requestedPath])[0] : undefined
   if (requestedPath && !path) return { ok: false, error: 'Invalid path' }
 
-  const sha = opts.sha?.trim()
+  const sha = opts.sha ? parseGitObjectId(opts.sha) : null
+  if (opts.sha && !sha) return { ok: false, error: 'Invalid commit' }
   if (sha) {
-    const args = ['show', '--no-color', '--no-ext-diff', '--format=']
+    const args = ['show', '--no-color', '--no-ext-diff', '--pretty=format:', '--patch']
     if (opts.ignoreWhitespace) args.push('-w')
-    args.push(sha)
-    if (path) {
-      args.push('--', path)
-    }
+    args.push('--end-of-options', sha)
+    if (path) args.push('--', path)
     try {
-      const stdout = await git(args, cwd, READ_TIMEOUT_MS)
+      const stdout = await gitDiffStdout(args, cwd, READ_TIMEOUT_MS)
       const text = stdout.trimEnd()
       if (!text) return { ok: true, content: '(no changes in commit)' }
       return { ok: true, content: capDiff(text) }
@@ -433,11 +459,31 @@ export async function readGitDiff(
     }
   }
 
-  const hasCommits =
-    (await gitQuiet(['rev-parse', '--verify', 'HEAD'], cwd, READ_TIMEOUT_MS)) != null
+  const hasCommits = await hasGitCommits(cwd)
+  if (opts.vsHead && !hasCommits) {
+    const [staged, unstaged] = await Promise.all([
+      readGitDiff(cwd, { ...opts, staged: true, vsHead: false }),
+      readGitDiff(cwd, { ...opts, staged: false, vsHead: false })
+    ])
+    if (!staged.ok) return staged
+    if (!unstaged.ok) return unstaged
+    const parts = [staged.content, unstaged.content].filter(
+      (content) => !/^\(no (?:staged|unstaged|uncommitted) changes\)$/i.test(content.trim())
+    )
+    const combined = parts.join('\n\n')
+    return {
+      ok: true,
+      content: combined ? capDiff(combined) : '(no uncommitted changes)'
+    }
+  }
+
   const args = ['diff', '--no-color', '--no-ext-diff']
   if (opts.ignoreWhitespace) args.push('-w')
-  if (opts.staged || !hasCommits) args.push('--cached')
+  if (opts.vsHead && hasCommits) {
+    args.push('HEAD')
+  } else if (opts.staged) {
+    args.push('--cached')
+  }
   if (path) {
     args.push('--', path)
   }
@@ -455,11 +501,102 @@ export async function readGitDiff(
 
     return {
       ok: true,
-      content: opts.staged || !hasCommits ? '(no staged changes)' : '(no unstaged changes)'
+      content: opts.vsHead
+        ? '(no uncommitted changes)'
+        : opts.staged
+          ? '(no staged changes)'
+          : '(no unstaged changes)',
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     return { ok: false, error: message }
+  }
+}
+
+const GIT_BLAME_MAX_LINES = 20_000
+
+type BlameCursor = {
+  sha: string
+  author: string
+  date: string
+  finalLine: number
+  remaining: number
+}
+
+function blameDate(raw: string): string {
+  const seconds = Number(raw)
+  if (!Number.isFinite(seconds)) return ''
+  return new Date(seconds * 1_000).toISOString()
+}
+
+/** Read bounded line ownership metadata without exposing raw git process output. */
+export async function readGitBlame(cwd: string, relPath: string): Promise<GitBlameResult> {
+  if (!(await gitAvailable())) {
+    return { kind: 'unavailable', detail: 'Git is not installed or not on PATH' }
+  }
+  if (!isGitRepo(cwd)) {
+    return { kind: 'not_repo', detail: 'This workspace is not a git repository' }
+  }
+  const path = sanitizeRelativePaths([relPath])[0]
+  if (!path) return { kind: 'unavailable', detail: 'Invalid workspace-relative path' }
+
+  let stdout: string
+  try {
+    stdout = await git(['blame', '--line-porcelain', '--', path], cwd, READ_TIMEOUT_MS)
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    return {
+      kind: 'unavailable',
+      detail: /not a valid object name|no such path|cannot stat/i.test(detail)
+        ? 'Git blame is unavailable until this file has a committed history'
+        : detail
+    }
+  }
+
+  const lines: GitBlameLine[] = []
+  let cursor: BlameCursor | null = null
+  for (const rawLine of stdout.split(/\r?\n/)) {
+    const header = /^([0-9a-f]{7,64}) \d+ (\d+)(?: (\d+))?$/.exec(rawLine)
+    if (header) {
+      cursor = {
+        sha: header[1]!,
+        author: '',
+        date: '',
+        finalLine: Number(header[2]),
+        remaining: Math.max(1, Number(header[3] ?? 1))
+      }
+      continue
+    }
+    if (!cursor) continue
+    if (rawLine.startsWith('author ')) {
+      cursor.author = rawLine.slice('author '.length)
+      continue
+    }
+    if (rawLine.startsWith('author-time ')) {
+      cursor.date = blameDate(rawLine.slice('author-time '.length))
+      continue
+    }
+    if (!rawLine.startsWith('\t')) continue
+    if (lines.length >= GIT_BLAME_MAX_LINES) break
+    const sha = /^0+$/.test(cursor.sha) ? null : cursor.sha
+    lines.push({
+      line: lines.length + 1,
+      sha,
+      shortSha: sha ? sha.slice(0, 7) : null,
+      author: cursor.author || 'Unknown author',
+      date: cursor.date,
+      text: rawLine.slice(1)
+    })
+    cursor.finalLine += 1
+    cursor.remaining -= 1
+    if (cursor.remaining <= 0) cursor = null
+  }
+
+  return {
+    kind: 'ok',
+    path,
+    lines,
+    truncated: lines.length >= GIT_BLAME_MAX_LINES
   }
 }
 
@@ -471,20 +608,45 @@ export type GitLogEntry = {
   relativeDate: string
 }
 
+function isEmptyHistoryError(message: string): boolean {
+  return /does not have any commits|bad default revision|ambiguous argument 'HEAD'/i.test(
+    message
+  )
+}
+
+/** Unit-separator fields so a tab in the subject cannot shift columns. */
+const GIT_LOG_FORMAT = '%H%x1f%h%x1f%s%x1f%an%x1f%cr'
+
 /** Recent commits for the Changes → Commits scope. */
 export async function readGitLog(cwd: string, limit = 40): Promise<GitLogEntry[]> {
   if (!isGitRepo(cwd)) return []
   const capped = Math.min(Math.max(1, limit), 100)
-  const stdout = await gitQuiet(
-    ['log', `-n${capped}`, '--format=%H%x09%h%x09%s%x09%an%x09%cr'],
-    cwd,
-    READ_TIMEOUT_MS
-  )
-  if (!stdout?.trim()) return []
+  let stdout: string
+  try {
+    stdout = await git(
+      [
+        '-c',
+        'log.showSignature=false',
+        'log',
+        `--max-count=${capped}`,
+        '--no-decorate',
+        `--format=${GIT_LOG_FORMAT}`
+      ],
+      cwd,
+      READ_TIMEOUT_MS
+    )
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (isEmptyHistoryError(message)) return []
+    throw err
+  }
+  if (!stdout.trim()) return []
   const out: GitLogEntry[] = []
-  for (const line of stdout.split('\n')) {
+  for (const raw of stdout.split('\n')) {
+    const line = raw.replace(/\r$/, '')
     if (!line.trim()) continue
-    const [sha, shortSha, subject, author, relativeDate] = line.split('\t')
+    const [shaRaw, shortSha, subject, author, relativeDate] = line.split('\x1f')
+    const sha = parseGitObjectId(shaRaw)
     if (!sha || !shortSha) continue
     out.push({
       sha,
@@ -497,40 +659,59 @@ export async function readGitLog(cwd: string, limit = 40): Promise<GitLogEntry[]
   return out
 }
 
+function commitFileFromNumstat(record: string): GitChangedFile | null {
+  const parts = record.split('\t')
+  if (parts.length < 3) return null
+  const addedRaw = parts[0] ?? ''
+  const removedRaw = parts[1] ?? ''
+  const path = parts.slice(2).join('\t').replace(/^"(.*)"$/, '$1').trim()
+  if (!path) return null
+  const added = addedRaw === '-' ? 0 : Number(addedRaw)
+  const removed = removedRaw === '-' ? 0 : Number(removedRaw)
+  const binary = addedRaw === '-'
+  const addedN = Number.isFinite(added) ? added : 0
+  const removedN = Number.isFinite(removed) ? removed : 0
+  let status: GitChangedFile['status'] = 'modified'
+  if (!binary && addedN > 0 && removedN === 0) status = 'added'
+  if (!binary && addedN === 0 && removedN > 0) status = 'deleted'
+  return {
+    path,
+    status,
+    added: addedN,
+    removed: removedN,
+    addedStaged: 0,
+    removedStaged: 0,
+    addedUnstaged: addedN,
+    removedUnstaged: removedN,
+    binary,
+    staged: false,
+    unstaged: false
+  }
+}
+
 /** Files changed in a single commit (numstat). */
 export async function readGitCommitFiles(cwd: string, sha: string): Promise<GitChangedFile[]> {
   if (!isGitRepo(cwd)) return []
-  const stdout = await gitQuiet(
-    ['show', '--numstat', '--format=', '--no-renames', sha.trim()],
+  const id = parseGitObjectId(sha)
+  if (!id) throw new Error('Invalid commit')
+  const stdout = await git(
+    [
+      'show',
+      '--numstat',
+      '--pretty=format:',
+      '--no-renames',
+      '-z',
+      '--end-of-options',
+      id
+    ],
     cwd,
     READ_TIMEOUT_MS
   )
-  if (!stdout?.trim()) return []
+  if (!stdout.trim()) return []
   const out: GitChangedFile[] = []
-  for (const line of stdout.split('\n')) {
-    if (!line.trim()) continue
-    const parts = line.split('\t')
-    if (parts.length < 3) continue
-    const [addedRaw, removedRaw, path] = parts as [string, string, string]
-    const added = addedRaw === '-' ? 0 : Number(addedRaw)
-    const removed = removedRaw === '-' ? 0 : Number(removedRaw)
-    const binary = addedRaw === '-'
-    let status: GitChangedFile['status'] = 'modified'
-    if (!binary && added > 0 && removed === 0) status = 'added'
-    if (!binary && added === 0 && removed > 0) status = 'deleted'
-    out.push({
-      path,
-      status,
-      added: Number.isFinite(added) ? added : 0,
-      removed: Number.isFinite(removed) ? removed : 0,
-      addedStaged: 0,
-      removedStaged: 0,
-      addedUnstaged: Number.isFinite(added) ? added : 0,
-      removedUnstaged: Number.isFinite(removed) ? removed : 0,
-      binary,
-      staged: false,
-      unstaged: false
-    })
+  for (const record of splitNul(stdout)) {
+    const file = commitFileFromNumstat(record)
+    if (file) out.push(file)
   }
   return out.sort((a, b) => a.path.localeCompare(b.path))
 }
@@ -585,11 +766,116 @@ async function commitStagedAndMaybePush(
   }
 
   // A first push on a fresh branch has no upstream, so set one rather than fail.
-  const branch = (await gitQuiet(['rev-parse', '--abbrev-ref', 'HEAD'], cwd, READ_TIMEOUT_MS))?.trim()
-  const pushArgs =
-    branch && branch !== 'HEAD' ? ['push', '--set-upstream', 'origin', branch] : ['push']
+  const pushArgs = await resolvePushArgs(cwd)
   await git(pushArgs, cwd, PUSH_TIMEOUT_MS)
   return { committed: true, pushed: true, detail: 'Committed and pushed' }
+}
+
+function parseRemoteNames(raw: string | null): string[] {
+  if (!raw) return []
+  return raw
+    .split(/\r?\n/)
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0 && !name.startsWith('-'))
+}
+
+async function resolvePushArgs(cwd: string): Promise<string[]> {
+  const branch = (await gitQuiet(['rev-parse', '--abbrev-ref', 'HEAD'], cwd, READ_TIMEOUT_MS))?.trim()
+  if (!branch || branch === 'HEAD') return ['push']
+
+  const upstream = await gitQuiet(
+    ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{upstream}'],
+    cwd,
+    READ_TIMEOUT_MS
+  )
+  if (upstream?.trim()) return ['push']
+
+  const remotes = parseRemoteNames(await gitQuiet(['remote'], cwd, READ_TIMEOUT_MS))
+  const remote = remotes.includes('origin') ? 'origin' : remotes[0]
+  if (!remote) return ['push']
+  return ['push', '--set-upstream', remote, branch]
+}
+
+/** Whether this repository has at least one configured remote. */
+export async function hasGitRemote(cwd: string): Promise<boolean> {
+  if (!isGitRepo(cwd)) return false
+  return parseRemoteNames(await gitQuiet(['remote'], cwd, READ_TIMEOUT_MS)).length > 0
+}
+
+function normalizeRemoteName(remote: string): string {
+  const name = remote.trim()
+  if (!name || name.startsWith('-') || /[\s\\]/.test(name)) {
+    throw new Error('Invalid git remote name')
+  }
+  return name
+}
+
+async function readGitRemoteUrl(cwd: string, name: string): Promise<string | null> {
+  return (await gitQuiet(['remote', 'get-url', name], cwd, READ_TIMEOUT_MS))?.trim() || null
+}
+
+/** URL for one configured remote, or null when the remote does not exist. */
+export async function gitRemoteUrl(cwd: string, remote = 'origin'): Promise<string | null> {
+  if (!isGitRepo(cwd)) return null
+  return readGitRemoteUrl(cwd, normalizeRemoteName(remote))
+}
+
+/** Add a GitHub HTTPS remote without replacing an existing remote. */
+export async function addGitRemote(
+  cwd: string,
+  url: string,
+  remote = 'origin'
+): Promise<void> {
+  if (!isGitRepo(cwd)) throw new Error('Not a git repository')
+  const name = normalizeRemoteName(remote)
+  const target = url.trim()
+  let parsed: URL
+  try {
+    parsed = new URL(target)
+  } catch {
+    throw new Error('GitHub repository returned an invalid remote URL')
+  }
+  if (parsed.protocol !== 'https:' || parsed.hostname.toLowerCase() !== 'github.com') {
+    throw new Error('GitHub repository returned an unsupported remote URL')
+  }
+  const existing = await readGitRemoteUrl(cwd, name)
+  if (existing) {
+    const comparable = (value: string) =>
+      value.trim().replace(/\/+$/, '').replace(/\.git$/i, '').toLowerCase()
+    if (comparable(existing) === comparable(target)) return
+    throw new Error(`Git remote "${name}" already exists`)
+  }
+  await git(['remote', 'add', name, target], cwd, WRITE_TIMEOUT_MS)
+}
+
+function validBranchName(name: string): boolean {
+  return Boolean(name) && !name.startsWith('-') && !name.includes('..') && !/[\s\\]/.test(name)
+}
+
+/** Create and check out a new local topic branch without touching the worktree. */
+export async function createBranch(cwd: string, branch: string): Promise<{ detail: string }> {
+  if (!isGitRepo(cwd)) throw new Error('Not a git repository')
+  const name = branch.trim()
+  if (!validBranchName(name)) throw new Error('Invalid branch name')
+  const checked = await gitQuiet(['check-ref-format', '--branch', name], cwd, READ_TIMEOUT_MS)
+  if (!checked?.trim()) throw new Error('Invalid branch name')
+  const exists = await gitQuiet(
+    ['show-ref', '--verify', '--quiet', `refs/heads/${name}`],
+    cwd,
+    READ_TIMEOUT_MS
+  )
+  if (exists !== null) throw new Error(`Branch already exists: ${name}`)
+  await git(['switch', '--create', name], cwd, WRITE_TIMEOUT_MS)
+  return { detail: `Created and checked out ${name}` }
+}
+
+/** Push the current branch, setting an upstream when needed. */
+export async function pushCurrentBranch(cwd: string): Promise<void> {
+  if (!isGitRepo(cwd)) throw new Error('Not a git repository')
+  if (!(await hasGitRemote(cwd))) {
+    throw new Error('No git remote configured. Add a GitHub remote before pushing.')
+  }
+  await git(await resolvePushArgs(cwd), cwd, PUSH_TIMEOUT_MS)
 }
 
 export async function commitAll(
@@ -607,6 +893,14 @@ export async function commitAll(
   }
 
   return commitStagedAndMaybePush(cwd, message, push)
+}
+
+/** Create a baseline commit when a newly connected repository has no history. */
+export async function commitEmpty(cwd: string, message: string): Promise<void> {
+  if (!isGitRepo(cwd)) throw new Error('Not a git repository')
+  const trimmed = message.trim()
+  if (!trimmed) throw new Error('Commit message is required')
+  await git(['commit', '--allow-empty', '--only', '-m', trimmed], cwd, WRITE_TIMEOUT_MS)
 }
 
 export type CommitPathsOutcome = CommitOutcome & {
@@ -731,9 +1025,12 @@ export async function checkoutBranch(
 ): Promise<{ detail: string }> {
   if (!isGitRepo(cwd)) throw new Error('Not a git repository')
   const name = branch.trim()
-  if (!name || name.includes('..') || /[\s\\]/.test(name)) {
+  if (!name || name.startsWith('-') || name.includes('..') || /[\s\\]/.test(name)) {
     throw new Error('Invalid branch name')
   }
-  await git(['checkout', name], cwd, WRITE_TIMEOUT_MS)
-  return { detail: `Checked out ${name}` }
+  const listed = await listLocalBranches(cwd)
+  const match = listed.find((entry) => entry.name === name)
+  if (!match) throw new Error(`Unknown branch: ${name}`)
+  await git(['checkout', match.name], cwd, WRITE_TIMEOUT_MS)
+  return { detail: `Checked out ${match.name}` }
 }

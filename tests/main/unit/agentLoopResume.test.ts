@@ -55,7 +55,7 @@ const assembleContextMock = vi.fn(async (input: {
   system: 'system',
   estimatedTokens: 100,
   layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-  contextShrunk: false,
+  overflow: false,
   anthropicNative: undefined,
   compaction: null
 }))
@@ -90,6 +90,10 @@ vi.mock('@main/agent/providers', () => ({
   })
 }))
 
+vi.mock('@main/agent/tools', () => ({
+  executeTool: vi.fn()
+}))
+
 import { runAgent } from '@main/agent/loop'
 import { isActive, registerRunAbort, resetActiveRunsForTests } from '@main/agent/runRegistry'
 import {
@@ -97,13 +101,18 @@ import {
   createRun,
   flushMessageAppends,
   flushStatusWrites,
+  interruptOrphanRuns,
   loadCompaction,
   loadMessages,
   loadStatus,
   saveCompaction,
+  syncMessages,
   updateStatus
 } from '@main/agent/state'
+import { RUN_INTERRUPTED_ERROR } from '@shared/runInterrupt'
+import { LOOP_CHECKPOINT_VERSION } from '@shared/ipc/schemas/agent'
 import { resolveRunDir } from '@main/storage/paths'
+import { saveLoopCheckpoint, loadLoopCheckpoint } from '@main/agent/loopCheckpoint'
 
 describe('runAgent session continuation', () => {
   let workspace: string
@@ -374,7 +383,7 @@ describe('runAgent session continuation', () => {
     expect(clamped?.summary).toBe('prior summary')
   })
 
-  it('persists server-side compaction from a stream done chunk', async () => {
+  it('ignores provider done.compaction (LLM-only compaction)', async () => {
     const runId = 'server-compact'
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       yield { type: 'text', text: 'folding' }
@@ -394,45 +403,251 @@ describe('runAgent session continuation', () => {
     }
 
     const record = loadCompaction(resolveRunDir(workspace, runId))
-    expect(record).not.toBeNull()
-    expect(record?.summary).toContain('Server compaction')
+    expect(record).toBeNull()
   })
 
-  it('persists foldedMessages on compaction emit when context shrinks', async () => {
-    const runId = 'fold-persist'
+  it('does not emit compaction_started when there is nothing to fold', async () => {
+    const runId = 'fold-skip'
     assembleContextMock.mockImplementationOnce(async (input: { messages: unknown[] }) => ({
-      messages: input.messages.slice(-1),
+      messages: input.messages,
       system: 'system',
-      estimatedTokens: 80,
+      estimatedTokens: 200_000,
       layers: { system: 10, history: 30, tools: 20, buffer: 20 },
-      contextShrunk: true,
+      overflow: true,
       anthropicNative: undefined,
-      compaction: {
-        summary: '## Session Intent\nFolded prior turns',
-        createdAt: new Date().toISOString(),
-        tokenEstimate: 40
-      }
+      compaction: null
     }))
 
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      yield { type: 'text', text: 'after fold' }
+      yield { type: 'text', text: 'too short to fold' }
+      yield { type: 'done' }
     })
 
-    for await (const _ev of runAgent({
+    const events: Array<{ type: string }> = []
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'one' }],
+      workspacePath: workspace
+    })) {
+      events.push(ev)
+    }
+
+    expect(events.some((e) => e.type === 'compaction_started')).toBe(false)
+    expect(events.some((e) => e.type === 'compaction')).toBe(false)
+    expect(loadCompaction(resolveRunDir(workspace, runId))).toBeNull()
+  })
+
+  it('persists foldedMessages after auto LLM compaction', async () => {
+    const runId = 'fold-persist'
+    assembleContextMock.mockImplementationOnce(async (input: { messages: unknown[] }) => ({
+      messages: input.messages,
+      system: 'system',
+      estimatedTokens: 200_000,
+      layers: { system: 10, history: 30, tools: 20, buffer: 20 },
+      overflow: true,
+      anthropicNative: undefined,
+      compaction: null
+    }))
+
+    streamChat.mockImplementation(async function* (req: {
+      tools?: unknown[]
+    }): AsyncGenerator<StreamChunk> {
+      if (!Array.isArray(req.tools) || req.tools.length === 0) {
+        yield { type: 'text', text: '## Session Intent\nFolded prior turns' }
+        yield { type: 'done' }
+        return
+      }
+      yield { type: 'text', text: 'after fold' }
+      yield { type: 'done' }
+    })
+
+    const events: Array<{ type: string }> = []
+    for await (const ev of runAgent({
       runId,
       messages: [
         { role: 'user', content: 'one' },
         { role: 'assistant', content: 'two' },
-        { role: 'user', content: 'three' }
+        { role: 'user', content: 'three' },
+        { role: 'assistant', content: 'four' }
       ],
       workspacePath: workspace
     })) {
-      // drain
+      events.push(ev)
     }
+
+    expect(events.some((e) => e.type === 'compaction_started')).toBe(true)
+    expect(events.some((e) => e.type === 'compaction')).toBe(true)
+    const startedAt = events.findIndex((e) => e.type === 'compaction_started')
+    const foldedAt = events.findIndex((e) => e.type === 'compaction')
+    expect(startedAt).toBeGreaterThanOrEqual(0)
+    expect(foldedAt).toBeGreaterThan(startedAt)
 
     const record = loadCompaction(resolveRunDir(workspace, runId))
     expect(record?.foldedMessages).toBe(2)
     expect(record?.summary).toContain('Folded prior turns')
+  })
+
+  it('resumes after orphan interrupt using disk messages without a new user turn', async () => {
+    const runId = 'orphan-resume'
+    const runDir = createRun(workspace, runId, 'crash goal')
+    syncMessages(runDir, [
+      { role: 'user', content: 'do work' },
+      { role: 'assistant', content: 'partial reply' }
+    ])
+    await updateStatus(runDir, { status: 'running', step: 4 }, { sync: true })
+
+    const interrupted = await interruptOrphanRuns([workspace])
+    expect(interrupted).toBe(1)
+    expect(loadStatus(runDir)).toMatchObject({
+      status: 'cancelled',
+      resumable: true,
+      step: 4,
+      error: RUN_INTERRUPTED_ERROR
+    })
+
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'resumed work' }
+    })
+    registerRunAbort(runId, workspace)
+
+    for await (const _ev of runAgent({
+      runId,
+      messages: [],
+      workspacePath: workspace,
+      resume: true
+    })) {
+      // drain
+    }
+
+    expect(loadMessages(workspace, runId)).toEqual([
+      { role: 'user', content: 'do work' },
+      { role: 'assistant', content: 'partial reply' },
+      { role: 'assistant', content: 'resumed work' }
+    ])
+    expect(loadStatus(runDir)?.resumable).toBeUndefined()
+    expect(loadStatus(runDir)?.status).toBe('done')
+  })
+
+  it('emits a terminal-loss notice when resuming an interrupted run', async () => {
+    const runId = 'terminal-loss-resume'
+    const runDir = createRun(workspace, runId, 'crash goal')
+    syncMessages(runDir, [{ role: 'user', content: 'run terminal' }])
+    await updateStatus(runDir, { status: 'cancelled', resumable: true, step: 2 }, { sync: true })
+
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'continued' }
+    })
+    registerRunAbort(runId, workspace)
+
+    const events: Array<{ type: string; message?: string }> = []
+    for await (const ev of runAgent({
+      runId,
+      messages: [],
+      workspacePath: workspace,
+      resume: true
+    })) {
+      events.push(ev)
+    }
+
+    expect(
+      events.some(
+        (e) =>
+          e.type === 'token_cost_hint' &&
+          e.message?.includes('background terminal sessions from before the interruption')
+      )
+    ).toBe(true)
+  })
+
+  it('auto-continues truncation after resume even when checkpoint already counted continues', async () => {
+    const runId = 'checkpoint-truncation-resume'
+    const runDir = createRun(workspace, runId, 'crash goal')
+    syncMessages(runDir, [{ role: 'user', content: 'long answer' }])
+    await updateStatus(runDir, { status: 'cancelled', resumable: true, step: 3 }, { sync: true })
+    saveLoopCheckpoint(runDir, {
+      version: LOOP_CHECKPOINT_VERSION,
+      step: 3,
+      invokeId: 2,
+      updatedAt: new Date().toISOString(),
+      truncationContinues: 2,
+      overflowRetryUsed: true
+    })
+
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield { type: 'text', text: 'still going' }
+        yield { type: 'done', stopReason: 'length' }
+      } else {
+        yield { type: 'text', text: 'completed' }
+        yield { type: 'done', stopReason: 'stop' }
+      }
+    })
+    registerRunAbort(runId, workspace)
+
+    const events: Array<{ type: string; reason?: string; message?: string; status?: string }> = []
+    for await (const ev of runAgent({
+      runId,
+      messages: [],
+      workspacePath: workspace,
+      resume: true
+    })) {
+      events.push(ev)
+    }
+
+    const incomplete = events.filter((e) => e.type === 'incomplete')
+    expect(incomplete.length).toBeGreaterThanOrEqual(1)
+    expect(incomplete[0]?.reason).toBe('truncated')
+    expect(incomplete[0]?.message).toMatch(/continuing automatically/i)
+    expect(streamChat).toHaveBeenCalledTimes(2)
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+  })
+
+  it('does not restore loop checkpoint on follow-up resume after done', async () => {
+    const runId = 'checkpoint-follow-up-resume'
+    const runDir = createRun(workspace, runId, 'first goal')
+    syncMessages(runDir, [{ role: 'user', content: 'first' }])
+    await updateStatus(runDir, { status: 'done', resumable: false, step: 2 }, { sync: true })
+    saveLoopCheckpoint(runDir, {
+      version: LOOP_CHECKPOINT_VERSION,
+      step: 2,
+      invokeId: 1,
+      updatedAt: new Date().toISOString(),
+      truncationContinues: 2,
+      overflowRetryUsed: true
+    })
+
+    let calls = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      calls += 1
+      if (calls === 1) {
+        yield { type: 'text', text: 'follow-up answer' }
+        yield { type: 'done', stopReason: 'length' }
+        return
+      }
+      yield { type: 'text', text: 'completed' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+    registerRunAbort(runId, workspace)
+
+    const events: Array<{ type: string; reason?: string; message?: string; status?: string }> = []
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'follow up' }],
+      workspacePath: workspace,
+      resume: true
+    })) {
+      events.push(ev)
+    }
+
+    expect(
+      events.some(
+        (e) => e.type === 'incomplete' && e.message?.match(/continuing automatically/i)
+      )
+    ).toBe(true)
+    expect(streamChat).toHaveBeenCalledTimes(2)
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+    expect(loadLoopCheckpoint(runDir)).toBeNull()
   })
 })
 

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor, act } from '@testing-library/react'
 import { Composer } from '@renderer/features/chat/components/composer/Composer'
 import { mentionMarker } from '@renderer/features/chat/components/composer/mentionModel'
+import { emptySecretStatus } from '@shared/ipc'
 
 const slashCommands = [
   {
@@ -25,6 +26,15 @@ const slashCommands = [
     group: 'Skills',
     availability: 'ready' as const,
     packageId: 'code-review'
+  },
+  {
+    id: 'builtin:create-skill',
+    trigger: 'create-skill',
+    label: 'Create skill',
+    description: 'Create a new skill under .vyotiq/skills/',
+    kind: 'builtin' as const,
+    group: 'App',
+    availability: 'ready' as const
   }
 ]
 
@@ -37,6 +47,12 @@ beforeEach(() => {
       slashCommandsResolve: vi.fn().mockImplementation(async (payload: { id: string }) => {
         if (payload.id === 'builtin:compact') {
           return { ok: true, data: { action: 'client', clientAction: 'compact' } }
+        }
+        if (payload.id === 'builtin:create-skill') {
+          return {
+            ok: true,
+            data: { action: 'client', clientAction: 'create_skill', trailingText: 'personal notes' }
+          }
         }
         if (payload.id === 'skill:code-review') {
           return {
@@ -79,7 +95,6 @@ const baseProps = {
   chatSettings: {
     provider: 'ollama' as const,
     model: 'qwen2.5',
-    compactionTriggerRatio: 0.7,
     keepRecentTurns: 12,
     thinkingEnabled: true,
     thinkingEffort: 'medium' as const,
@@ -88,6 +103,7 @@ const baseProps = {
   onChatSettingsChange: vi.fn(),
   onSend: vi.fn().mockResolvedValue(true),
   onStop: vi.fn(),
+  secrets: emptySecretStatus(),
   variant: 'hero' as const
 }
 
@@ -113,6 +129,22 @@ describe('Composer slash commands', () => {
       expect(screen.getByRole('listbox', { name: /Slash commands/i })).toBeTruthy()
     })
     expect(screen.getByText('/compact')).toBeTruthy()
+  })
+
+  it('does not accept a slash menu item when Enter is committing IME composition', async () => {
+    const onDraftChange = vi.fn()
+    const { rerender } = render(<Composer {...baseProps} draft="" onDraftChange={onDraftChange} />)
+    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    ta.textContent = '/com'
+    fireEvent.input(ta)
+    rerender(<Composer {...baseProps} draft="/com" onDraftChange={onDraftChange} />)
+    fireEvent.focus(ta)
+    await screen.findByRole('listbox', { name: /Slash commands/i })
+    onDraftChange.mockClear()
+
+    fireEvent.keyDown(ta, { key: 'Enter', code: 'Enter', isComposing: true })
+
+    expect(onDraftChange).not.toHaveBeenCalled()
   })
 
   it('renders hero composer with message field', () => {
@@ -155,6 +187,46 @@ describe('Composer slash commands', () => {
       )
     })
     await waitFor(() => expect(onCompact).toHaveBeenCalled())
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('resolves /create-skill as a client action', async () => {
+    const onCreateSkill = vi.fn()
+    const onSend = vi.fn()
+    const onDraftChange = vi.fn()
+    const { rerender } = render(
+      <Composer
+        {...baseProps}
+        draft="/create-skill"
+        onDraftChange={onDraftChange}
+        onSend={onSend}
+        slashHandlers={{ onCreateSkill }}
+      />
+    )
+
+    await waitFor(() => expect(window.vyotiq.slashCommandsList).toHaveBeenCalled())
+    const menu = await screen.findByRole('listbox', { name: /Slash commands/i })
+    expect(menu.textContent).toContain('/create-skill')
+
+    rerender(
+      <Composer
+        {...baseProps}
+        draft="/create-skill"
+        onDraftChange={onDraftChange}
+        onSend={onSend}
+        slashHandlers={{ onCreateSkill }}
+      />
+    )
+
+    const form = screen.getByRole('textbox', { name: /^Message$/i }).closest('form')!
+    fireEvent.submit(form)
+
+    await waitFor(() => {
+      expect(window.vyotiq.slashCommandsResolve).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'builtin:create-skill' })
+      )
+    })
+    await waitFor(() => expect(onCreateSkill).toHaveBeenCalled())
     expect(onSend).not.toHaveBeenCalled()
   })
 
@@ -407,5 +479,24 @@ describe('Composer slash commands', () => {
       await Promise.resolve()
     })
     expect(onSend).not.toHaveBeenCalled()
+    expect((await screen.findByRole('alert')).textContent).toMatch(/no longer available/i)
+  })
+
+  it('Escape dismisses the slash menu without cancelling inline edit', async () => {
+    const onCancelEdit = vi.fn()
+    render(
+      <Composer
+        {...baseProps}
+        variant="inline"
+        draft="/compact"
+        workspacePath="/ws"
+        onCancelEdit={onCancelEdit}
+      />
+    )
+    await waitFor(() => expect(screen.getByRole('listbox')).toBeTruthy())
+    fireEvent.keyDown(screen.getByRole('textbox', { name: /Edit message|Message/i }), {
+      key: 'Escape'
+    })
+    expect(onCancelEdit).not.toHaveBeenCalled()
   })
 })

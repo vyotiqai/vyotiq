@@ -6,14 +6,14 @@ import {
   renameSync,
   writeFileSync
 } from 'fs'
-import { join, relative, isAbsolute } from 'path'
+import { join, relative, isAbsolute, dirname } from 'path'
 import { execFile as execFileCb } from 'child_process'
 import { promisify } from 'util'
 import type { HarnessApplyResult, HarnessPreviewApplyResult } from '../../shared/ipc'
 import { canonicalizeWorkspacePath } from '../../shared/workspacePath'
 import { atomicWriteFile } from '../storage/atomicWrite'
 import { resolveInsideWorkspace } from '../workspace/safePath'
-import { WORKSPACE_HARNESS_REL, workspaceHarnessPath } from './harness'
+import { WORKSPACE_HARNESS_REL, workspaceHarnessPath, HARNESS_PROPOSALS_REL, HARNESS_BACKUP_REL } from './harness'
 import { sanitizedTerminalEnv } from './tools/terminal'
 
 const execFile = promisify(execFileCb)
@@ -193,7 +193,7 @@ function resolveProposalPath(workspacePath: string, proposalPath: string): strin
 
 /** Latest proposal by filename sort (ISO-ish stamps sort lexicographically). */
 export function findLatestHarnessProposal(workspacePath: string): string | null {
-  const dir = resolveInsideWorkspace(workspacePath, join('.vyotiq', 'harness', 'proposals'))
+  const dir = resolveInsideWorkspace(workspacePath, HARNESS_PROPOSALS_REL)
   if (!existsSync(dir)) return null
   const files = readdirSync(dir)
     .filter((f) => f.endsWith('.md'))
@@ -356,9 +356,8 @@ export async function applyHarnessProposal(
   }
 
   const target = workspaceHarnessPath(workspacePath)
-  const backupDir = resolveInsideWorkspace(workspacePath, join('.vyotiq', 'harness'))
-  mkdirSync(backupDir, { recursive: true })
-  const backupPath = join(backupDir, 'default.md.bak')
+  const backupPath = resolveInsideWorkspace(workspacePath, HARNESS_BACKUP_REL)
+  mkdirSync(dirname(backupPath), { recursive: true })
   writeFileSync(backupPath, preview.current, 'utf8')
 
   atomicWriteFile(target, preview.proposed)
@@ -367,7 +366,7 @@ export async function applyHarnessProposal(
   if (!validation.ok) {
     writeFileSync(target, preview.current, 'utf8')
     try {
-      renameSync(backupPath, join(backupDir, `default.md.bak.failed-${Date.now()}`))
+      renameSync(backupPath, `${backupPath}.failed-${Date.now()}`)
     } catch {
       // keep .bak
     }

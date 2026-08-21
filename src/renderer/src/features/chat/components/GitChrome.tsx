@@ -1,12 +1,7 @@
-import { useCallback, useState } from 'react'
-import { Icon } from '@renderer/lib/icons'
-import { cn } from '@renderer/lib/ui'
+import { useCallback, useMemo, useState } from 'react'
 import type { GitStatus, GitStatusResult } from '@shared/ipc'
 import { useGitStatus } from './useGitStatus'
 import { defaultCommitMessageFromStatus } from './CommitComposer'
-
-const PILL =
-  'inline-flex items-center gap-1.5 text-2xs vy-transition text-tertiary'
 
 export type GitChrome = {
   status: GitStatus | null
@@ -20,9 +15,11 @@ export type GitChrome = {
   noticeFailed: boolean
   refresh: () => void
   commit: (message: string, push: boolean, mode?: 'all' | 'staged') => Promise<boolean>
+  createPr: (message: string, mode?: 'all' | 'staged', draft?: boolean) => Promise<boolean>
   stageAll: () => Promise<boolean>
   stagePaths: (paths: string[]) => Promise<boolean>
   unstagePaths: (paths: string[]) => Promise<boolean>
+  reportNotice: (message: string, failed?: boolean) => void
 }
 
 /**
@@ -32,7 +29,8 @@ export function useGitChrome(
   workspacePath: string | null,
   revision: number,
   enabled = true,
-  deferStartupMs?: number
+  deferStartupMs?: number,
+  beforeMutation?: () => Promise<boolean>
 ): GitChrome {
   const { status, result, error, loading, refresh } = useGitStatus(
     workspacePath,
@@ -44,12 +42,31 @@ export function useGitChrome(
   const [notice, setNotice] = useState<string | null>(null)
   const [noticeFailed, setNoticeFailed] = useState(false)
 
+  const flushFilesBeforeMutation = useCallback(async (): Promise<boolean> => {
+    if (!beforeMutation) return true
+    let ok = false
+    try {
+      ok = await beforeMutation()
+    } catch {
+      ok = false
+    }
+    if (!ok) {
+      setNotice('File autosave could not complete. Resolve file conflicts or errors first.')
+      setNoticeFailed(true)
+    }
+    return ok
+  }, [beforeMutation])
+
   const commit = useCallback(
     async (message: string, push: boolean, mode: 'all' | 'staged' = 'all'): Promise<boolean> => {
       if (!workspacePath || !message.trim() || busy) return false
       setBusy(true)
       setNotice(null)
       setNoticeFailed(false)
+      if (!(await flushFilesBeforeMutation())) {
+        setBusy(false)
+        return false
+      }
       try {
         const commitResult = await window.vyotiq.gitCommit(
           workspacePath,
@@ -65,7 +82,56 @@ export function useGitChrome(
         refresh()
       }
     },
-    [workspacePath, busy, refresh]
+    [busy, flushFilesBeforeMutation, refresh, workspacePath]
+  )
+
+  const ensureGithubCli = useCallback(async (): Promise<boolean> => {
+    if (!window.vyotiq?.githubAuthStatus || !window.vyotiq.githubCliInstall) return true
+    const auth = await window.vyotiq.githubAuthStatus()
+    if (!auth.ok || auth.data.ghAvailable) return true
+
+    setNotice('Installing GitHub CLI…')
+    setNoticeFailed(false)
+    const install = await window.vyotiq.githubCliInstall()
+    if (install.ok && install.data.ghAvailable) {
+      setNotice(install.data.detail || 'GitHub CLI is ready.')
+      return true
+    }
+    setNotice(install.ok ? 'GitHub CLI installation did not complete.' : install.error)
+    setNoticeFailed(true)
+    return false
+  }, [])
+
+  const createPr = useCallback(
+    async (
+      message: string,
+      mode: 'all' | 'staged' = 'all',
+      draft = true
+    ): Promise<boolean> => {
+      if (!workspacePath || !message.trim() || busy) return false
+      setBusy(true)
+      setNotice(null)
+      setNoticeFailed(false)
+      if (!(await flushFilesBeforeMutation())) {
+        setBusy(false)
+        return false
+      }
+      try {
+        if (!(await ensureGithubCli())) return false
+        const result = await window.vyotiq.prCreate(workspacePath, {
+          message: message.trim(),
+          mode,
+          draft
+        })
+        setNotice(result.ok ? `${result.data.detail}: ${result.data.url}` : result.error)
+        setNoticeFailed(!result.ok)
+        return result.ok
+      } finally {
+        setBusy(false)
+        refresh()
+      }
+    },
+    [busy, ensureGithubCli, flushFilesBeforeMutation, refresh, workspacePath]
   )
 
   const stageAll = useCallback(async (): Promise<boolean> => {
@@ -73,6 +139,10 @@ export function useGitChrome(
     setBusy(true)
     setNotice(null)
     setNoticeFailed(false)
+    if (!(await flushFilesBeforeMutation())) {
+      setBusy(false)
+      return false
+    }
     try {
       const stageResult = await window.vyotiq.gitStageAll(workspacePath)
       setNotice(stageResult.ok ? stageResult.data.detail : stageResult.error)
@@ -82,7 +152,7 @@ export function useGitChrome(
       setBusy(false)
       refresh()
     }
-  }, [workspacePath, busy, refresh])
+  }, [busy, flushFilesBeforeMutation, refresh, workspacePath])
 
   const stagePaths = useCallback(
     async (paths: string[]): Promise<boolean> => {
@@ -90,6 +160,10 @@ export function useGitChrome(
       setBusy(true)
       setNotice(null)
       setNoticeFailed(false)
+      if (!(await flushFilesBeforeMutation())) {
+        setBusy(false)
+        return false
+      }
       try {
         const stageResult = await window.vyotiq.gitStagePaths({ workspacePath, paths })
         setNotice(stageResult.ok ? stageResult.data.detail : stageResult.error)
@@ -100,7 +174,7 @@ export function useGitChrome(
         refresh()
       }
     },
-    [workspacePath, busy, refresh]
+    [busy, flushFilesBeforeMutation, refresh, workspacePath]
   )
 
   const unstagePaths = useCallback(
@@ -109,6 +183,10 @@ export function useGitChrome(
       setBusy(true)
       setNotice(null)
       setNoticeFailed(false)
+      if (!(await flushFilesBeforeMutation())) {
+        setBusy(false)
+        return false
+      }
       try {
         const result = await window.vyotiq.gitUnstagePaths({ workspacePath, paths })
         setNotice(result.ok ? result.data.detail : result.error)
@@ -119,118 +197,48 @@ export function useGitChrome(
         refresh()
       }
     },
-    [workspacePath, busy, refresh]
+    [busy, flushFilesBeforeMutation, refresh, workspacePath]
   )
 
-  return {
-    status,
-    result,
-    error,
-    ready: !loading && result != null,
-    loading,
-    busy,
-    notice,
-    noticeFailed,
-    refresh,
-    commit,
-    stageAll,
-    stagePaths,
-    unstagePaths
-  }
-}
+  const reportNotice = useCallback((message: string, failed = false) => {
+    setNotice(message)
+    setNoticeFailed(failed)
+  }, [])
 
-/** Compact line deltas for the Changes pill — mirrors token abbreviations. */
-function formatLineDelta(n: number): string {
-  const v = Math.round(Number.isFinite(n) ? n : 0)
-  if (v <= 0) return '0'
-  if (v >= 10_000) return `${Math.round(v / 1000)}k`
-  if (v >= 1000) return `${(v / 1000).toFixed(1).replace(/\.0$/, '')}k`
-  return String(v)
-}
-
-/**
- * Compact working-tree summary that opens the Changes panel.
- * Commit / Keep / Discard actions live only in Changes.
- */
-export function GitChangePills({
-  chrome,
-  onOpenChanges
-}: {
-  chrome: GitChrome
-  onOpenChanges?: () => void
-}) {
-  const { status, ready } = chrome
-
-  if (!ready || !status || status.fileCount === 0) return null
-
-  return (
-    <div className="pointer-events-auto flex min-w-0 flex-1 items-center gap-1.5 text-tertiary">
-      <button
-        type="button"
-        className={cn(PILL, 'tabular-nums text-fg hover:text-fg-strong')}
-        onClick={() => onOpenChanges?.()}
-        aria-label={
-          status.added > 0 || status.removed > 0
-            ? `Open Changes panel, ${status.fileCount} files, +${status.added} -${status.removed} lines`
-            : `Open Changes panel, ${status.fileCount} files`
-        }
-        title={
-          status.added > 0 || status.removed > 0
-            ? `${status.fileCount} files · +${status.added} / -${status.removed} lines`
-            : `${status.fileCount} files changed`
-        }
-      >
-        <span>Changes</span>
-        {status.added > 0 ? (
-          <span className="text-success" title={`+${status.added} lines`}>
-            +{formatLineDelta(status.added)}
-          </span>
-        ) : null}
-        {status.removed > 0 ? (
-          <span className="text-danger" title={`-${status.removed} lines`}>
-            -{formatLineDelta(status.removed)}
-          </span>
-        ) : null}
-        {status.added > 0 || status.removed > 0 ? (
-          <span className="text-muted">lines</span>
-        ) : null}
-        <Icon name="chevronRight" size={14} className="-rotate-90" />
-      </button>
-      {status.truncated ? (
-        <span className="shrink-0 text-2xs text-muted" title="File list is truncated">
-          Showing first {status.files.length} of {status.fileCount}
-        </span>
-      ) : null}
-    </div>
-  )
-}
-
-/** Branch label + refresh — sits on the Changes leading row. */
-export function GitBranchStrip({ chrome }: { chrome: GitChrome }) {
-  const { status, ready, refresh } = chrome
-  if (!ready || !status) return null
-
-  const branchLabel =
-    status.branch && status.branch !== 'HEAD' ? status.branch : 'detached'
-
-  return (
-    <div className="pointer-events-auto flex shrink-0 items-center gap-1.5 text-2xs text-tertiary">
-      <span className="inline-flex min-w-0 items-center gap-1.5">
-        <Icon name="branch" size={14} />
-        <span className="max-w-[24ch] truncate text-fg" title={branchLabel}>
-          {branchLabel}
-        </span>
-      </span>
-
-      <button
-        type="button"
-        className="inline-grid size-6 place-items-center rounded-sm vy-transition hover:bg-surface hover:text-fg"
-        onClick={refresh}
-        aria-label="Refresh git status"
-      >
-        <Icon name="refresh" size={14} />
-      </button>
-    </div>
+  return useMemo(
+    () => ({
+      status,
+      result,
+      error,
+      ready: !loading && result != null,
+      loading,
+      busy,
+      notice,
+      noticeFailed,
+      refresh,
+      commit,
+      createPr,
+      stageAll,
+      stagePaths,
+      unstagePaths,
+      reportNotice
+    }),
+    [
+      status,
+      result,
+      error,
+      loading,
+      busy,
+      notice,
+      noticeFailed,
+      refresh,
+      commit,
+      createPr,
+      stageAll,
+      stagePaths,
+      unstagePaths,
+      reportNotice
+    ]
   )
 }
 

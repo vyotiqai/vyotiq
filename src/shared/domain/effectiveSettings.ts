@@ -6,8 +6,8 @@ export type EffectiveChatSettings = Pick<
   | 'model'
   | 'ollamaBaseUrl'
   | 'customOpenAiBaseUrl'
-  | 'compactionTriggerRatio'
   | 'keepRecentTurns'
+  | 'autoCompactThresholdRatio'
   | 'thinkingEnabled'
   | 'thinkingEffort'
   | 'showThinking'
@@ -29,8 +29,8 @@ export function resolveEffectiveSettings(
       model: global.model,
       ollamaBaseUrl: global.ollamaBaseUrl,
       customOpenAiBaseUrl: global.customOpenAiBaseUrl,
-      compactionTriggerRatio: global.compactionTriggerRatio,
       keepRecentTurns: global.keepRecentTurns,
+      autoCompactThresholdRatio: global.autoCompactThresholdRatio,
       thinkingEnabled: global.thinkingEnabled,
       thinkingEffort: global.thinkingEffort,
       showThinking: global.showThinking,
@@ -42,8 +42,9 @@ export function resolveEffectiveSettings(
     model: override.model ?? global.model,
     ollamaBaseUrl: global.ollamaBaseUrl,
     customOpenAiBaseUrl: override.customOpenAiBaseUrl ?? global.customOpenAiBaseUrl,
-    compactionTriggerRatio: override.compactionTriggerRatio ?? global.compactionTriggerRatio,
     keepRecentTurns: override.keepRecentTurns ?? global.keepRecentTurns,
+    autoCompactThresholdRatio:
+      override.autoCompactThresholdRatio ?? global.autoCompactThresholdRatio,
     thinkingEnabled: override.thinkingEnabled ?? global.thinkingEnabled,
     thinkingEffort: override.thinkingEffort ?? global.thinkingEffort,
     showThinking: override.showThinking ?? global.showThinking,

@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { toolRead, READ_CONTENT_CAP } from '@main/agent/tools/read'
+import { toolRead } from '@main/agent/tools/read'
 describe('toolRead', () => {
   let root: string
 
@@ -23,9 +23,10 @@ describe('toolRead', () => {
     expect(toolRead(root, 'hello.txt')).toBe('hello world')
   })
 
-  it('exports a content cap of 512 KiB', async () => {
-    const { READ_CONTENT_CAP } = await import('@main/agent/tools/read')
-    expect(READ_CONTENT_CAP).toBe(512 * 1024)
+  it('reads files larger than the former 512 KiB full-read cap', () => {
+    const body = 'x'.repeat(512 * 1024 + 80)
+    writeFileSync(join(root, 'over-old-cap.txt'), body, 'utf8')
+    expect(toolRead(root, 'over-old-cap.txt')).toBe(body)
   })
 
   it('lists directory contents instead of throwing not-a-file', () => {
@@ -53,7 +54,9 @@ describe('toolRead', () => {
     expect(() => toolRead(root, 'binary.dat', { offset: 1, limit: 2 })).toThrow(
       /Binary file detected: binary\.dat\. Read is text-only\./
     )
-    expect(() => toolRead(root, 'binary.dat', { offset: 2 })).toThrow(/Binary file detected/)
+    // A window with no NUL is treated as text — mid-file has no BOM to inspect.
+    const out = toolRead(root, 'binary.dat', { offset: 2 })
+    expect(out).toContain('BC')
   })
 
   it('rejects binary files on full and line-range reads', () => {
@@ -86,20 +89,36 @@ describe('toolRead', () => {
       buf[2 + i * 2 + 1] = 0
     }
     writeFileSync(utf16Path, buf)
-    const out = toolRead(root, 'utf16-offset.log', { offset: 2, limit: 20 })
+    const out = toolRead(root, 'utf16-offset.log', { offset: 0, limit: 20 })
     expect(out).toContain('download')
     expect(out).not.toContain('line two')
   })
 
-  it('rejects oversized files on the offset/limit path', () => {
+  it('streams a byte window on large files', () => {
     const bigPath = join(root, 'big-offset.txt')
-    writeFileSync(bigPath, 'x'.repeat(READ_CONTENT_CAP + 1))
-    expect(() => toolRead(root, 'big-offset.txt', { offset: 0, limit: 10 })).toThrow(/File too large/)
+    writeFileSync(bigPath, 'x'.repeat(512 * 1024 + 1))
+    const out = toolRead(root, 'big-offset.txt', { offset: 0, limit: 10 })
+    expect(out).toContain('--- offset 0, limit 10')
+    expect(out).toContain('xxxxxxxxxx')
+    expect(out).not.toMatch(/File too large/)
   })
 
   it('returns an inclusive line range with a header naming it', () => {
     const out = toolRead(root, 'lines.txt', { startLine: 2, endLine: 4 })
     expect(out).toBe('--- lines 2-4 of 5 ---\ntwo\nthree\nfour')
+  })
+
+  it('swaps inverted startLine/endLine and reads that window', () => {
+    writeFileSync(
+      join(root, 'many-lines.txt'),
+      Array.from({ length: 25 }, (_, i) => `L${i + 1}`).join('\n')
+    )
+    const out = toolRead(root, 'many-lines.txt', { startLine: 20, endLine: 5 })
+    expect(out).toMatch(/^--- lines 5-20 of 25 ---/)
+    const body = out.split('\n').slice(1)
+    expect(body[0]).toBe('L5')
+    expect(body[body.length - 1]).toBe('L20')
+    expect(body).toHaveLength(16)
   })
 
   it('runs to the end of the file when endLine is omitted', () => {
@@ -118,5 +137,18 @@ describe('toolRead', () => {
 
   it('does not count a trailing newline as an extra line', () => {
     expect(toolRead(root, 'lines.txt', { startLine: 1 })).toContain('of 5 ---')
+  })
+
+  it('streams a requested line range in full without a returned-text cap', () => {
+    const line = 'y'.repeat(200)
+    const count = 400
+    writeFileSync(join(root, 'big-lines.txt'), Array.from({ length: count }, () => line).join('\n'))
+    const out = toolRead(root, 'big-lines.txt', { startLine: 10, endLine: 12 })
+    expect(out).toMatch(/^--- lines 10-12 of 400 ---/)
+    expect(out).not.toMatch(/capped/)
+    expect(out).toContain(line)
+    const body = out.split('\n').slice(1)
+    expect(body).toHaveLength(3)
+    expect(body.every((row) => row === line)).toBe(true)
   })
 })

@@ -31,7 +31,8 @@ describe('layout typography and spacing tokens', () => {
     expect(CHAT_COLUMN).toContain(CHAT_COLUMN_MAX)
     expect(CHAT_COLUMN_MAX).toBe('max-w-[840px]')
     expect(SETTINGS_COLUMN).toContain(SETTINGS_COLUMN_MAX)
-    expect(SETTINGS_COLUMN_MAX).toBe('max-w-[520px]')
+    expect(SETTINGS_COLUMN).not.toContain('mx-auto')
+    expect(SETTINGS_COLUMN_MAX).toBe('max-w-[680px]')
   })
 
   it('exports transcript rhythm gaps', () => {
@@ -44,6 +45,7 @@ describe('layout typography and spacing tokens', () => {
     expect(USER_PROMPT_SURFACE).toContain('text-sm')
     expect(USER_PROMPT_SURFACE).toContain('leading-relaxed')
     expect(USER_PROMPT_SURFACE).toContain('tracking-[var(--vy-tracking-body)]')
+    expect(USER_PROMPT_SURFACE).toContain('rounded-xl')
   })
 
   it('exports micro label tokens', () => {

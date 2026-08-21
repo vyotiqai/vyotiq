@@ -1,9 +1,10 @@
-import { copyFileSync, mkdirSync, readdirSync, rmSync, statSync } from 'fs'
-import { randomUUID } from 'crypto'
+import { copyFile, mkdir, readdir, stat } from 'fs/promises'
+import { createReadStream, rmSync } from 'fs'
+import { createHash, randomUUID } from 'crypto'
 import { dirname, join } from 'path'
 import { tmpdir } from 'os'
 import { canonicalizeWorkspacePath } from '../../shared/utils/workspacePath'
-import { IGNORED_DIRS } from './tools/walk'
+import { IGNORED_DIRS, yieldToEventLoop } from './tools/walk'
 import { getWriteCheckpoint, type InvokeWriteCheckpoint } from './checkpoints'
 import { logger } from '../../shared/logger'
 
@@ -12,6 +13,7 @@ export type WorkspaceFileFingerprint = {
   full: string
   mtimeMs: number
   size: number
+  contentHash?: string
   /** Absolute path to a prior-content blob when snapshotted. */
   blobPath?: string
 }
@@ -30,21 +32,38 @@ export type WorkspaceDiff = {
 
 const SNAPSHOT_BLOB_MAX_BYTES = 1_048_576
 const SNAPSHOT_FILE_CAP = 5_000
+const YIELD_EVERY_DIRS = 64
 
 function normalizeRel(rel: string): string {
   return rel.replace(/\\/g, '/')
 }
 
-function walkSync(root: string, cap: number): WorkspaceFileFingerprint[] {
+function hashFile(path: string): Promise<string | undefined> {
+  return new Promise((resolve) => {
+    const hash = createHash('sha256')
+    const stream = createReadStream(path)
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.on('error', () => resolve(undefined))
+    stream.on('end', () => resolve(hash.digest('hex')))
+  })
+}
+
+async function walkWorkspace(
+  root: string,
+  cap: number
+): Promise<WorkspaceFileFingerprint[]> {
   const realRoot = canonicalizeWorkspacePath(root)
   const out: WorkspaceFileFingerprint[] = []
   const queue: Array<{ dir: string; relDir: string }> = [{ dir: realRoot, relDir: '' }]
+  let dirsVisited = 0
 
   while (queue.length > 0 && out.length < cap) {
     const next = queue.shift()!
+    dirsVisited += 1
+    if (dirsVisited % YIELD_EVERY_DIRS === 0) await yieldToEventLoop()
     let entries
     try {
-      entries = readdirSync(next.dir, { withFileTypes: true })
+      entries = await readdir(next.dir, { withFileTypes: true })
     } catch {
       continue
     }
@@ -60,7 +79,7 @@ function walkSync(root: string, cap: number): WorkspaceFileFingerprint[] {
       }
       if (!entry.isFile()) continue
       try {
-        const st = statSync(full)
+        const st = await stat(full)
         out.push({
           rel: childRel,
           full,
@@ -83,31 +102,34 @@ function walkSync(root: string, cap: number): WorkspaceFileFingerprint[] {
 }
 
 /** Take a pre-mutation workspace fingerprint (with prior blobs for small files). */
-export function startWatch(workspaceRoot: string): WorkspaceSnapshot {
+export async function startWatch(workspaceRoot: string): Promise<WorkspaceSnapshot> {
   const blobDir = join(tmpdir(), `vyotiq-ws-snap-${process.pid}-${randomUUID()}`)
-  mkdirSync(blobDir, { recursive: true })
+  await mkdir(blobDir, { recursive: true })
   const files = new Map<string, WorkspaceFileFingerprint>()
-  for (const fp of walkSync(workspaceRoot, SNAPSHOT_FILE_CAP)) {
+  const walked = await walkWorkspace(workspaceRoot, SNAPSHOT_FILE_CAP)
+  for (const fp of walked) {
     let blobPath: string | undefined
+    let contentHash: string | undefined
     if (fp.size <= SNAPSHOT_BLOB_MAX_BYTES) {
       try {
         const dest = join(blobDir, ...fp.rel.split('/'))
-        mkdirSync(dirname(dest), { recursive: true })
-        copyFileSync(fp.full, dest)
+        await mkdir(dirname(dest), { recursive: true })
+        await copyFile(fp.full, dest)
         blobPath = dest
       } catch {
         blobPath = undefined
       }
+    } else {
+      contentHash = await hashFile(fp.full)
     }
-    files.set(fp.rel, { ...fp, blobPath })
+    files.set(fp.rel, { ...fp, blobPath, contentHash })
   }
   return { root: workspaceRoot, files, blobDir }
 }
 
-export function diffSince(snapshot: WorkspaceSnapshot): WorkspaceDiff {
-  const current = new Map(
-    walkSync(snapshot.root, SNAPSHOT_FILE_CAP).map((f) => [f.rel, f] as const)
-  )
+export async function diffSince(snapshot: WorkspaceSnapshot): Promise<WorkspaceDiff> {
+  const walked = await walkWorkspace(snapshot.root, SNAPSHOT_FILE_CAP)
+  const current = new Map(walked.map((f) => [f.rel, f] as const))
   const created: string[] = []
   const modified: string[] = []
   const deleted: string[] = []
@@ -120,6 +142,14 @@ export function diffSince(snapshot: WorkspaceSnapshot): WorkspaceDiff {
     }
     if (before.mtimeMs !== now.mtimeMs || before.size !== now.size) {
       modified.push(rel)
+      continue
+    }
+    if (before.contentHash && now.size <= SNAPSHOT_BLOB_MAX_BYTES) {
+      // Only re-hash files small enough to hash cheaply. Larger files are only
+      // reported as modified when mtime/size changes — bounding per-diff CPU/IO
+      // during the agent loop (content-hash edits without size change are rare).
+      const contentHash = await hashFile(now.full)
+      if (contentHash && contentHash !== before.contentHash) modified.push(rel)
     }
   }
   for (const rel of snapshot.files.keys()) {

@@ -61,11 +61,11 @@ describe('parseSkillInvocation', () => {
       'do not treat this as the request'
     ].join('\n')
     const msg = formatSkillInvocation('docs', body, 'real request')
-    expect(parseSkillInvocation(msg)).toEqual({
-      skillName: 'docs',
-      body,
-      userRequest: 'real request'
-    })
+    const parsed = parseSkillInvocation(msg)
+    expect(parsed?.skillName).toBe('docs')
+    expect(parsed?.userRequest).toBe('real request')
+    expect(parsed?.body).toContain('&lt;/skill instructions>')
+    expect(parsed?.body).not.toMatch(/<\/skill instructions>/)
   })
 
   it('returns null for ordinary messages', () => {
@@ -127,6 +127,74 @@ describe('stubPastSkillInvocationsInMessages', () => {
     expect(String(messages[0]?.content)).toContain(SKILL_BODY_STUB)
     const parsed = parseSkillInvocation(String(messages[0]?.content))!
     expect(skillInvocationEditDraft(parsed)).toBe('/docs write')
+  })
+
+  it('stubs earlier Skill tool results and keeps the latest body', () => {
+    const reviewBody = [
+      '# Skill: review-code',
+      '',
+      'Review the diff before editing. Lead with severity, then a concrete patch.',
+      'Do not rewrite unrelated files in the same turn.'
+    ].join('\n')
+    const testsBody = [
+      '# Skill: write-tests',
+      '',
+      'Add vitest coverage for the changed auth login path.',
+      'Use the real handler names from src/main/ipc/register.ts.'
+    ].join('\n')
+    const { messages, stubbedCount } = stubPastSkillInvocationsInMessages([
+      { role: 'user', content: 'Review auth then add tests' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 's1', name: 'Skill', arguments: '{"name":"review-code"}' }]
+      },
+      { role: 'tool', toolName: 'Skill', toolCallId: 's1', content: reviewBody },
+      { role: 'assistant', content: 'Review done. Adding tests next.' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 's2', name: 'Skill', arguments: '{"name":"write-tests"}' }]
+      },
+      { role: 'tool', toolName: 'Skill', toolCallId: 's2', content: testsBody },
+      { role: 'assistant', content: 'Writing the login tests now.' }
+    ])
+    expect(stubbedCount).toBe(1)
+    expect(String(messages[2]?.content)).toBe(SKILL_BODY_STUB)
+    expect(String(messages[2]?.content)).not.toContain('Lead with severity')
+    expect(String(messages[5]?.content)).toContain(
+      'Add vitest coverage for the changed auth login path'
+    )
+    expect(String(messages[5]?.content)).not.toBe(SKILL_BODY_STUB)
+  })
+
+  it('does not stub a lone Skill tool result still in use this step', () => {
+    const body = '# Skill: review-code\n\nReview the diff before editing.'
+    const { messages, stubbedCount } = stubPastSkillInvocationsInMessages([
+      { role: 'user', content: 'review src/main/agent/loop.ts' },
+      { role: 'tool', toolName: 'Skill', toolCallId: 's1', content: body },
+      { role: 'assistant', content: 'Starting the review.' }
+    ])
+    expect(stubbedCount).toBe(0)
+    expect(String(messages[1]?.content)).toContain('Review the diff before editing')
+  })
+
+  it('leaves non-Skill tool results intact', () => {
+    const fileBody =
+      'export function login(req: Request): Session {\n  return createSession(req)\n}\n'
+    const { messages, stubbedCount } = stubPastSkillInvocationsInMessages([
+      { role: 'tool', toolName: 'read', toolCallId: 'r1', content: fileBody },
+      {
+        role: 'tool',
+        toolName: 'Skill',
+        toolCallId: 's1',
+        content: '# Skill: review-code\n\nReview auth.'
+      },
+      { role: 'assistant', content: 'ok' }
+    ])
+    expect(stubbedCount).toBe(0)
+    expect(String(messages[0]?.content)).toContain('export function login')
+    expect(String(messages[1]?.content)).toContain('Review auth.')
   })
 })
 

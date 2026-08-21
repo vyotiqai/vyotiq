@@ -1,5 +1,14 @@
 import { afterEach, vi } from 'vitest'
 import { resetActiveRunsForTests } from '@main/agent/runRegistry'
+import { resetCircuitBreakersForTests } from '@main/agent/circuitBreaker'
+
+vi.mock('@main/app/window', () => ({
+  getMainWindow: () => null,
+  applyTitleBarTheme: () => undefined,
+  createWindow: () => {
+    throw new Error('createWindow is not available in unit tests')
+  }
+}))
 
 /** jsdom/Node sometimes exposes a broken localStorage — ensure a working Map-backed stub. */
 function ensureLocalStorage(): void {
@@ -42,6 +51,38 @@ function ensureLocalStorage(): void {
 
 ensureLocalStorage()
 
+vi.mock('@xterm/xterm', () => ({
+  Terminal: class {
+    open() {}
+    loadAddon() {}
+    dispose() {}
+    onData() {
+      return { dispose() {} }
+    }
+    onResize() {
+      return { dispose() {} }
+    }
+    write() {}
+    reset() {}
+    scrollToBottom() {}
+    focus() {}
+    resize() {}
+  }
+}))
+
+vi.mock('@xterm/addon-fit', () => ({
+  FitAddon: class {
+    activate() {}
+    fit() {}
+  }
+}))
+
+vi.mock('@xterm/addon-web-links', () => ({
+  WebLinksAddon: class {
+    activate() {}
+  }
+}))
+
 if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
   Object.defineProperty(window, 'matchMedia', {
     writable: true,
@@ -69,5 +110,6 @@ if (typeof document !== 'undefined') {
 
 afterEach(() => {
   resetActiveRunsForTests()
+  resetCircuitBreakersForTests()
   vi.clearAllMocks()
 })

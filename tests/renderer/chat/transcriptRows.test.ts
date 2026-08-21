@@ -6,7 +6,8 @@ import {
   stabilizeTranscriptRows,
   transcriptRowFingerprint,
   turnHasVisibleToolWork,
-  TURN_GAP_PX
+  TURN_GAP_PX,
+  type TranscriptRow
 } from '@renderer/features/chat/utils/transcriptRows'
 import type { UiItem } from '@shared/transcript'
 
@@ -20,6 +21,36 @@ function tool(id: string, name = 'read', expanded = false): UiItem {
 }
 
 describe('buildTranscriptRows', () => {
+  it('keeps inline agent instance tools in individual compact activity rows', () => {
+    const spawn = tool('s1', 'spawn_agent_instance')
+    spawn.tool.status = 'done'
+    const awaitA = tool('a1', 'await_agent_instance')
+    awaitA.tool.status = 'running'
+    awaitA.toolExpanded = undefined
+    awaitA.tool.argsPreview = JSON.stringify({ run_id: '584c0a1c-434a-4ddf-85c5-a05bb80fd696' })
+    const awaitB = tool('a2', 'await_agent_instance')
+    awaitB.tool.status = 'running'
+    awaitB.toolExpanded = undefined
+    awaitB.tool.argsPreview = JSON.stringify({ run_id: '7f2e9b1a-1111-2222-3333-444455556666' })
+    const pull = tool('p1', 'pull_agent_instance')
+    const merge = tool('m1', 'merge_agent_instance')
+
+    const rows = buildTranscriptRows([spawn, awaitA, awaitB, pull, merge])
+    expect(rows.map((row) => row.kind)).toEqual([
+      'activity',
+      'activity',
+      'activity',
+      'activity',
+      'activity'
+    ])
+    expect(rows.every((row) => row.kind !== 'card')).toBe(true)
+    for (const row of rows) {
+      if (row.kind === 'activity') expect(row.tools).toHaveLength(1)
+    }
+    expect(rows[1]?.kind === 'activity' ? rows[1].tools[0]?.toolExpanded : undefined).toBe(false)
+    expect(rows[2]?.kind === 'activity' ? rows[2].tools[0]?.toolExpanded : undefined).toBe(false)
+  })
+
   it('assigns turn indices starting from user messages', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'u1', role: 'user', content: 'hi' },
@@ -188,6 +219,56 @@ describe('buildTranscriptRows', () => {
     }
   })
 
+  it('times a follow-up turn from the hydrated prompt, not the prior turn end', () => {
+    const items: UiItem[] = [
+      {
+        kind: 'message',
+        id: 'u1',
+        role: 'user',
+        content: 'first',
+        at: '2026-07-24T12:00:00.000Z'
+      },
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: 'done',
+        at: '2026-07-24T12:00:05.000Z'
+      },
+      {
+        kind: 'message',
+        id: 'u2',
+        role: 'user',
+        content: 'second',
+        at: '2026-07-24T17:00:06.000Z'
+      },
+      tool('t1'),
+      {
+        kind: 'message',
+        id: 'a2',
+        role: 'assistant',
+        content: 'ok',
+        at: '2026-07-24T17:05:55.000Z'
+      }
+    ]
+    const readTool = items[3]
+    if (readTool?.kind === 'tool') {
+      readTool.at = '2026-07-24T17:00:10.000Z'
+      readTool.groupTiming = {
+        startedAt: new Date('2026-07-24T17:00:10.000Z').getTime(),
+        endedAt: new Date('2026-07-24T17:01:00.000Z').getTime()
+      }
+    }
+    const summaries = buildTranscriptRows(items).filter((row) => row.kind === 'turn')
+    // Text-only first turn has no work row, so only the follow-up is summarized.
+    expect(summaries).toHaveLength(1)
+    const followUp = summaries[0]
+    expect(followUp?.kind).toBe('turn')
+    if (followUp?.kind === 'turn') {
+      expect(followUp.span.endedAt! - followUp.span.startedAt!).toBe(5 * 60_000 + 49_000)
+    }
+  })
+
   it('marks a turn active while a tool is still running', () => {
     const running = tool('t1')
     running.tool.status = 'running'
@@ -226,6 +307,22 @@ describe('buildTranscriptRows', () => {
       { kind: 'message', id: 'a1', role: 'assistant', content: 'hello' }
     ]
     expect(buildTranscriptRows(items).some((row) => row.kind === 'turn')).toBe(false)
+  })
+
+  it('still marks the closing answer final when a compaction card follows it', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'go' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'Here is the answer.' },
+      {
+        kind: 'compaction',
+        id: 'c1',
+        summary: 'Folded prior turns.',
+        verifyStatus: 'verified'
+      }
+    ]
+    const rows = buildTranscriptRows(items)
+    const answer = rows.find((row) => row.kind === 'text' && row.id === 'a1')
+    expect(answer?.kind === 'text' ? answer.final : undefined).toBe(true)
   })
 
   it('only the closing answer of a turn is marked final', () => {
@@ -797,14 +894,14 @@ describe('buildTranscriptRows', () => {
     }
   })
 
-  it('shows a planning turn summary while pendingRun is true', () => {
+  it('shows a working turn summary while pendingRun is true with no rows yet', () => {
     const items: UiItem[] = [{ kind: 'message', id: 'u1', role: 'user', content: 'go' }]
     const rows = buildTranscriptRows(items, { pendingRun: true })
     const summary = rows.find((row) => row.kind === 'turn')
     expect(summary?.kind).toBe('turn')
     if (summary?.kind === 'turn') {
       expect(summary.span.active).toBe(true)
-      expect(summary.span.activity).toEqual({ kind: 'planning' })
+      expect(summary.span.activity).toEqual({ kind: 'working' })
     }
   })
 
@@ -815,11 +912,34 @@ describe('buildTranscriptRows', () => {
     expect(summary?.kind).toBe('turn')
     if (summary?.kind === 'turn') {
       expect(summary.span.active).toBe(true)
+      expect(summary.span.activity).toEqual({ kind: 'working' })
+    }
+  })
+
+  it('shows Planning while a coalesced todo_write is running', () => {
+    const running = tool('todo1', 'todo_write')
+    running.tool.status = 'running'
+    running.tool.summary = '1 task'
+    const rows = buildTranscriptRows(
+      [
+        { kind: 'message', id: 'u1', role: 'user', content: 'ship the planning gate' },
+        running
+      ],
+      { pendingRun: true }
+    )
+    const todoTools = rows.flatMap((row) =>
+      row.kind === 'activity' ? row.tools.filter((item) => item.tool.name === 'todo_write') : []
+    )
+    expect(todoTools).toHaveLength(0)
+    const summary = rows.find((row) => row.kind === 'turn')
+    expect(summary?.kind).toBe('turn')
+    if (summary?.kind === 'turn') {
+      expect(summary.span.active).toBe(true)
       expect(summary.span.activity).toEqual({ kind: 'planning' })
     }
   })
 
-  it('keeps only the latest todo_write even when separated by thinking', () => {
+  it('omits successful todo_write from the transcript (Tasks band owns the checklist)', () => {
     const first = tool('todo1', 'todo_write')
     first.tool.summary = '5 tasks'
     const second = tool('todo2', 'todo_write')
@@ -842,8 +962,25 @@ describe('buildTranscriptRows', () => {
         ? row.tools.filter((item) => item.tool.name === 'todo_write')
         : []
     )
+    expect(todoTools).toHaveLength(0)
+  })
+
+  it('keeps failed todo_write inline so errors stay visible', () => {
+    const failed = tool('todo-fail', 'todo_write')
+    failed.tool.status = 'fail'
+    failed.tool.summary = 'todos: Required'
+    failed.tool.content = 'todos: Required'
+    const rows = buildTranscriptRows([
+      { kind: 'message', id: 'u1', role: 'user', content: 'plan' },
+      failed
+    ])
+    const todoTools = rows.flatMap((row) =>
+      row.kind === 'activity'
+        ? row.tools.filter((item) => item.tool.name === 'todo_write')
+        : []
+    )
     expect(todoTools).toHaveLength(1)
-    expect(todoTools[0]?.id).toBe('todo2')
+    expect(todoTools[0]?.id).toBe('todo-fail')
   })
 
   it('omits short finished thinking so padded empty gaps are not created', () => {
@@ -1177,6 +1314,101 @@ describe('transcriptRowFingerprint / stabilizeTranscriptRows', () => {
     expect(transcriptRowFingerprint(collidingPrev)).toBe(transcriptRowFingerprint(nextThinking))
     const stable = stabilizeTranscriptRows([collidingPrev], [nextThinking])
     expect(stable[0]).toBe(nextThinking)
+    expect(stable[0]).not.toBe(collidingPrev)
+  })
+
+  it('emits a compaction row for summarized context', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'hi' },
+      {
+        kind: 'compaction',
+        id: 'c1',
+        summary: 'Folded the setup turns into a short brief.',
+        tokenEstimate: 800
+      }
+    ]
+    const rows = buildTranscriptRows(items)
+    const compact = rows.find((row) => row.kind === 'compaction')
+    expect(compact?.kind).toBe('compaction')
+    if (compact?.kind !== 'compaction') return
+    expect(compact.summary).toBe('Folded the setup turns into a short brief.')
+    expect(compact.tokenEstimate).toBe(800)
+    expect(compact.turnIndex).toBe(0)
+    expect(isTurnWorkRow(compact)).toBe(false)
+  })
+
+  it('marks the live turn as Compacting when compacting option is set', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'hi' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'hello' }
+    ]
+    const rows = buildTranscriptRows(items, { running: true, compacting: true })
+    const turn = rows.find((row) => row.kind === 'turn')
+    expect(turn?.kind).toBe('turn')
+    if (turn?.kind !== 'turn') return
+    expect(turn.span.active).toBe(true)
+    expect(turn.span.activity).toEqual({ kind: 'compacting' })
+  })
+
+  it('uses the live compact card verify status for the timeline phase', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'hi' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'hello' },
+      {
+        kind: 'compaction',
+        id: 'compaction:in-flight',
+        summary: 'draft',
+        verifyStatus: 'verifying'
+      }
+    ]
+    const rows = buildTranscriptRows(items, { running: true, compacting: true })
+    const turn = rows.find((row) => row.kind === 'turn')
+    expect(turn?.kind).toBe('turn')
+    if (turn?.kind !== 'turn') return
+    expect(turn.span.activity).toEqual({ kind: 'verifying_compact' })
+  })
+
+  it('invalidates compaction identity when verifyStatus changes', () => {
+    const base: UiItem = {
+      kind: 'compaction',
+      id: 'compaction:in-flight',
+      summary: 'Folded prior turns.',
+      verifyStatus: 'verifying'
+    }
+    const retrying: UiItem = { ...base, verifyStatus: 'retrying' }
+    const prev = buildTranscriptRows([base])
+    const next = buildTranscriptRows([retrying])
+    const prevRow = prev.find((row) => row.kind === 'compaction')
+    const nextRow = next.find((row) => row.kind === 'compaction')
+    expect(prevRow?.kind).toBe('compaction')
+    expect(nextRow?.kind).toBe('compaction')
+    if (prevRow?.kind !== 'compaction' || nextRow?.kind !== 'compaction') return
+    expect(transcriptRowFingerprint(prevRow)).not.toBe(transcriptRowFingerprint(nextRow))
+    const stable = stabilizeTranscriptRows(prev, next)
+    const stableRow = stable.find((row) => row.kind === 'compaction')
+    expect(stableRow).toBe(nextRow)
+    expect(stableRow).not.toBe(prevRow)
+  })
+
+  it('does not reuse a verifying compaction row even on fingerprint collision', () => {
+    const verifying: TranscriptRow = {
+      kind: 'compaction',
+      id: 'compaction:in-flight',
+      summary: 'Folded prior turns.',
+      turnIndex: 0,
+      verifyStatus: 'verifying'
+    }
+    const retrying: TranscriptRow = {
+      ...verifying,
+      verifyStatus: 'retrying'
+    }
+    const collidingPrev: TranscriptRow = {
+      ...verifying,
+      verifyStatus: 'retrying'
+    }
+    expect(transcriptRowFingerprint(collidingPrev)).toBe(transcriptRowFingerprint(retrying))
+    const stable = stabilizeTranscriptRows([collidingPrev], [retrying])
+    expect(stable[0]).toBe(retrying)
     expect(stable[0]).not.toBe(collidingPrev)
   })
 })

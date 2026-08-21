@@ -45,6 +45,30 @@ export function billedCacheHitRate(billedInput: number, billedCached: number): n
   return Math.min(1, billedCached / billedInput)
 }
 
+/** Steps at/above this input size count toward the low-cache rolling window. */
+export const LARGE_STEP_INPUT_THRESHOLD = 20_000
+
+/** Recent large cache-reported steps required before emitting low_cache_hit_rate. */
+export const RECENT_LARGE_CACHE_WINDOW = 5
+
+export function rollingMean(samples: readonly number[]): number | null {
+  if (samples.length === 0) return null
+  let sum = 0
+  for (const s of samples) sum += s
+  return sum / samples.length
+}
+
+/** Append a large-step cache hit sample; keeps only the newest `max` values. */
+export function pushRecentLargeCacheHit(
+  window: number[],
+  hitRate: number,
+  max = RECENT_LARGE_CACHE_WINDOW
+): number[] {
+  window.push(hitRate)
+  if (window.length > max) window.splice(0, window.length - max)
+  return window
+}
+
 export type TokenCostWarnKind =
   | 'context_above_soft_trigger'
   | 'low_cache_hit_rate'
@@ -71,10 +95,10 @@ export function isAdvisoryTokenCostHint(kind: TokenCostWarnKind): boolean {
   }
 }
 
-/** Steps at/above which we suggest /clear between unrelated tasks (P-CLEAR). */
+/** Steps at/above which ops logs a long-run boundary (no user-facing /clear nag). */
 export const LONG_RUN_STEP_HINT_THRESHOLD = 40
 
-/** Cumulative billed input at/above which we suggest a task boundary (P-CLEAR). */
+/** Cumulative billed input at/above which ops logs a long-run boundary. */
 export const LONG_RUN_BILLED_INPUT_HINT_THRESHOLD = 1_000_000
 
 /**
@@ -158,14 +182,22 @@ export function evaluateTokenCostWarnings(input: {
   compactionTrigger: number
   contentWindow: number
   compactedThisRun: boolean
+  /** Single-step hit rate — used only when `recentLargeStepCacheHitRates` is omitted. */
   cacheHitRate: number | null
+  /** Count of cache-reported steps — used only with legacy single-step path. */
   stepsWithCacheReport: number
+  /** Current step ≥ large threshold — used only with legacy single-step path. */
   largeInput: boolean
   thinkingEnabled: boolean
   thinkingEffortHigh: boolean
   step: number
   /** Cumulative Σ step inputs this run (true bill shape). */
   billedInputTokens?: number
+  /**
+   * Newest large (≥ {@link LARGE_STEP_INPUT_THRESHOLD}) cache-reported hit rates.
+   * Warning uses the mean once length ≥ {@link RECENT_LARGE_CACHE_WINDOW}.
+   */
+  recentLargeStepCacheHitRates?: readonly number[]
 }): TokenCostWarning[] {
   const out: TokenCostWarning[] = []
   if (
@@ -178,15 +210,23 @@ export function evaluateTokenCostWarnings(input: {
       message: `Context estimate ${input.estimatedTokens} still exceeds soft trigger ${input.compactionTrigger} after compaction`
     })
   }
-  if (
+  const recent = input.recentLargeStepCacheHitRates
+  const rolling =
+    recent != null && recent.length >= RECENT_LARGE_CACHE_WINDOW
+      ? rollingMean(recent)
+      : null
+  const legacyRate =
+    recent == null &&
     input.cacheHitRate != null &&
-    input.stepsWithCacheReport >= 5 &&
-    input.largeInput &&
-    input.cacheHitRate < 0.1
-  ) {
+    input.stepsWithCacheReport >= RECENT_LARGE_CACHE_WINDOW &&
+    input.largeInput
+      ? input.cacheHitRate
+      : null
+  const cacheWarnRate = rolling ?? legacyRate
+  if (cacheWarnRate != null && cacheWarnRate < 0.1) {
     out.push({
       kind: 'low_cache_hit_rate',
-      message: `Prompt cache hit rate ${(input.cacheHitRate * 100).toFixed(1)}% over recent large steps`
+      message: `Prompt cache hit rate ${(cacheWarnRate * 100).toFixed(1)}% over recent large steps`
     })
   }
   if (input.contentWindow > 0 && input.estimatedTokens >= input.contentWindow * 0.8) {
@@ -212,44 +252,29 @@ export function evaluateTokenCostWarnings(input: {
   ) {
     out.push({
       kind: 'long_run_task_boundary',
-      message: `Long run at step ${input.step} (billed input ${billed}) — consider /clear between unrelated tasks`
+      message: `Long run at step ${input.step} (billed input ${billed})`
     })
   }
   return out
 }
 
-/** Composer-facing hint copy for selected warning kinds (Claude Code costs practice). */
+/**
+ * User-facing ContextMeter copy — intentionally null.
+ * Context is managed by auto-compact + the Compact menu; do not nag /clear.
+ */
 export function userFacingTokenCostHint(
-  kind: TokenCostWarnKind,
-  step?: number
+  _kind: TokenCostWarnKind,
+  _step?: number
 ): string | null {
-  switch (kind) {
-    case 'high_thinking_on_long_run':
-      return `High thinking effort is still on at step ${step ?? '?'} — reasoning tokens accumulate every step. Lower effort in the composer for simpler work, or /clear between tasks.`
-    case 'context_above_soft_trigger':
-      return 'Context is still large after compaction. Prefer /clear for a new task, or /compact with a focus while continuing this one.'
-    case 'high_context_watermark':
-      return 'Context is near the model window. Prefer /clear between unrelated tasks, or /compact to keep continuity.'
-    case 'long_run_task_boundary':
-      return `This chat has been running a long time (step ${step ?? '?'}). Use /clear (new chat) when starting an unrelated task — it zeros history tokens; /compact keeps continuity for the same task.`
-    case 'low_cache_hit_rate':
-      return 'Prompt cache hit rate is low on large steps — avoid mid-run tool-catalog churn; /clear between unrelated tasks to restore a stable cacheable prefix.'
-    default: {
-      const _exhaustive: never = kind
-      return _exhaustive
-    }
-  }
+  return null
 }
 
-/** True when step/billed totals warrant a static ContextMeter task-boundary tip. */
-export function shouldShowTaskBoundaryTip(input: {
+/** Deprecated: task-boundary /clear tips are suppressed — auto + menu compact own continuity. */
+export function shouldShowTaskBoundaryTip(_input: {
   steps: number
   billedInputTokens: number
 }): boolean {
-  return (
-    input.steps >= LONG_RUN_STEP_HINT_THRESHOLD ||
-    input.billedInputTokens >= LONG_RUN_BILLED_INPUT_HINT_THRESHOLD
-  )
+  return false
 }
 
 /** Count characters in non-stubbed tool message bodies (cheap hotspot signal). */

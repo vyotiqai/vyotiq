@@ -1,7 +1,27 @@
-import { existsSync, mkdtempSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
+
+const canSymlink = (() => {
+  const root = mkdtempSync(join(tmpdir(), 'vyotiq-mem-symlink-probe-'))
+  try {
+    if (process.platform === 'win32') {
+      const target = join(root, 't')
+      mkdirSync(target)
+      symlinkSync(target, join(root, 'link'), 'junction')
+      return true
+    }
+    const target = join(root, 't.txt')
+    writeFileSync(target, 'x', 'utf8')
+    symlinkSync(target, join(root, 'link.txt'), 'file')
+    return true
+  } catch {
+    return false
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})()
 import {
   ensureMemoryLayout,
   listMemoryNotes,
@@ -41,6 +61,21 @@ describe('memory store', () => {
     expect(() => writeMemoryFile(dir, '../secrets.txt', 'nope')).toThrow(/escape|Invalid/)
     expect(() => readMemoryFile(dir, '../secrets.txt')).toThrow(/escape|Invalid/)
     expect(() => readMemoryFile(dir, 'notes/../index.md')).toThrow(/Invalid/)
+  })
+
+  it.skipIf(!canSymlink)('rejects memory root symlink that escapes the workspace', () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-mem-'))
+    const outside = mkdtempSync(join(tmpdir(), 'vyotiq-mem-out-'))
+    try {
+      writeFileSync(join(outside, 'index.md'), '# leaked\n', 'utf8')
+      mkdirSync(join(dir, '.vyotiq'), { recursive: true })
+      const linkType = process.platform === 'win32' ? 'junction' : 'dir'
+      symlinkSync(outside, join(dir, '.vyotiq', 'memory'), linkType)
+      expect(() => readMemoryFile(dir, 'index.md')).toThrow(/escapes workspace/)
+      expect(() => writeMemoryFile(dir, 'notes/x.md', 'nope')).toThrow(/escapes workspace/)
+    } finally {
+      rmSync(outside, { recursive: true, force: true })
+    }
   })
 
   it('exposes memory tools', () => {

@@ -1,26 +1,48 @@
 import { useEffect, useState } from 'react'
 import type { Settings, WorkspaceSettingsOverride } from '@shared/ipc'
+import { findByWorkspacePath } from '@shared/workspacePathMatch'
 import { Button } from '@renderer/lib/ui'
 import { Icon } from '@renderer/lib/icons'
 import { handleTabListKeyDown } from '@renderer/lib/utils/tabListKeyboard'
 import { MarketplaceFeedbackBanner } from './MarketplaceFeedbackBanner'
 import { MarketplaceInstalledList } from './MarketplaceInstalledList'
-import { MarketplaceAddPanel } from './MarketplaceAddPanel'
+import { RegistrySettingsPanel } from './RegistrySettingsPanel'
+import { MarketplaceMcpPane } from './MarketplaceMcpPane'
+import { MarketplaceSkillsPane } from './MarketplaceSkillsPane'
+import { MarketplaceRulesPane } from './MarketplaceRulesPane'
 import type { MarketplaceController } from './useMarketplaceController'
 
-type ManageTab = 'installed' | 'add'
+export const MANAGE_KINDS = ['mcps', 'skills', 'rules', 'packages'] as const
+export type ManageKind = (typeof MANAGE_KINDS)[number]
+
+const KIND_LABEL: Record<ManageKind, string> = {
+  mcps: 'MCPs',
+  skills: 'Skills',
+  rules: 'Rules',
+  packages: 'Packages'
+}
 
 export function MarketplaceManage({
   controller,
   settings,
+  onUpdate,
+  onReloadSettings,
   activeWorkspacePath,
   settingsOverridesByPath,
   onSetSettingsOverride,
   onBack,
-  focusServerId
+  focusServerId,
+  focusSkillPath,
+  focusRulePath,
+  openMcpAdd,
+  onOpenMcpAddConsumed,
+  onFocusSkillConsumed,
+  onFocusRuleConsumed
 }: {
   controller: MarketplaceController
   settings: Settings
+  onUpdate: (partial: Partial<Settings>) => Promise<{ ok: true } | { ok: false; error: string }>
+  onReloadSettings?: () => Promise<void>
   activeWorkspacePath?: string | null
   settingsOverridesByPath?: Record<string, WorkspaceSettingsOverride>
   onSetSettingsOverride?: (
@@ -29,30 +51,39 @@ export function MarketplaceManage({
   ) => Promise<{ ok: true } | { ok: false; error: string }>
   onBack: () => void
   focusServerId?: string | null
+  focusSkillPath?: string | null
+  focusRulePath?: string | null
+  openMcpAdd?: boolean
+  onOpenMcpAddConsumed?: () => void
+  onFocusSkillConsumed?: () => void
+  onFocusRuleConsumed?: () => void
 }) {
-  const [tab, setTab] = useState<ManageTab>('installed')
-  const { formLocked, feedback, setFeedback } = controller
+  const [kind, setKind] = useState<ManageKind>(() => {
+    if (focusSkillPath) return 'skills'
+    if (focusRulePath) return 'rules'
+    return 'mcps'
+  })
+  const { formLocked, feedback, setFeedback, workspaceEnabledForId } = controller
 
   useEffect(() => {
-    if (!focusServerId) return
-    setTab('installed')
-    const t = window.setTimeout(() => {
-      const el = document.querySelector<HTMLElement>(
-        `[data-mcp-server-id="${CSS.escape(focusServerId)}"]`
-      )
-      el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
-      el?.focus?.()
-    }, 50)
-    return () => window.clearTimeout(t)
-  }, [focusServerId])
+    if (focusServerId || openMcpAdd) setKind('mcps')
+  }, [focusServerId, openMcpAdd])
+
+  useEffect(() => {
+    if (focusSkillPath) setKind('skills')
+  }, [focusSkillPath])
+
+  useEffect(() => {
+    if (focusRulePath) setKind('rules')
+  }, [focusRulePath])
 
   const workspaceOverride =
     activeWorkspacePath && settingsOverridesByPath
-      ? settingsOverridesByPath[activeWorkspacePath]
+      ? (findByWorkspacePath(settingsOverridesByPath, activeWorkspacePath) ?? undefined)
       : undefined
 
   const setWorkspaceEnable = async (
-    kind: 'mcp' | 'skills' | 'plugins',
+    enableKind: 'mcp' | 'skills' | 'plugins',
     id: string,
     enabled: boolean
   ) => {
@@ -60,8 +91,8 @@ export function MarketplaceManage({
     const prev = workspaceOverride ?? { useOverride: false as const }
     const marketplaceOverrides = {
       ...(prev.marketplaceOverrides ?? {}),
-      [kind]: {
-        ...(prev.marketplaceOverrides?.[kind] ?? {}),
+      [enableKind]: {
+        ...(prev.marketplaceOverrides?.[enableKind] ?? {}),
         [id]: enabled
       }
     }
@@ -73,31 +104,22 @@ export function MarketplaceManage({
   }
 
   const clearWorkspaceEnable = async (
-    kind: 'mcp' | 'skills' | 'plugins',
+    enableKind: 'mcp' | 'skills' | 'plugins',
     id: string
   ) => {
     if (!activeWorkspacePath || !onSetSettingsOverride || !workspaceOverride) return
-    const kindMap = { ...(workspaceOverride.marketplaceOverrides?.[kind] ?? {}) }
+    const kindMap = { ...(workspaceOverride.marketplaceOverrides?.[enableKind] ?? {}) }
     if (!Object.prototype.hasOwnProperty.call(kindMap, id)) return
     delete kindMap[id]
     const marketplaceOverrides = {
       ...(workspaceOverride.marketplaceOverrides ?? {}),
-      [kind]: kindMap
+      [enableKind]: kindMap
     }
     const res = await onSetSettingsOverride(activeWorkspacePath, {
       ...workspaceOverride,
       marketplaceOverrides
     })
     if (!res.ok) setFeedback({ kind: 'error', text: res.error })
-  }
-
-  const workspaceEnabledForId = (
-    kind: 'mcp' | 'skills' | 'plugins',
-    id: string
-  ): boolean | undefined => {
-    const map = workspaceOverride?.marketplaceOverrides?.[kind]
-    if (map && Object.prototype.hasOwnProperty.call(map, id)) return map[id]
-    return undefined
   }
 
   return (
@@ -118,34 +140,42 @@ export function MarketplaceManage({
           className="flex flex-wrap gap-1"
           role="tablist"
           aria-label="Manage marketplace"
+          tabIndex={-1}
           onKeyDown={(e) =>
             handleTabListKeyDown(e, {
-              tabs: ['installed', 'add'],
-              activeId: tab,
-              onSelect: (id) => setTab(id as ManageTab)
+              tabs: [...MANAGE_KINDS],
+              activeId: kind,
+              onSelect: (id) => setKind(id as ManageKind)
             })
           }
         >
-          {(['installed', 'add'] as ManageTab[]).map((t) => (
+          {MANAGE_KINDS.map((t) => (
             <Button
               key={t}
               id={`marketplace-manage-tab-${t}`}
               role="tab"
-              aria-selected={tab === t}
+              aria-selected={kind === t}
               aria-controls={`marketplace-manage-panel-${t}`}
-              tabIndex={tab === t ? 0 : -1}
+              tabIndex={kind === t ? 0 : -1}
               variant="subtle"
-              className={tab === t ? 'bg-surface text-fg-strong ring-1 ring-inset ring-border/50' : undefined}
+              className={kind === t ? 'bg-surface text-fg-strong ring-1 ring-inset ring-border/50' : undefined}
               disabled={formLocked}
-              onClick={() => setTab(t)}
+              onClick={() => setKind(t)}
             >
-              {t === 'installed' ? 'Installed' : 'Add'}
+              {KIND_LABEL[t]}
             </Button>
           ))}
         </div>
       </div>
 
-      {activeWorkspacePath && onSetSettingsOverride ? (
+      <RegistrySettingsPanel
+        settings={settings}
+        formLocked={formLocked}
+        onUpdate={onUpdate}
+        onReloadSettings={onReloadSettings}
+      />
+
+      {activeWorkspacePath && onSetSettingsOverride && (kind === 'packages' || kind === 'mcps') ? (
         <p className="m-0 rounded-md border border-border bg-surface px-2.5 py-2 text-xs text-secondary">
           Force on/off enables workspace overrides for this workspace and overrides global package
           enablement for agent runs here. Global MCP connections stay up for other workspaces
@@ -155,11 +185,64 @@ export function MarketplaceManage({
 
       <MarketplaceFeedbackBanner feedback={feedback} />
 
-      {tab === 'installed' ? (
+      {kind === 'mcps' ? (
         <div
-          id="marketplace-manage-panel-installed"
+          id="marketplace-manage-panel-mcps"
           role="tabpanel"
-          aria-labelledby="marketplace-manage-tab-installed"
+          aria-labelledby="marketplace-manage-tab-mcps"
+        >
+          <MarketplaceMcpPane
+            controller={controller}
+            settings={settings}
+            activeWorkspacePath={activeWorkspacePath}
+            canOverride={!!onSetSettingsOverride}
+            setWorkspaceEnable={setWorkspaceEnable}
+            clearWorkspaceEnable={clearWorkspaceEnable}
+            workspaceEnabledForId={workspaceEnabledForId}
+            openAdd={openMcpAdd}
+            onOpenAddConsumed={onOpenMcpAddConsumed}
+            focusServerId={focusServerId}
+          />
+        </div>
+      ) : null}
+
+      {kind === 'skills' ? (
+        <div
+          id="marketplace-manage-panel-skills"
+          role="tabpanel"
+          aria-labelledby="marketplace-manage-tab-skills"
+        >
+          <MarketplaceSkillsPane
+            controller={controller}
+            activeWorkspacePath={activeWorkspacePath}
+            focusSkillPath={focusSkillPath}
+            onFocusSkillConsumed={onFocusSkillConsumed}
+          />
+        </div>
+      ) : null}
+
+      {kind === 'rules' ? (
+        <div
+          id="marketplace-manage-panel-rules"
+          role="tabpanel"
+          aria-labelledby="marketplace-manage-tab-rules"
+        >
+          <MarketplaceRulesPane
+            controller={controller}
+            settings={settings}
+            onUpdate={onUpdate}
+            activeWorkspacePath={activeWorkspacePath}
+            focusRulePath={focusRulePath}
+            onFocusRuleConsumed={onFocusRuleConsumed}
+          />
+        </div>
+      ) : null}
+
+      {kind === 'packages' ? (
+        <div
+          id="marketplace-manage-panel-packages"
+          role="tabpanel"
+          aria-labelledby="marketplace-manage-tab-packages"
         >
           <MarketplaceInstalledList
             controller={controller}
@@ -170,16 +253,6 @@ export function MarketplaceManage({
             clearWorkspaceEnable={clearWorkspaceEnable}
             workspaceEnabledForId={workspaceEnabledForId}
           />
-        </div>
-      ) : null}
-
-      {tab === 'add' ? (
-        <div
-          id="marketplace-manage-panel-add"
-          role="tabpanel"
-          aria-labelledby="marketplace-manage-tab-add"
-        >
-          <MarketplaceAddPanel controller={controller} onInstalled={() => setTab('installed')} />
         </div>
       ) : null}
     </div>

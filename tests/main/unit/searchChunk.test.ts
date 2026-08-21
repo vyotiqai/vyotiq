@@ -28,8 +28,10 @@ describe('toolSearch chunking', () => {
 
     const hits = await toolSearch(dir, 'needle', 5)
     expect(hits).toMatch(/f-\d+\.ts/)
-    // Truncation appends a '… stopped at N matches' notice line beyond the hits.
-    const hitLines = hits.split('\n').filter((line) => !line.startsWith('…'))
+    // Truncation / index notices are not hit lines.
+    const hitLines = hits
+      .split('\n')
+      .filter((line) => line.trim() && !line.startsWith('…') && !line.startsWith('index='))
     expect(hitLines.length).toBeLessThanOrEqual(5)
   })
 })

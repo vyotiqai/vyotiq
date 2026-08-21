@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { MarketplaceView } from '@renderer/features/marketplace'
 import type { Settings } from '@shared/ipc'
 import { DEFAULT_SETTINGS } from '@shared/ipc'
@@ -49,17 +49,17 @@ const catalogPackages = [
     bundledPath: 'memory'
   },
   {
-    id: 'docs',
-    name: 'Docs',
+    id: 'implement-feature',
+    name: 'Implement feature',
     version: '1.0.0',
-    description: 'Docs skill',
+    description: 'Feature implementation skill',
     kind: 'skill' as const,
     source: 'bundled' as const,
     category: 'skills',
     verified: true,
-    publisher: 'Vyotiq',
+    publisher: 'Agent V',
     installable: true,
-    bundledPath: 'docs'
+    bundledPath: 'implement-feature'
   },
   {
     id: 'fetch',
@@ -75,17 +75,17 @@ const catalogPackages = [
     bundledPath: 'fetch'
   },
   {
-    id: 'devtools',
-    name: 'Devtools',
+    id: 'create-skill',
+    name: 'Create skill',
     version: '1.0.0',
-    description: 'Plugin',
-    kind: 'plugin' as const,
+    description: 'Create skill workflow',
+    kind: 'skill' as const,
     source: 'bundled' as const,
-    category: 'plugins',
+    category: 'skills',
     verified: true,
-    publisher: 'Vyotiq',
+    publisher: 'Agent V',
     installable: true,
-    bundledPath: 'devtools'
+    bundledPath: 'create-skill'
   }
 ]
 
@@ -222,7 +222,78 @@ describe('MarketplaceView', () => {
           scannedPaths: []
         }
       })),
-      marketplacePickLocal: vi.fn(async () => ({ ok: true as const, data: null }))
+      marketplacePickLocal: vi.fn(async () => ({ ok: true as const, data: null })),
+      skillsListLocal: vi.fn(async () => ({
+        ok: true as const,
+        data: {
+          skills: [
+            {
+              id: 'skill:local:project:ship-notes',
+              name: 'ship-notes',
+              description: 'Project skill for shipping notes from the current workspace.',
+              source: 'project' as const,
+              origin: 'vyotiq' as const,
+              skillPath: 'C:/tmp/.vyotiq/skills/ship-notes/SKILL.md',
+              relativePath: '.vyotiq/skills/ship-notes/SKILL.md'
+            }
+          ]
+        }
+      })),
+      skillsOpenLocal: vi.fn(async () => ({ ok: true as const, data: true as const })),
+      skillsReadLocal: vi.fn(async () => ({
+        ok: true as const,
+        data: {
+          skillPath: 'C:/tmp/.vyotiq/skills/ship-notes/SKILL.md',
+          content: '---\nname: ship-notes\ndescription: Project skill for shipping notes from the current workspace.\n---\n\n# Ship notes\n',
+          name: 'ship-notes',
+          description: 'Project skill for shipping notes from the current workspace.',
+          body: '# Ship notes\n'
+        }
+      })),
+      skillsWriteLocal: vi.fn(async () => ({
+        ok: true as const,
+        data: {
+          skillPath: 'C:/tmp/.vyotiq/skills/ship-notes/SKILL.md',
+          relativePath: '.vyotiq/skills/ship-notes/SKILL.md',
+          name: 'ship-notes'
+        }
+      })),
+      skillsDeleteLocal: vi.fn(async () => ({ ok: true as const, data: true as const })),
+      slashCommandsCreateSkill: vi.fn(async () => ({
+        ok: true as const,
+        data: {
+          path: 'C:/tmp/.vyotiq/skills/release-notes/SKILL.md',
+          relativePath: '.vyotiq/skills/release-notes/SKILL.md',
+          name: 'release-notes',
+          source: 'project' as const
+        }
+      })),
+      slashCommandsCreateRule: vi.fn(async () => ({
+        ok: true as const,
+        data: {
+          path: 'C:/tmp/.vyotiq/rules/release-notes.md',
+          relativePath: '.vyotiq/rules/release-notes.md'
+        }
+      })),
+      workspaceListRules: vi.fn(async () => ({
+        ok: true as const,
+        data: { rules: [] as Array<{ path: string; alwaysApply: boolean }> }
+      })),
+      workspaceFileRead: vi.fn(async () => ({
+        ok: false as const,
+        error: 'not used'
+      })),
+      workspaceFileSave: vi.fn(async () => ({
+        ok: false as const,
+        error: 'not used'
+      })),
+      workspaceFileDelete: vi.fn(async () => ({
+        ok: false as const,
+        error: 'not used'
+      })),
+      workspaceFileReveal: vi.fn(async () => ({ ok: true as const, data: true as const })),
+      shellOpenExternal: vi.fn(async () => ({ ok: true as const, data: true as const })),
+      onSkillsChanged: vi.fn(() => () => {})
     }
   })
 
@@ -235,12 +306,16 @@ describe('MarketplaceView', () => {
     expect(screen.queryByRole('heading', { name: /^Discover$/i })).toBeNull()
     expect(screen.getAllByText('Filesystem').length).toBe(1)
     expect(screen.getAllByText('Memory').length).toBe(1)
-    expect(screen.getAllByText('Docs').length).toBe(1)
+    expect(screen.getAllByText('Implement feature').length).toBe(1)
     expect(screen.getByRole('heading', { name: /^Skills$/i })).toBeTruthy()
     expect(screen.getByRole('heading', { name: /^Infrastructure$/i })).toBeTruthy()
-    expect(screen.getByRole('heading', { name: /^Plugins$/i })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: /^Plugins$/i })).toBeNull()
+    expect(screen.getByText('MCP servers, skills, and packages for the agent.')).toBeTruthy()
+    expect(screen.getByPlaceholderText('Search packages, skills, MCPs…')).toBeTruthy()
+    expect(screen.getByRole('option', { name: 'Packages' })).toBeTruthy()
+    expect(screen.queryByRole('option', { name: 'Plugins' })).toBeNull()
     expect(screen.getByText('Fetch')).toBeTruthy()
-    expect(screen.getByText('Devtools')).toBeTruthy()
+    expect(screen.getByText('Create skill')).toBeTruthy()
     // Installed packages sit in Installed, not Featured / categories
     const installedSection = screen.getByRole('heading', { name: /^Installed$/i }).closest('section')
     expect(installedSection?.textContent).toContain('Memory')
@@ -254,14 +329,76 @@ describe('MarketplaceView', () => {
     expect(screen.queryByRole('button', { name: /^Coming soon$/i })).toBeNull()
   })
 
-  it('Manage Installed lists installed packages and Add tab is reachable', async () => {
+  it('shows Installing… only on the Featured card being installed', async () => {
+    let resolveInstall: ((value: unknown) => void) | undefined
+    // @ts-expect-error test bridge
+    window.vyotiq.marketplaceListInstalled = vi.fn(async () => ({
+      ok: true as const,
+      data: { schemaVersion: 1 as const, items: [] }
+    }))
+    // @ts-expect-error test bridge
+    window.vyotiq.marketplaceInstall = vi.fn(
+      () =>
+        new Promise((resolve) => {
+          resolveInstall = resolve
+        })
+    )
+
+    render(
+      <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
+    )
+    await screen.findByRole('heading', { name: /^Featured$/i })
+
+    const featured = screen.getByRole('heading', { name: /^Featured$/i }).closest('section')
+    expect(featured).toBeTruthy()
+    const addButtons = within(featured!).getAllByRole('button', { name: /^Add$/i })
+    expect(addButtons.length).toBeGreaterThanOrEqual(2)
+
+    fireEvent.click(addButtons[0]!)
+
+    await waitFor(() => {
+      expect(within(featured!).getAllByRole('button', { name: /^Installing/i }).length).toBe(1)
+    })
+    expect(within(featured!).getAllByRole('button', { name: /^Add$/i }).length).toBe(
+      addButtons.length - 1
+    )
+
+    resolveInstall?.({
+      ok: true,
+      data: {
+        item: {
+          id: 'filesystem',
+          kind: 'mcp',
+          name: 'Filesystem',
+          version: '1.0.0',
+          description: '',
+          enabled: true,
+          installSource: 'bundled',
+          installedAt: new Date().toISOString(),
+          packagePath: 'filesystem/1.0.0'
+        }
+      }
+    })
+    await waitFor(() => {
+      expect(within(featured!).queryByRole('button', { name: /^Installing/i })).toBeNull()
+    })
+  })
+
+  it('Manage hub lists packages, skills, and MCP add', async () => {
     render(
       <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
     )
     fireEvent.click((await screen.findAllByRole('tab', { name: /^Manage$/i }))[0]!)
-    expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
+    expect(await screen.findByRole('tab', { name: /^MCPs$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Skills$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Rules$/i })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: /^Packages$/i })).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: /^Packages$/i }))
     expect(await screen.findByText('Memory')).toBeTruthy()
-    fireEvent.click(screen.getByRole('tab', { name: /^Add$/i }))
+    fireEvent.click(screen.getByRole('tab', { name: /^Skills$/i }))
+    expect(await screen.findByText('ship-notes')).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: /^MCPs$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /^New$/i }))
     expect(await screen.findByLabelText(/Paste MCP URL, command, or JSON/i)).toBeTruthy()
   })
 
@@ -273,13 +410,145 @@ describe('MarketplaceView', () => {
     expect(screen.getAllByRole('button', { name: /^Connected$/i }).length).toBeGreaterThan(0)
   })
 
+  it('keeps Browse, detail, and Manage on the same connected MCP status', async () => {
+    const settings: Settings = {
+      ...baseSettings,
+      mcpServers: [
+        {
+          id: 'memory-settings',
+          name: 'Memory',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-memory'],
+          enabled: false,
+          source: 'marketplace',
+          packageId: 'memory'
+        }
+      ]
+    }
+    render(
+      <MarketplaceView settings={settings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
+    )
+    const installed = await screen.findByRole('heading', { name: /^Installed$/i })
+    expect(installed.closest('section')?.textContent).toMatch(/Connected · 2 tools/i)
+    expect(screen.getAllByRole('button', { name: /^Connected$/i }).length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByText('Memory'))
+    expect(await screen.findByRole('button', { name: /^Connected$/i })).toBeTruthy()
+    expect(screen.getByText(/Connected · 2 tools/i)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
+    expect(await screen.findByText(/Connected · 2 tools/i)).toBeTruthy()
+    expect(screen.queryByText(/^Disabled$/i)).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: /Enable MCP server/i })).toBeNull()
+  })
+
+  it('does not show connected on Browse when the MCP is disabled', async () => {
+    // @ts-expect-error test bridge
+    window.vyotiq.marketplaceListInstalled = vi.fn(async () => ({
+      ok: true as const,
+      data: {
+        schemaVersion: 1 as const,
+        items: [
+          {
+            id: 'memory',
+            kind: 'mcp' as const,
+            name: 'Memory',
+            version: '1.0.0',
+            description: '',
+            enabled: false,
+            installSource: 'bundled' as const,
+            installedAt: new Date().toISOString(),
+            packagePath: 'memory/1.0.0'
+          }
+        ]
+      }
+    }))
+    // @ts-expect-error test bridge
+    window.vyotiq.mcpStatus = vi.fn(async () => ({
+      ok: true as const,
+      data: {
+        servers: [
+          {
+            id: 'memory',
+            name: 'Memory',
+            enabled: false,
+            connected: true,
+            toolCount: 2
+          }
+        ]
+      }
+    }))
+    const settings: Settings = {
+      ...baseSettings,
+      mcpServers: [
+        {
+          id: 'memory',
+          name: 'Memory',
+          transport: 'stdio',
+          command: 'npx',
+          args: ['-y', '@modelcontextprotocol/server-memory'],
+          enabled: false,
+          source: 'marketplace',
+          packageId: 'memory'
+        }
+      ]
+    }
+    render(
+      <MarketplaceView settings={settings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
+    )
+    const installed = await screen.findByRole('heading', { name: /^Installed$/i })
+    expect(installed.closest('section')?.textContent).toMatch(/Disabled/i)
+    expect(installed.closest('section')?.textContent).not.toMatch(/Connected/i)
+
+    fireEvent.click(screen.getByText('Memory'))
+    expect(await screen.findByRole('button', { name: /^Disabled$/i })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
+    expect(await screen.findByText(/^Disabled$/i)).toBeTruthy()
+    expect(screen.queryByText(/Connected · 2 tools/i)).toBeNull()
+  })
+
+  it('does not show connected on Featured catalog MCPs that are not installed', async () => {
+    // @ts-expect-error test bridge
+    window.vyotiq.mcpStatus = vi.fn(async () => ({
+      ok: true as const,
+      data: {
+        servers: [
+          {
+            id: 'filesystem',
+            name: 'Filesystem',
+            enabled: true,
+            connected: true,
+            toolCount: 6
+          },
+          {
+            id: 'memory',
+            name: 'Memory',
+            enabled: true,
+            connected: true,
+            toolCount: 2
+          }
+        ]
+      }
+    }))
+    render(
+      <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
+    )
+    await screen.findByRole('heading', { name: /^Featured$/i })
+    const featured = screen.getByRole('heading', { name: /^Featured$/i }).closest('section')
+    expect(featured?.textContent).toContain('Filesystem')
+    expect(featured?.textContent).not.toMatch(/Connected/i)
+    expect(within(featured!).getAllByRole('button', { name: /^Add$/i }).length).toBeGreaterThan(0)
+  })
+
   it('marks the selected package when returning from detail', async () => {
     render(
       <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
     )
     await screen.findByRole('heading', { name: /^Featured$/i })
     fireEvent.click(screen.getByText('Filesystem'))
-    expect(await screen.findByRole('button', { name: /^Add to Vyotiq$/i })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: /^Add to Agent V$/i })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /^Marketplace$/i }))
     await screen.findByRole('heading', { name: /^Featured$/i })
     const selected = screen.getAllByRole('button', { current: 'page' })
@@ -292,7 +561,7 @@ describe('MarketplaceView', () => {
     )
     await screen.findByRole('heading', { name: /^Featured$/i })
     fireEvent.click(screen.getByText('Filesystem'))
-    expect(await screen.findByRole('button', { name: /^Add to Vyotiq$/i })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: /^Add to Agent V$/i })).toBeTruthy()
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: /^MCP$/i })).toBeTruthy()
     })
@@ -304,9 +573,19 @@ describe('MarketplaceView', () => {
     )
     const manageTabs = await screen.findAllByRole('tab', { name: /^Manage$/i })
     fireEvent.click(manageTabs[0]!)
-    expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
+    expect(await screen.findByRole('tab', { name: /^MCPs$/i })).toBeTruthy()
     fireEvent.click(screen.getByRole('tab', { name: /^Browse$/i }))
     expect(await screen.findByRole('heading', { name: /^Featured$/i })).toBeTruthy()
+  })
+
+  it('Manage shows Package registry panel with URL and ack', async () => {
+    render(
+      <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
+    )
+    fireEvent.click((await screen.findAllByRole('tab', { name: /^Manage$/i }))[0]!)
+    expect(await screen.findByLabelText(/Package registry/i)).toBeTruthy()
+    expect(screen.getByLabelText(/Registry URL/i)).toBeTruthy()
+    expect(screen.getByLabelText(/Acknowledge marketplace install risk/i)).toBeTruthy()
   })
 
   it('exposes full package names on truncated cards and roving tab a11y', async () => {
@@ -331,7 +610,7 @@ describe('MarketplaceView', () => {
     )
 
     fireEvent.keyDown(browse.closest('[role="tablist"]')!, { key: 'ArrowRight' })
-    expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
+    expect(await screen.findByRole('tab', { name: /^MCPs$/i })).toBeTruthy()
     const manageHeader = screen.getAllByRole('tab', { name: /^Manage$/i })[0]!
     expect(manageHeader.getAttribute('aria-selected')).toBe('true')
     expect(manageHeader.getAttribute('tabindex')).toBe('0')
@@ -349,7 +628,7 @@ describe('MarketplaceView', () => {
       await screen.findByText(/No matching packages in the curated catalog/i)
     ).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /^Open Manage to add$/i }))
-    expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
+    expect(await screen.findByLabelText(/Paste MCP URL, command, or JSON/i)).toBeTruthy()
   })
 
   it('links installed detail to Manage', async () => {
@@ -360,15 +639,15 @@ describe('MarketplaceView', () => {
     fireEvent.click(screen.getByText('Memory'))
     expect(await screen.findByRole('button', { name: /^Connected$/i })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /^Manage$/i }))
-    expect(await screen.findByRole('tab', { name: /^Installed$/i })).toBeTruthy()
+    expect(await screen.findByRole('tab', { name: /^MCPs$/i })).toBeTruthy()
   })
 
-  it('detects pasted stdio MCP on Manage Add tab', async () => {
+  it('detects pasted stdio MCP on Manage MCPs New panel', async () => {
     render(
       <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
     )
     fireEvent.click((await screen.findAllByRole('tab', { name: /^Manage$/i }))[0]!)
-    fireEvent.click(await screen.findByRole('tab', { name: /^Add$/i }))
+    fireEvent.click(await screen.findByRole('button', { name: /^New$/i }))
     const paste = await screen.findByLabelText(/Paste MCP URL, command, or JSON/i)
     fireEvent.change(paste, { target: { value: 'uvx mcp-server-fetch' } })
     fireEvent.click(screen.getByRole('button', { name: /^Detect$/i }))
@@ -377,5 +656,36 @@ describe('MarketplaceView', () => {
     await waitFor(() => {
       expect(window.vyotiq.marketplaceApplyDetectedMcp).toHaveBeenCalled()
     })
+  })
+
+  it('focuses marketplace search on mount', async () => {
+    render(
+      <MarketplaceView
+        settings={baseSettings}
+        onUpdate={vi.fn(async () => ({ ok: true as const }))}
+        onClose={vi.fn()}
+      />
+    )
+    const search = await screen.findByLabelText(/Search marketplace/i)
+    await waitFor(() => {
+      expect(document.activeElement).toBe(search)
+    })
+  })
+
+  it('closes on Escape from an empty search', async () => {
+    const onClose = vi.fn()
+    render(
+      <MarketplaceView
+        settings={baseSettings}
+        onUpdate={vi.fn(async () => ({ ok: true as const }))}
+        onClose={onClose}
+      />
+    )
+    const search = await screen.findByLabelText(/Search marketplace/i)
+    fireEvent.change(search, { target: { value: 'filesystem' } })
+    fireEvent.keyDown(search, { key: 'Escape' })
+    expect(onClose).not.toHaveBeenCalled()
+    fireEvent.keyDown(search, { key: 'Escape' })
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 })

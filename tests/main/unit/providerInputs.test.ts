@@ -32,6 +32,55 @@ describe('OpenAI Responses input', () => {
     ])
   })
 
+  it('includes a new user follow-up instead of an empty trailing-tool continuation', () => {
+    const messages = [
+      { role: 'user' as const, content: 'read file' },
+      {
+        role: 'assistant' as const,
+        content: 'done',
+        reasoningState: {
+          kind: 'openai_responses' as const,
+          responseId: 'resp_1',
+          outputItems: []
+        }
+      },
+      { role: 'user' as const, content: 'now summarize it' }
+    ]
+    const input = toResponsesInput(messages, 'system prompt', {
+      kind: 'openai_responses',
+      responseId: 'resp_1',
+      outputItems: []
+    })
+    expect(input).toEqual([{ role: 'user', content: 'now summarize it' }])
+  })
+
+  it('includes tool results plus a newer user turn on continuation', () => {
+    const messages = [
+      { role: 'user' as const, content: 'read file' },
+      {
+        role: 'assistant' as const,
+        content: '',
+        reasoningState: {
+          kind: 'openai_responses' as const,
+          responseId: 'resp_1',
+          outputItems: [{ type: 'function_call', call_id: 'c1', name: 'read', arguments: '{}' }]
+        },
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+      },
+      { role: 'tool' as const, toolCallId: 'c1', toolName: 'read', content: 'file contents' },
+      { role: 'user' as const, content: 'summarize that' }
+    ]
+    const input = toResponsesInput(messages, undefined, {
+      kind: 'openai_responses',
+      responseId: 'resp_1',
+      outputItems: []
+    })
+    expect(input).toEqual([
+      { type: 'function_call_output', call_id: 'c1', output: 'file contents' },
+      { role: 'user', content: 'summarize that' }
+    ])
+  })
+
   it('replays output items for assistant tool turns on first request', () => {
     const messages = [
       { role: 'user' as const, content: 'go' },
@@ -55,6 +104,25 @@ describe('OpenAI Responses input', () => {
       arguments: '{}'
     })
   })
+
+  it('wires broken tool-call arguments to parseable JSON when replaying history', () => {
+    const input = toResponsesInput(
+      [
+        { role: 'user', content: 'go' },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'c1', name: 'edit', arguments: '[' }]
+        }
+      ],
+      'system'
+    )
+    const call = input.find((row) => (row as { type?: string }).type === 'function_call') as {
+      arguments: string
+    }
+    expect(call).toBeTruthy()
+    expect(() => JSON.parse(call.arguments)).not.toThrow()
+  })
 })
 
 describe('Gemini Interactions input', () => {
@@ -69,6 +137,48 @@ describe('Gemini Interactions input', () => {
         type: 'function_response',
         function_response: { id: 'c1', name: 'read', response: { output: 'ok' } }
       }
+    ])
+  })
+
+  it('includes a new user follow-up instead of an empty trailing-tool continuation', () => {
+    const messages = [
+      { role: 'user' as const, content: 'hi' },
+      {
+        role: 'assistant' as const,
+        content: 'hello',
+        reasoningState: {
+          kind: 'gemini_interactions' as const,
+          interactionId: 'int_1'
+        }
+      },
+      { role: 'user' as const, content: 'what next?' }
+    ]
+    const input = toInteractionsInput(messages, 'system', true)
+    expect(input).toBe('what next?')
+  })
+
+  it('includes tool results plus a newer user turn on continuation', () => {
+    const messages = [
+      { role: 'user' as const, content: 'hi' },
+      {
+        role: 'assistant' as const,
+        content: '',
+        reasoningState: {
+          kind: 'gemini_interactions' as const,
+          interactionId: 'int_1'
+        },
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+      },
+      { role: 'tool' as const, toolCallId: 'c1', toolName: 'read', content: 'ok' },
+      { role: 'user' as const, content: 'thanks, continue' }
+    ]
+    const input = toInteractionsInput(messages, 'system', true)
+    expect(input).toEqual([
+      {
+        type: 'function_response',
+        function_response: { id: 'c1', name: 'read', response: { output: 'ok' } }
+      },
+      { type: 'text', text: 'thanks, continue' }
     ])
   })
 

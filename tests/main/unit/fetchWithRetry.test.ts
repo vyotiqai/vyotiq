@@ -1,11 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  CHAT_FETCH_MAX_ATTEMPTS,
   fetchWithRetry,
+  httpRetryBackoffMs,
+  HTTP_RETRY_BASE_MS,
   isRetriableNetworkError,
   isRetriableProviderMessage,
   retryAfterMs,
-  RetriableStreamError
+  RetriableStreamError,
+  runWithNetworkRetry
 } from '@main/agent/providers/fetchWithRetry'
+import {
+  CIRCUIT_FAILURE_THRESHOLD,
+  CircuitOpenError,
+  circuitKeyHttp
+} from '@main/agent/circuitBreaker'
 
 describe('isRetriableNetworkError', () => {
   it('detects ECONNRESET on cause chain', () => {
@@ -20,6 +29,10 @@ describe('isRetriableNetworkError', () => {
 
   it('rejects abort errors', () => {
     expect(isRetriableNetworkError(new DOMException('Aborted', 'AbortError'))).toBe(false)
+  })
+
+  it('rejects circuit-open errors', () => {
+    expect(isRetriableNetworkError(new CircuitOpenError('http:down.test', 1000))).toBe(false)
   })
 })
 
@@ -64,6 +77,10 @@ describe('retryAfterMs', () => {
 describe('fetchWithRetry', () => {
   afterEach(() => {
     vi.unstubAllGlobals()
+  })
+
+  it('exports the shared chat fetch attempt budget', () => {
+    expect(CHAT_FETCH_MAX_ATTEMPTS).toBe(5)
   })
 
   function response(status: number, headers: Record<string, string> = {}): Response {
@@ -127,5 +144,72 @@ describe('fetchWithRetry', () => {
     await Promise.resolve()
     controller.abort()
     await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+  })
+
+  it('fail-fasts once consecutive exhausted fetches open the host circuit', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('reset'), { code: 'ECONNRESET' }))
+    vi.stubGlobal('fetch', fetchMock)
+    for (let i = 0; i < CIRCUIT_FAILURE_THRESHOLD; i++) {
+      await expect(
+        fetchWithRetry('https://down.fetch.test', {}, { maxAttempts: 1 })
+      ).rejects.toMatchObject({ code: 'ECONNRESET' })
+    }
+    fetchMock.mockClear()
+    await expect(
+      fetchWithRetry('https://down.fetch.test', {}, { maxAttempts: 3 })
+    ).rejects.toBeInstanceOf(CircuitOpenError)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('httpRetryBackoffMs', () => {
+  it('stays inside the full-jitter window for attempt 1', () => {
+    for (let i = 0; i < 30; i++) {
+      const ms = httpRetryBackoffMs(1)
+      expect(ms).toBeGreaterThanOrEqual(HTTP_RETRY_BASE_MS / 2)
+      expect(ms).toBeLessThanOrEqual(HTTP_RETRY_BASE_MS)
+    }
+  })
+})
+
+describe('runWithNetworkRetry', () => {
+  it('retries a thrown network error then succeeds', async () => {
+    vi.useFakeTimers()
+    try {
+      const fn = vi
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error('reset'), { code: 'ECONNRESET' }))
+        .mockResolvedValueOnce('ok')
+      const pending = runWithNetworkRetry(fn)
+      await vi.runAllTimersAsync()
+      await expect(pending).resolves.toBe('ok')
+      expect(fn).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not retry AbortError', async () => {
+    const fn = vi.fn().mockRejectedValue(new DOMException('Aborted', 'AbortError'))
+    await expect(runWithNetworkRetry(fn)).rejects.toMatchObject({ name: 'AbortError' })
+    expect(fn).toHaveBeenCalledTimes(1)
+  })
+
+  it('fail-fasts once the host circuit is open', async () => {
+    const err = Object.assign(new Error('reset'), { code: 'ECONNRESET' })
+    const fn = vi.fn().mockRejectedValue(err)
+    const key = circuitKeyHttp('https://down.circuit.test')
+    for (let i = 0; i < CIRCUIT_FAILURE_THRESHOLD; i++) {
+      await expect(
+        runWithNetworkRetry(fn, { maxAttempts: 1, circuitKey: key })
+      ).rejects.toMatchObject({ code: 'ECONNRESET' })
+    }
+    fn.mockClear()
+    await expect(runWithNetworkRetry(fn, { maxAttempts: 3, circuitKey: key })).rejects.toBeInstanceOf(
+      CircuitOpenError
+    )
+    expect(fn).not.toHaveBeenCalled()
   })
 })

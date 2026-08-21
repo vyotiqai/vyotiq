@@ -2,12 +2,19 @@ import { AlertBlock } from '@renderer/lib/ui'
 import type { SettingsViewProps } from './types'
 import { useSettingsForm } from './hooks/useSettingsForm'
 import { SettingsLayout } from './components/SettingsLayout'
-import { SettingsNav } from './components/SettingsNav'
+import { SettingsBackButton, SettingsNav } from './components/SettingsNav'
 import { SettingsSectionHeader } from './components/SettingsSectionHeader'
+import { SettingsSearch } from './components/SettingsSearch'
 import { GeneralSection } from './sections/GeneralSection'
 import { ProvidersSection } from './sections/ProvidersSection'
 import { AgentSection } from './sections/AgentSection'
-import { MarketplaceRegistrySection } from './sections/MarketplaceRegistrySection'
+import { IndexingSection } from './sections/IndexingSection'
+import { VoiceSection } from './sections/VoiceSection'
+import { ToolsSection } from './sections/ToolsSection'
+import { IntegrationsSection } from './sections/IntegrationsSection'
+import { AboutSection } from './sections/AboutSection'
+import { AppearanceSection } from './sections/AppearanceSection'
+import { ShortcutsSection } from './sections/ShortcutsSection'
 
 export function SettingsView(props: SettingsViewProps) {
   const {
@@ -16,12 +23,13 @@ export function SettingsView(props: SettingsViewProps) {
     backRef,
     onClose,
     onClearSecret,
-    onSetTheme,
+    onAppearanceChange,
     onPickWorkspace,
     activeWorkspacePath = null,
     openWorkspaces = [],
     settingsOverridesByPath = {},
-    onSetSettingsOverride
+    onSetSettingsOverride,
+    onOpenComposerModel
   } = props
 
   const form = useSettingsForm(props)
@@ -32,13 +40,23 @@ export function SettingsView(props: SettingsViewProps) {
         return (
           <GeneralSection
             settings={settings}
+            secrets={secrets}
             form={form}
-            onSetTheme={onSetTheme}
             onPickWorkspace={onPickWorkspace}
             activeWorkspacePath={activeWorkspacePath}
             openWorkspaces={openWorkspaces}
             settingsOverridesByPath={settingsOverridesByPath}
             onSetSettingsOverride={onSetSettingsOverride}
+            onOpenComposerModel={onOpenComposerModel}
+            onOpenProviders={() => form.navigateSection('providers')}
+          />
+        )
+      case 'appearance':
+        return (
+          <AppearanceSection
+            settings={settings}
+            form={form}
+            onAppearanceChange={onAppearanceChange}
           />
         )
       case 'providers':
@@ -53,14 +71,18 @@ export function SettingsView(props: SettingsViewProps) {
         )
       case 'agent':
         return <AgentSection form={form} />
-      case 'marketplace':
-        return (
-          <MarketplaceRegistrySection
-            settings={settings}
-            form={form}
-            onReloadSettings={props.onReloadSettings}
-          />
-        )
+      case 'indexing':
+        return <IndexingSection form={form} />
+      case 'voice':
+        return <VoiceSection form={form} secrets={secrets} />
+      case 'tools':
+        return <ToolsSection form={form} />
+      case 'integrations':
+        return <IntegrationsSection form={form} />
+      case 'shortcuts':
+        return <ShortcutsSection />
+      case 'about':
+        return <AboutSection form={form} />
       default: {
         const _exhaustive: never = form.section
         return _exhaustive
@@ -70,14 +92,19 @@ export function SettingsView(props: SettingsViewProps) {
 
   return (
     <SettingsLayout
-      nav={
-        <SettingsNav
-          backRef={backRef}
+      back={<SettingsBackButton backRef={backRef} onClose={onClose} />}
+      search={
+        <SettingsSearch
           section={form.section}
-          onClose={onClose}
           onSectionChange={form.navigateSection}
+          onRevealField={(id) => {
+            if (id === 'custom-url') form.selectKeyProvider('custom')
+            else if (id === 'ollama-url') form.selectKeyProvider('ollama')
+          }}
+          onClose={onClose}
         />
       }
+      nav={<SettingsNav section={form.section} onSectionChange={form.navigateSection} />}
     >
       <SettingsSectionHeader section={form.section} />
       {renderSection()}

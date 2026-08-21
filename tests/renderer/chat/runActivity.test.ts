@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { deriveRunActivity, formatRunActivityLabel, turnSummaryActiveLabel } from '@renderer/features/chat/utils/runActivity'
+import {
+  compactActivityFromRows,
+  deriveRunActivity,
+  formatRunActivityLabel,
+  turnSummaryActiveLabel
+} from '@renderer/features/chat/utils/runActivity'
 import type { TranscriptRow } from '@renderer/features/chat/utils/transcriptRows'
 
 function thinkingRow(thinkingStreaming: boolean): TranscriptRow {
@@ -133,8 +138,13 @@ describe('deriveRunActivity', () => {
     expect(formatRunActivityLabel({ kind: 'awaiting_question' })).toBe('Awaiting answer')
   })
 
-  it('reports planning when pendingRun is true with no rows yet', () => {
-    expect(deriveRunActivity([], true)).toEqual({ kind: 'planning' })
+  it('reports working when pendingRun is true with no rows yet', () => {
+    expect(deriveRunActivity([], true)).toEqual({ kind: 'working' })
+  })
+
+  it('reports planning while a coalesced todo_write is running', () => {
+    expect(deriveRunActivity([], true, { todoWriteRunning: true })).toEqual({ kind: 'planning' })
+    expect(deriveRunActivity([], false, { todoWriteRunning: true })).toEqual({ kind: 'planning' })
   })
 
   it('reports working when pendingRun is true but turn already has work', () => {
@@ -166,6 +176,34 @@ describe('turnSummaryActiveLabel', () => {
   })
 })
 
+describe('compactActivityFromRows', () => {
+  it('reads verifying and retrying from the latest compact card', () => {
+    expect(compactActivityFromRows([])).toEqual({ kind: 'compacting' })
+    expect(
+      compactActivityFromRows([
+        {
+          kind: 'compaction',
+          id: 'c1',
+          summary: 'draft',
+          turnIndex: 0,
+          verifyStatus: 'verifying'
+        }
+      ])
+    ).toEqual({ kind: 'verifying_compact' })
+    expect(
+      compactActivityFromRows([
+        {
+          kind: 'compaction',
+          id: 'c1',
+          summary: 'draft',
+          turnIndex: 0,
+          verifyStatus: 'retrying'
+        }
+      ])
+    ).toEqual({ kind: 'retrying_compact' })
+  })
+})
+
 describe('formatRunActivityLabel', () => {
   it('joins tool verb and detail', () => {
     expect(
@@ -178,6 +216,9 @@ describe('formatRunActivityLabel', () => {
     expect(formatRunActivityLabel({ kind: 'writing' })).toBe('Writing')
     expect(formatRunActivityLabel({ kind: 'planning' })).toBe('Planning')
     expect(formatRunActivityLabel({ kind: 'working' })).toBe('Working')
+    expect(formatRunActivityLabel({ kind: 'compacting' })).toBe('Compacting…')
+    expect(formatRunActivityLabel({ kind: 'verifying_compact' })).toBe('Verifying summary…')
+    expect(formatRunActivityLabel({ kind: 'retrying_compact' })).toBe('Retrying summary…')
     expect(formatRunActivityLabel({ kind: 'awaiting_approval' })).toBe('Awaiting approval')
   })
 })

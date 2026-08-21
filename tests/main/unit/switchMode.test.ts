@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_SETTINGS } from '@shared/ipc'
-import { filterToolDefsForMode, isBuiltinAllowedInMode } from '@main/agent/tools/modePolicy'
+import {
+  assertToolAllowedInMode,
+  filterToolDefsForMode,
+  isBuiltinAllowedInMode
+} from '@main/agent/tools/modePolicy'
 import { AGENT_TOOLS } from '@main/agent/schemas/tools'
 import { isApprovalExemptTool, isParallelSafeTool } from '@main/agent/tools/classify'
-
 const getSettings = vi.hoisted(() =>
   vi.fn(() => ({ ...DEFAULT_SETTINGS, autoModeSwitch: true }))
 )
@@ -25,12 +28,26 @@ describe('switch_mode', () => {
     expect(isBuiltinAllowedInMode('ask', 'switch_mode', opts)).toBe(true)
     expect(isBuiltinAllowedInMode('plan', 'switch_mode', opts)).toBe(true)
     expect(isBuiltinAllowedInMode('agent', 'switch_mode', opts)).toBe(true)
+    expect(assertToolAllowedInMode('ask', 'switch_mode', { mode: 'agent' }, opts).ok).toBe(true)
+    expect(assertToolAllowedInMode('plan', 'switch_mode', { mode: 'agent' }, opts).ok).toBe(true)
+    expect(assertToolAllowedInMode('agent', 'switch_mode', { mode: 'plan' }, opts).ok).toBe(true)
   })
 
   it('is denied in every interaction mode when autoModeSwitch is off', () => {
     expect(isBuiltinAllowedInMode('ask', 'switch_mode')).toBe(false)
     expect(isBuiltinAllowedInMode('plan', 'switch_mode', { autoModeSwitch: false })).toBe(false)
     expect(isBuiltinAllowedInMode('agent', 'switch_mode', { autoModeSwitch: false })).toBe(false)
+    const denied = assertToolAllowedInMode(
+      'agent',
+      'switch_mode',
+      { mode: 'plan' },
+      { autoModeSwitch: false }
+    )
+    expect(denied.ok).toBe(false)
+    if (!denied.ok) {
+      expect(denied.error).toMatch(/Automatic mode switching is off/i)
+      expect(denied.error).toMatch(/Only the user can change/i)
+    }
   })
 
   it('is serial and approval-exempt', () => {
@@ -114,11 +131,13 @@ describe('switch_mode', () => {
     expect(askTools).toContain('ask_question')
     expect(askTools).toContain('switch_mode')
     expect(askTools).not.toContain('edit')
+    expect(askTools).not.toContain('compact_context')
 
     const agentTools = filterToolDefsForMode('agent', AGENT_TOOLS, opts).map((t) => t.name)
     expect(agentTools).toContain('edit')
     expect(agentTools).toContain('ask_question')
     expect(agentTools).toContain('switch_mode')
+    expect(agentTools).not.toContain('compact_context')
   })
 
   it('omits switch_mode from tool defs when autoModeSwitch is off', () => {

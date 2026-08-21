@@ -68,6 +68,12 @@
   --z-dropdown: 20;
   --z-tooltip: 25;
   --z-drawer: 30;
+
+  --vy-font-scale: 1;
+  --vy-density-scale: 1;
+  --vy-control-min-h: calc(2rem * var(--vy-density-scale));
+  --vy-control-px: calc(0.75rem * var(--vy-density-scale));
+  --vy-control-gap: calc(0.375rem * var(--vy-density-scale));
 }
 
 [data-theme="dark"] {
@@ -125,29 +131,84 @@
   --z-dropdown: 20;
   --z-tooltip: 25;
   --z-drawer: 30;
+
+  --vy-font-scale: 1;
+  --vy-density-scale: 1;
+  --vy-control-min-h: calc(2rem * var(--vy-density-scale));
+  --vy-control-px: calc(0.75rem * var(--vy-density-scale));
+  --vy-control-gap: calc(0.375rem * var(--vy-density-scale));
 }
 
+[data-font-scale="small"] {
+  --vy-font-scale: 0.92;
+}
+
+[data-font-scale="large"] {
+  --vy-font-scale: 1.08;
+}
+
+[data-density="compact"] {
+  --vy-density-scale: 0.9;
+}
+
+[data-density="comfortable"] {
+  --vy-density-scale: 1.08;
+}
+
+[data-theme="light"][data-accent="blue"] {
+  --vy-accent: #1d4ed8;
+  --vy-accent-fg: #f8fafc;
+  --vy-focus: #3b82f6;
+}
+
+[data-theme="light"][data-accent="violet"] {
+  --vy-accent: #6d28d9;
+  --vy-accent-fg: #faf5ff;
+  --vy-focus: #8b5cf6;
+}
+
+[data-theme="light"][data-accent="green"] {
+  --vy-accent: #15803d;
+  --vy-accent-fg: #f0fdf4;
+  --vy-focus: #22c55e;
+}
+
+[data-theme="dark"][data-accent="blue"] {
+  --vy-accent: #3b82f6;
+  --vy-accent-fg: #0a0a0a;
+  --vy-focus: #60a5fa;
+}
+
+[data-theme="dark"][data-accent="violet"] {
+  --vy-accent: #8b5cf6;
+  --vy-accent-fg: #0a0a0a;
+  --vy-focus: #a78bfa;
+}
+
+[data-theme="dark"][data-accent="green"] {
+  --vy-accent: #22c55e;
+  --vy-accent-fg: #0a0a0a;
+  --vy-focus: #4ade80;
+}
+
+/* Opacity-only — transform on ancestors ghosts contenteditable glyphs / spellcheck. */
 @keyframes fade-in {
   from {
     opacity: 0;
-    transform: translateY(3px);
   }
 
   to {
     opacity: 1;
-    transform: none;
   }
 }
 
 @keyframes chrome-drop-in {
   from {
     opacity: 0;
-    transform: translateY(-4px);
   }
 
   to {
     opacity: 1;
-    transform: none;
   }
 }
 
@@ -167,15 +228,15 @@
   --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
 
-  --text-3xs: 9px;
-  --text-2xs: 10px;
-  --text-caption: 11px;
-  --text-xs: 12px;
-  --text-sm: 13px;
-  --text-md: 14px;
-  --text-lg: 15px;
-  --text-heading: 16px;
-  --text-title: 17px;
+  --text-3xs: calc(9px * var(--vy-font-scale));
+  --text-2xs: calc(10px * var(--vy-font-scale));
+  --text-caption: calc(11px * var(--vy-font-scale));
+  --text-xs: calc(12px * var(--vy-font-scale));
+  --text-sm: calc(13px * var(--vy-font-scale));
+  --text-md: calc(14px * var(--vy-font-scale));
+  --text-lg: calc(15px * var(--vy-font-scale));
+  --text-heading: calc(16px * var(--vy-font-scale));
+  --text-title: calc(17px * var(--vy-font-scale));
   --leading-mono: 1.6;
 
   --radius-sm: 4px;
@@ -216,6 +277,13 @@
   --animate-chrome-drop-in: chrome-drop-in var(--vy-duration) var(--vy-ease);
   --animate-slide-in-left: slide-in-left var(--vy-duration) var(--vy-ease);
 
+  /* Motion system — operate/product surface: anchored emergence, state feedback */
+  --animate-menu-in: vy-pop-in var(--vy-duration) var(--vy-ease) both;
+  --animate-tip-in: vy-tip-in 120ms var(--vy-ease) both;
+  --animate-toast-in: vy-toast-in 220ms var(--vy-ease) both;
+  --animate-toast-out: vy-toast-out 150ms var(--vy-ease) both;
+  --animate-dialog-in: vy-dialog-in 200ms var(--vy-ease) both;
+
   --z-index-sticky: var(--z-sticky);
   --z-index-dropdown: var(--z-dropdown);
   --z-index-tooltip: var(--z-tooltip);
@@ -242,6 +310,11 @@
   transition-property: background-color, border-color, color, opacity, box-shadow, transform;
   transition-duration: var(--vy-duration);
   transition-timing-function: var(--vy-ease);
+}
+
+@utility vy-disabled-state {
+  cursor: not-allowed;
+  opacity: var(--vy-disabled-opacity);
 }
 
 /** Softens the cut where clamped content is truncated. */
@@ -281,6 +354,18 @@
     line-height: 1.4;
     letter-spacing: var(--vy-tracking-body);
     text-rendering: optimizeLegibility;
+  }
+
+  /* Contenteditable under transform/tracking paints ghosted glyphs + drifted spellcheck. */
+  [data-composer-shell] {
+    transform: none;
+  }
+
+  input,
+  textarea,
+  [contenteditable]:not([contenteditable='false']) {
+    letter-spacing: 0;
+    text-rendering: auto;
   }
 
   button,
@@ -387,6 +472,46 @@
     background-color: var(--vy-muted);
   }
 
+  .files-panel-scroll {
+    overflow: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: thin;
+    scrollbar-color: var(--vy-muted) transparent;
+  }
+
+  .files-panel-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  .files-panel-scroll::-webkit-scrollbar-thumb {
+    background-color: var(--vy-border-strong);
+    border-radius: 6px;
+  }
+
+  .files-panel-scroll::-webkit-scrollbar-thumb:hover {
+    background-color: var(--vy-muted);
+  }
+
+  [data-code-editor] .cm-scroller {
+    scrollbar-width: thin;
+    scrollbar-color: var(--vy-muted) transparent;
+  }
+
+  [data-code-editor] .cm-scroller::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  [data-code-editor] .cm-scroller::-webkit-scrollbar-thumb {
+    background-color: var(--vy-border-strong);
+    border-radius: 4px;
+  }
+
+  [data-code-editor] .cm-scroller::-webkit-scrollbar-thumb:hover {
+    background-color: var(--vy-muted);
+  }
+
   @media (prefers-reduced-motion: reduce) {
     html:focus-within {
       scroll-behavior: auto;
@@ -415,6 +540,51 @@
   border-width: 0;
 }
 
+@utility skip-link {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+
+  &:focus-visible {
+    position: fixed;
+    left: 0.5rem;
+    top: 0.5rem;
+    z-index: 9999;
+    width: auto;
+    height: auto;
+    margin: 0;
+    padding: 0.5rem 0.75rem;
+    overflow: visible;
+    clip: auto;
+    white-space: normal;
+    border-radius: 0.375rem;
+    background: var(--color-surface);
+    color: var(--color-fg);
+    outline: 2px solid var(--color-focus);
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :focus-visible,
+  .skip-link:focus-visible {
+    outline-width: 3px;
+  }
+}
+
+@media (forced-colors: active) {
+  :focus-visible,
+  .skip-link:focus-visible {
+    outline: 2px solid Highlight;
+  }
+}
+
 .markdown-body {
   &> :first-child {
     margin-top: 0;
@@ -438,15 +608,17 @@
   }
 
   h1 {
-    font-size: 1.35em;
+    font-size: 1.4em;
   }
 
   h2 {
-    font-size: 1.2em;
+    margin-top: 1.15em;
+    font-size: 1.25em;
   }
 
   h3 {
-    font-size: 1.08em;
+    margin-top: 1em;
+    font-size: 1.12em;
   }
 
   h4,
@@ -474,13 +646,13 @@
   }
 
   p {
-    margin: 0.5em 0;
+    margin: 0.55em 0;
   }
 
   /* Tailwind preflight strips list markers globally; restore them for prose. */
   ul,
   ol {
-    margin: 0.5em 0;
+    margin: 0.55em 0;
     padding-left: 1.25rem;
   }
 
@@ -501,7 +673,7 @@
   }
 
   li {
-    margin: 0.2em 0;
+    margin: 0.4em 0;
   }
 
   li::marker {
@@ -510,7 +682,7 @@
 
   li>ul,
   li>ol {
-    margin: 0.2em 0;
+    margin: 0.25em 0;
   }
 
   li.task-list-item {
@@ -526,8 +698,12 @@
   }
 
   a {
-    color: var(--color-fg-strong);
+    color: var(--color-muted);
     text-decoration: underline;
+  }
+
+  del {
+    color: var(--color-muted);
   }
 
   code {
@@ -649,11 +825,11 @@
   -webkit-background-clip: text;
   color: transparent;
   background-image: linear-gradient(90deg,
-      var(--vy-gray-400) 0%,
-      var(--vy-gray-400) 40%,
-      var(--vy-gray-500) 50%,
-      var(--vy-gray-400) 60%,
-      var(--vy-gray-400) 100%);
+      var(--color-tertiary) 0%,
+      var(--color-tertiary) 40%,
+      var(--color-muted) 50%,
+      var(--color-tertiary) 60%,
+      var(--color-tertiary) 100%);
   background-repeat: no-repeat;
 }
 
@@ -675,6 +851,75 @@
   from {
     opacity: 0;
     transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Emergence from a trigger — scale settles while a few px of rise resolve.
+   transform-origin is set per-placement (origin-bottom / origin-top) so the
+   panel appears to grow out of the control, not float in from nowhere. */
+@keyframes vy-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Tooltip: brief, near-invisible settle. Outer wrapper keeps the
+   translate-based centering; this only scales the inner content. */
+@keyframes vy-tip-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Toast: state feedback for the bottom-right stack. Enters from the right
+   (where it lives) and exits the same way, so a dismissed notice reads as
+   "slid away" rather than blinked out. */
+@keyframes vy-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(16px) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@keyframes vy-toast-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+
+  to {
+    opacity: 0;
+    transform: translateX(16px) scale(0.98);
+  }
+}
+
+/* Dialog panel: a calm drop-and-settle instead of an instant pop. */
+@keyframes vy-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
   }
 
   to {
@@ -706,15 +951,29 @@
 
 @media (prefers-reduced-motion: no-preference) {
   .tool-stagger-enter {
-    animation: tool-stagger-in 0.28s var(--vy-ease) both;
+    animation: tool-stagger-in var(--vy-duration) var(--vy-ease) both;
     animation-delay: calc(min(var(--stagger-index, 0), 8) * 40ms);
   }
 
   .tool-body-enter {
-    animation: tool-stagger-in 0.22s var(--vy-ease) both;
+    animation: tool-stagger-in 120ms var(--vy-ease) both;
   }
 
   .tool-expand {
     transition: grid-template-rows var(--vy-duration) var(--vy-ease);
+  }
+}
+
+/* Native <dialog> (useNativeDialog) has no entrance by default — showModal
+   just appears. Animate the open transition so it matches the non-native
+   panel. Exit stays instant (close() removes [open] immediately). */
+dialog[open] {
+  animation: vy-dialog-in 200ms var(--vy-ease) both;
+}
+
+@media (max-width: 639px) {
+  [data-vy-text-entry] {
+    min-height: 2.75rem;
+    font-size: 1rem;
   }
 }

@@ -9,6 +9,7 @@ import { formatSkillInvocation } from '../../../shared/slashCommands'
 import { effectiveMarketplaceEnabled } from '../../../shared/domain/marketplaceEnablement'
 import { parseSkillFrontmatter } from '../skills/parse'
 import { isSkillMdFilename, resolveSkillMdPath } from '../skills/paths'
+import { findLocalSkillById, loadLocalSkills } from '../skills/local'
 import { browseCatalog } from '../../marketplace/catalog'
 import { readMarketplaceIndex } from '../../marketplace/indexStore'
 import { findCatalogEntry, getPackageContents } from '../../marketplace/packageContents'
@@ -24,6 +25,8 @@ type SkillCandidate = {
   availability: SlashCommandDescriptor['availability']
   /** Absolute path to SKILL.md when known. */
   skillPath?: string
+  /** Higher wins when availability ties (project local > personal > marketplace). */
+  sourceRank: number
 }
 
 function skillPathForInstalled(packagePath: string, nestedRel?: string): string | undefined {
@@ -68,9 +71,10 @@ function readSkillBody(path: string): { name: string; description: string; body:
   }
 }
 
-/** List skill slash commands from catalog + installed packages. */
+/** List skill slash commands from local filesystem + catalog + installed packages. */
 export async function listSkillCommands(
-  marketplaceOverrides?: MarketplaceOverrides | null
+  marketplaceOverrides?: MarketplaceOverrides | null,
+  workspacePath?: string | null
 ): Promise<SlashCommandDescriptor[]> {
   const index = readMarketplaceIndex()
   const installedById = new Map(index.items.map((item) => [item.id, item]))
@@ -79,12 +83,35 @@ export async function listSkillCommands(
   const upsert = (candidate: SkillCandidate): void => {
     const key = candidate.trigger.toLowerCase()
     const prev = byTrigger.get(key)
-    // Prefer ready > disabled > not_installed
     const rank = (a: SkillCandidate['availability']): number =>
       a === 'ready' ? 3 : a === 'disabled' ? 2 : 1
-    if (!prev || rank(candidate.availability) > rank(prev.availability)) {
+    if (!prev) {
+      byTrigger.set(key, candidate)
+      return
+    }
+    if (rank(candidate.availability) > rank(prev.availability)) {
+      byTrigger.set(key, candidate)
+      return
+    }
+    if (
+      rank(candidate.availability) === rank(prev.availability) &&
+      candidate.sourceRank > prev.sourceRank
+    ) {
       byTrigger.set(key, candidate)
     }
+  }
+
+  for (const local of loadLocalSkills(workspacePath)) {
+    upsert({
+      id: local.id,
+      trigger: local.name.toLowerCase(),
+      label: local.name,
+      description: local.description,
+      packageId: local.id,
+      availability: 'ready',
+      skillPath: local.skillPath,
+      sourceRank: local.source === 'project' ? 5 : 4
+    })
   }
 
   // Installed standalone skills
@@ -106,7 +133,8 @@ export async function listSkillCommands(
       description: loaded?.description ?? item.description,
       packageId: item.id,
       availability: enabled ? 'ready' : 'disabled',
-      skillPath: path
+      skillPath: path,
+      sourceRank: 3
     })
   }
 
@@ -130,7 +158,8 @@ export async function listSkillCommands(
         description: skill.description,
         packageId: item.id,
         availability: enabled ? 'ready' : 'disabled',
-        skillPath: path
+        skillPath: path,
+        sourceRank: 2
       })
     }
   }
@@ -154,7 +183,8 @@ export async function listSkillCommands(
         description: skill?.description ?? entry.description,
         packageId: entry.id,
         availability: 'not_installed',
-        skillPath
+        skillPath,
+        sourceRank: 1
       })
       continue
     }
@@ -182,8 +212,9 @@ export async function listSkillCommands(
               )
               ? 'ready'
               : 'disabled'
-            : 'not_installed',
-          skillPath
+              : 'not_installed',
+          skillPath,
+          sourceRank: 1
         })
       }
     }
@@ -243,9 +274,21 @@ function resolveSkillPath(id: string): string | null {
 export function resolveSkillCommand(
   id: string,
   trailingText: string,
-  marketplaceOverrides?: MarketplaceOverrides | null
+  marketplaceOverrides?: MarketplaceOverrides | null,
+  workspacePath?: string | null
 ): SlashCommandResolveResult | null {
   if (!id.startsWith('skill:')) return null
+
+  if (id.startsWith('skill:local:')) {
+    const local = findLocalSkillById(id, workspacePath)
+    if (!local) {
+      return { action: 'send', message: `Could not load skill for /${id.slice('skill:local:'.length)}.` }
+    }
+    return {
+      action: 'send',
+      message: formatSkillInvocation(local.name, local.body, trailingText)
+    }
+  }
 
   const rest = id.slice('skill:'.length)
   const slash = rest.indexOf('/')

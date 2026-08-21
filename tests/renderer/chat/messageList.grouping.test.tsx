@@ -48,21 +48,25 @@ describe('MessageList', () => {
 
     render(<MessageList items={items} />)
 
-    const toggles = screen.getAllByRole('button', { name: /Read 2 files/i })
+    const toggles = screen.getAllByRole('button', { name: /Read: 2 files/i })
     expect(toggles).toHaveLength(2)
-    // Prior turn stays collapsed; last turn uses keepOpen so recent work stays visible.
+    // Settled groups stay collapsed; expand is opt-in.
     expect(toggles[0]!.getAttribute('aria-expanded')).toBe('false')
-    expect(toggles[1]!.getAttribute('aria-expanded')).toBe('true')
+    expect(toggles[1]!.getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByText('alpha-one.ts')).toBeNull()
-    expect(screen.getByText('beta-one.ts')).toBeTruthy()
+    expect(screen.queryByText('beta-one.ts')).toBeNull()
 
     fireEvent.click(toggles[0]!)
 
     expect(toggles[0]!.getAttribute('aria-expanded')).toBe('true')
-    expect(toggles[1]!.getAttribute('aria-expanded')).toBe('true')
+    expect(toggles[1]!.getAttribute('aria-expanded')).toBe('false')
     const alphaGroup = toggles[0]!.parentElement as HTMLElement
     expect(within(alphaGroup).getByText('alpha-one.ts')).toBeTruthy()
     expect(within(alphaGroup).getByText('alpha-two.ts')).toBeTruthy()
+    expect(screen.queryByText('beta-one.ts')).toBeNull()
+
+    fireEvent.click(toggles[1]!)
+    expect(toggles[1]!.getAttribute('aria-expanded')).toBe('true')
     expect(screen.getByText('beta-one.ts')).toBeTruthy()
 
     fireEvent.click(toggles[0]!)
@@ -80,7 +84,7 @@ describe('MessageList', () => {
     ]
 
     const { rerender } = render(<MessageList items={items} />)
-    const prior = screen.getByRole('button', { name: /Read 2 files/i })
+    const prior = screen.getByRole('button', { name: /Read: 2 files/i })
     expect(prior.getAttribute('aria-expanded')).toBe('false')
     expect(screen.queryByText('alpha-one.ts')).toBeNull()
 
@@ -106,7 +110,7 @@ describe('MessageList', () => {
 
     // Live expanded turn streams tool chrome inline; prior settled turn stays collapsed.
     const toggles = screen
-      .getAllByRole('button', { name: /Read(?:ing)? 2 files/i })
+      .getAllByRole('button', { name: /Read(?:ing)?: 2 files/i })
       .filter((btn) => !/turn work|Collapse turn work/i.test(btn.getAttribute('aria-label') ?? ''))
     expect(toggles).toHaveLength(2)
     expect(toggles[0]!.getAttribute('aria-expanded')).toBe('false')
@@ -207,8 +211,8 @@ describe('MessageList', () => {
 
     render(<MessageList items={items} running />)
 
-    // Activity chrome for the read tool is hidden; approval gate stays.
-    expect(screen.queryByRole('button', { name: /^Read(?:ing)?\b/i })).toBeNull()
+    // Running lookup chrome stays visible; the gated edit is the approval card.
+    expect(screen.getByRole('button', { name: /^Reading$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Allow once' })).toBeTruthy()
     expect(
       screen.getByRole('button', { name: /Collapse turn work|Awaiting approval/i })

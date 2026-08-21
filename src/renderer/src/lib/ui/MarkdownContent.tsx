@@ -25,20 +25,29 @@ import {
   allocateHeadingId,
   extractHeadingText
 } from '@renderer/lib/markdown/headingIds'
-import { markdownSanitizeSchema, sanitizeHighlightedHtml } from '@renderer/lib/markdown/markdownSanitize'
+import {
+  isSafeMarkdownHref,
+  markdownSanitizeSchema,
+  sanitizeHighlightedHtml
+} from '@renderer/lib/markdown/markdownSanitize'
+import {
+  autolinkWorkspacePathsInProse,
+  parseLinkableWorkspacePath,
+  parseVyFileHref
+} from '@shared/utils/linkableWorkspacePath'
 import { cn } from './cn'
 import { useDocumentTheme } from './useDocumentTheme'
 
 export { trailingOpenFenceBody } from '@renderer/lib/markdown/fenceUtils'
 
-/** Close an unclosed fence and balance incomplete inline markdown for streaming. */
-export function prepareStreamingMarkdown(content: string): string {
+/** Balance unclosed fences and inline markdown when a stream completes. */
+export function balanceIncompleteMarkdown(content: string): string {
   return balanceOutsideFences(closeOpenFence(content))
 }
 
-/** Balance unclosed inline markdown when a stream completes. */
-export function balanceIncompleteMarkdown(content: string): string {
-  return balanceOutsideFences(content)
+/** Alias used by streaming markdown paths. */
+export function prepareStreamingMarkdown(content: string): string {
+  return balanceIncompleteMarkdown(content)
 }
 
 type MarkdownBlock = { source: string; start: number }
@@ -246,16 +255,25 @@ function buildHeadingComponents(used: Map<string, number>) {
   return { h1: make('h1'), h2: make('h2'), h3: make('h3') }
 }
 
+const CODE_CHIP =
+  'rounded-sm bg-surface px-1 py-0.5 font-mono text-[0.85em] hover:bg-surface-2 focus-visible:bg-surface-2'
+
+function formatLinkablePathText(parsed: { path: string; line?: number }): string {
+  return parsed.line != null ? `${parsed.path}:${parsed.line}` : parsed.path
+}
+
 function buildMarkdownComponents(
   openFenceBody: string | null,
   opts?: {
     headingIds?: boolean
     headingUsed?: Map<string, number>
     readOnlyTasks?: boolean
+    onOpenWorkspaceFile?: (path: string, options?: { line?: number }) => void
   }
 ) {
   const heading =
     opts?.headingIds && opts.headingUsed ? buildHeadingComponents(opts.headingUsed) : null
+  const onOpenWorkspaceFile = opts?.onOpenWorkspaceFile
   return {
     ...(heading ?? {}),
     ...(opts?.readOnlyTasks
@@ -277,11 +295,34 @@ function buildMarkdownComponents(
           }
         }
       : {}),
-    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
-      <a href={href} target="_blank" rel="noreferrer noopener" className="text-fg-strong underline">
-        {children}
-      </a>
-    ),
+    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
+      const fileTarget = parseVyFileHref(href)
+      if (fileTarget && onOpenWorkspaceFile) {
+        return (
+          <button
+            type="button"
+            className={CODE_CHIP}
+            onClick={() =>
+              onOpenWorkspaceFile(
+                fileTarget.path,
+                fileTarget.line ? { line: fileTarget.line } : undefined
+              )
+            }
+          >
+            {children}
+          </button>
+        )
+      }
+      if (!isSafeMarkdownHref(href)) {
+        // Keep the author's visible text without exposing an inert link target.
+        return <span className="text-muted underline">{children}</span>
+      }
+      return (
+        <a href={href} target="_blank" rel="noreferrer noopener" className="text-muted underline">
+          {children}
+        </a>
+      )
+    },
     table: ({ children }: { children?: React.ReactNode }) => (
       <div className="markdown-table-scroll my-2 max-w-full overflow-x-auto" data-markdown-table-scroll>
         <table>{children}</table>
@@ -297,8 +338,28 @@ function buildMarkdownComponents(
       if (codeClass?.includes('language-')) {
         return <code className={cn('block font-mono text-[0.85em]', codeClass)}>{children}</code>
       }
+      const text = String(children ?? '').trim()
+      const parsed = parseLinkableWorkspacePath(text)
+      if (parsed && onOpenWorkspaceFile && text === formatLinkablePathText(parsed)) {
+        return (
+          <button
+            type="button"
+            className={CODE_CHIP}
+            onClick={() =>
+              onOpenWorkspaceFile(
+                parsed.path,
+                parsed.line ? { line: parsed.line } : undefined
+              )
+            }
+          >
+            {children}
+          </button>
+        )
+      }
       return (
-        <code className="rounded-sm bg-surface px-1 py-0.5 font-mono text-[0.85em]">{children}</code>
+        <code className={cn('rounded-sm bg-surface px-1 py-0.5 font-mono text-[0.85em]', codeClass)}>
+          {children}
+        </code>
       )
     },
     pre: ({ children }: { children?: React.ReactNode }) => (
@@ -312,21 +373,35 @@ const MemoMarkdownBlock = memo(function MemoMarkdownBlock({
   openFenceBody,
   headingIds,
   headingUsed,
-  readOnlyTasks
+  readOnlyTasks,
+  linkWorkspacePaths,
+  onOpenWorkspaceFile
 }: {
   source: string
   openFenceBody: string | null
   headingIds?: boolean
   headingUsed?: Map<string, number>
   readOnlyTasks?: boolean
+  linkWorkspacePaths?: boolean
+  onOpenWorkspaceFile?: (path: string, options?: { line?: number }) => void
 }) {
+  const renderedSource = useMemo(() => {
+    if (!linkWorkspacePaths || parseFenceLine(source.split('\n')[0] ?? '')) return source
+    return autolinkWorkspacePathsInProse(source)
+  }, [linkWorkspacePaths, source])
   const components = useMemo(
-    () => buildMarkdownComponents(openFenceBody, { headingIds, headingUsed, readOnlyTasks }),
-    [openFenceBody, headingIds, headingUsed, readOnlyTasks]
+    () =>
+      buildMarkdownComponents(openFenceBody, {
+        headingIds,
+        headingUsed,
+        readOnlyTasks,
+        onOpenWorkspaceFile
+      }),
+    [openFenceBody, headingIds, headingUsed, readOnlyTasks, onOpenWorkspaceFile]
   )
   return (
     <Markdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components}>
-      {source}
+      {renderedSource}
     </Markdown>
   )
 })
@@ -337,6 +412,8 @@ export function MarkdownContent({
   headingIds = false,
   wrapTables = false,
   readOnlyTasks = false,
+  linkWorkspacePaths = false,
+  onOpenWorkspaceFile,
   className
 }: {
   content: string
@@ -347,6 +424,9 @@ export function MarkdownContent({
   wrapTables?: boolean
   /** Disable GFM task checkboxes (display-only). */
   readOnlyTasks?: boolean
+  /** Auto-link bare workspace-relative paths in prose (assistant chat). */
+  linkWorkspacePaths?: boolean
+  onOpenWorkspaceFile?: (path: string, options?: { line?: number }) => void
   className?: string
 }) {
   const markdown = useMemo(
@@ -390,6 +470,10 @@ export function MarkdownContent({
             headingIds={headingIds}
             headingUsed={headingUsed}
             readOnlyTasks={readOnlyTasks}
+            linkWorkspacePaths={linkWorkspacePaths}
+            onOpenWorkspaceFile={
+              linkWorkspacePaths ? onOpenWorkspaceFile : undefined
+            }
           />
         )
       })}

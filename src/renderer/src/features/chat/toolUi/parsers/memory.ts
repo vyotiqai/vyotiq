@@ -21,9 +21,9 @@ export type MemoryWriteParsed = {
 
 export function parseMemoryListData(tool: UiToolRow): MemoryListParsed {
   const content = tool.content ?? ''
-  const indexMatch = content.match(/## index\.md \(excerpt\)\n([\s\S]*?)\n\n## notes\//)
+  const indexMatch = content.match(/## index\.md \(excerpt\)\n([\s\S]*?)\n\n## notes\//i)
   const indexExcerpt = indexMatch?.[1]?.trim() ?? ''
-  const notesSection = content.match(/## notes\/\n([\s\S]*?)(?:\n\nstate\.md:|$)/)
+  const notesSection = content.match(/## notes\/\n([\s\S]*?)(?:\n\nstate\.md:|$)/i)
   const notesRaw = notesSection?.[1]?.trim() ?? ''
   const notes =
     notesRaw === '(none)'
@@ -32,7 +32,7 @@ export function parseMemoryListData(tool: UiToolRow): MemoryListParsed {
           .split('\n')
           .map((l) => l.replace(/^-\s*/, '').trim())
           .filter(Boolean)
-  const hasState = content.includes('state.md: present')
+  const hasState = /state\.md:\s*present/i.test(content)
   return { indexExcerpt, notes, hasState }
 }
 

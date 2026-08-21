@@ -1,5 +1,6 @@
 import type { UiItem } from '@shared/transcript'
 import type { ContextUsageState } from '@shared/utils/contextUsage'
+import type { StepUsageTotals } from '@shared/utils/runTelemetry'
 
 /** Items stream — ChatView must not subscribe; only TranscriptPane / git leaves. */
 export type ChatItemsStore = {
@@ -16,4 +17,6 @@ export type ChatMetaStore = {
   subscribeMeta: (listener: () => void) => () => void
   getMetaRevision: () => number
   getContextUsage: () => ContextUsageState | null
+  getTurnUsage?: () => readonly StepUsageTotals[]
+  getCostHint?: () => string | null
 }

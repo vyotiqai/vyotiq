@@ -10,25 +10,29 @@ export type TerminalCardData = {
   shell: string
   output: string
   stderr: string
+  sessionStatus: string | null
 }
 
 export function parseTerminalCardData(tool: UiToolRow): TerminalCardData {
   const args = parseArgsRecord(tool.argsPreview)
+  const content = tool.content ?? ''
+  const parsed = parseTerminalOutput(content)
   const command =
     typeof args?.command === 'string'
       ? args.command
       : typeof args?.cmd === 'string'
         ? args.cmd
-        : tool.summary || ''
+        : parsed.command || tool.summary || ''
 
-  const content = tool.content ?? ''
-  const { cwd, stdout, stderr, exitCode } = parseTerminalOutput(content)
+  const { cwd, stdout, stderr, exitCode, sessionStatus } = parsed
   // Prefer the header `shell:` that sits under `cwd:` (toolTerminal format).
   const shellMatch =
-    content.match(/^cwd:[^\n]*\nshell:\s*(.+)$/m) ?? content.match(/^shell:\s*(.+)$/m)
+    content.match(/^cwd:[^\n]*\nshell:\s*(.+)$/m) ??
+    content.match(/\ncwd:[^\n]*\nshell:\s*(.+)$/m) ??
+    content.match(/^shell:\s*(.+)$/m)
   const shell = shellMatch?.[1]?.trim() ?? ''
 
-  return { command, exitCode, cwd, shell, output: stdout, stderr }
+  return { command, exitCode, cwd, shell, output: stdout, stderr, sessionStatus }
 }
 
 /**

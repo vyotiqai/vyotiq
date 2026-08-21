@@ -3,10 +3,20 @@ import { contentToText, type AgentEvent, type ChatMessage } from '../ipc'
 /** Matches ToolRow display cap — IPC should not ship more than the UI can show live. */
 export const TOOL_RESULT_IPC_PREVIEW_CHARS = 4000
 
+/** Cap live tool-call argument previews in the renderer (full args stay on disk / messages). */
+export const TOOL_ARGS_IPC_PREVIEW_CHARS = TOOL_RESULT_IPC_PREVIEW_CHARS
+
 export function truncateToolResultContent(content: string | undefined): string | undefined {
   if (!content) return content
   if (content.length <= TOOL_RESULT_IPC_PREVIEW_CHARS) return content
   return `${content.slice(0, TOOL_RESULT_IPC_PREVIEW_CHARS)}\n…`
+}
+
+/** Bound tool-call argument strings shown in the UI transcript. */
+export function truncateToolArgsPreview(args: string | undefined): string {
+  if (!args) return ''
+  if (args.length <= TOOL_ARGS_IPC_PREVIEW_CHARS) return args
+  return `${args.slice(0, TOOL_ARGS_IPC_PREVIEW_CHARS)}\n…`
 }
 
 /** Shrink tool_result payloads before Structured Clone IPC; persistence keeps full content. */

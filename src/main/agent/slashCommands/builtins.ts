@@ -24,7 +24,7 @@ export const BUILTIN_COMMANDS: SlashCommandDescriptor[] = [
     id: 'builtin:marketplace',
     trigger: 'marketplace',
     label: 'Open Marketplace',
-    description: 'Browse and manage skills, MCP servers, and plugins',
+    description: 'Browse and manage skills, MCP servers, and packages',
     kind: 'builtin',
     group: 'App',
     availability: 'ready'
@@ -43,6 +43,15 @@ export const BUILTIN_COMMANDS: SlashCommandDescriptor[] = [
     trigger: 'create-rule',
     label: 'Create rule',
     description: 'Create a new workspace rule under .vyotiq/rules/',
+    kind: 'builtin',
+    group: 'App',
+    availability: 'ready'
+  },
+  {
+    id: 'builtin:create-skill',
+    trigger: 'create-skill',
+    label: 'Create skill',
+    description: 'Create a new skill under .vyotiq/skills/ (or /create-skill personal)',
     kind: 'builtin',
     group: 'App',
     availability: 'ready'
@@ -96,7 +105,7 @@ export const BUILTIN_COMMANDS: SlashCommandDescriptor[] = [
     id: 'builtin:harness-review',
     trigger: 'harness-review',
     label: 'Harness review',
-    description: 'Mine recent run receipts into a .vyotiq/harness/proposals/ draft',
+    description: 'Mine recent run receipts into a resources/harness/proposals/ draft',
     kind: 'builtin',
     group: 'App',
     availability: 'ready'
@@ -121,7 +130,11 @@ export function resolveBuiltin(
     case 'builtin:clear':
       return { action: 'client', clientAction: 'clear' }
     case 'builtin:compact':
-      return { action: 'client', clientAction: 'compact' }
+      return {
+        action: 'client',
+        clientAction: 'compact',
+        ...(trailingText.trim() ? { trailingText: trailingText.trim() } : {})
+      }
     case 'builtin:marketplace':
       return { action: 'client', clientAction: 'open_marketplace' }
     case 'builtin:settings':
@@ -130,6 +143,12 @@ export function resolveBuiltin(
       return {
         action: 'client',
         clientAction: 'create_rule',
+        ...(trailingText.trim() ? { trailingText: trailingText.trim() } : {})
+      }
+    case 'builtin:create-skill':
+      return {
+        action: 'client',
+        clientAction: 'create_skill',
         ...(trailingText.trim() ? { trailingText: trailingText.trim() } : {})
       }
     case 'builtin:help':

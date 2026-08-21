@@ -42,7 +42,11 @@ describe('runTelemetry', () => {
       cacheCreationInputTokens: 0,
       reasoningTokens: 16,
       steps: 2,
-      stepsWithCacheReport: 2
+      stepsWithCacheReport: 2,
+      billedCost: 0,
+      billedCostSaved: 0,
+      stepsWithCostReport: 0,
+      generationMs: 0
     })
   })
 
@@ -84,7 +88,11 @@ describe('runTelemetry', () => {
         cacheCreationInputTokens: 100,
         reasoningTokens: 3,
         steps: 1,
-        stepsWithCacheReport: 1
+        stepsWithCacheReport: 1,
+        billedCost: 0.012,
+        billedCostSaved: 0.004,
+        stepsWithCostReport: 1,
+        generationMs: 1200
       },
       {
         inputTokens: 0,
@@ -96,7 +104,11 @@ describe('runTelemetry', () => {
         cacheCreationInputTokens: 0,
         reasoningTokens: 2,
         steps: 1,
-        stepsWithCacheReport: 0
+        stepsWithCacheReport: 0,
+        billedCost: 0,
+        billedCostSaved: 0,
+        stepsWithCostReport: 0,
+        generationMs: 800
       }
     )
     expect(totals.inputTokens).toBe(900)
@@ -105,6 +117,7 @@ describe('runTelemetry', () => {
     expect(totals.cacheCreationInputTokens).toBe(100)
     expect(totals.outputTokens).toBe(12)
     expect(totals.reasoningTokens).toBe(5)
+    expect(totals.generationMs).toBe(2000)
   })
 
   it('defaults reasoning tokens to zero when the provider omits them', () => {
@@ -131,7 +144,11 @@ describe('runTelemetry', () => {
       cacheCreationInputTokens: 0,
       reasoningTokens: 0,
       steps: 0,
-      stepsWithCacheReport: 0
+      stepsWithCacheReport: 0,
+      billedCost: 0,
+      billedCostSaved: 0,
+      stepsWithCostReport: 0,
+      generationMs: 0
     })
   })
 
@@ -164,5 +181,49 @@ describe('runTelemetry', () => {
     expect(totals.billedCachedInputTokens).toBe(150)
     expect(totals.peakInputTokens).toBe(1000)
     expect(totals.steps).toBe(2)
+  })
+
+  it('sums billed cost only from steps that reported it', () => {
+    const withCost = stepUsageFromEvent({
+      type: 'step_usage',
+      runId: 'r1',
+      step: 1,
+      inputTokens: 10,
+      outputTokens: 2,
+      billedCost: 0.01,
+      billedCostSaved: 0.004
+    })
+    const withoutCost = stepUsageFromEvent({
+      type: 'step_usage',
+      runId: 'r1',
+      step: 2,
+      inputTokens: 8,
+      outputTokens: 1
+    })
+    const merged = mergeStepUsageTotals(withCost!, withoutCost!)
+    expect(merged.billedCost).toBe(0.01)
+    expect(merged.billedCostSaved).toBe(0.004)
+    expect(merged.stepsWithCostReport).toBe(1)
+    expect(merged.steps).toBe(2)
+  })
+
+  it('sums generationMs from steps that reported a stream clock', () => {
+    const first = stepUsageFromEvent({
+      type: 'step_usage',
+      runId: 'r1',
+      step: 1,
+      inputTokens: 10,
+      outputTokens: 20,
+      generationMs: 2500
+    })
+    const second = stepUsageFromEvent({
+      type: 'step_usage',
+      runId: 'r1',
+      step: 2,
+      inputTokens: 8,
+      outputTokens: 10,
+      generationMs: 1500
+    })
+    expect(mergeStepUsageTotals(first!, second!).generationMs).toBe(4000)
   })
 })

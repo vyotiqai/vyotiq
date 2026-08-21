@@ -1,14 +1,22 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { execFileSync } from 'child_process'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
+  addGitRemote,
   checkoutBranch,
   commitAll,
+  commitEmpty,
+  createBranch,
+  currentGitBranch,
+  gitRemoteUrl,
   isGitRepo,
   listLocalBranches,
+  readGitCommitFiles,
+  readGitBlame,
   readGitDiff,
+  readGitLog,
   readGitStatus,
   sanitizeRelativePaths,
   stageAll,
@@ -16,6 +24,7 @@ import {
   unstagePaths
 } from '@main/git/git'
 import type { GitStatus, GitStatusResult } from '@shared/ipc'
+import { canGit } from '../../helpers/canGit'
 
 function git(cwd: string, ...args: string[]): void {
   execFileSync('git', args, { cwd, stdio: 'ignore' })
@@ -49,7 +58,70 @@ describe('sanitizeRelativePaths', () => {
   })
 })
 
-describe('git status', () => {
+describe.skipIf(!canGit)('git remote setup', () => {
+  it('adds a GitHub remote without replacing a different origin', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'vyotiq-git-remote-'))
+    try {
+      git(repo, 'init', '--initial-branch=main')
+      await addGitRemote(repo, 'https://github.com/example/project')
+      await expect(gitRemoteUrl(repo)).resolves.toBe('https://github.com/example/project')
+      await expect(
+        addGitRemote(repo, 'https://github.com/example/other-project')
+      ).rejects.toThrow(/already exists/i)
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(!canGit)('git empty baseline', () => {
+  it('does not consume staged changes while creating an empty baseline commit', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'vyotiq-git-empty-'))
+    try {
+      git(repo, 'init', '--initial-branch=main')
+      git(repo, 'config', 'user.email', 'test@example.com')
+      git(repo, 'config', 'user.name', 'Test')
+      writeFileSync(join(repo, 'pending.txt'), 'pending\n', 'utf8')
+      git(repo, 'add', 'pending.txt')
+      await commitEmpty(repo, 'chore: initialize repository')
+      const status = expectOk(await readGitStatus(repo))
+      expect(status.files.find((file) => file.path === 'pending.txt')).toMatchObject({
+        staged: true,
+        unstaged: false
+      })
+      await expect(readGitLog(repo, 1)).resolves.toEqual(
+        expect.arrayContaining([expect.objectContaining({ subject: 'chore: initialize repository' })])
+      )
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(!canGit)('git diff without an initial commit', () => {
+  it('includes both staged and worktree edits for an uncommitted diff', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'vyotiq-git-no-head-'))
+    try {
+      git(repo, 'init', '--initial-branch=main')
+      git(repo, 'config', 'user.email', 'test@example.com')
+      git(repo, 'config', 'user.name', 'Test')
+      writeFileSync(join(repo, 'tracked.txt'), 'indexed\n', 'utf8')
+      git(repo, 'add', 'tracked.txt')
+      writeFileSync(join(repo, 'tracked.txt'), 'indexed\nworktree\n', 'utf8')
+
+      const diff = await readGitDiff(repo, { vsHead: true })
+
+      expect(diff.ok).toBe(true)
+      if (!diff.ok) throw new Error('expected ok')
+      expect(diff.content).toContain('+indexed')
+      expect(diff.content).toContain('+worktree')
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(!canGit)('git status', () => {
   let repo: string
   let plain: string
 
@@ -182,6 +254,15 @@ describe('git status', () => {
     await checkoutBranch(repo, 'main')
   })
 
+  it('creates a topic branch without discarding the working tree', async () => {
+    writeFileSync(join(repo, 'topic.txt'), 'topic\n', 'utf8')
+    expect(await currentGitBranch(repo)).toBe('main')
+    await createBranch(repo, 'vyotiq/pr-test')
+    expect(await currentGitBranch(repo)).toBe('vyotiq/pr-test')
+    expect(readFileSync(join(repo, 'topic.txt'), 'utf8')).toBe('topic\n')
+    await checkoutBranch(repo, 'main')
+  })
+
   it('stages all unstaged changes without committing', async () => {
     writeFileSync(join(repo, 'kept.txt'), 'to-stage\n', 'utf8')
     writeFileSync(join(repo, 'extra.txt'), 'x\n', 'utf8')
@@ -244,6 +325,91 @@ describe('git status', () => {
       expect(status.branch).toBeNull()
     } finally {
       git(repo, 'checkout', 'main')
+    }
+  })
+
+  it('rejects option-like sha values before invoking git show', async () => {
+    const diff = await readGitDiff(repo, { sha: '--output=/tmp/pwned' })
+    expect(diff.ok).toBe(false)
+    if (diff.ok) throw new Error('expected fail')
+    expect(diff.error).toMatch(/invalid commit/i)
+  })
+
+  it('lists commit files and the patch introduced by that commit', async () => {
+    writeFileSync(join(repo, 'commit-panel.txt'), 'alpha\n', 'utf8')
+    git(repo, 'add', 'commit-panel.txt')
+    git(repo, 'commit', '-m', 'show in panel')
+    const log = await readGitLog(repo, 5)
+    expect(log[0]?.subject).toBe('show in panel')
+    expect(log[0]?.sha).toMatch(/^[0-9a-f]{7,40}$/i)
+    const files = await readGitCommitFiles(repo, log[0]!.sha)
+    expect(files.some((file) => file.path === 'commit-panel.txt')).toBe(true)
+    const diff = await readGitDiff(repo, { sha: log[0]!.sha, path: 'commit-panel.txt' })
+    expect(diff.ok).toBe(true)
+    if (!diff.ok) throw new Error('expected ok')
+    expect(diff.content).toContain('+alpha')
+    expect(diff.content).not.toMatch(/no changes in commit/)
+  })
+
+  it('rejects checkout of option-like and unknown branch names', async () => {
+    await expect(checkoutBranch(repo, '-f')).rejects.toThrow(/Invalid branch/)
+    await expect(checkoutBranch(repo, 'no-such-branch')).rejects.toThrow(/Unknown branch/)
+  })
+})
+
+describe.skipIf(!canGit)('git push remote selection', () => {
+  it('sets upstream to the first remote when origin is absent', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'vyotiq-git-push-'))
+    const bare = mkdtempSync(join(tmpdir(), 'vyotiq-git-bare-'))
+    try {
+      git(bare, 'init', '--bare', '--initial-branch=main')
+      git(repo, 'init', '--initial-branch=main')
+      git(repo, 'config', 'user.email', 'test@example.com')
+      git(repo, 'config', 'user.name', 'Test')
+      git(repo, 'config', 'commit.gpgsign', 'false')
+      writeFileSync(join(repo, 'kept.txt'), 'one\n', 'utf8')
+      git(repo, 'add', '-A')
+      git(repo, 'commit', '-m', 'first')
+      git(repo, 'remote', 'add', 'upstream', bare)
+      writeFileSync(join(repo, 'kept.txt'), 'two\n', 'utf8')
+      const result = await commitAll(repo, 'second', true)
+      expect(result).toMatchObject({ committed: true, pushed: true })
+      const tracking = execFileSync('git', ['rev-parse', '--abbrev-ref', '@{upstream}'], {
+        cwd: repo,
+        encoding: 'utf8'
+      }).trim()
+      expect(tracking).toBe('upstream/main')
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
+      rmSync(bare, { recursive: true, force: true })
+    }
+  })
+})
+
+describe.skipIf(!canGit)('git blame', () => {
+  it('returns bounded line ownership and current working-tree text', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'vyotiq-git-blame-'))
+    try {
+      git(repo, 'init', '--initial-branch=main')
+      git(repo, 'config', 'user.email', 'test@example.com')
+      git(repo, 'config', 'user.name', 'Test')
+      writeFileSync(join(repo, 'note.ts'), 'one\ntwo\n', 'utf8')
+      git(repo, 'add', 'note.ts')
+      git(repo, 'commit', '-m', 'initial')
+      writeFileSync(join(repo, 'note.ts'), 'one\nchanged\n', 'utf8')
+
+      const result = await readGitBlame(repo, 'note.ts')
+      expect(result.kind).toBe('ok')
+      if (result.kind !== 'ok') throw new Error('expected blame result')
+      expect(result.lines).toHaveLength(2)
+      expect(result.lines[1]).toMatchObject({
+        line: 2,
+        text: 'changed',
+        author: 'Not Committed Yet'
+      })
+      expect(result.lines[0]?.shortSha).toMatch(/^[0-9a-f]{7}$/i)
+    } finally {
+      rmSync(repo, { recursive: true, force: true })
     }
   })
 })

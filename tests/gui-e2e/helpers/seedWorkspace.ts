@@ -1,12 +1,21 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { DEFAULT_SETTINGS } from '../../../src/shared/ipc/schemas/settings'
 import { workspaceIdFromPath } from '../../../src/shared/utils/workspaceId'
 import { canonicalizeWorkspacePath } from '../../../src/shared/utils/workspacePath'
+import { RUN_INTERRUPTED_ERROR } from '../../../src/shared/runInterrupt'
 
 export type SeededRun = {
   runId: string
   goal: string
   updatedAt?: string
+}
+
+export type SeededInterruptedRun = SeededRun & {
+  status: 'running' | 'cancelled'
+  resumable?: true
+  error?: string
+  step?: number
 }
 
 /** Write run status files into the Electron userData sessions tree. */
@@ -44,3 +53,89 @@ export function seedRunsInUserData(
     )
   }
 }
+
+/** Seed a run that may be running or interrupted (cancelled + resumable). */
+export function seedInterruptedRun(
+  userDataDir: string,
+  workspacePath: string,
+  run: SeededInterruptedRun
+): void {
+  const canonical = canonicalizeWorkspacePath(workspacePath)
+  const id = workspaceIdFromPath(canonical)
+  const dir = join(userDataDir, 'workspaces', id, 'sessions', run.runId)
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    join(dir, 'status.json'),
+    JSON.stringify(
+      {
+        status: run.status,
+        step: run.step ?? 0,
+        updatedAt: run.updatedAt ?? new Date().toISOString(),
+        goal: run.goal,
+        workspacePath: canonical,
+        ...(run.resumable ? { resumable: true } : {}),
+        ...(run.error ? { error: run.error } : {})
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+  writeFileSync(
+    join(dir, 'messages.jsonl'),
+    `${JSON.stringify({ role: 'user', content: run.goal })}\n`,
+    'utf8'
+  )
+}
+
+/** Write workspaces.json so the app opens with a workspace and active run on boot. */
+export function seedWorkspacesRegistry(
+  userDataDir: string,
+  workspacePath: string,
+  activeRunId: string | null
+): void {
+  const canonical = canonicalizeWorkspacePath(workspacePath)
+  mkdirSync(userDataDir, { recursive: true })
+  writeFileSync(
+    join(userDataDir, 'workspaces.json'),
+    JSON.stringify(
+      {
+        version: 2,
+        legacySessionsMigrated: true,
+        openPaths: [canonical],
+        activePath: canonical,
+        recentPaths: [canonical],
+        uiStateByPath: {
+          [canonical]: {
+            activeRunId,
+            openRunIds: activeRunId ? [activeRunId] : [],
+            scrollTop: 0,
+            scrollTopByRunId: {},
+            composerDraft: '',
+            composerDraftByRunId: {},
+            agentMode: 'agent'
+          }
+        },
+        settingsOverridesByPath: {}
+      },
+      null,
+      2
+    ),
+    'utf8'
+  )
+}
+
+/** Seed settings.json (merged over defaults). */
+export function seedAppSettings(
+  userDataDir: string,
+  partial: Record<string, unknown> = {}
+): void {
+  mkdirSync(userDataDir, { recursive: true })
+  writeFileSync(
+    join(userDataDir, 'settings.json'),
+    JSON.stringify({ ...DEFAULT_SETTINGS, ...partial }, null, 2),
+    'utf8'
+  )
+}
+
+export { RUN_INTERRUPTED_ERROR }

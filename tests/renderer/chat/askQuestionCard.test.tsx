@@ -32,11 +32,13 @@ describe('AskQuestionPanel', () => {
       />
     )
 
+    expect(screen.queryByRole('button', { name: 'Submit answer' })).toBeNull()
     fireEvent.click(screen.getByRole('radio', { name: 'A' }))
 
     expect(onSubmit).toHaveBeenCalledTimes(1)
     expect(onSubmit).toHaveBeenCalledWith('q1', [{ questionId: 'q1', values: ['A'] }])
-    expect(await screen.findByRole('button', { name: 'Answered' })).toBeTruthy()
+    expect(await screen.findByText('Answered')).toBeTruthy()
+    expect(screen.getByText('A')).toBeTruthy()
   })
 
   it('still needs Submit for a single choice with an Other… field', async () => {
@@ -73,8 +75,8 @@ describe('AskQuestionPanel', () => {
 
     expect(onSubmit).toHaveBeenCalledTimes(1)
     expect(onSubmit).toHaveBeenCalledWith('q1', [])
-    expect(await screen.findByRole('button', { name: 'Skipped' })).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'Answered' })).toBeNull()
+    expect(await screen.findByText('Skipped — agent continues with a reasonable default.')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Skip' })).toBeNull()
   })
 
   it('moves focus and selection with arrow keys in non-quick forms', async () => {
@@ -156,6 +158,7 @@ describe('AskQuestionPanel', () => {
       />
     )
 
+    expect(screen.queryByRole('button', { name: 'Submit answer' })).toBeNull()
     fireEvent.click(screen.getByRole('radio', { name: 'Yes' }))
 
     expect(onSubmit).toHaveBeenCalledTimes(1)
@@ -178,20 +181,66 @@ describe('AskQuestionPanel', () => {
     )
 
     expect(screen.getByText('Setup')).toBeTruthy()
+    expect(screen.getByText('2 questions')).toBeTruthy()
+    expect(screen.getByText('Waiting for your answer — agent continues if skipped.')).toBeTruthy()
+    expect(screen.getByText('0 of 2 answered')).toBeTruthy()
+    expect(screen.getAllByText('Unanswered')).toHaveLength(2)
+    expect(screen.getByRole('button', { name: 'Submit answers' }).getAttribute('title')).toBe(
+      'Still need: Mode?; Notes'
+    )
     fireEvent.click(screen.getByRole('radio', { name: 'Ask' }))
-    expect(screen.getByRole('button', { name: 'Submit answer' }).hasAttribute('disabled')).toBe(
+    expect(screen.getByRole('button', { name: 'Submit answers' }).hasAttribute('disabled')).toBe(
       true
+    )
+    expect(screen.getByText('1 of 2 answered')).toBeTruthy()
+    expect(screen.getByText('Unanswered')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Submit answers' }).getAttribute('title')).toBe(
+      'Still need: Notes'
     )
 
     fireEvent.change(screen.getByPlaceholderText('Your answer…'), {
       target: { value: 'ship it' }
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Submit answer' }))
+    expect(screen.queryByText(/of 2 answered/)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Submit answers' }))
 
     expect(onSubmit).toHaveBeenCalledWith('q1', [
       { questionId: 'a', values: ['Ask'] },
       { questionId: 'b', values: ['ship it'] }
     ])
+  })
+
+  it('uses a single header label when multi-question form has no title', () => {
+    render(
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [
+            { id: 'a', prompt: 'First?', type: 'single', options: ['A', 'B'] },
+            { id: 'b', prompt: 'Second?', type: 'single', options: ['C', 'D'] }
+          ]
+        })}
+      />
+    )
+    expect(screen.getByText('2 questions')).toBeTruthy()
+    expect(screen.queryByText('Questions')).toBeNull()
+  })
+
+  it('marks selected options with inset ring classes distinct from hover', () => {
+    render(
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [
+            { id: 'a', prompt: 'First?', type: 'single', options: ['A', 'B'] },
+            { id: 'b', prompt: 'Second?', type: 'single', options: ['C', 'D'] }
+          ]
+        })}
+      />
+    )
+    fireEvent.click(screen.getByRole('radio', { name: 'A' }))
+    const selected = screen.getByRole('radio', { name: 'A' })
+    expect(selected.className).toMatch(/ring-inset/)
+    expect(selected.className).toMatch(/bg-surface-2/)
+    expect(selected.getAttribute('aria-checked')).toBe('true')
   })
 
   it('disables submit when onSubmit is missing', () => {
@@ -209,6 +258,26 @@ describe('AskQuestionPanel', () => {
 
     expect(screen.getByRole('button', { name: 'Submit answer' }).hasAttribute('disabled')).toBe(
       true
+    )
+  })
+
+  it('shows Submit after quick-submit failure so the user can retry', async () => {
+    const onSubmit = vi.fn().mockRejectedValue(new Error('boom'))
+    render(
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [{ id: 'q1', prompt: 'Retry?', type: 'single', options: ['A', 'B'] }]
+        })}
+        onSubmit={onSubmit}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('radio', { name: 'A' }))
+
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Submit answer' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Submit answer' }).hasAttribute('disabled')).toBe(
+      false
     )
   })
 
@@ -286,5 +355,55 @@ describe('AskQuestionPanel', () => {
     )
     expect(screen.getByRole('radio', { name: 'A' }).getAttribute('aria-checked')).toBe('false')
     expect(screen.getByRole('radio', { name: 'C' })).toBeTruthy()
+  })
+
+  it('shows a settled confirmation after answer and a waiting hint while idle', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    render(
+      <AskQuestionPanel
+        question={baseQuestion({
+          questions: [{ id: 'q1', prompt: 'Continue?', type: 'boolean' }]
+        })}
+        onSubmit={onSubmit}
+      />
+    )
+    expect(screen.getByText('Waiting for your answer — agent continues if skipped.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('radio', { name: 'Yes' }))
+    expect(await screen.findByText('Answered')).toBeTruthy()
+    expect(screen.getByText('Yes')).toBeTruthy()
+    expect(screen.queryByText('Waiting for your answer — agent continues if skipped.')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Skip' })).toBeNull()
+  })
+
+  it('dims unanswered prompts and shows labeled settled summary for multi-question forms', async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    render(
+      <AskQuestionPanel
+        question={baseQuestion({
+          title: 'Setup',
+          questions: [
+            { id: 'a', prompt: 'Mode?', type: 'single', options: ['Ask', 'Agent'] },
+            { id: 'b', prompt: 'Notes', type: 'text' }
+          ]
+        })}
+        onSubmit={onSubmit}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Ask' }))
+    const modePrompt = document.getElementById('ask-q-prompt-q1-a')
+    const notesPrompt = document.getElementById('ask-q-prompt-q1-b')
+    expect(modePrompt?.className).not.toMatch(/opacity-90/)
+    expect(notesPrompt?.className).toMatch(/opacity-90/)
+
+    fireEvent.change(screen.getByPlaceholderText('Your answer…'), {
+      target: { value: 'ship it' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Submit answers' }))
+
+    expect(await screen.findByText('Answered')).toBeTruthy()
+    expect(screen.getByText('Mode?: Ask · Notes: ship it')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Submit answers' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Skip' })).toBeNull()
   })
 })

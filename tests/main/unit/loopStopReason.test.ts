@@ -55,7 +55,6 @@ const { streamChat, executeTool, assembleContext } = vi.hoisted(() => ({
     system: 'system',
     estimatedTokens: 100,
     layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-    contextShrunk: false,
     overflow: false,
     anthropicNative: undefined,
     compaction: null
@@ -105,6 +104,7 @@ vi.mock('@main/agent/state', async (importOriginal) => {
 
 import { runAgent } from '@main/agent/loop'
 import { resetActiveRunsForTests } from '@main/agent/runRegistry'
+import { appendMessage, createRun, flushMessageAppends } from '@main/agent/state'
 
 type CapturedEvent = {
   type: string
@@ -130,6 +130,16 @@ async function collect(runId: string, workspace: string): Promise<CapturedEvent[
   return events
 }
 
+type StreamChatReq = {
+  tools?: unknown[]
+  toolChoice?: 'auto' | 'none' | 'required'
+}
+
+/** Primary auto-compact path: parent tool defs + toolChoice none (not flattened tools: []). */
+function isParentCompactFork(req: StreamChatReq): boolean {
+  return req.toolChoice === 'none' && Array.isArray(req.tools) && req.tools.length > 0
+}
+
 describe('runAgent stop-reason classification', () => {
   let workspace: string
 
@@ -145,7 +155,6 @@ describe('runAgent stop-reason classification', () => {
       system: 'system',
       estimatedTokens: 100,
       layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-      contextShrunk: false,
       overflow: false,
       anthropicNative: undefined,
       compaction: null
@@ -176,28 +185,67 @@ describe('runAgent stop-reason classification', () => {
     expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
   })
 
-  it('reports truncation when the auto-continue budget is exhausted', async () => {
+  it('auto-continues after repeated truncations then finishes', async () => {
+    let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      yield { type: 'text', text: 'still going' }
-      yield { type: 'done', stopReason: 'length' }
+      call += 1
+      if (call < 4) {
+        yield { type: 'text', text: 'still going' }
+        yield { type: 'done', stopReason: 'length' }
+      } else {
+        yield { type: 'text', text: 'finished' }
+        yield { type: 'done', stopReason: 'stop' }
+      }
     })
 
-    const events = await collect('stop-truncated', workspace)
+    const events = await collect('stop-truncated-multi', workspace)
     const incomplete = events.filter((e) => e.type === 'incomplete')
 
-    expect(incomplete.length).toBeGreaterThanOrEqual(1)
-    expect(incomplete[incomplete.length - 1]?.reason).toBe('truncated')
+    expect(call).toBe(4)
+    expect(incomplete).toHaveLength(3)
+    expect(incomplete.every((e) => e.reason === 'truncated')).toBe(true)
     expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
   })
 
-  it('reports an empty response when the model returns nothing at all', async () => {
+  it('auto-continues after repeated empty responses then finishes', async () => {
+    let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      yield { type: 'done', stopReason: 'stop' }
+      call += 1
+      if (call < 4) {
+        yield { type: 'done', stopReason: 'stop' }
+      } else {
+        yield { type: 'text', text: 'recovered answer' }
+        yield { type: 'done', stopReason: 'stop' }
+      }
     })
 
-    const events = await collect('stop-empty', workspace)
+    const events = await collect('stop-empty-multi', workspace)
+    const incomplete = events.filter((e) => e.type === 'incomplete')
 
+    expect(call).toBe(4)
+    expect(incomplete).toHaveLength(3)
+    expect(incomplete.every((e) => e.reason === 'empty_response')).toBe(true)
+    expect(incomplete[0]?.message).toMatch(/retrying/i)
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+  })
+
+  it('auto-continues once after an empty response then finishes', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield { type: 'done', stopReason: 'stop' }
+      } else {
+        yield { type: 'text', text: 'recovered answer' }
+        yield { type: 'done', stopReason: 'stop' }
+      }
+    })
+
+    const events = await collect('stop-empty-continue', workspace)
+    expect(call).toBe(2)
+    expect(events.filter((e) => e.type === 'incomplete')).toHaveLength(1)
     expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('empty_response')
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
   })
 
   it('reports a content filter stop', async () => {
@@ -290,6 +338,41 @@ describe('runAgent stop-reason classification', () => {
     expect(deltas[1]?.argumentsDelta).toBe('')
   })
 
+  it('forwards complete tool_call args after chrome-only tool_call_delta', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield {
+          type: 'tool_call_delta',
+          toolCallDelta: { index: 0, id: 'c-edit', name: 'edit', arguments: '' }
+        }
+        yield {
+          type: 'tool_call',
+          toolCall: {
+            id: 'c-edit',
+            name: 'edit',
+            arguments: '{"path":"src/app.ts","diff":"@@\\n+hello"}'
+          }
+        }
+        yield { type: 'done', stopReason: 'tool_calls' }
+        return
+      }
+      yield { type: 'text', text: 'done' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+    executeTool.mockResolvedValue({ ok: true, summary: 'src/app.ts', content: 'ok' })
+
+    const events = await collect('live-forward-after-chrome', workspace)
+    const deltas = events.filter((e) => e.type === 'tool_call_delta') as Array<{
+      argumentsDelta?: string
+      name?: string
+    }>
+    const joined = deltas.map((d) => d.argumentsDelta ?? '').join('')
+    expect(joined).toContain('"path":"src/app.ts"')
+    expect(joined).toContain('+hello')
+  })
+
   it('merges args-only tool_call_delta onto the indexed id when later delta sends id:""', async () => {
     let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
@@ -337,25 +420,41 @@ describe('runAgent stop-reason classification', () => {
   })
 
   it('reports truncation when stopReason is tool_calls but no tools were parsed', async () => {
+    let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      yield { type: 'text', text: 'about to call' }
-      yield { type: 'done', stopReason: 'tool_calls' }
+      call += 1
+      if (call === 1) {
+        yield { type: 'text', text: 'about to call' }
+        yield { type: 'done', stopReason: 'tool_calls' }
+      } else {
+        yield { type: 'text', text: 'finished after truncated tool_calls' }
+        yield { type: 'done', stopReason: 'stop' }
+      }
     })
 
     const events = await collect('stop-tool-parse-fail', workspace)
 
     expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('truncated')
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
   })
 
   it('reports truncation when a provider error arrives after partial text', async () => {
+    let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
-      yield { type: 'text', text: 'partial answer' }
-      yield { type: 'done', stopReason: 'error' }
+      call += 1
+      if (call === 1) {
+        yield { type: 'text', text: 'partial answer' }
+        yield { type: 'done', stopReason: 'error' }
+      } else {
+        yield { type: 'text', text: 'finished after truncated error' }
+        yield { type: 'done', stopReason: 'stop' }
+      }
     })
 
     const events = await collect('stop-error-partial', workspace)
 
     expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('truncated')
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
   })
 
   it('treats a missing stop reason with real text as a clean finish', async () => {
@@ -368,122 +467,146 @@ describe('runAgent stop-reason classification', () => {
 
     expect(events.some((e) => e.type === 'incomplete')).toBe(false)
   })
-})
 
-describe('runAgent context overflow', () => {
-  let workspace: string
-
-  beforeEach(() => {
-    workspace = join(tmpdir(), `vyotiq-overflow-ws-${process.pid}-${Date.now()}`)
-    mkdirSync(workspace, { recursive: true })
-    resetActiveRunsForTests()
-    saveCompactionFails.value = false
-    streamChat.mockReset()
-    executeTool.mockReset()
-    assembleContext.mockReset()
+  it('stops with context_overflow when assemble stays over budget after auto compact', async () => {
     assembleContext.mockImplementation(async (input: { messages: unknown[] }) => ({
       messages: input.messages,
       system: 'system',
-      estimatedTokens: 100,
-      layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-      contextShrunk: false,
-      overflow: false,
-      anthropicNative: undefined,
-      compaction: null
-    }))
-  })
-
-  afterEach(() => {
-    saveCompactionFails.value = false
-    if (existsSync(userData)) rmSync(userData, { recursive: true, force: true })
-    if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true })
-  })
-
-  it('stops before streaming when assembleContext reports overflow', async () => {
-    assembleContext.mockImplementation(async (input: { messages: unknown[] }) => ({
-      messages: input.messages,
-      system: 'system',
+      systemStable: 'system',
       estimatedTokens: 200_000,
       layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-      contextShrunk: true,
       overflow: true,
       anthropicNative: undefined,
       compaction: null
     }))
 
-    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+    streamChat.mockImplementation(async function* (req: StreamChatReq): AsyncGenerator<StreamChunk> {
+      if (req.toolChoice === 'none') {
+        yield { type: 'text', text: '## Session Intent\nFolded summary' }
+        yield { type: 'done' }
+        return
+      }
       yield { type: 'text', text: 'should not stream' }
       yield { type: 'done', stopReason: 'stop' }
     })
 
-    const events = await collect('overflow-stop', workspace)
+    const runId = 'overflow-stop'
+    const runDir = createRun(workspace, runId, 'goal')
+    for (let i = 0; i < 6; i++) {
+      await appendMessage(runDir, { role: 'user', content: `old-u-${i}` })
+      await appendMessage(runDir, { role: 'assistant', content: `old-a-${i}` })
+    }
+    await flushMessageAppends(runDir)
+
+    const events: CapturedEvent[] = []
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'continue' }],
+      workspacePath: workspace,
+      resume: true,
+      newMessages: [{ role: 'user', content: 'continue' }]
+    })) {
+      events.push(ev as CapturedEvent)
+    }
 
     expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('context_overflow')
     expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
     expect(events.some((e) => e.type === 'text_delta')).toBe(false)
-    expect(streamChat).not.toHaveBeenCalled()
+    expect(streamChat.mock.calls.some((c) => isParentCompactFork(c[0] as StreamChatReq))).toBe(true)
   })
 
-  it('ends the step instead of streaming when the trim watermark cannot persist', async () => {
+  it('ends the step when auto compact cannot persist compaction.json', async () => {
     saveCompactionFails.value = true
     assembleContext.mockImplementation(async (input: { messages: unknown[] }) => ({
-      messages: input.messages.slice(1),
+      messages: input.messages,
       system: 'system',
-      estimatedTokens: 100,
+      systemStable: 'system',
+      estimatedTokens: 200_000,
       layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-      contextShrunk: true,
-      overflow: false,
+      overflow: true,
       anthropicNative: undefined,
       compaction: null
     }))
-    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+    streamChat.mockImplementation(async function* (req: StreamChatReq): AsyncGenerator<StreamChunk> {
+      if (req.toolChoice === 'none') {
+        yield { type: 'text', text: '## Session Intent\nFolded summary' }
+        yield { type: 'done' }
+        return
+      }
       yield { type: 'text', text: 'should not stream' }
       yield { type: 'done', stopReason: 'stop' }
     })
 
-    const events = await collect('trim-watermark-persist-fail', workspace)
+    const runId = 'auto-compact-persist-fail'
+    const runDir = createRun(workspace, runId, 'goal')
+    for (let i = 0; i < 6; i++) {
+      await appendMessage(runDir, { role: 'user', content: `old-u-${i}` })
+      await appendMessage(runDir, { role: 'assistant', content: `old-a-${i}` })
+    }
+    await flushMessageAppends(runDir)
+
+    const events: CapturedEvent[] = []
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'continue' }],
+      workspacePath: workspace,
+      resume: true,
+      newMessages: [{ role: 'user', content: 'continue' }]
+    })) {
+      events.push(ev as CapturedEvent)
+    }
 
     expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
     expect(events.some((e) => e.type === 'text_delta')).toBe(false)
-    expect(streamChat).not.toHaveBeenCalled()
+    expect(streamChat.mock.calls.some((c) => isParentCompactFork(c[0] as StreamChatReq))).toBe(true)
   })
 
-  it('ends the step instead of streaming when an overflow-retry trim watermark cannot persist', async () => {
+  it('ends the step when auto compact retry cannot persist compaction.json', async () => {
     saveCompactionFails.value = true
     let assembleCall = 0
     assembleContext.mockImplementation(async (input: { messages: unknown[] }) => {
       assembleCall += 1
-      if (assembleCall === 1) {
-        return {
-          messages: input.messages,
-          system: 'system',
-          estimatedTokens: 200_000,
-          layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-          contextShrunk: false,
-          overflow: true,
-          anthropicNative: undefined,
-          compaction: null
-        }
-      }
       return {
-        messages: input.messages.slice(1),
+        messages: input.messages,
         system: 'system',
-        estimatedTokens: 100,
+        systemStable: 'system',
+        estimatedTokens: 200_000,
         layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-        contextShrunk: true,
-        overflow: false,
+        overflow: true,
         anthropicNative: undefined,
         compaction: null
       }
     })
-    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+    streamChat.mockImplementation(async function* (req: StreamChatReq): AsyncGenerator<StreamChunk> {
+      if (req.toolChoice === 'none') {
+        yield { type: 'text', text: '## Session Intent\nFolded summary' }
+        yield { type: 'done' }
+        return
+      }
       yield { type: 'text', text: 'should not stream' }
       yield { type: 'done', stopReason: 'stop' }
     })
 
-    const events = await collect('overflow-retry-watermark-fail', workspace)
+    const runId = 'auto-compact-retry-persist-fail'
+    const runDir = createRun(workspace, runId, 'goal')
+    for (let i = 0; i < 6; i++) {
+      await appendMessage(runDir, { role: 'user', content: `old-u-${i}` })
+      await appendMessage(runDir, { role: 'assistant', content: `old-a-${i}` })
+    }
+    await flushMessageAppends(runDir)
 
-    expect(streamChat).not.toHaveBeenCalled()
+    const events: CapturedEvent[] = []
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'continue' }],
+      workspacePath: workspace,
+      resume: true,
+      newMessages: [{ role: 'user', content: 'continue' }]
+    })) {
+      events.push(ev as CapturedEvent)
+    }
+
+    expect(streamChat.mock.calls.some((c) => isParentCompactFork(c[0] as StreamChatReq))).toBe(true)
     expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
     expect(events.some((e) => e.type === 'text_delta')).toBe(false)
   })
@@ -504,7 +627,6 @@ describe('runAgent partial persistence', () => {
       system: 'system',
       estimatedTokens: 100,
       layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-      contextShrunk: false,
       overflow: false,
       anthropicNative: undefined,
       compaction: null

@@ -18,7 +18,9 @@ export {
   wrapFamilyShell,
   familyDefaultExpanded,
   toolDefaultExpanded,
-  isFileReadTool
+  isFileReadTool,
+  isDiffCompactTool,
+  toolUsesPeekCollapse
 } from './shells'
 export { basename } from './pathUtils'
 export type {
@@ -43,6 +45,7 @@ export {
   countDiffLines,
   countLines,
   collectWritingChanges,
+  iconPathForFile,
   type EditCardData,
   type DiffLine,
   type DiffLineKind,
@@ -53,12 +56,12 @@ export { parseGrepData } from './parsers/grep'
 export { parseSearchData } from './parsers/search'
 export { parseGlobData } from './parsers/glob'
 export { parseListDirData } from './parsers/listDir'
-export { parseTodoData } from './parsers/todo'
+export { parseTodoData, parseTodosJson } from './parsers/todo'
 export { parseDeleteData } from './parsers/delete'
 export { parseMemoryListData, parseMemoryReadData, parseMemoryWriteData } from './parsers/memory'
 export { parseWebFetchData } from './parsers/webFetch'
 export { parseWebSearchData } from './parsers/webSearch'
-export { parseGitStatusData, parseGitDiffData, parseGitCommitData } from './parsers/git'
+export { parseGitStatusData, parseGitDiffData, parseGitCommitData, pathFromUnifiedDiffContent } from './parsers/git'
 export { parseMcpData } from './parsers/mcp'
 export {
   parseBrowserSnapshotData,

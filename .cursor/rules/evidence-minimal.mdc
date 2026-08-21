@@ -1,0 +1,49 @@
+---
+description: Evidence-based work and minimal, reliable changes only
+alwaysApply: true
+---
+
+# Evidence-Based, Minimal Changes
+
+## Verify Before Acting
+
+- Do not assume. Base every claim, diagnosis, and fix on verified evidence from the codebase, tests, logs, or runtime output.
+- Read or search the relevant code before describing how something works.
+- Run commands and tests yourself; do not guess at outcomes.
+- If evidence is missing, investigate first or say what is unknown — do not fill gaps with assumptions.
+
+```typescript
+// ❌ BAD — assumed cause without reading code
+// "This fails because the handler doesn't await the promise."
+
+// ✅ GOOD — verified in src/main/agent/loop.ts
+// Read loop.ts; confirmed handler returns before flush completes; fix matches that path.
+```
+
+## Minimal Scope
+
+- Solve the requested problem with the smallest correct change.
+- Do not add features, abstractions, flags, or refactors that were not asked for.
+- Do not add clutter: dead code, speculative error handling, one-off helpers, or verbose comments on obvious code.
+- Prefer extending existing patterns over introducing new ones.
+
+```typescript
+// ❌ BAD — scope creep
+// Add retry wrapper, config flag, and metrics for a one-line null check.
+
+// ✅ GOOD — focused fix
+if (entry == null) return;
+```
+
+## Reliability Over Cleverness
+
+- Working, durable, and efficient beats clever or over-engineered.
+- Match surrounding conventions (naming, imports, structure).
+- Add tests only when they cover real behavior the change depends on — not to pad coverage.
+
+## Deleted Files — Fix Forward, Never Restore From Git
+
+- **Never** restore files that were removed or deleted from the repo using git history (`git checkout`, `git restore`, `git show > file`, etc.).
+- Treat deletions as intentional. If a missing file breaks imports or tests, **fix forward** in the current tree: remove dangling imports, update callers, or use the replacement module the deletion intended.
+- Do not resurrect deleted code to unblock tests or fix broken imports — that is scope creep and reverses an explicit repo decision.
+- If it is genuinely unclear whether a deletion was accidental, **ask the user** before recovering anything from history — default is do not restore.

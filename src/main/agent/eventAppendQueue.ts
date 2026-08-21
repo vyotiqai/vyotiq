@@ -1,10 +1,12 @@
-import { appendFile, open, rename, stat, writeFile } from 'fs/promises'
+import { appendFile, open, readdir, rename, stat, unlink, writeFile } from 'fs/promises'
 import { basename, join } from 'path'
 import { logger } from '../../shared/logger'
 
 /** Rotate events.jsonl once it grows past this size; the most recent tail is kept. */
 export const EVENTS_FILE_MAX_BYTES = 2 * 1024 * 1024
-const EVENTS_FILE_KEEP_BYTES = 1024 * 1024
+export const EVENTS_FILE_KEEP_BYTES = 1024 * 1024
+const MAX_EVENT_ARCHIVES = 5
+const EVENT_ARCHIVE_PREFIX = 'events.archive.'
 
 /** Per-run-dir serialized append chain — ordered, non-blocking, single-writer safe. */
 const appendChains = new Map<string, Promise<void>>()
@@ -36,25 +38,43 @@ function throwIfAppendError(dir: string): void {
   if (err) throw err
 }
 
-/** Read approximately the last `byteBudget` bytes, aligned to a line boundary. */
-async function readFileTail(path: string, byteBudget: number): Promise<string> {
-  const handle = await open(path, 'r')
-  try {
-    const size = (await handle.stat()).size
-    if (size <= 0) return ''
-    const start = Math.max(0, size - byteBudget)
-    const length = size - start
-    const buf = Buffer.alloc(length)
-    await handle.read(buf, 0, length, start)
-    let text = buf.toString('utf8')
-    if (start > 0) {
-      const firstNl = text.indexOf('\n')
-      text = firstNl >= 0 ? text.slice(firstNl + 1) : text
-    }
-    return text
-  } finally {
-    await handle.close()
+function archiveFilename(): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+  return `${EVENT_ARCHIVE_PREFIX}${stamp}.jsonl`
+}
+
+async function listEventArchives(dir: string): Promise<string[]> {
+  const names = await readdir(dir)
+  return names
+    .filter((name) => name.startsWith(EVENT_ARCHIVE_PREFIX) && name.endsWith('.jsonl'))
+    .sort()
+}
+
+async function enforceArchiveCap(dir: string): Promise<void> {
+  const archives = await listEventArchives(dir)
+  while (archives.length >= MAX_EVENT_ARCHIVES) {
+    const oldest = archives.shift()
+    if (!oldest) break
+    await unlink(join(dir, oldest))
   }
+}
+
+async function archiveDiscardedHead(dir: string, head: string): Promise<void> {
+  if (!head) return
+  await enforceArchiveCap(dir)
+  const filename = archiveFilename()
+  const archivePath = join(dir, filename)
+  const temp = `${archivePath}.tmp`
+  await writeFile(temp, head, 'utf8')
+  await rename(temp, archivePath)
+  const byteCount = Buffer.byteLength(head, 'utf8')
+  logger.info('Archived rotated events head', {
+    scope: 'state',
+    code: 'EVENTS_ARCHIVED',
+    correlationId: basename(dir),
+    filename,
+    byteCount
+  })
 }
 
 /**
@@ -69,7 +89,43 @@ async function rotateEventsFileIfNeeded(path: string, dir: string): Promise<void
     return // file does not exist yet — the append will create it
   }
   if (size <= EVENTS_FILE_MAX_BYTES) return
-  const tail = await readFileTail(path, EVENTS_FILE_KEEP_BYTES)
+  const targetSplit = size - EVENTS_FILE_KEEP_BYTES
+  if (targetSplit <= 0) return
+
+  const handle = await open(path, 'r')
+  let head = ''
+  let tail = ''
+  try {
+    const headLen = Math.min(size, targetSplit)
+    const headBuf = Buffer.alloc(headLen)
+    await handle.read(headBuf, 0, headLen, 0)
+    const headText = headBuf.toString('utf8')
+    const lastNl = headText.lastIndexOf('\n')
+    let splitAt = 0
+    if (lastNl >= 0) {
+      splitAt = lastNl + 1
+      head = headText.slice(0, splitAt)
+      const tailLen = size - splitAt
+      const tailBuf = Buffer.alloc(tailLen)
+      await handle.read(tailBuf, 0, tailLen, splitAt)
+      tail = tailBuf.toString('utf8')
+    } else {
+      const restLen = size - targetSplit
+      const restBuf = Buffer.alloc(restLen)
+      await handle.read(restBuf, 0, restLen, targetSplit)
+      const restText = restBuf.toString('utf8')
+      const firstNl = restText.indexOf('\n')
+      if (firstNl < 0) return
+      splitAt = targetSplit + firstNl + 1
+      head = headText + restText.slice(0, firstNl + 1)
+      tail = restText.slice(firstNl + 1)
+    }
+    if (splitAt <= 0 || splitAt >= size) return
+  } finally {
+    await handle.close()
+  }
+
+  await archiveDiscardedHead(dir, head)
   const temp = `${path}.tmp`
   await writeFile(temp, tail, 'utf8')
   await rename(temp, path)

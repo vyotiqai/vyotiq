@@ -1,10 +1,20 @@
 import { z } from 'zod'
 import {
+  AccentPresetSchema,
+  DEFAULT_ACCENT_PRESET,
+  DEFAULT_FONT_SCALE,
+  DEFAULT_UI_DENSITY,
+  FontScaleSchema,
+  UiDensitySchema
+} from '../../appearance'
+import type { ThemeId } from '../../theme'
+import {
   ProviderIdSchema,
   ServiceTierSchema,
   ThinkingEffortSchema,
   type ThinkingEffort
 } from './providers'
+import { DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO } from '../../domain/contextBudget'
 import {
   DEFAULT_MARKETPLACE_SETTINGS,
   MarketplaceSettingsSchema,
@@ -13,24 +23,17 @@ import {
 
 export type { ThinkingEffort }
 
-export const ImageGenProviderIdSchema = z.enum([
-  'openai',
-  'gemini',
-  'xai',
-  'openrouter',
-  'custom'
-])
-export type ImageGenProviderId = z.infer<typeof ImageGenProviderIdSchema>
-
-/** `auto` picks OpenAI → Gemini → xAI → OpenRouter → custom (if enabled) by available key. */
-export const ImageProviderSettingSchema = z.union([
-  z.literal('auto'),
-  ImageGenProviderIdSchema
-])
-export type ImageProviderSetting = z.infer<typeof ImageProviderSettingSchema>
-
 export const ThemeIdSchema = z.enum(['system', 'light', 'dark'])
-export type ThemeId = z.infer<typeof ThemeIdSchema>
+export type { ThemeId } from '../../theme'
+
+export {
+  AccentPresetSchema,
+  FontScaleSchema,
+  UiDensitySchema,
+  type AccentPreset,
+  type FontScale,
+  type UiDensity
+} from '../../appearance'
 
 const McpServerIdSchema = z
   .string()
@@ -115,6 +118,47 @@ export type AgentInteractionMode = z.infer<typeof AgentInteractionModeSchema>
 export const SearchEngineSchema = z.enum(['duckduckgo', 'bing', 'google'])
 export type SearchEngineId = z.infer<typeof SearchEngineSchema>
 
+export const OfflineWaitModeSchema = z.enum(['default', 'extended', 'wait_forever'])
+export type OfflineWaitMode = z.infer<typeof OfflineWaitModeSchema>
+
+/** User-global rules stored in settings (not workspace files). */
+export const MAX_USER_RULES = 16
+export const USER_RULE_NAME_MAX = 64
+export const USER_RULE_BODY_MAX = 4000
+
+export const UserRuleSchema = z.object({
+  id: z.string().min(1).max(64),
+  name: z.string().min(1).max(USER_RULE_NAME_MAX),
+  body: z.string().max(USER_RULE_BODY_MAX).default(''),
+  enabled: z.boolean().default(true)
+})
+export type UserRule = z.infer<typeof UserRuleSchema>
+
+export const AutonomousSkipQuestionsSchema = z.enum(['skip', 'wait'])
+export type AutonomousSkipQuestions = z.infer<typeof AutonomousSkipQuestionsSchema>
+
+export const DesktopNotificationModeSchema = z.enum(['off', 'unfocused', 'always'])
+export type DesktopNotificationMode = z.infer<typeof DesktopNotificationModeSchema>
+
+export const NotificationSettingsSchema = z.object({
+  enabled: z.boolean().default(true),
+  desktop: DesktopNotificationModeSchema.default('unfocused'),
+  agentRunFinished: z.boolean().default(true),
+  agentRunFailed: z.boolean().default(true),
+  agentNeedsYou: z.boolean().default(true),
+  system: z.boolean().default(true)
+})
+export type NotificationSettings = z.infer<typeof NotificationSettingsSchema>
+
+export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
+  enabled: true,
+  desktop: 'unfocused',
+  agentRunFinished: true,
+  agentRunFailed: true,
+  agentNeedsYou: true,
+  system: true
+}
+
 export const ToolApprovalSettingsSchema = z.object({
   mode: ToolApprovalModeSchema.default('off'),
   /** Tool names the user chose to always allow, persisted per workspace. */
@@ -124,6 +168,139 @@ export type ToolApprovalSettings = z.infer<typeof ToolApprovalSettingsSchema>
 
 export const DEFAULT_TOOL_APPROVAL: ToolApprovalSettings = { mode: 'off', allowlist: [] }
 
+export const CodeIndexEmbedderSchema = z.enum(['mdenseon', 'ollama', 'hash'])
+export type CodeIndexEmbedderSetting = z.infer<typeof CodeIndexEmbedderSchema>
+
+export const CodeIndexSettingsSchema = z.object({
+  enabled: z.boolean().default(true),
+  /** Default: LightOn dense ONNX (mDenseOn preferred; DenseOn bootstrap). */
+  embedder: CodeIndexEmbedderSchema.default('mdenseon'),
+  /** Download ONNX weights into userData on first use. */
+  autoDownload: z.boolean().default(true),
+  /** Ollama embedding model when embedder=ollama. */
+  ollamaModel: z.string().min(1).default('nomic-embed-text')
+})
+export type CodeIndexSettings = z.infer<typeof CodeIndexSettingsSchema>
+
+export const DEFAULT_CODE_INDEX_SETTINGS: CodeIndexSettings = {
+  enabled: true,
+  embedder: 'mdenseon',
+  autoDownload: true,
+  ollamaModel: 'nomic-embed-text'
+}
+
+export const CodeIndexModelPhaseSchema = z.enum([
+  'idle',
+  'ready',
+  'downloading',
+  'loading',
+  'indexing',
+  'fallback_hash',
+  'error'
+])
+export type CodeIndexModelPhase = z.infer<typeof CodeIndexModelPhaseSchema>
+
+export const CodeIndexSyncProgressSchema = z.object({
+  kind: z.enum(['code', 'sparse']),
+  stage: z.enum(['walking', 'scanning', 'embedding', 'reconciling', 'done']),
+  filesDone: z.number().int().nonnegative(),
+  filesTotal: z.number().int().nonnegative(),
+  indexed: z.number().int().nonnegative(),
+  skipped: z.number().int().nonnegative(),
+  removed: z.number().int().nonnegative(),
+  /** Chunks embedded so far in this sync (code index only). */
+  embedChunks: z.number().int().nonnegative(),
+  currentPath: z.string().nullable()
+})
+export type CodeIndexSyncProgress = z.infer<typeof CodeIndexSyncProgressSchema>
+
+export const CodeIndexRuntimeStatusSchema = z.object({
+  phase: CodeIndexModelPhaseSchema,
+  modelId: z.string(),
+  embedder: CodeIndexEmbedderSchema,
+  /** 0–1 overall fraction for the active phase (download or index sync). */
+  progress: z.number().nullable(),
+  message: z.string().nullable(),
+  error: z.string().nullable(),
+  modelDir: z.string().nullable(),
+  /** Live file/embed counters while phase === 'indexing'. */
+  indexProgress: CodeIndexSyncProgressSchema.nullable().default(null)
+})
+export type CodeIndexRuntimeStatus = z.infer<typeof CodeIndexRuntimeStatusSchema>
+
+export const CodeIndexReindexRequestSchema = z.object({
+  workspacePath: z.string().min(1).optional()
+})
+export type CodeIndexReindexRequest = z.infer<typeof CodeIndexReindexRequestSchema>
+
+export const DictationEngineSchema = z.enum(['openai', 'openrouter', 'local'])
+export type DictationEngine = z.infer<typeof DictationEngineSchema>
+
+export const DictationLocalModelIdSchema = z.enum(['whisper-tiny.en', 'whisper-small.en'])
+export type DictationLocalModelId = z.infer<typeof DictationLocalModelIdSchema>
+
+export const DictationWaveformStyleSchema = z.enum(['bars', 'dots', 'line', 'mirror'])
+export type DictationWaveformStyle = z.infer<typeof DictationWaveformStyleSchema>
+
+export const DictationSettingsSchema = z.object({
+  /** Cloud vs on-device STT. Default keeps today's OpenAI path. */
+  engine: DictationEngineSchema.default('openai'),
+  /** Which installed local Whisper weights to use. Empty until the user installs. */
+  localModelId: z.union([z.literal(''), DictationLocalModelIdSchema]).default(''),
+  /** Composer listening visualizer. */
+  waveformStyle: DictationWaveformStyleSchema.default('bars')
+})
+export type DictationSettings = z.infer<typeof DictationSettingsSchema>
+
+export const DEFAULT_DICTATION_SETTINGS: DictationSettings = {
+  engine: 'openai',
+  localModelId: '',
+  waveformStyle: 'bars'
+}
+
+export const DictationModelPhaseSchema = z.enum([
+  'idle',
+  'downloading',
+  'loading',
+  'ready',
+  'error'
+])
+export type DictationModelPhase = z.infer<typeof DictationModelPhaseSchema>
+
+export const DictationInstalledModelSchema = z.object({
+  id: DictationLocalModelIdSchema,
+  bytesOnDisk: z.number().int().nonnegative(),
+  loaded: z.boolean()
+})
+export type DictationInstalledModel = z.infer<typeof DictationInstalledModelSchema>
+
+export const DictationRuntimeStatusSchema = z.object({
+  phase: DictationModelPhaseSchema,
+  progress: z.number().nullable(),
+  message: z.string().nullable(),
+  error: z.string().nullable(),
+  installed: z.array(DictationInstalledModelSchema),
+  recommendedModelId: DictationLocalModelIdSchema,
+  engine: DictationEngineSchema,
+  /** Model currently downloading or loading, if any. */
+  activeModelId: DictationLocalModelIdSchema.nullable(),
+  loadedModelId: DictationLocalModelIdSchema.nullable()
+})
+export type DictationRuntimeStatus = z.infer<typeof DictationRuntimeStatusSchema>
+
+export const DictationInstallRequestSchema = z.object({
+  modelId: DictationLocalModelIdSchema
+})
+export type DictationInstallRequest = z.infer<typeof DictationInstallRequestSchema>
+
+export const DictationDeleteCacheRequestSchema = z.object({
+  modelId: DictationLocalModelIdSchema
+})
+export type DictationDeleteCacheRequest = z.infer<typeof DictationDeleteCacheRequestSchema>
+
+/** Current persisted settings format. Bump with a matching load-time rewrite. */
+export const SETTINGS_FORMAT_VERSION = 1
+
 export const SettingsSchema = z.object({
   provider: ProviderIdSchema,
   model: z.string().min(1),
@@ -131,10 +308,22 @@ export const SettingsSchema = z.object({
   /** OpenAI-compatible base URL for the `custom` provider (must end with `/v1`). */
   customOpenAiBaseUrl: z.string().min(1).default('http://127.0.0.1:8080/v1'),
   theme: ThemeIdSchema,
+  fontScale: FontScaleSchema.default(DEFAULT_FONT_SCALE),
+  uiDensity: UiDensitySchema.default(DEFAULT_UI_DENSITY),
+  accentPreset: AccentPresetSchema.default(DEFAULT_ACCENT_PRESET),
   telemetryEnabled: z.boolean().default(false),
   mcpServers: z.array(McpServerSchema).default([]),
-  compactionTriggerRatio: z.number().min(0.5).max(0.95).default(0.7),
   keepRecentTurns: z.number().int().min(4).max(50).default(12),
+  autoCompactThresholdRatio: z
+    .number()
+    .min(0.05)
+    .max(0.95)
+    .default(DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO),
+  /**
+   * Persisted settings format. Not a UI setting. Bump when rewriting an old
+   * product default that was already written into settings.json.
+   */
+  settingsVersion: z.number().int().min(0).default(SETTINGS_FORMAT_VERSION),
   thinkingEnabled: z.boolean().default(true),
   thinkingEffort: ThinkingEffortSchema.default('medium'),
   showThinking: z.boolean().default(true),
@@ -146,6 +335,11 @@ export const SettingsSchema = z.object({
   toolApproval: ToolApprovalSettingsSchema.default(DEFAULT_TOOL_APPROVAL),
   /** Default search engine for browser_search. */
   searchEngine: SearchEngineSchema.default('duckduckgo'),
+  /**
+   * When non-empty, agent browser navigation is limited to these hostnames
+   * (exact or `*.suffix` wildcards). Empty = no extra host filter (SSRF rules still apply).
+   */
+  browserDomainAllowlist: z.array(z.string().min(1)).default([]),
   /** Set after first-send tool approval onboarding modal is shown or dismissed. */
   toolApprovalOnboardingDone: z.boolean().default(false),
   /** Shell used by the terminal tool. `auto` prefers PowerShell on Windows when available. */
@@ -163,29 +357,44 @@ export const SettingsSchema = z.object({
   /**
    * When true, the agent may call `switch_mode` mid-run as the task phase changes.
    * When false, only the user changes mode (composer picker or slash). Default off.
+   * Live runs re-read this at each step boundary (next step picks up a toggle).
    */
   autoModeSwitch: z.boolean().default(false),
   /**
-   * Default provider for the `generate_image` tool. `auto` = first available key
-   * (prefer matching chat provider when it is openai/gemini/xai).
+   * When true, opening an interrupted chat resumes automatically instead of showing Continue.
    */
-  imageProvider: ImageProviderSettingSchema.default('auto'),
-  /**
-   * Optional default image model for `generate_image`. Empty = provider default
-   * (gpt-image-2 / gemini-3.1-flash-image / grok-imagine-image-quality).
-   */
-  imageModel: z.string().default(''),
-  /**
-   * When true, image tools may use the Custom OpenAI-compatible base URL after a
-   * capability probe. Off by default — chat Completions ≠ Images API.
-   */
-  customImageEnabled: z.boolean().default(false),
+  autoResumeInterruptedRuns: z.boolean().default(false),
   /**
    * GitHub App / OAuth App client ID for in-app device-flow Connect.
    * Empty falls back to `VYOTIQ_GITHUB_CLIENT_ID` env.
    */
   githubClientId: z.string().default(''),
-  marketplace: MarketplaceSettingsSchema.default(DEFAULT_MARKETPLACE_SETTINGS)
+  marketplace: MarketplaceSettingsSchema.default(DEFAULT_MARKETPLACE_SETTINGS),
+  /** Local codebase semantic index (codebase_search). */
+  codeIndex: CodeIndexSettingsSchema.default(DEFAULT_CODE_INDEX_SETTINGS),
+  /** Composer dictation engine + which local Whisper weights to use. */
+  dictation: DictationSettingsSchema.default(DEFAULT_DICTATION_SETTINGS),
+  /**
+   * Unattended runs: auto-approve gated tools (high-risk still gated) and relax
+   * offline wait_forever. Off by default.
+   */
+  autonomousMode: z.boolean().default(false),
+  /**
+   * When autonomousMode is on: skip ask_question immediately, or wait for answers
+   * until the normal 15-minute question timeout.
+   */
+  autonomousSkipQuestions: AutonomousSkipQuestionsSchema.default('wait'),
+  /** Offline connectivity wait budget (autonomousMode gates wait_forever). */
+  offlineWaitMode: OfflineWaitModeSchema.default('default'),
+  /**
+   * User-global rules injected as `<user_rules>` on every agent step.
+   * Disabled rules are omitted. Workspace rules override these on conflict.
+   */
+  userRules: z.array(UserRuleSchema).max(MAX_USER_RULES).default([]),
+  /**
+   * App-wide inbox + OS toast preferences. Not a workspace override.
+   */
+  notifications: NotificationSettingsSchema.default(DEFAULT_NOTIFICATION_SETTINGS)
 })
 export type Settings = z.infer<typeof SettingsSchema>
 
@@ -195,10 +404,14 @@ export const DEFAULT_SETTINGS: Settings = {
   ollamaBaseUrl: 'http://127.0.0.1:11434',
   customOpenAiBaseUrl: 'http://127.0.0.1:8080/v1',
   theme: 'system',
+  fontScale: DEFAULT_FONT_SCALE,
+  uiDensity: DEFAULT_UI_DENSITY,
+  accentPreset: DEFAULT_ACCENT_PRESET,
   telemetryEnabled: false,
   mcpServers: [],
-  compactionTriggerRatio: 0.7,
   keepRecentTurns: 12,
+  autoCompactThresholdRatio: DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO,
+  settingsVersion: SETTINGS_FORMAT_VERSION,
   thinkingEnabled: true,
   thinkingEffort: 'medium',
   showThinking: true,
@@ -209,16 +422,22 @@ export const DEFAULT_SETTINGS: Settings = {
   serviceTier: 'default',
   toolApproval: DEFAULT_TOOL_APPROVAL,
   searchEngine: 'duckduckgo',
+  browserDomainAllowlist: [],
   toolApprovalOnboardingDone: false,
   terminalShell: 'auto',
   diagnosticsCommand: '',
   harnessProposalRewriter: false,
   autoModeSwitch: false,
-  imageProvider: 'auto',
-  imageModel: '',
-  customImageEnabled: false,
+  autoResumeInterruptedRuns: false,
   githubClientId: '',
-  marketplace: DEFAULT_MARKETPLACE_SETTINGS
+  marketplace: DEFAULT_MARKETPLACE_SETTINGS,
+  codeIndex: DEFAULT_CODE_INDEX_SETTINGS,
+  dictation: DEFAULT_DICTATION_SETTINGS,
+  autonomousMode: false,
+  autonomousSkipQuestions: 'wait',
+  offlineWaitMode: 'default',
+  userRules: [],
+  notifications: DEFAULT_NOTIFICATION_SETTINGS
 }
 
 export const SetSettingsRequestSchema = SettingsSchema.partial()
@@ -231,6 +450,22 @@ export const TelemetryStatusSchema = z.object({
   telemetryEnabled: z.boolean()
 })
 export type TelemetryStatus = z.infer<typeof TelemetryStatusSchema>
+
+export const AppInfoSchema = z.object({
+  name: z.string().min(1),
+  version: z.string().min(1),
+  homepage: z
+    .string()
+    .url()
+    .refine((url) => url.startsWith('https:'), { message: 'homepage must be https' }),
+  electron: z.string().min(1),
+  chrome: z.string().min(1),
+  node: z.string().min(1),
+  platform: z.string().min(1),
+  arch: z.string().min(1),
+  osVersion: z.string().min(1)
+})
+export type AppInfo = z.infer<typeof AppInfoSchema>
 
 export const CrashSnippetSchema = z.object({
   at: z.string().min(1),

@@ -4,9 +4,7 @@ import { resolveInsideWorkspace } from '../../workspace/safePath'
 import { gitignoreMatcherForDir } from './gitignore'
 import { IGNORED_DIRS } from './walk'
 
-/** Max entries returned in one listing. */
 export const LIST_DIR_CAP = 200
-const DEFAULT_CAP = LIST_DIR_CAP
 
 function normalizeRelDir(pathArg: string): string {
   const rel = pathArg.trim().replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/+$/, '')
@@ -20,7 +18,7 @@ function formatSize(bytes: number): string {
 }
 
 /** List one directory level, skipping ignored and gitignored entries. */
-export function toolListDir(workspaceRoot: string, pathArg = '.', cap = DEFAULT_CAP): string {
+export function toolListDir(workspaceRoot: string, pathArg = '.', cap?: number): string {
   const relDir = normalizeRelDir(pathArg)
   const resolved = resolveInsideWorkspace(workspaceRoot, relDir || '.')
   if (!existsSync(resolved)) {
@@ -41,7 +39,8 @@ export function toolListDir(workspaceRoot: string, pathArg = '.', cap = DEFAULT_
       return a.name.localeCompare(b.name)
     })
 
-  const shown = entries.slice(0, cap).map((entry) => {
+  const limit = cap == null ? entries.length : Math.max(0, cap)
+  const shown = entries.slice(0, limit).map((entry) => {
     if (entry.isDirectory()) return `[dir]  ${entry.name}/`
     let size = ''
     try {

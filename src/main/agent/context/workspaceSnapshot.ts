@@ -4,12 +4,23 @@ import { existsSync, readdirSync, statSync } from 'fs'
 import { readdir, stat } from 'fs/promises'
 import { join } from 'path'
 import { namedGitBranch } from '../../../shared/utils/gitBranch'
+import { sanitizedTerminalEnv } from '../tools/terminal'
+import { HARNESS_SECTION_TAGS } from '../harnessSections'
+import { neutralizeXmlTags, wrapPromptSection } from '../promptSections'
 
 const execFile = promisify(execFileCallback)
 
 const MAX_ENTRIES = 40
 const CACHE_TTL_MS = 30_000
 const GOAL_TOKEN = '{{GOAL}}'
+
+/** Tags a post-wrap goal fill must not be able to close. */
+const WORKSPACE_GOAL_TAGS = ['workspace', 'live_session', ...HARNESS_SECTION_TAGS] as const
+
+function fillWorkspaceGoal(template: string, goal: string): string {
+  return template.replace(GOAL_TOKEN, neutralizeXmlTags(goal, WORKSPACE_GOAL_TAGS))
+}
+
 const GIT_STATUS_TIMEOUT_MS = 3000
 const GIT_BRANCH_TIMEOUT_MS = 2000
 const GIT_MAX_BUFFER = 64 * 1024
@@ -39,7 +50,7 @@ export function clearWorkspaceSnapshotCache(workspacePath?: string): void {
 
 export function buildWorkspaceSnapshot(workspacePath: string | null, goal: string): string {
   if (!workspacePath) {
-    return ['## Workspace', 'No workspace selected.', `Goal: ${goal}`].join('\n')
+    return wrapPromptSection('workspace', ['No workspace selected.', `Goal: ${goal}`].join('\n'))
   }
 
   const fingerprint = workspaceFingerprint(workspacePath)
@@ -50,7 +61,7 @@ export function buildWorkspaceSnapshot(workspacePath: string | null, goal: strin
     Date.now() - cached.builtAt < CACHE_TTL_MS
 
   if (fresh) {
-    return cached.template.replace(GOAL_TOKEN, goal)
+    return fillWorkspaceGoal(cached.template, goal)
   }
 
   const template = buildWorkspaceSnapshotTemplateSync(workspacePath)
@@ -59,7 +70,7 @@ export function buildWorkspaceSnapshot(workspacePath: string | null, goal: strin
     template,
     builtAt: Date.now()
   })
-  return template.replace(GOAL_TOKEN, goal)
+  return fillWorkspaceGoal(template, goal)
 }
 
 export async function buildWorkspaceSnapshotAsync(
@@ -67,7 +78,7 @@ export async function buildWorkspaceSnapshotAsync(
   goal: string
 ): Promise<string> {
   if (!workspacePath) {
-    return ['## Workspace', 'No workspace selected.', `Goal: ${goal}`].join('\n')
+    return wrapPromptSection('workspace', ['No workspace selected.', `Goal: ${goal}`].join('\n'))
   }
 
   const fingerprint = workspaceFingerprint(workspacePath)
@@ -78,7 +89,7 @@ export async function buildWorkspaceSnapshotAsync(
     Date.now() - cached.builtAt < CACHE_TTL_MS
 
   if (fresh) {
-    return cached.template.replace(GOAL_TOKEN, goal)
+    return fillWorkspaceGoal(cached.template, goal)
   }
 
   const inflightKey = `${workspacePath}|${fingerprint}`
@@ -100,14 +111,13 @@ export async function buildWorkspaceSnapshotAsync(
   }
 
   const template = await inflight
-  return template.replace(GOAL_TOKEN, goal)
+  return fillWorkspaceGoal(template, goal)
 }
 
 function buildWorkspaceSnapshotTemplateSync(workspacePath: string): string {
   const lines: string[] = [
-    '## Workspace',
     `Root: ${workspacePath}`,
-    'Shell cwd: workspace root (terminal paths are relative to this directory).',
+    'Terminal cwd: workspace root (terminal paths are relative to this directory).',
     `Goal: ${GOAL_TOKEN}`
   ]
 
@@ -144,14 +154,13 @@ function buildWorkspaceSnapshotTemplateSync(workspacePath: string): string {
   const gitStatus = gitStatusShortSync(workspacePath)
   if (gitStatus) lines.push('', '### Git status (short)', gitStatus)
 
-  return lines.join('\n')
+  return wrapPromptSection('workspace', lines.join('\n'))
 }
 
 async function buildWorkspaceSnapshotTemplateAsync(workspacePath: string): Promise<string> {
   const lines: string[] = [
-    '## Workspace',
     `Root: ${workspacePath}`,
-    'Shell cwd: workspace root (terminal paths are relative to this directory).',
+    'Terminal cwd: workspace root (terminal paths are relative to this directory).',
     `Goal: ${GOAL_TOKEN}`
   ]
 
@@ -191,7 +200,7 @@ async function buildWorkspaceSnapshotTemplateAsync(workspacePath: string): Promi
   if (branch) lines.push('', `Git branch: ${branch}`)
   if (gitStatus) lines.push('', '### Git status (short)', gitStatus)
 
-  return lines.join('\n')
+  return wrapPromptSection('workspace', lines.join('\n'))
 }
 
 function workspaceFingerprint(workspacePath: string): string {
@@ -232,7 +241,7 @@ function workspaceFingerprint(workspacePath: string): string {
 }
 
 const GIT_ENV = {
-  ...process.env,
+  ...sanitizedTerminalEnv(),
   GIT_TERMINAL_PROMPT: '0',
   GIT_OPTIONAL_LOCKS: '0',
   GCM_INTERACTIVE: 'never'

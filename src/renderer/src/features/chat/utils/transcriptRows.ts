@@ -1,4 +1,9 @@
-import type { UiAgentQuestion, UiItem, UiToolApproval } from '@shared/transcript'
+import type {
+  CompactionVerifyStatus,
+  UiAgentQuestion,
+  UiItem,
+  UiToolApproval
+} from '@shared/transcript'
 import {
   duplicatesReasoning,
   mergeThinkingContent,
@@ -6,11 +11,12 @@ import {
   stripToolShapedAssistantText,
   stripToolShapedAssistantTextForStream
 } from '@shared/transcript'
+import type { TurnOutcome } from '@shared/transcript'
 import { isProminentPresentation } from '../toolUi'
 import { collectWritingChanges } from '../toolUi/parsers/edit'
 import { parseDeleteData } from '../toolUi/parsers/delete'
-import { deriveRunActivity, type RunActivityPhase } from './runActivity'
-import { normalizeRelPath, WRITING_TOOLS } from './turnFileDiffs'
+import { compactActivityFromRows, deriveRunActivity, type RunActivityPhase } from './runActivity'
+import { mergeChangedFileAction, normalizeRelPath, WRITING_TOOLS } from './turnFileDiffs'
 
 export type { RunActivityPhase } from './runActivity'
 
@@ -31,11 +37,24 @@ export type TranscriptRow =
   | { kind: 'approval'; id: string; approval: UiToolApproval; turnIndex: number }
   | { kind: 'question'; id: string; question: UiAgentQuestion; turnIndex: number }
   | { kind: 'run_error'; id: string; message: string; code?: string; turnIndex: number }
+  | {
+      kind: 'compaction'
+      id: string
+      summary: string
+      tokenEstimate?: number
+      expanded?: boolean
+      at?: string
+      turnIndex: number
+      verifyStatus?: CompactionVerifyStatus
+      verifyFailures?: string[]
+      verifyCoverage?: number
+    }
 
 export type ChangedFile = {
   path: string
   added: number
   removed: number
+  action?: 'created' | 'modified' | 'deleted'
 }
 
 export type TurnSpan = {
@@ -48,6 +67,8 @@ export type TurnSpan = {
   /** Terminal network/provider failure on this turn. */
   failed?: boolean
   failureLabel?: string
+  /** Terminal outcome for the latest turn. */
+  status?: TurnOutcome
 }
 
 /**
@@ -77,12 +98,35 @@ export function turnHasVisibleToolWork(
   )
 }
 
+/** Closing answer with text — that row owns the finished receipt footer. */
+export function turnHasClosingAnswer(
+  rows: readonly TranscriptRow[],
+  turnIndex: number
+): boolean {
+  return rows.some(
+    (row) =>
+      row.kind === 'text' &&
+      row.final &&
+      row.turnIndex === turnIndex &&
+      Boolean(row.item.content?.trim())
+  )
+}
+
 /** Extra lead-in above a user prompt that opens a new turn (matches TRANSCRIPT_TURN_GAP). */
 export const TURN_GAP_PX = 32
 
 /** Tools whose output is worth a dedicated card instead of a group line. */
 function isCardTool(item: ToolItem): boolean {
   return isProminentPresentation(item.tool)
+}
+
+function isStandaloneActivityTool(item: ToolItem): boolean {
+  return (
+    item.tool.name === 'spawn_agent_instance' ||
+    item.tool.name === 'await_agent_instance' ||
+    item.tool.name === 'pull_agent_instance' ||
+    item.tool.name === 'merge_agent_instance'
+  )
 }
 
 /**
@@ -105,8 +149,10 @@ export function buildTranscriptRows(
       retryInMs: number
       code?: string
     } | null
+    compacting?: boolean
     turnFailed?: boolean
     turnFailureLabel?: string | null
+    turnStatus?: TurnOutcome | null
   }
 ): TranscriptRow[] {
   const rows: TranscriptRow[] = []
@@ -114,6 +160,7 @@ export function buildTranscriptRows(
   let pending: ToolItem[] = []
   const includeThinking = options?.showThinking !== false
   const hiddenThinkingStreamingTurns = new Set<number>()
+  const todoWriteRunningTurns = new Set<number>()
 
   const flush = (): void => {
     const run = pending
@@ -142,6 +189,15 @@ export function buildTranscriptRows(
       if (isCardTool(item)) {
         closeGroup()
         rows.push({ kind: 'card', id: item.id, item, turnIndex })
+        return
+      }
+      if (isStandaloneActivityTool(item)) {
+        closeGroup()
+        const compactItem =
+          item.tool.status === 'running' && item.toolExpanded == null
+            ? { ...item, toolExpanded: false }
+            : item
+        rows.push({ kind: 'activity', id: `activity:${item.id}`, tools: [compactItem], turnIndex })
         return
       }
       group.push(item)
@@ -175,7 +231,29 @@ export function buildTranscriptRows(
       })
       continue
     }
+    if (item.kind === 'compaction') {
+      flush()
+      rows.push({
+        kind: 'compaction',
+        id: item.id,
+        summary: item.summary,
+        ...(item.tokenEstimate != null ? { tokenEstimate: item.tokenEstimate } : {}),
+        ...(item.expanded != null ? { expanded: item.expanded } : {}),
+        ...(item.at ? { at: item.at } : {}),
+        ...(item.verifyStatus ? { verifyStatus: item.verifyStatus } : {}),
+        ...(item.verifyFailures && item.verifyFailures.length > 0
+          ? { verifyFailures: item.verifyFailures }
+          : {}),
+        ...(item.verifyCoverage != null ? { verifyCoverage: item.verifyCoverage } : {}),
+        turnIndex: Math.max(turnIndex, 0)
+      })
+      continue
+    }
     if (item.kind === 'tool') {
+      // Capture before coalesceTodoWrites strips running todo_write rows.
+      if (item.tool.name === 'todo_write' && item.tool.status === 'running') {
+        todoWriteRunningTurns.add(Math.max(turnIndex, 0))
+      }
       const gatedByQuestion = items.some(
         (entry) => entry.kind === 'question' && entry.question.toolCallId === item.id
       )
@@ -258,9 +336,12 @@ export function buildTranscriptRows(
       pendingRun: options?.pendingRun,
       running: options?.running,
       hiddenThinkingStreamingTurns,
+      todoWriteRunningTurns,
       networkWait: options?.networkWait,
+      compacting: options?.compacting,
       turnFailed: options?.turnFailed,
-      turnFailureLabel: options?.turnFailureLabel
+      turnFailureLabel: options?.turnFailureLabel,
+      turnStatus: options?.turnStatus
     }
   )
 }
@@ -330,7 +411,7 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
       ].join(':')
     }
     case 'changes':
-      return `changes:${row.id}:${row.files.map((f) => `${f.path}:${f.added}:${f.removed}`).join('|')}`
+      return `changes:${row.id}:${row.files.map((f) => `${f.path}:${f.added}:${f.removed}:${f.action ?? ''}`).join('|')}`
     case 'approval':
       return `approval:${row.id}:${row.approval.requestId}`
     case 'question': {
@@ -346,6 +427,8 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
     }
     case 'run_error':
       return `run_error:${row.id}:${row.message}:${row.code ?? ''}`
+    case 'compaction':
+      return `compaction:${row.id}:${contentFingerprint(row.summary)}:${row.expanded ?? ''}:${row.tokenEstimate ?? ''}:${row.verifyStatus ?? ''}:${(row.verifyFailures ?? []).join('\u001f')}:${row.verifyCoverage ?? ''}`
     default: {
       const _exhaustive: never = row
       return _exhaustive
@@ -374,7 +457,9 @@ export function stabilizeTranscriptRows(
       ((row.kind === 'activity' || row.kind === 'card') &&
         (row.kind === 'activity'
           ? row.tools.some((t) => t.tool.status === 'running')
-          : row.item.tool.status === 'running'))
+          : row.item.tool.status === 'running')) ||
+      (row.kind === 'compaction' &&
+        (row.verifyStatus === 'verifying' || row.verifyStatus === 'retrying'))
     if (
       !live &&
       prior &&
@@ -396,7 +481,7 @@ function writingToolChanges(item: ToolItem): ChangedFile[] {
   if (item.tool.name === 'delete') {
     const { path } = parseDeleteData(item.tool)
     if (!path) return []
-    return [{ path, added: 0, removed: 1 }]
+    return [{ path, added: 0, removed: 1, action: 'deleted' }]
   }
   return collectWritingChanges(item.tool)
 }
@@ -443,6 +528,8 @@ function withChangeSummaries(
           if (existing) {
             existing.added += change.added
             existing.removed += change.removed
+            existing.action = mergeChangedFileAction(existing.action, change.action)
+            if (!existing.action) delete existing.action
           } else {
             totals.set(key, { ...change, path: key })
           }
@@ -469,29 +556,26 @@ function withChangeSummaries(
 }
 
 /**
- * Fold duplicate todo_write snapshots in one turn — keep only the latest checklist.
+ * Drop successful/running todo_write rows from the transcript — the pinned
+ * Tasks band (under the current user prompt) and Plan Tasks section own the
+ * checklist. Keep failures so errors remain visible inline.
  */
 function coalesceTodoWrites(rows: TranscriptRow[]): TranscriptRow[] {
-  const lastTodoByTurn = new Map<number, string>()
-  for (const row of rows) {
-    if (row.kind === 'activity') {
-      for (const item of row.tools) {
-        if (item.tool.name === 'todo_write') {
-          lastTodoByTurn.set(row.turnIndex, item.id)
-        }
-      }
-    }
-  }
-
   const out: TranscriptRow[] = []
   for (const row of rows) {
     if (row.kind === 'activity') {
       const tools = row.tools.filter(
-        (item) =>
-          item.tool.name !== 'todo_write' || lastTodoByTurn.get(row.turnIndex) === item.id
+        (item) => item.tool.name !== 'todo_write' || item.tool.status === 'fail'
       )
       if (tools.length === 0) continue
       out.push(tools.length === row.tools.length ? row : { ...row, tools })
+      continue
+    }
+    if (
+      row.kind === 'card' &&
+      row.item.tool.name === 'todo_write' &&
+      row.item.tool.status !== 'fail'
+    ) {
       continue
     }
     out.push(row)
@@ -506,7 +590,10 @@ function coalesceTodoWrites(rows: TranscriptRow[]): TranscriptRow[] {
  */
 function closingAnswerStart(turnRows: TranscriptRow[]): number {
   let end = turnRows.length
-  while (end > 0 && turnRows[end - 1]!.kind === 'changes') {
+  while (
+    end > 0 &&
+    (turnRows[end - 1]!.kind === 'changes' || turnRows[end - 1]!.kind === 'compaction')
+  ) {
     end -= 1
   }
   let index = end
@@ -540,7 +627,7 @@ function markFinalText(rows: TranscriptRow[]): TranscriptRow[] {
   )
 }
 
-function toMs(iso: string | undefined): number | null {
+export function timestampMs(iso: string | undefined): number | null {
   if (!iso) return null
   const ms = new Date(iso).getTime()
   return Number.isNaN(ms) ? null : ms
@@ -551,14 +638,14 @@ function rowTimestamps(row: TranscriptRow): { at: number | null; endedAt: number
     case 'user':
     case 'thinking':
     case 'text':
-      return { at: toMs(row.item.at), endedAt: null }
+      return { at: timestampMs(row.item.at), endedAt: null }
     case 'card':
-      return { at: toMs(row.item.at), endedAt: row.item.groupTiming?.endedAt ?? null }
+      return { at: timestampMs(row.item.at), endedAt: row.item.groupTiming?.endedAt ?? null }
     case 'activity': {
       let at: number | null = null
       let endedAt: number | null = null
       for (const tool of row.tools) {
-        const started = toMs(tool.at) ?? tool.groupTiming?.startedAt ?? null
+        const started = timestampMs(tool.at) ?? tool.groupTiming?.startedAt ?? null
         if (started != null) at = at == null ? started : Math.min(at, started)
         const ended = tool.groupTiming?.endedAt ?? null
         if (ended != null) endedAt = endedAt == null ? ended : Math.max(endedAt, ended)
@@ -571,6 +658,8 @@ function rowTimestamps(row: TranscriptRow): { at: number | null; endedAt: number
     case 'question':
     case 'run_error':
       return { at: null, endedAt: null }
+    case 'compaction':
+      return { at: timestampMs(row.at), endedAt: null }
     default: {
       const _exhaustive: never = row
       return _exhaustive
@@ -594,6 +683,7 @@ function isRowActive(row: TranscriptRow): boolean {
     case 'turn':
     case 'changes':
     case 'run_error':
+    case 'compaction':
       return false
     default: {
       const _exhaustive: never = row
@@ -618,19 +708,24 @@ function withTurnSummaries(
     pendingRun?: boolean
     running?: boolean
     hiddenThinkingStreamingTurns?: ReadonlySet<number>
+    todoWriteRunningTurns?: ReadonlySet<number>
     networkWait?: {
       attempt: number
       maxAttempts: number
       retryInMs: number
       code?: string
     } | null
+    compacting?: boolean
     turnFailed?: boolean
     turnFailureLabel?: string | null
+    turnStatus?: TurnOutcome | null
   }
 ): TranscriptRow[] {
   const pendingRun = options?.pendingRun
   const running = options?.running
   const hiddenThinkingStreamingTurns = options?.hiddenThinkingStreamingTurns
+  const todoWriteRunningTurns = options?.todoWriteRunningTurns
+  const turnStatus = options?.turnStatus
   let maxTurnIndex = -1
   for (const row of rows) {
     if (row.kind === 'user') maxTurnIndex = Math.max(maxTurnIndex, row.turnIndex)
@@ -668,8 +763,13 @@ function withTurnSummaries(
     const closingStart = closingAnswerStart(turnRows)
     out.push(...turnRows.slice(0, closingStart))
 
-    if (hasWork || isLiveTurn) {
-      const startedAt = toMs(userRow.item.at)
+    const terminalStatus =
+      isLastTurn && !isLiveTurn
+        ? turnStatus ?? (options?.turnFailed === true ? 'error' : 'done')
+        : undefined
+
+    if (hasWork || isLiveTurn || (terminalStatus != null && terminalStatus !== 'done')) {
+      const startedAt = timestampMs(userRow.item.at)
       let endedAt: number | null = null
       for (const entry of turnRows) {
         const { at, endedAt: closed } = rowTimestamps(entry)
@@ -684,17 +784,20 @@ function withTurnSummaries(
       const rowActive = turnRows.some(isRowActive)
       const active = isLiveTurn
       const activity = active
-        ? options?.networkWait
-          ? {
-              kind: 'reconnecting' as const,
-              attempt: options.networkWait.attempt,
-              maxAttempts: options.networkWait.maxAttempts
-            }
-          : deriveRunActivity(turnRows, isLiveTurn && !rowActive && turnRows.length === 0, {
-              hiddenThinkingStreaming: hiddenThinkingStreamingTurns?.has(turnIndex) === true
-            })
+        ? options?.compacting
+          ? compactActivityFromRows(rows)
+          : options?.networkWait
+            ? {
+                kind: 'reconnecting' as const,
+                attempt: options.networkWait.attempt,
+                maxAttempts: options.networkWait.maxAttempts
+              }
+            : deriveRunActivity(turnRows, isLiveTurn && !rowActive && turnRows.length === 0, {
+                hiddenThinkingStreaming: hiddenThinkingStreamingTurns?.has(turnIndex) === true,
+                todoWriteRunning: todoWriteRunningTurns?.has(turnIndex) === true
+              })
         : null
-      const failed = isLastTurn && !active && options?.turnFailed === true
+      const failed = terminalStatus === 'error'
       const failureLabel = failed
         ? options?.turnFailureLabel?.trim() || 'Connection lost'
         : undefined
@@ -708,6 +811,7 @@ function withTurnSummaries(
           endedAt,
           active,
           activity,
+          ...(terminalStatus ? { status: terminalStatus } : {}),
           ...(failed ? { failed: true, failureLabel } : {})
         }
       })

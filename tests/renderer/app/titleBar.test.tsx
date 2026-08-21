@@ -79,6 +79,11 @@ describe('TitleBar', () => {
     expect(screen.getByRole('button', { name: /open menu/i })).toBeTruthy()
   })
 
+  it('shows the brand mark in the mobile title bar when navigation is closed', () => {
+    const { container } = renderBar('win32', { desktop: false })
+    expect(container.querySelector('[data-titlebar-accessory] [data-brand-mark]')).toBeTruthy()
+  })
+
   it('uses shared macOS inset on mobile title bar', () => {
     renderBar('darwin', { desktop: false })
     const header = screen.getByRole('banner')

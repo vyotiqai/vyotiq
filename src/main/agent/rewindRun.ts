@@ -20,6 +20,7 @@ import { clearFollowUps } from './runRegistry'
 import { logger } from '../../shared/logger'
 import { writeRunReceiptBestEffort } from './runReceipt'
 import { writeTrajectoryArtifactsBestEffort } from './runTrajectory'
+import { syncTodosAfterRewind } from './tools/todo'
 
 export type PrepareRewindResult = {
   messages: ChatMessage[]
@@ -98,6 +99,9 @@ export async function prepareRewindAndReplaceUserMessage(input: {
   }
 
   const writes = rewindWritesFrom(runDir, workspacePath, editMessageIndex)
+  if (writes.undoableRestoreFailed) {
+    throw new Error('Could not restore checkpoint files; history was not truncated')
+  }
   const prior = diskMessages.slice(0, editMessageIndex)
   const nextMessages: ChatMessage[] = [...prior, { ...editedUserMessage, role: 'user' }]
 
@@ -123,6 +127,7 @@ async function applyRewindPersistence(input: {
 }): Promise<void> {
   const { workspacePath, runId, runDir, userMessageIndex, nextMessages, writes } = input
   await syncMessagesAsync(runDir, nextMessages)
+  syncTodosAfterRewind(runDir, nextMessages)
 
   const persistedEvents = await loadEventsAsync(runDir, runId)
   const prior = nextMessages.slice(0, userMessageIndex)
@@ -152,8 +157,7 @@ async function applyRewindPersistence(input: {
     runDir,
     {
       status: 'done',
-      error: undefined,
-      consecutiveToolFailureSteps: 0
+      error: undefined
     },
     { sync: true }
   )
@@ -203,6 +207,9 @@ export async function prepareRewindToUserMessage(input: {
   }
 
   const writes = rewindWritesFrom(runDir, workspacePath, userMessageIndex)
+  if (writes.undoableRestoreFailed) {
+    throw new Error('Could not restore checkpoint files; history was not truncated')
+  }
   const nextMessages = diskMessages.slice(0, userMessageIndex + 1)
 
   await applyRewindPersistence({

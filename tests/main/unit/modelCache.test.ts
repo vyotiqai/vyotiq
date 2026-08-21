@@ -50,7 +50,7 @@ describe('modelCache disk', () => {
     const firstSavedAt = JSON.parse(readFileSync(disk, 'utf8')).entries[deepseek].savedAt as number
     // Force an older stamp so a refresh would be observable.
     const raw = JSON.parse(readFileSync(disk, 'utf8')) as {
-      version: 1
+      version: 2
       entries: Record<string, { models: ModelInfo[]; savedAt: number }>
     }
     raw.entries[deepseek]!.savedAt = firstSavedAt - 60_000
@@ -83,7 +83,7 @@ describe('modelCache disk', () => {
     writeFileSync(
       disk,
       JSON.stringify({
-        version: 1,
+        version: 2,
         entries: {
           [legacyKey]: { models: sample, savedAt: Date.now() }
         }
@@ -112,7 +112,7 @@ describe('modelCache disk', () => {
     writeFileSync(
       disk,
       JSON.stringify({
-        version: 1,
+        version: 2,
         entries: {
           [legacyKey]: { models: legacyModels, savedAt: now - 2_000 },
           [canonicalKey]: { models: canonicalModels, savedAt: now - 1_000 }
@@ -138,7 +138,7 @@ describe('modelCache disk', () => {
     writeFileSync(
       disk,
       JSON.stringify({
-        version: 1,
+        version: 2,
         entries: {
           [freshKey]: { models: sample, savedAt: now },
           [staleKey]: {
@@ -155,5 +155,35 @@ describe('modelCache disk', () => {
       entries: Record<string, unknown>
     }
     expect(Object.keys(onDisk.entries)).toEqual([freshKey])
+  })
+
+  it('ignores v1 disk catalogs that coerced Ollama missing thinking to false', () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-model-cache-'))
+    const disk = join(dir, 'model-catalog-cache.json')
+    const key = modelCacheKey('ollama', 'https://ollama.com', 'sk-test')
+    writeFileSync(
+      disk,
+      JSON.stringify({
+        version: 1,
+        entries: {
+          [key]: {
+            models: [
+              {
+                id: 'glm-5.2',
+                inputModalities: ['text'],
+                outputModalities: ['text'],
+                supportsTools: true,
+                supportsVision: false,
+                supportsThinking: false,
+                contextWindow: 128_000
+              }
+            ],
+            savedAt: Date.now()
+          }
+        }
+      })
+    )
+    setModelCacheDiskPathForTests(disk)
+    expect(getCachedModels(key)).toBeNull()
   })
 })

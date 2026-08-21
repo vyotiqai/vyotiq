@@ -10,7 +10,8 @@ import {
   mkdir as mkdirAsync,
   rename as renameAsync,
   unlink as unlinkAsync,
-  writeFile as writeFileAsync
+  writeFile as writeFileAsync,
+  chmod as chmodAsync
 } from 'fs/promises'
 import { dirname } from 'path'
 import { randomBytes } from 'crypto'
@@ -51,6 +52,8 @@ export type RenameRetryDeps = {
   renameFn?: (from: string, to: string) => Promise<void>
   sleepFn?: (ms: number) => Promise<void>
 }
+
+export type AtomicWriteGuard = () => void | Promise<void>
 
 /** Sync rename with Windows backoff on EPERM/EACCES/EBUSY. */
 export function renameSyncWithRetry(from: string, to: string, deps: RenameRetryDeps = {}): void {
@@ -119,6 +122,66 @@ export function atomicWriteFile(target: string, content: string, mode = 0o644): 
   } catch (err) {
     try {
       unlinkSync(temp)
+    } catch {
+      /* ignore */
+    }
+    throw err
+  }
+}
+
+/** Async atomic text write with the same temp+rename semantics as the sync writer. */
+export async function atomicWriteFileAsync(
+  target: string,
+  content: string,
+  mode = 0o644,
+  guard?: AtomicWriteGuard
+): Promise<void> {
+  const dir = dirname(target)
+  if (!existsSync(dir)) await mkdirAsync(dir, { recursive: true })
+  const temp = tempPathFor(target)
+  try {
+    await guard?.()
+    await writeFileAsync(temp, content, { encoding: 'utf8', mode })
+    await guard?.()
+    await renameWithRetry(temp, target)
+    try {
+      await chmodAsync(target, mode)
+    } catch {
+      /* Windows may ignore; continue */
+    }
+  } catch (err) {
+    try {
+      await unlinkAsync(temp)
+    } catch {
+      /* ignore */
+    }
+    throw err
+  }
+}
+
+/** Async atomic binary write with the same temp+rename semantics as the sync writer. */
+export async function atomicWriteBufferAsync(
+  target: string,
+  content: Buffer,
+  mode = 0o644,
+  guard?: AtomicWriteGuard
+): Promise<void> {
+  const dir = dirname(target)
+  if (!existsSync(dir)) await mkdirAsync(dir, { recursive: true })
+  const temp = tempPathFor(target)
+  try {
+    await guard?.()
+    await writeFileAsync(temp, content, { mode })
+    await guard?.()
+    await renameWithRetry(temp, target)
+    try {
+      await chmodAsync(target, mode)
+    } catch {
+      /* Windows may ignore; continue */
+    }
+  } catch (err) {
+    try {
+      await unlinkAsync(temp)
     } catch {
       /* ignore */
     }

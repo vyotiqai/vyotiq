@@ -85,8 +85,7 @@ describe('runReceipt', () => {
       updatedAt: '2026-07-30T00:00:01.000Z',
       goal: 'Fix b.ts',
       mode: 'agent',
-      error: 'boom',
-      consecutiveToolFailureSteps: 1
+      error: 'boom'
     }
     const receipt = buildRunReceipt({
       runId: 'run-1',
@@ -132,6 +131,27 @@ describe('runReceipt', () => {
         }
       ])
     ).toEqual(['src/a.ts', 'b.ts'])
+  })
+
+  it('filters garbage paths from wroteFiles checkpoint entries', () => {
+    expect(
+      wroteFilesFromEvents([
+        {
+          at: 't',
+          event: {
+            type: 'writes_checkpoint',
+            files: [
+              { path: 'package.json', action: 'created', undoable: true },
+              { path: 'Directory', action: 'created', undoable: true },
+              { path: 'src/config,src/llm,src/memory', action: 'created', undoable: true },
+              { path: '=', action: 'created', undoable: true },
+              { path: 'f1.confidence)', action: 'modified', undoable: true },
+              { path: 'src/utils/paths.js', action: 'created', undoable: true }
+            ]
+          }
+        }
+      ])
+    ).toEqual(['package.json', 'src/utils/paths.js'])
   })
 
   it('keeps cumulative metrics but scopes outcome fields to the latest invocation', () => {

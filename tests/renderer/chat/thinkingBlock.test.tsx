@@ -14,7 +14,7 @@ describe('ThinkingBlock', () => {
     render(<ThinkingBlock content="Let me reason about this." />)
     const button = screen.getByRole('button', { name: /thought/i })
     expect(button.getAttribute('aria-expanded')).toBe('false')
-    expect(screen.queryByText('Let me reason about this.')).toBeNull()
+    expect(screen.queryByTestId('thinking-body')).toBeNull()
 
     fireEvent.click(button)
     expect(button.getAttribute('aria-expanded')).toBe('true')
@@ -48,7 +48,19 @@ describe('ThinkingBlock', () => {
 
   it('renders short finished reasoning when mounted directly (MessageList filters rows)', () => {
     render(<ThinkingBlock content="OK" />)
-    expect(screen.getByRole('button', { name: /thought/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /thought: ok/i })).toBeTruthy()
+    expect(screen.queryByTestId('thinking-preview')).toBeNull()
+  })
+
+  it('keeps finished-thought preview in the accessible name, not the row', () => {
+    render(<ThinkingBlock content={'\n\nFirst useful step.\nSecond step.'} />)
+    expect(screen.getByRole('button', { name: /thought: first useful step\./i })).toBeTruthy()
+    expect(screen.queryByTestId('thinking-preview')).toBeNull()
+  })
+
+  it('does not show a truncated preview fragment while the finished thought is open', () => {
+    render(<ThinkingBlock content="First useful step." expanded />)
+    expect(screen.queryByTestId('thinking-preview')).toBeNull()
   })
 
   it('still shows short reasoning while it streams', () => {
@@ -67,11 +79,44 @@ describe('ThinkingBlock', () => {
   it('forces muted ink on streaming reasoning body', () => {
     const { container } = render(<ThinkingBlock content="Let me reason about this." streaming />)
     const body = container.querySelector('.overflow-y-auto .markdown-body')
-    expect(body?.className).toMatch(/text-tertiary/)
+    // THINKING_INK uses text-secondary (readable but dimmer than answer text-fg).
+    expect(body?.className).toMatch(/text-secondary/)
+    expect(body?.className).toMatch(/text-sm/)
   })
 
   it('uses markdown when expanded after streaming', () => {
     const { container } = render(<ThinkingBlock content="Let me reason about this." expanded />)
     expect(container.querySelector('.markdown-body')).toBeTruthy()
+  })
+
+  it('shimmers the Thinking label while streaming, like other running verbs', () => {
+    const { container } = render(<ThinkingBlock content="Working through it." streaming />)
+    const shimmer = container.querySelector('.vy-text-shimmer--active')
+    expect(shimmer?.textContent).toBe('Thinking')
+
+    const { container: doneContainer } = render(<ThinkingBlock content="Working through it." />)
+    expect(doneContainer.querySelector('.vy-text-shimmer--active')).toBeNull()
+    expect(doneContainer.textContent).toContain('Thought')
+  })
+
+  it('stops following the stream once the reader scrolls away from the bottom', () => {
+    const base = 'Plan step. '.repeat(40)
+    const { container, rerender } = render(<ThinkingBlock content={base} streaming />)
+    const body = container.querySelector('[data-testid="thinking-body"]') as HTMLElement
+    expect(body).toBeTruthy()
+    Object.defineProperty(body, 'scrollHeight', { value: 1000, configurable: true })
+    Object.defineProperty(body, 'clientHeight', { value: 300, configurable: true })
+
+    // Reader scrolls up: pin releases, and further stream growth must not yank.
+    body.scrollTop = 100
+    fireEvent.scroll(body)
+    rerender(<ThinkingBlock content={`${base}More reasoning.`} streaming />)
+    expect(body.scrollTop).toBe(100)
+
+    // Reader returns to the bottom: follow resumes.
+    body.scrollTop = 700
+    fireEvent.scroll(body)
+    rerender(<ThinkingBlock content={`${base}More reasoning. Even more.`} streaming />)
+    expect(body.scrollTop).toBe(1000)
   })
 })

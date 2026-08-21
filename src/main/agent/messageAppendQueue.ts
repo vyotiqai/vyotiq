@@ -52,6 +52,32 @@ export function enqueueMessageAppend(dir: string, line: string): Promise<void> {
   return next
 }
 
+/**
+ * Serialize a whole-file rewrite behind queued appends. A read-modify-write that
+ * races the chain would silently drop lines that were still buffered — including
+ * the partial assistant message flushed on the terminal error paths.
+ */
+export function enqueueMessageRewrite(dir: string, rewrite: () => void): Promise<void> {
+  const prev = appendChains.get(dir) ?? Promise.resolve()
+  const next = prev
+    .then(() => {
+      rewrite()
+    })
+    .catch((err) => {
+      recordAppendError(dir, err)
+      logger.warn('Failed to rewrite messages.jsonl', {
+        scope: 'state',
+        correlationId: basename(dir),
+        err
+      })
+    })
+    .finally(() => {
+      if (appendChains.get(dir) === next) appendChains.delete(dir)
+    })
+  appendChains.set(dir, next)
+  return next
+}
+
 export async function flushMessageAppends(dir?: string): Promise<void> {
   if (dir) {
     await appendChains.get(dir)

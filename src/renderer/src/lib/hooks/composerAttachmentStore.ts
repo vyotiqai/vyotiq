@@ -1,8 +1,9 @@
 import { useCallback, useSyncExternalStore } from 'react'
 import type { AttachedAudio, AttachedFile, AttachedNativeFile } from '@shared/ipc'
+import { HOT_COMPOSER_DRAFT_KEY } from './workspaceHotUiStore'
 
 /**
- * Per-workspace composer attachments (images, files, audio).
+ * Per-workspace (and per-run) composer attachments (images, files, audio).
  * Survives Composer remounts on run-tab switches, like the hot-UI draft store.
  * Session-scoped only — never written to disk.
  */
@@ -21,26 +22,35 @@ const EMPTY_ATTACHMENTS: ComposerAttachmentState = Object.freeze({
   audio: []
 })
 
-const byPath = new Map<string, ComposerAttachmentState>()
-const listenersByPath = new Map<string, Set<() => void>>()
+const byKey = new Map<string, ComposerAttachmentState>()
+const listenersByKey = new Map<string, Set<() => void>>()
 
-function notify(path: string): void {
-  const listeners = listenersByPath.get(path)
+/** Persist key for attachments — mirrors hot composer draft run scoping. */
+export function composerAttachmentKey(
+  workspacePath: string | null | undefined,
+  runId?: string | null
+): string | null {
+  if (!workspacePath) return null
+  return `${workspacePath}::${runId ?? HOT_COMPOSER_DRAFT_KEY}`
+}
+
+function notify(key: string): void {
+  const listeners = listenersByKey.get(key)
   if (listeners) {
     for (const listener of listeners) listener()
   }
 }
 
-export function getComposerAttachments(path: string | null | undefined): ComposerAttachmentState {
-  if (!path) return EMPTY_ATTACHMENTS
-  return byPath.get(path) ?? EMPTY_ATTACHMENTS
+export function getComposerAttachments(key: string | null | undefined): ComposerAttachmentState {
+  if (!key) return EMPTY_ATTACHMENTS
+  return byKey.get(key) ?? EMPTY_ATTACHMENTS
 }
 
 export function setComposerAttachments(
-  path: string,
+  key: string,
   patch: Partial<ComposerAttachmentState>
 ): void {
-  const prev = byPath.get(path) ?? EMPTY_ATTACHMENTS
+  const prev = byKey.get(key) ?? EMPTY_ATTACHMENTS
   const next: ComposerAttachmentState = {
     images: patch.images !== undefined ? patch.images : prev.images,
     files: patch.files !== undefined ? patch.files : prev.files,
@@ -52,49 +62,59 @@ export function setComposerAttachments(
     next.files === prev.files &&
     next.nativeFiles === prev.nativeFiles &&
     next.audio === prev.audio &&
-    byPath.has(path)
+    byKey.has(key)
   ) {
     return
   }
-  byPath.set(path, next)
-  notify(path)
+  byKey.set(key, next)
+  notify(key)
 }
 
-export function clearComposerAttachments(path: string): void {
-  if (!byPath.has(path)) return
-  byPath.delete(path)
-  notify(path)
+export function clearComposerAttachments(key: string): void {
+  if (!byKey.has(key)) return
+  byKey.delete(key)
+  notify(key)
+}
+
+/** Drop every attachment bucket for a workspace (all run keys + legacy bare path). */
+export function clearComposerAttachmentsForWorkspace(workspacePath: string): void {
+  const prefix = `${workspacePath}::`
+  const keys = [...byKey.keys()].filter((k) => k === workspacePath || k.startsWith(prefix))
+  for (const key of keys) {
+    byKey.delete(key)
+    notify(key)
+  }
 }
 
 export function subscribeComposerAttachments(
-  path: string | null | undefined,
+  key: string | null | undefined,
   listener: () => void
 ): () => void {
-  if (!path) return () => {}
-  let set = listenersByPath.get(path)
+  if (!key) return () => {}
+  let set = listenersByKey.get(key)
   if (!set) {
     set = new Set()
-    listenersByPath.set(path, set)
+    listenersByKey.set(key, set)
   }
   set.add(listener)
   return () => {
     set!.delete(listener)
-    if (set!.size === 0) listenersByPath.delete(path)
+    if (set!.size === 0) listenersByKey.delete(key)
   }
 }
 
-/** Subscribe to one workspace's composer attachments (no-op when unbound). */
-export function useComposerAttachments(path: string | null | undefined): ComposerAttachmentState {
+/** Subscribe to one persist-key's composer attachments (no-op when unbound). */
+export function useComposerAttachments(key: string | null | undefined): ComposerAttachmentState {
   const subscribe = useCallback(
-    (onStoreChange: () => void) => subscribeComposerAttachments(path, onStoreChange),
-    [path]
+    (onStoreChange: () => void) => subscribeComposerAttachments(key, onStoreChange),
+    [key]
   )
-  const getSnapshot = useCallback(() => getComposerAttachments(path), [path])
+  const getSnapshot = useCallback(() => getComposerAttachments(key), [key])
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
 }
 
 /** Test helper — reset module state between cases. */
 export function resetComposerAttachmentStoreForTests(): void {
-  byPath.clear()
-  listenersByPath.clear()
+  byKey.clear()
+  listenersByKey.clear()
 }

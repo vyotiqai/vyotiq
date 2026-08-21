@@ -2,7 +2,8 @@ import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { dirname } from 'path'
 import { resolveInsideWorkspace, assertResolvedInsideWorkspace } from '../../workspace/safePath'
 import { atomicWriteFile } from '@main/storage/atomicWrite'
-import { assertWritableTextContent } from './writeGuard'
+import { withWorkspaceMutation } from '@main/workspace/mutationQueue'
+import { assertWritablePath } from './writeGuard'
 
 /** Count non-overlapping occurrences of `needle` in `haystack`. */
 export function countOccurrences(haystack: string, needle: string): number {
@@ -50,7 +51,7 @@ export function toolStrReplace(
   newString: string,
   replaceAll = false
 ): string {
-  const path = pathArg.trim()
+  const path = (pathArg ?? '').trim()
   if (!path) throw new Error('str_replace requires a non-empty path')
   if (!oldString) throw new Error('str_replace requires a non-empty old_string')
 
@@ -86,11 +87,25 @@ export function toolStrReplace(
   }
 
   const next = useCrlf ? nextNormalized.replace(/\n/g, '\r\n') : nextNormalized
-  assertWritableTextContent(path, next)
+  assertWritablePath(path)
   assertResolvedInsideWorkspace(workspaceRoot, dirname(resolved))
   mkdirSync(dirname(resolved), { recursive: true })
   assertResolvedInsideWorkspace(workspaceRoot, resolved)
   atomicWriteFile(resolved, next)
   const label = replaceAll && matches > 1 ? `${matches} occurrences` : '1 occurrence'
   return `Replaced ${label} in ${path}`
+}
+
+export async function toolStrReplaceAsync(
+  workspaceRoot: string,
+  pathArg: string,
+  oldString: string,
+  newString: string,
+  replaceAll = false
+): Promise<string> {
+  const path = (pathArg ?? '').trim()
+  if (!path) throw new Error('str_replace requires a non-empty path')
+  return withWorkspaceMutation(workspaceRoot, path, () =>
+    toolStrReplace(workspaceRoot, path, oldString, newString, replaceAll)
+  )
 }

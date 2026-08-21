@@ -1,22 +1,20 @@
 ﻿import { describe, expect, it } from 'vitest'
 import {
-  loopHintForCompactionPaybackSkip,
   loopHintForEvictedMcpTools,
   loopHintForMcpNotInCatalogFailFast,
   MCP_NOT_IN_CATALOG_FAIL_FAST_THRESHOLD,
   mcpNotInCatalogFailFastMessage,
-  recordMcpNotInCatalogFailure,
-  runNoticeForHighThinkingCost,
-  runNoticeForOmittedMcpTools
+  recordMcpNotInCatalogFailure
 } from '../../../src/main/agent/loopPolicy'
+import { mcpToolsOmittedRunNotice } from '../../../src/shared/utils/mcpRunNotice'
 
-describe('runNoticeForOmittedMcpTools', () => {
+describe('mcpToolsOmittedRunNotice', () => {
   it('returns undefined when nothing was omitted', () => {
-    expect(runNoticeForOmittedMcpTools(0)).toBeUndefined()
+    expect(mcpToolsOmittedRunNotice(0)).toBeUndefined()
   })
 
   it('mentions request_mcp_tools for deferred MCP tools', () => {
-    const notice = runNoticeForOmittedMcpTools(3)
+    const notice = mcpToolsOmittedRunNotice(3, 'budget')
     expect(notice).toMatch(/3 MCP tools were deferred/i)
     expect(notice).toMatch(/request_mcp_tools/)
   })
@@ -29,18 +27,6 @@ describe('loopHintForEvictedMcpTools', () => {
     expect(hint).toMatch(/unloaded/)
     expect(hint).toMatch(/request_mcp_tools/)
     expect(hint).toMatch(/release_mcp_tools/)
-  })
-})
-
-describe('token-cost loop notices', () => {
-  it('mentions /clear when compaction LLM is skipped', () => {
-    expect(loopHintForCompactionPaybackSkip('fold_too_small')).toMatch(/\/clear/)
-    expect(loopHintForCompactionPaybackSkip('residual_above_trigger')).toMatch(/soft trigger/)
-  })
-
-  it('surfaces high thinking cost without changing settings', () => {
-    expect(runNoticeForHighThinkingCost(12)).toMatch(/step 12/)
-    expect(runNoticeForHighThinkingCost(12)).toMatch(/\/clear/)
   })
 })
 

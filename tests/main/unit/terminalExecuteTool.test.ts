@@ -8,7 +8,12 @@ vi.mock('@main/settings/settings', () => ({
   getSettings: () => ({ ...DEFAULT_SETTINGS })
 }))
 
+vi.mock('@main/app/window', () => ({
+  getMainWindow: () => null
+}))
+
 import { executeTool } from '@main/agent/tools'
+import { toolTodoWrite } from '@main/agent/tools/todo'
 import { resetTerminalSessionsForTests } from '@main/agent/tools/terminalSessions'
 
 /**
@@ -21,7 +26,12 @@ describe('executeTool terminal', () => {
 
   beforeEach(() => {
     workspace = mkdtempSync(join(tmpdir(), 'vyotiq-terminal-exec-'))
+    toolTodoWrite(workspace, [{ id: '1', content: 'Run the shell command', status: 'in_progress' }])
   })
+
+  function termCtx(extra: { runId?: string; invokeId?: number } = {}) {
+    return { runDir: workspace, agentMode: 'agent' as const, ...extra }
+  }
 
   afterEach(async () => {
     resetTerminalSessionsForTests()
@@ -42,21 +52,56 @@ describe('executeTool terminal', () => {
       'terminal',
       JSON.stringify({ command: 'echo vyotiq-terminal-ok' }),
       workspace,
-      new AbortController().signal
+      new AbortController().signal,
+      termCtx()
     )
     expect(result.ok).toBe(true)
     expect(result.content).toContain('vyotiq-terminal-ok')
     expect(result.content).toContain('exit_code: 0')
   })
 
-  it('rejects invalid args through the schema gate', async () => {
+  it('timeoutMs wait expiry keeps the process alive for polling (does not kill)', async () => {
+    const signal = new AbortController().signal
+    const context = termCtx({ runId: 'term-run-timeout-keep', invokeId: 1 })
+    const started = await executeTool(
+      'terminal',
+      JSON.stringify({
+        command:
+          "node -e \"setTimeout(() => { console.log('vyotiq-late-done'); process.exit(0) }, 1500)\"",
+        timeoutMs: 200
+      }),
+      workspace,
+      signal,
+      context
+    )
+    expect(started.ok).toBe(true)
+    expect(started.content).toMatch(/status: timeout/)
+    expect(started.content).not.toMatch(/Command timed out after/i)
+    const sessionId = started.content.match(/session_id: ([0-9a-f-]{36})/)?.[1]
+    expect(sessionId).toBeTruthy()
+
+    const polled = await executeTool(
+      'terminal',
+      JSON.stringify({ session_id: sessionId, block_until_ms: 10_000 }),
+      workspace,
+      signal,
+      context
+    )
+    expect(polled.ok).toBe(true)
+    expect(polled.content).toContain('vyotiq-late-done')
+    expect(polled.content).toMatch(/status: done/)
+    expect(polled.content).toContain('exit_code: 0')
+  }, 20_000)
+
+  it('dispatches negative block_until_ms without a schema gate', async () => {
     const result = await executeTool(
       'terminal',
       JSON.stringify({ command: 'echo hi', block_until_ms: -5 }),
       workspace,
-      new AbortController().signal
+      new AbortController().signal,
+      termCtx({ runId: 'term-run-neg', invokeId: 1 })
     )
-    expect(result.ok).toBe(false)
+    expect(result).toBeDefined()
   })
 
   it('background sessions require run ownership', async () => {
@@ -64,7 +109,8 @@ describe('executeTool terminal', () => {
       'terminal',
       JSON.stringify({ command: 'echo bg', block_until_ms: 0 }),
       workspace,
-      new AbortController().signal
+      new AbortController().signal,
+      termCtx()
     )
     expect(result.ok).toBe(false)
     expect(result.content).toMatch(/run ownership/i)
@@ -72,7 +118,7 @@ describe('executeTool terminal', () => {
 
   it('starts a background session and polls it to completion', async () => {
     const signal = new AbortController().signal
-    const context = { runId: 'term-run-1', invokeId: 1 }
+    const context = termCtx({ runId: 'term-run-1', invokeId: 1 })
 
     const started = await executeTool(
       'terminal',
@@ -100,11 +146,13 @@ describe('executeTool terminal', () => {
     expect(polled.content).toContain('vyotiq-bg-done')
     expect(polled.content).toContain('status: done')
     expect(polled.content).toContain('exit_code: 0')
+    expect(polled.summary).toContain('node -e')
+    expect(polled.summary).not.toMatch(/^[0-9a-f-]{36}$/)
   }, 20_000)
 
   it('poll with a pattern returns early on match', async () => {
     const signal = new AbortController().signal
-    const context = { runId: 'term-run-2', invokeId: 2 }
+    const context = termCtx({ runId: 'term-run-2', invokeId: 2 })
 
     const started = await executeTool(
       'terminal',
@@ -138,7 +186,7 @@ describe('executeTool terminal', () => {
       JSON.stringify({ command: 'node -e "setInterval(() => {}, 1000)"', block_until_ms: 0 }),
       workspace,
       signal,
-      { runId: 'term-run-3', invokeId: 3 }
+      termCtx({ runId: 'term-run-3', invokeId: 3 })
     )
     const sessionId = started.content.match(/session_id: ([0-9a-f-]{36})/)?.[1]
     expect(sessionId).toBeTruthy()
@@ -148,9 +196,49 @@ describe('executeTool terminal', () => {
       JSON.stringify({ session_id: sessionId, block_until_ms: 0 }),
       workspace,
       signal,
-      { runId: 'someone-else', invokeId: 9 }
+      termCtx({ runId: 'someone-else', invokeId: 9 })
     )
     expect(foreign.ok).toBe(false)
     expect(foreign.content).toMatch(/does not belong to run/i)
+  }, 20_000)
+
+  it('runs command when session_id is also set, including invented UUIDs', async () => {
+    const result = await executeTool(
+      'terminal',
+      JSON.stringify({
+        command: 'echo hi',
+        session_id: 'e8b8f89f-1b26-4c5b-a1dd-a93800d05fbb',
+        pattern: ''
+      }),
+      workspace,
+      new AbortController().signal,
+      termCtx()
+    )
+    expect(result.ok).toBe(true)
+    expect(result.content).toMatch(/hi/)
+    expect(result.content).not.toMatch(/command or session_id, not both/i)
+  }, 20_000)
+
+  it('new command with block_until_ms and timeoutMs waits the larger, not 1s', async () => {
+    const signal = new AbortController().signal
+    const context = termCtx({ runId: 'term-run-wait-larger', invokeId: 4 })
+    const startedAt = Date.now()
+    const result = await executeTool(
+      'terminal',
+      JSON.stringify({
+        command:
+          "node -e \"setTimeout(() => { console.log('vyotiq-wait-larger'); process.exit(0) }, 250)\"",
+        block_until_ms: 50,
+        timeoutMs: 8_000
+      }),
+      workspace,
+      signal,
+      context
+    )
+    const elapsed = Date.now() - startedAt
+    expect(result.ok).toBe(true)
+    expect(result.content).toContain('vyotiq-wait-larger')
+    expect(result.content).toMatch(/status: done/)
+    expect(elapsed).toBeGreaterThan(200)
   }, 20_000)
 })

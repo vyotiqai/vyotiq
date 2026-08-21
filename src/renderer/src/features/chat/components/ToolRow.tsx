@@ -1,4 +1,4 @@
-import type { UiToolProgressEntry, UiToolRow } from '@shared/transcript'
+import type { UiGroupTiming, UiToolProgressEntry, UiToolRow } from '@shared/transcript'
 import { cn } from '@renderer/lib/ui'
 import { toolHasBody } from '../toolUi'
 import { ToolBodyView } from '../toolUi'
@@ -10,7 +10,8 @@ export function ToolRowOutput({
   onLoadFullContent,
   mcpServerNames,
   inGroup,
-  indent = true
+  indent = true,
+  timing
 }: {
   tool: UiToolRow
   toolProgress?: UiToolProgressEntry[]
@@ -20,6 +21,8 @@ export function ToolRowOutput({
   inGroup?: boolean
   /** Extra left pad; false when the parent group already indented. */
   indent?: boolean
+  /** Wall-clock from groupTiming (same as ToolCard). */
+  timing?: UiGroupTiming
 }) {
   const hasDetails = toolHasBody(tool, { toolProgress })
   if (!hasDetails) return null
@@ -33,7 +36,8 @@ export function ToolRowOutput({
           toolProgress,
           onLoadFullContent,
           mcpServerNames,
-          inGroup
+          inGroup,
+          timing
         }}
       />
     </div>

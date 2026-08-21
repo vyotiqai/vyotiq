@@ -87,7 +87,7 @@ describe('harnessReview', () => {
     )
 
     const written = writeHarnessProposal(workspace, summary)
-    expect(written.relativePath).toMatch(/^\.vyotiq\/harness\/proposals\//)
+    expect(written.relativePath).toMatch(/^resources\/harness\/proposals\//)
     expect(existsSync(written.proposalPath)).toBe(true)
     const body = readFileSync(written.proposalPath, 'utf8')
     expect(body).toMatch(/Suggested harness edits/)

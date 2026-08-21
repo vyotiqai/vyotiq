@@ -1,3 +1,4 @@
+import { cpus } from 'os'
 import { defineConfig } from 'vitest/config'
 import { resolve } from 'path'
 import react from '@vitejs/plugin-react'
@@ -20,6 +21,12 @@ export default defineConfig({
     setupFiles: ['tests/setup.ts'],
     testTimeout: 30_000,
     pool: 'forks',
+    poolOptions: {
+      forks: {
+        maxForks: Math.max(1, Math.min(4, cpus().length)),
+        minForks: 1
+      }
+    },
     coverage: {
       provider: 'v8',
       reporter: ['text', 'html'],

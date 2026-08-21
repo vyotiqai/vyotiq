@@ -1,4 +1,10 @@
 import { z } from 'zod'
+import { RunIdSchema } from './agent'
+
+export const BrowserWorkspaceScopeSchema = z.object({
+  workspacePath: z.string().min(1).optional()
+})
+export type BrowserWorkspaceScope = z.infer<typeof BrowserWorkspaceScopeSchema>
 
 export const AgentBrowserTabSchema = z.object({
   id: z.string(),
@@ -13,6 +19,8 @@ export const AgentBrowserStateSchema = z.object({
   title: z.string(),
   snapshotDataUrl: z.string().nullable().optional(),
   navigating: z.boolean().optional(),
+  agentBusy: z.boolean().optional(),
+  userControl: z.boolean().optional(),
   tabs: z.array(AgentBrowserTabSchema).optional(),
   canGoBack: z.boolean().optional(),
   canGoForward: z.boolean().optional()
@@ -36,21 +44,35 @@ export type BrowserNavigateRequest = z.infer<typeof BrowserNavigateRequestSchema
 
 export const BrowserTakeScreenshotRequestSchema = z.object({
   workspacePath: z.string().min(1),
-  runId: z.string().min(1),
+  runId: RunIdSchema,
   tabId: z.string().min(1).optional()
 })
 export type BrowserTakeScreenshotRequest = z.infer<typeof BrowserTakeScreenshotRequestSchema>
 
 export const BrowserSelectTabRequestSchema = z.object({
-  tabId: z.string().min(1)
+  tabId: z.string().min(1),
+  workspacePath: z.string().min(1).optional()
 })
 export type BrowserSelectTabRequest = z.infer<typeof BrowserSelectTabRequestSchema>
+
+export const BrowserOpenTabRequestSchema = z.object({
+  url: z.string().min(1).optional(),
+  workspacePath: z.string().min(1).optional()
+})
+export type BrowserOpenTabRequest = z.infer<typeof BrowserOpenTabRequestSchema>
+
+export const BrowserCloseTabRequestSchema = z.object({
+  tabId: z.string().min(1).optional(),
+  workspacePath: z.string().min(1).optional()
+})
+export type BrowserCloseTabRequest = z.infer<typeof BrowserCloseTabRequestSchema>
 
 export const BrowserClearBrowsingDataKindSchema = z.enum(['history', 'cookies', 'cache', 'all'])
 export type BrowserClearBrowsingDataKind = z.infer<typeof BrowserClearBrowsingDataKindSchema>
 
 export const BrowserClearBrowsingDataRequestSchema = z.object({
-  kind: BrowserClearBrowsingDataKindSchema
+  kind: BrowserClearBrowsingDataKindSchema,
+  workspacePath: z.string().min(1).optional()
 })
 export type BrowserClearBrowsingDataRequest = z.infer<typeof BrowserClearBrowsingDataRequestSchema>
 

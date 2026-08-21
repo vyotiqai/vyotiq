@@ -47,6 +47,29 @@ export function parseStatusMessageData(tool: UiToolRow): StatusMessageParsed {
     if (single) {
       return { chip: 'Answered', message: '', answers: [single[1]!.trim()] }
     }
+    if (/^Interrupted$/i.test(content)) {
+      return { chip: 'Interrupted', message: content, answers: [] }
+    }
+    if (/^Question timed out or was dismissed/i.test(content)) {
+      return { chip: 'Timed out', message: content, answers: [] }
+    }
+    if (/^Question skipped \(autonomous mode\)/i.test(content)) {
+      return { chip: 'Skipped', message: content, answers: [] }
+    }
+    if (
+      tool.status === 'fail' ||
+      /Expected array, received string/i.test(content) ||
+      /ask_question\.questions must be a JSON array/i.test(content) ||
+      /question or questions is required/i.test(content) ||
+      /questions must contain at least 1 item/i.test(content)
+    ) {
+      return {
+        // Avoid duplicating the header "Failed" verb with another Failed chip.
+        chip: 'Invalid arguments',
+        message: content || tool.summary?.trim() || '',
+        answers: []
+      }
+    }
     return {
       chip: 'Question',
       message: content || tool.summary?.trim() || '',

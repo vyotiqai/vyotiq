@@ -1,5 +1,6 @@
 declare module 'node-pty' {
   export interface IPty {
+    readonly pid: number
     write(data: string): void
     resize(cols: number, rows: number): void
     kill(): void

@@ -57,6 +57,27 @@ describe('tool approval card', () => {
     expect(container.querySelector('.border-l-accent')).toBeNull()
   })
 
+  it('labels browse-only browser tools as browse, not mutating', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'Search docs.' },
+      {
+        kind: 'tool',
+        id: 'call-1',
+        tool: { id: 'call-1', name: 'browser_search', summary: 'exFAT', status: 'running' },
+        approval: {
+          requestId: 'req-b',
+          toolName: 'browser_search',
+          summary: 'exFAT',
+          argsPreview: '{"query":"exFAT"}',
+          mutating: false
+        }
+      }
+    ]
+    render(<MessageList items={items} />)
+    expect(screen.getByText('browse')).toBeTruthy()
+    expect(screen.queryByText('mutating / network')).toBeNull()
+  })
+
   it('reports the reader decision once and locks the card', async () => {
     const onApprovalDecision = vi.fn()
     render(<MessageList items={gatedItems()} onApprovalDecision={onApprovalDecision} />)
@@ -107,5 +128,36 @@ describe('tool approval card', () => {
       expect(screen.getByRole('alert').textContent).toBe('IPC offline')
     })
     expect(screen.getByRole('button', { name: 'Deny' }).hasAttribute('disabled')).toBe(false)
+  })
+
+  it('focuses Allow once and denies on Escape', async () => {
+    const onApprovalDecision = vi.fn()
+    render(<MessageList items={gatedItems()} onApprovalDecision={onApprovalDecision} />)
+
+    const allow = screen.getByRole('button', { name: 'Allow once' })
+    expect(document.activeElement).toBe(allow)
+    expect(allow.getAttribute('title')).toBe('Allow once (Enter)')
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => {
+      expect(onApprovalDecision).toHaveBeenCalledWith('req-1', 'deny')
+    })
+  })
+
+  it('does not autofocus Allow once or steal Escape on an unfocused pane', async () => {
+    const onApprovalDecision = vi.fn()
+    render(
+      <MessageList
+        items={gatedItems()}
+        onApprovalDecision={onApprovalDecision}
+        approvalAutoFocus={false}
+      />
+    )
+
+    const allow = screen.getByRole('button', { name: 'Allow once' })
+    expect(document.activeElement).not.toBe(allow)
+
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(onApprovalDecision).not.toHaveBeenCalled()
   })
 })

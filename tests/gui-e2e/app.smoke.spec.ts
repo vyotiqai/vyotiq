@@ -59,7 +59,21 @@ test('Ctrl/Cmd+, opens settings', async () => {
   ).toBeVisible({ timeout: 10_000 })
 })
 
-test('hovering New chat IconButton shows custom tooltip; Esc dismisses', async () => {
+test('skip link targets main content landmark', async () => {
+  const { window } = launched
+  await window.evaluate(async () => {
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()))
+    })
+    document.body.focus()
+  })
+  await window.keyboard.press('Tab')
+  const skip = window.getByRole('link', { name: /skip to main content/i })
+  await expect(skip).toBeFocused({ timeout: 5_000 })
+  await expect(window.locator('#main-content')).toHaveAttribute('tabindex', '-1')
+})
+
+test('hover shows new chat tooltip', async () => {
   const { window } = launched
   // Settings uses native title=; IconButton (New chat) mounts role=tooltip.
   const newChat = window.getByRole('button', { name: /^new chat$/i }).first()

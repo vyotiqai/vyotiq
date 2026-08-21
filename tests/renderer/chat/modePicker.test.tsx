@@ -34,4 +34,26 @@ describe('ModePicker', () => {
     fireEvent.click(screen.getByRole('button', { name: /Agent mode/i }))
     expect(onModeChange).toHaveBeenCalledWith('ask')
   })
+
+  it('cycles with Ctrl+. and reverses with Shift', () => {
+    const onModeChange = vi.fn()
+    render(<ModePicker mode="agent" onModeChange={onModeChange} />)
+    fireEvent.keyDown(window, { key: '.', ctrlKey: true })
+    expect(onModeChange).toHaveBeenCalledWith('ask')
+    onModeChange.mockClear()
+    fireEvent.keyDown(window, { key: '.', ctrlKey: true, shiftKey: true })
+    expect(onModeChange).toHaveBeenCalledWith('plan')
+  })
+
+  it('does not cycle from a generic input', () => {
+    const onModeChange = vi.fn()
+    render(
+      <>
+        <input aria-label="Other field" />
+        <ModePicker mode="agent" onModeChange={onModeChange} />
+      </>
+    )
+    fireEvent.keyDown(screen.getByLabelText('Other field'), { key: '.', ctrlKey: true })
+    expect(onModeChange).not.toHaveBeenCalled()
+  })
 })

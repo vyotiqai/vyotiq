@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Composer } from '@renderer/features/chat/components/composer'
-import { DEFAULT_SETTINGS } from '@shared/ipc'
+import { DEFAULT_SETTINGS, emptySecretStatus } from '@shared/ipc'
 import type { EffectiveChatSettings } from '@shared/effectiveSettings'
 
 afterEach(() => {
@@ -14,7 +14,6 @@ afterEach(() => {
 const chatSettings: EffectiveChatSettings = {
   provider: 'ollama',
   model: 'qwen2.5',
-  compactionTriggerRatio: DEFAULT_SETTINGS.compactionTriggerRatio,
   keepRecentTurns: DEFAULT_SETTINGS.keepRecentTurns,
   thinkingEnabled: DEFAULT_SETTINGS.thinkingEnabled,
   thinkingEffort: DEFAULT_SETTINGS.thinkingEffort,
@@ -35,6 +34,7 @@ const composerProps = {
   provider: 'ollama' as const,
   model: 'qwen2.5',
   running: false,
+  secrets: emptySecretStatus(),
   chatSettings,
   onChatSettingsChange: vi.fn(),
   onProviderModel: vi.fn(),
@@ -43,28 +43,44 @@ const composerProps = {
 }
 
 describe('Composer layout', () => {
-  it('renders toolbar on its own row below textarea in DOM order', () => {
+  it('places the input full width above the compact toolbar', () => {
     render(<Composer {...composerProps} />)
 
     const shell = document.querySelector('[data-composer-shell]')
     expect(shell).toBeTruthy()
     const form = shell?.querySelector('form')
     expect(form).toBeTruthy()
+    expect(form?.className).toMatch(/\bpx-2\.5\b/)
+    expect(form?.className).toMatch(/(?:^|\s)py-1(?:\s|$)/)
+    expect(form?.className).not.toMatch(/(?:^|\s)py-1\.5(?:\s|$)/)
+    expect(form?.className).toMatch(/(?:^|\s)gap-1(?:\s|$)/)
+    expect(form?.className).not.toMatch(/(?:^|\s)gap-1\.5(?:\s|$)/)
 
     const textarea = screen.getByRole('textbox', { name: /^Message$/i })
     const toolbar = form?.querySelector('[data-composer-toolbar]')
+    const plus = screen.getByRole('button', { name: /^Attach files$/i })
+    const primary = screen.getByRole('button', { name: /^Dictate$/i })
     expect(toolbar).toBeTruthy()
+    expect(toolbar?.contains(textarea)).toBe(false)
     expect(form?.contains(textarea)).toBe(true)
-    expect(form?.contains(toolbar!)).toBe(true)
+    expect(textarea.className).toMatch(/\bw-full\b/)
+    expect(textarea.className).toMatch(/\bmin-h-7\b/)
+    expect(toolbar?.contains(plus)).toBe(true)
+    expect(toolbar?.contains(primary)).toBe(true)
+    expect(toolbar?.className).toMatch(/\bh-7\b/)
+    expect(toolbar?.className).toMatch(/(?:^|\s)gap-1(?:\s|$)/)
+    expect(toolbar?.className).toMatch(/\bitems-center\b/)
+    expect(toolbar?.className).not.toMatch(/border-t/)
+    expect(toolbar?.className).not.toMatch(/\bmin-h-8\b/)
+    expect(plus.className).toMatch(/\brounded-md\b/)
+    expect(primary.className).toMatch(/\brounded-md\b/)
+    expect(primary.className).not.toMatch(/\brounded-xl\b/)
 
-    const children = Array.from(form!.children).filter((el) => el.tagName !== 'INPUT')
-    const textareaIdx = children.findIndex((el) => el.contains(textarea))
-    const toolbarIdx = children.findIndex((el) => el === toolbar)
-    expect(textareaIdx).toBeGreaterThanOrEqual(0)
-    expect(toolbarIdx).toBeGreaterThan(textareaIdx)
+    expect(textarea.compareDocumentPosition(plus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(textarea.compareDocumentPosition(primary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('keeps toolbar after message input when multiline', () => {
+  it('keeps multiline text full width instead of a side column', () => {
     render(<Composer {...composerProps} />)
 
     const shell = document.querySelector('[data-composer-shell]')
@@ -75,10 +91,10 @@ describe('Composer layout', () => {
     fireEvent.input(textarea)
 
     const toolbar = form?.querySelector('[data-composer-toolbar]')
-    const children = Array.from(form!.children).filter((el) => el.tagName !== 'INPUT')
-    const textareaIdx = children.findIndex((el) => el.contains(textarea))
-    const toolbarIdx = children.findIndex((el) => el === toolbar)
-    expect(toolbarIdx).toBeGreaterThan(textareaIdx)
+    expect(toolbar?.contains(textarea)).toBe(false)
+    expect(textarea.className).toMatch(/\bw-full\b/)
+    expect(toolbar?.className).toMatch(/\bitems-center\b/)
+    expect(toolbar?.className).not.toMatch(/\bitems-end\b/)
   })
 
   it('places attachments inside the composer shell', async () => {
@@ -96,34 +112,41 @@ describe('Composer layout', () => {
     expect(shell?.contains(chip)).toBe(true)
   })
 
-  it('keeps the toolbar left zone constrained for overflow', () => {
+  it('keeps the model cluster constrained so the toolbar can flex', () => {
     render(<Composer {...composerProps} />)
 
     const toolbar = document.querySelector('[data-composer-toolbar]')
     expect(toolbar).toBeTruthy()
-    const left = toolbar!.children[0] as HTMLElement
-    expect(left.className).toMatch(/\bmin-w-0\b/)
-    expect(left.className).toMatch(/\boverflow-hidden\b/)
-    const modelPicker = left.querySelector('[aria-label="Select model"]')?.parentElement
-    expect(modelPicker?.className).toMatch(/\bflex-1\b/)
+    expect(toolbar!.className).toMatch(/\bmin-w-0\b/)
+    expect(toolbar!.className).not.toMatch(/border-t/)
+    const modelPicker = toolbar!.querySelector('[aria-label="Select model"]')?.parentElement
     expect(modelPicker?.className).toMatch(/\bmin-w-0\b/)
-    expect(toolbar!.className).toMatch(/border-t/)
+    expect(modelPicker?.className).toMatch(/\bmax-w-\[6rem\]/)
+    const mic = screen.getByRole('button', { name: /^Dictate$/i })
+    expect(mic.parentElement?.className).toMatch(/\bgap-1\b/)
+    expect(mic.parentElement?.className).not.toMatch(/\bgap-0\.5\b/)
   })
 
-  it('renders dock leading inside the composer shell header', () => {
-    render(
-      <Composer
-        {...composerProps}
-        leading={<div data-testid="git-leading">git</div>}
-      />
-    )
+  it('keeps git status out of the composer toolbar', () => {
+    render(<Composer {...composerProps} />)
 
-    const leading = screen.getByTestId('git-leading')
-    const shell = document.querySelector('[data-composer-shell]')
-    expect(shell).toBeTruthy()
-    expect(shell?.contains(leading)).toBe(true)
-    expect(
-      shell?.querySelector('[data-composer-git-leading-wrap]')?.contains(leading)
-    ).toBe(true)
+    const toolbar = document.querySelector('[data-composer-toolbar]')
+    expect(toolbar).toBeTruthy()
+    expect(document.querySelector('[data-composer-git-leading]')).toBeNull()
+    expect(document.querySelector('[data-composer-git-leading-wrap]')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Open Changes panel/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Refresh git status' })).toBeNull()
+  })
+
+  it('hides Think below a gutter-aware form breakpoint, not pane min width', () => {
+    render(<Composer {...composerProps} />)
+    const toolbar = document.querySelector('[data-composer-toolbar]')
+    expect(toolbar).toBeTruthy()
+    const slot = [...toolbar!.querySelectorAll('div')].find((el) =>
+      el.className.includes('@min-[280px]:inline-flex')
+    )
+    expect(slot).toBeTruthy()
+    expect(slot!.className).toMatch(/\bhidden\b/)
+    expect(slot!.className).not.toMatch(/@min-\[360px\]/)
   })
 })

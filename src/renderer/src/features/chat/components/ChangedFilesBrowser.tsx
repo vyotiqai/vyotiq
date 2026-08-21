@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Tooltip, cn } from '@renderer/lib/ui'
+import { Icon } from '@renderer/lib/icons'
 import { FileBadge } from './FileBadge'
 import { DiffPreview, type DiffLayout } from './DiffPreview'
 import { basename, parseUnifiedDiff, type DiffLine } from '../toolUi'
+import { useRunSession } from '../RunSessionContext'
+import type { WorkspaceFileOpenOptions } from './FilesPanel'
 
 /** Normalized file entry for git or PR change lists. */
 export type BrowserFileEntry = {
@@ -29,6 +32,7 @@ function isEmptyDiffSentinel(content: string): boolean {
   return (
     t === '(no unstaged changes)' ||
     t === '(no staged changes)' ||
+    t === '(no uncommitted changes)' ||
     t === '(no changes in commit)'
   )
 }
@@ -178,7 +182,7 @@ function StageControls({
   const showUnstage = canUnstage(file)
   if (!showStage && !showUnstage) return null
   return (
-    <span className="flex shrink-0 items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+    <span className="flex shrink-0 items-center gap-0.5">
       {showStage ? (
         <Tooltip content="Stage file">
           <button
@@ -186,7 +190,10 @@ function StageControls({
             className="rounded px-1 text-2xs text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-50"
             disabled={busy}
             aria-label={`Stage ${file.path}`}
-            onClick={() => onStage(file.path)}
+            onClick={(e) => {
+              e.stopPropagation()
+              onStage(file.path)
+            }}
           >
             Stage
           </button>
@@ -199,7 +206,10 @@ function StageControls({
             className="rounded px-1 text-2xs text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-50"
             disabled={busy}
             aria-label={`Unstage ${file.path}`}
-            onClick={() => onUnstage(file.path)}
+            onClick={(e) => {
+              e.stopPropagation()
+              onUnstage(file.path)
+            }}
           >
             Unstage
           </button>
@@ -237,7 +247,9 @@ function FileRow({
   findQuery,
   stageActions,
   viewed,
-  onToggleViewed
+  onToggleViewed,
+  workspacePath,
+  onOpenFile
 }: {
   file: BrowserFileEntry
   selected: boolean
@@ -251,7 +263,19 @@ function FileRow({
   stageActions?: StageActions
   viewed?: boolean
   onToggleViewed?: () => void
+  workspacePath?: string | null
+  onOpenFile?: (path: string, options?: WorkspaceFileOpenOptions) => void
 }) {
+  const runSession = useRunSession()
+  const openWorkspaceFile =
+    onOpenFile ??
+    runSession.onOpenWorkspaceFile ??
+    (workspacePath
+      ? (path: string) => {
+          void window.vyotiq?.slashCommandsOpenFile?.({ workspacePath, path })
+        }
+      : undefined)
+
   const label = pathLabel(file.path)
   return (
     <li
@@ -307,6 +331,38 @@ function FileRow({
             </span>
           ) : null}
         </button>
+        {openWorkspaceFile ? (
+          <>
+            <Tooltip content={`Open ${file.path}`}>
+              <button
+                type="button"
+                className="inline-grid size-5 shrink-0 place-items-center rounded-md text-muted vy-transition hover:bg-surface-2 hover:text-fg"
+                aria-label={`Open ${file.path}`}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  openWorkspaceFile(file.path)
+                }}
+              >
+                <Icon name="folderOpen" size={12} />
+              </button>
+            </Tooltip>
+            {expanded ? (
+              <Tooltip content={`Open diff for ${file.path}`}>
+                <button
+                  type="button"
+                  className="shrink-0 rounded px-1 text-2xs text-muted vy-transition hover:bg-surface-2 hover:text-fg"
+                  aria-label={`Open diff for ${file.path}`}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    openWorkspaceFile(file.path, { mode: 'diff' })
+                  }}
+                >
+                  Diff
+                </button>
+              </Tooltip>
+            ) : null}
+          </>
+        ) : null}
         {stageActions ? <StageControls file={file} {...stageActions} /> : null}
         {onToggleViewed ? (
           <input
@@ -350,6 +406,8 @@ export function ChangedFilesBrowser({
   stageActions,
   viewedPaths,
   onToggleViewed,
+  workspacePath,
+  onOpenFile,
   /** When false, list grows with content; parent owns scrolling. */
   ownScroll = true,
   className
@@ -368,6 +426,8 @@ export function ChangedFilesBrowser({
   stageActions?: StageActions
   viewedPaths?: Set<string>
   onToggleViewed?: (path: string) => void
+  workspacePath?: string | null
+  onOpenFile?: (path: string, options?: WorkspaceFileOpenOptions) => void
   ownScroll?: boolean
   className?: string
 }) {
@@ -420,6 +480,8 @@ export function ChangedFilesBrowser({
             stageActions={stageActions}
             viewed={viewedPaths?.has(file.path)}
             onToggleViewed={onToggleViewed ? () => onToggleViewed(file.path) : undefined}
+            workspacePath={workspacePath}
+            onOpenFile={onOpenFile}
           />
         ))}
       </ul>

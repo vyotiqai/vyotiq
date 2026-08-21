@@ -1,4 +1,12 @@
-import { useCallback, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+  type PointerEvent
+} from 'react'
 import { cn } from './cn'
 
 export type PanelResizeHandleProps = {
@@ -51,40 +59,90 @@ export function PanelResizeHandle({
   maxRef.current = max
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
+  const draggingRef = useRef(false)
+  const cleanupDragRef = useRef<(() => void) | null>(null)
 
   const apply = useCallback((next: number) => {
     onChangeRef.current(clamp(next, minRef.current, maxRef.current))
   }, [])
 
-  const onMouseDown = (e: MouseEvent<HTMLDivElement>): void => {
-    if (disabled || e.button !== 0) return
+  const stopDrag = useCallback((): void => {
+    cleanupDragRef.current?.()
+    cleanupDragRef.current = null
+    draggingRef.current = false
+    setDragging(false)
+  }, [])
+
+  useEffect(() => stopDrag, [stopDrag])
+
+  const startDrag = useCallback(
+    (clientX: number, target: HTMLDivElement, pointerId?: number): void => {
+      if (disabled || draggingRef.current) return
+      draggingRef.current = true
+      setDragging(true)
+      if (pointerId != null) {
+        try {
+          target.setPointerCapture(pointerId)
+        } catch {
+          // Pointer capture can fail when the handle is removed during a drag.
+        }
+      }
+
+      const startValue = valueRef.current
+      const startX = clientX
+      const prevUserSelect = document.body.style.userSelect
+      const prevCursor = document.body.style.cursor
+      document.body.style.userSelect = 'none'
+      document.body.style.cursor = 'col-resize'
+
+      const onMove = (event: globalThis.PointerEvent | globalThis.MouseEvent): void => {
+        const dx = event.clientX - startX
+        const delta = edgeRef.current === 'end' ? dx : -dx
+        apply(startValue + delta)
+      }
+      const onUp = (): void => {
+        if (pointerId != null) {
+          try {
+            target.releasePointerCapture(pointerId)
+          } catch {
+            // The pointer may already have been released by the browser.
+          }
+        }
+        document.body.style.userSelect = prevUserSelect
+        document.body.style.cursor = prevCursor
+        window.removeEventListener('pointermove', onMove)
+        window.removeEventListener('pointerup', onUp)
+        window.removeEventListener('pointercancel', onUp)
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+        cleanupDragRef.current = null
+        draggingRef.current = false
+        setDragging(false)
+      }
+
+      cleanupDragRef.current = onUp
+      if (pointerId != null) {
+        window.addEventListener('pointermove', onMove)
+        window.addEventListener('pointerup', onUp)
+        window.addEventListener('pointercancel', onUp)
+      } else {
+        window.addEventListener('mousemove', onMove)
+        window.addEventListener('mouseup', onUp)
+      }
+    },
+    [apply, disabled]
+  )
+
+  const onPointerDown = (e: PointerEvent<HTMLDivElement>): void => {
+    if (disabled || e.button !== 0 || !e.isPrimary) return
     e.preventDefault()
+    startDrag(e.clientX, e.currentTarget, e.pointerId)
+  }
 
-    const startX = e.clientX
-    const startValue = valueRef.current
-    setDragging(true)
-
-    const prevUserSelect = document.body.style.userSelect
-    const prevCursor = document.body.style.cursor
-    document.body.style.userSelect = 'none'
-    document.body.style.cursor = 'col-resize'
-
-    const onMove = (ev: globalThis.MouseEvent): void => {
-      const dx = ev.clientX - startX
-      const delta = edgeRef.current === 'end' ? dx : -dx
-      apply(startValue + delta)
-    }
-
-    const onUp = (): void => {
-      setDragging(false)
-      document.body.style.userSelect = prevUserSelect
-      document.body.style.cursor = prevCursor
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+  const onMouseDown = (e: MouseEvent<HTMLDivElement>): void => {
+    if (disabled || e.button !== 0 || draggingRef.current) return
+    e.preventDefault()
+    startDrag(e.clientX, e.currentTarget)
   }
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>): void => {
@@ -107,6 +165,8 @@ export function PanelResizeHandle({
   }
 
   return (
+    // ARIA separator is the native semantic for a resizable gutter.
+    // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
     <div
       role="separator"
       aria-orientation="vertical"
@@ -125,6 +185,7 @@ export function PanelResizeHandle({
           : 'cursor-col-resize focus-visible:vy-focus-ring',
         className
       )}
+      onPointerDown={onPointerDown}
       onMouseDown={onMouseDown}
       onKeyDown={onKeyDown}
     >

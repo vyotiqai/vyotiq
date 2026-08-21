@@ -6,7 +6,8 @@ import {
   dequeueOfflineMessage,
   enqueueOfflineMessage,
   offlineQueueLength,
-  peekOfflineQueue
+  peekOfflineQueue,
+  type OfflineQueuedSend
 } from './offlineQueueStore'
 
 type SendHandler = (
@@ -16,12 +17,14 @@ type SendHandler = (
   extras?: ComposerSendExtras
 ) => boolean | void | Promise<boolean | void>
 
+type FlushHandler = (entry: OfflineQueuedSend) => boolean | void | Promise<boolean | void>
+
 /** Prevents duplicate flush loops when two owners briefly share a workspace. */
 const flushingWorkspaces = new Set<string>()
 
 export function useOfflineSendQueue(
   workspacePath: string,
-  onSend: SendHandler
+  onFlush: FlushHandler
 ): {
   online: boolean
   offlineHint: string | null
@@ -30,7 +33,8 @@ export function useOfflineSendQueue(
     images?: string[],
     files?: AttachedFile[],
     extras?: ComposerSendExtras,
-    deliver?: SendHandler
+    deliver?: SendHandler,
+    binding?: { runId?: string | null; paneId?: string; workspacePath?: string }
   ) => Promise<boolean>
   clearOfflineQueueForWorkspace: () => void
 } {
@@ -58,17 +62,40 @@ export function useOfflineSendQueue(
       images?: string[],
       files?: AttachedFile[],
       extras?: ComposerSendExtras,
-      deliver?: SendHandler
+      deliver?: SendHandler,
+      binding?: { runId?: string | null; paneId?: string; workspacePath?: string }
     ) => {
-      if (!online && workspacePath) {
-        enqueueOfflineMessage(workspacePath, { text, images, files, extras })
+      const queuePath = binding?.workspacePath ?? workspacePath
+      if (!online && queuePath) {
+        const queued = enqueueOfflineMessage(queuePath, {
+          text,
+          images,
+          files,
+          extras,
+          runId: binding?.runId,
+          paneId: binding?.paneId,
+          workspacePath: queuePath
+        })
+        if (!queued) return false
         bumpQueue()
         return true
       }
-      const target = deliver ?? onSend
-      return Boolean(await target(text, images, files, extras))
+      if (deliver) return Boolean(await deliver(text, images, files, extras))
+      return Boolean(
+        await onFlush({
+          id: '',
+          text,
+          images,
+          files,
+          extras,
+          runId: binding?.runId,
+          paneId: binding?.paneId,
+          workspacePath: queuePath || undefined,
+          queuedAt: ''
+        })
+      )
     },
-    [online, workspacePath, onSend, bumpQueue]
+    [online, workspacePath, onFlush, bumpQueue]
   )
 
   useEffect(() => {
@@ -82,8 +109,18 @@ export function useOfflineSendQueue(
           while (!cancelled) {
             const next = peekOfflineQueue(workspacePath)
             if (!next) break
-            const ok = Boolean(await onSend(next.text, next.images, next.files, next.extras))
-            if (!ok) break
+            let ok = false
+            try {
+              ok = Boolean(await onFlush(next))
+            } catch {
+              // Transient failure (e.g. workspace still indexing). Keep the message
+              // queued and retry on the next tick instead of stranding it forever.
+              ok = false
+            }
+            if (!ok) {
+              bumpQueue()
+              break
+            }
             dequeueOfflineMessage(workspacePath)
             bumpQueue()
           }
@@ -96,7 +133,7 @@ export function useOfflineSendQueue(
       cancelled = true
       window.clearTimeout(timer)
     }
-  }, [online, workspacePath, onSend, bumpQueue, queueTick])
+  }, [online, workspacePath, onFlush, bumpQueue, queueTick])
 
   return { online, offlineHint, sendWithOfflineQueue, clearOfflineQueueForWorkspace }
 }

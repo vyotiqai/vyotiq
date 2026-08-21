@@ -2,15 +2,26 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, act } from '@testing-library/react'
 import {
   estimateTranscriptRowSize,
   MessageList,
   transcriptRowsContentRevision
 } from '@renderer/features/chat/components/MessageList'
 import { buildTranscriptRows } from '@renderer/features/chat/utils/transcriptRows'
-import { TOOL_BODY_CLAMP_PX, TOOL_GROUP_LIST_MAX_PX, TOOL_TERMINAL_VIEWPORT_MAX_PX } from '@renderer/lib/utils/layout'
+import {
+  TOOL_BODY_CLAMP_PX,
+  TOOL_GROUP_LIST_ESTIMATE_MIN_PX,
+  TOOL_TERMINAL_VIEWPORT_MAX_PX
+} from '@renderer/lib/utils/layout'
 import type { UiItem } from '@shared/transcript'
+import { emptyStepUsageTotals } from '@shared/utils/runTelemetry'
+
+function visibleTextMatches(pattern: RegExp): HTMLElement[] {
+  return screen
+    .getAllByText(pattern)
+    .filter((element) => !element.closest('[data-live-receipt-announcement]'))
+}
 
 beforeEach(() => {
   Object.defineProperty(window, 'matchMedia', {
@@ -86,6 +97,189 @@ describe('MessageList', () => {
     expect(screen.getByText('The table is built up front.')).toBeTruthy()
   })
 
+  it('holds the closing-answer copy hidden while streaming, then shows it', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'summarize', at: '2026-08-16T10:00:00Z' },
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: 'Here is the summary you asked for.',
+        at: '2026-08-16T10:00:05Z',
+        streaming: true
+      }
+    ]
+
+    const { rerender } = render(<MessageList items={items} />)
+    expect(document.querySelector('[aria-label="Copy message"]')).toBeNull()
+    expect(screen.getByText('5s')).toBeTruthy()
+
+    rerender(
+      <MessageList
+        items={items.map((item) =>
+          item.kind === 'message' && item.id === 'a1' ? { ...item, streaming: false } : item
+        )}
+      />
+    )
+    expect(screen.getByRole('button', { name: 'Copy message' })).toBeTruthy()
+  })
+
+  it('puts turn duration on the closing answer instead of the turn summary', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'read it', at: '2026-08-18T10:00:00.000Z' },
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: { id: 't1', name: 'read', summary: 'file.ts', status: 'done' },
+        groupTiming: {
+          startedAt: Date.parse('2026-08-18T10:00:01.000Z'),
+          endedAt: Date.parse('2026-08-18T10:00:09.000Z')
+        }
+      },
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: 'Done reading.',
+        at: '2026-08-18T10:00:09.000Z'
+      }
+    ]
+
+    render(<MessageList items={items} />)
+    expect(screen.getByText('Completed')).toBeTruthy()
+    expect(screen.queryByText(/Completed for/)).toBeNull()
+    expect(screen.getAllByText('9s')).toHaveLength(1)
+  })
+
+  it('shows live receipt on the turn summary instead of the streaming footer', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'read it', at: '2026-08-18T10:00:00.000Z' },
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: { id: 't1', name: 'read', summary: 'file.ts', status: 'running' },
+        groupTiming: { startedAt: Date.parse('2026-08-18T10:00:01.000Z') }
+      },
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: 'Looking now.',
+        at: '2026-08-18T10:00:09.000Z',
+        streaming: true
+      }
+    ]
+    const usage = {
+      ...emptyStepUsageTotals(),
+      steps: 1,
+      billedInputTokens: 200,
+      outputTokens: 40,
+      generationMs: 2500
+    }
+
+    render(<MessageList items={items} running turnUsage={[usage]} />)
+    expect(visibleTextMatches(/tok/)).toHaveLength(1)
+    expect(visibleTextMatches(/16 output tok\/s/)).toHaveLength(1)
+    expect(screen.queryByText(/\$/)).toBeNull()
+  })
+
+  it('keeps the receipt on Completed when the turn has tools but no closing answer', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'read it', at: '2026-08-18T10:00:00.000Z' },
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: { id: 't1', name: 'read', summary: 'file.ts', status: 'done' },
+        groupTiming: {
+          startedAt: Date.parse('2026-08-18T10:00:01.000Z'),
+          endedAt: Date.parse('2026-08-18T10:00:09.000Z')
+        }
+      }
+    ]
+    const usage = {
+      ...emptyStepUsageTotals(),
+      steps: 1,
+      billedInputTokens: 200,
+      outputTokens: 40,
+      generationMs: 2500
+    }
+
+    render(<MessageList items={items} turnUsage={[usage]} />)
+    expect(screen.getByText(/Completed/)).toBeTruthy()
+    expect(visibleTextMatches(/tok/)).toHaveLength(1)
+    expect(screen.getByText(/9s/)).toBeTruthy()
+  })
+
+  it('labels a cancelled partial answer and does not offer copy', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'stop it', at: '2026-08-18T10:00:00.000Z' },
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: { id: 't1', name: 'read', summary: 'file.ts', status: 'fail', content: 'Cancelled' },
+        groupTiming: {
+          startedAt: Date.parse('2026-08-18T10:00:01.000Z'),
+          endedAt: Date.parse('2026-08-18T10:00:04.000Z')
+        }
+      },
+      {
+        kind: 'message',
+        id: 'a1',
+        role: 'assistant',
+        content: 'Partial answer before stopping.',
+        at: '2026-08-18T10:00:04.000Z'
+      }
+    ]
+
+    render(<MessageList items={items} turnStatus="cancelled" />)
+    expect(screen.getByText('Cancelled')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Copy message' })).toBeNull()
+  })
+
+  it('reads live turn usage from the meta store without a parent re-render of items', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'go', at: '2026-08-18T10:00:00.000Z' },
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: { id: 't1', name: 'read', summary: 'file.ts', status: 'running' }
+      }
+    ]
+    let slots = [emptyStepUsageTotals()]
+    let revision = 0
+    const listeners = new Set<() => void>()
+    const metaStore = {
+      subscribeMeta: (listener: () => void) => {
+        listeners.add(listener)
+        return () => {
+          listeners.delete(listener)
+        }
+      },
+      getMetaRevision: () => revision,
+      getContextUsage: () => null,
+      getTurnUsage: () => slots
+    }
+
+    render(<MessageList items={items} running metaStore={metaStore} />)
+    expect(screen.queryByText(/tok/)).toBeNull()
+
+    slots = [
+      {
+        ...emptyStepUsageTotals(),
+        steps: 1,
+        billedInputTokens: 200,
+        outputTokens: 40,
+        generationMs: 2500
+      }
+    ]
+    revision += 1
+    act(() => {
+      for (const listener of listeners) listener()
+    })
+    expect(visibleTextMatches(/tok/)).toHaveLength(1)
+    expect(visibleTextMatches(/16 output tok\/s/)).toHaveLength(1)
+  })
+
   it('does not re-apply scroll restore when restoreScrollTop updates without a new token', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'msg-1', role: 'assistant', content: 'Hello', streaming: true }
@@ -123,6 +317,31 @@ describe('MessageList', () => {
     )
 
     expect(container.scrollTop).toBe(initialScrollTop)
+  })
+
+  it('restores scrollTop 0 instead of treating it as unset', async () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'msg-1', role: 'assistant', content: 'Top of thread' },
+      { kind: 'message', id: 'msg-2', role: 'assistant', content: 'Later message' }
+    ]
+
+    const setSpy = vi.fn()
+    const { rerender } = render(
+      <MessageList items={items} restoreScrollTop={0} scrollRestoreToken={1} />
+    )
+
+    const container = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    expect(container).toBeTruthy()
+    Object.defineProperty(container, 'scrollTop', {
+      configurable: true,
+      get: () => 0,
+      set: setSpy
+    })
+
+    rerender(<MessageList items={items} restoreScrollTop={0} scrollRestoreToken={2} />)
+    await vi.waitFor(() => {
+      expect(setSpy.mock.calls.some((call) => call[0] === 0)).toBe(true)
+    })
   })
 
   it('renders every row in a long transcript', () => {
@@ -250,9 +469,62 @@ describe('MessageList', () => {
 
     const column = scroll!.querySelector('[data-chat-column]')
     const order = [...(column?.querySelectorAll('[data-chat-column] > div') ?? [])]
-    // Live expanded: user → tool activity → TurnSummary (elapsed/collapse only).
+    // Chronological in-scroll: user → tools → TurnSummary. No external pin.
+    expect(document.querySelector('[data-prompt-pin]')).toBeNull()
     expect(order.length).toBe(3)
     expect(order[2]?.querySelector('button[aria-label="Collapse turn work"]')).toBeTruthy()
+  })
+
+  it('keeps user prompts in chronological scroll order with no pin', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'user-0', role: 'user', content: 'earlier prompt' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'earlier reply' },
+      { kind: 'message', id: 'user-2', role: 'user', content: 'latest prompt' },
+      { kind: 'message', id: 'a2', role: 'assistant', content: 'latest reply' }
+    ]
+    render(<MessageList items={items} />)
+
+    const scroll = document.querySelector('[data-transcript-scroll]')
+    expect(scroll).toBeTruthy()
+    expect(document.querySelector('[data-prompt-pin]')).toBeNull()
+
+    const latest = screen.getByText('latest prompt')
+    const earlier = screen.getByText('earlier prompt')
+    expect(latest.closest('[data-transcript-scroll]')).toBeTruthy()
+    expect(earlier.closest('[data-transcript-scroll]')).toBeTruthy()
+    expect(screen.getByText('latest reply').closest('[data-transcript-scroll]')).toBeTruthy()
+    expect(screen.getByText('earlier reply').closest('[data-transcript-scroll]')).toBeTruthy()
+
+    const text = scroll!.querySelector('[data-chat-column]')?.textContent ?? ''
+    expect(text.indexOf('earlier prompt')).toBeLessThan(text.indexOf('earlier reply'))
+    expect(text.indexOf('earlier reply')).toBeLessThan(text.indexOf('latest prompt'))
+    expect(text.indexOf('latest prompt')).toBeLessThan(text.indexOf('latest reply'))
+  })
+
+  it('mounts tasks under the task-owning user prompt (not a later follow-up)', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'user-0', role: 'user', content: 'audit the entire codebase end to end' },
+      {
+        kind: 'tool',
+        id: 'todo1',
+        tool: { id: 'todo1', name: 'todo_write', summary: '1 task', status: 'done' }
+      },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'Working on it.' },
+      { kind: 'message', id: 'user-2', role: 'user', content: 'delete it' }
+    ]
+    render(<MessageList items={items} running />)
+
+    const owning = screen.getByText('audit the entire codebase end to end')
+    const followUp = screen.getByText('delete it')
+    expect(owning.closest('[data-transcript-scroll]')).toBeTruthy()
+    expect(followUp.closest('[data-transcript-scroll]')).toBeTruthy()
+    expect(document.querySelector('[data-prompt-pin]')).toBeNull()
+    // Band mount is under the owning prompt; content needs run artifacts (ChatView).
+    const text = document.querySelector('[data-chat-column]')?.textContent ?? ''
+    expect(text.indexOf('audit the entire codebase end to end')).toBeLessThan(
+      text.indexOf('Working on it.')
+    )
+    expect(text.indexOf('Working on it.')).toBeLessThan(text.indexOf('delete it'))
   })
 
   it('follows content growth on the same message id while streaming and pinned', async () => {
@@ -590,6 +862,175 @@ describe('MessageList', () => {
     expect(screen.getByText('Line 179')).toBeTruthy()
   })
 
+  it('preserves scroll position when a long live run ends', () => {
+    class ResizeObserverStub {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+
+    const originalGbc = Element.prototype.getBoundingClientRect
+    Element.prototype.getBoundingClientRect = function getBoundingClientRect(this: Element) {
+      if (this.hasAttribute?.('data-transcript-scroll')) {
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          bottom: 800,
+          right: 720,
+          width: 720,
+          height: 800,
+          toJSON() {
+            return {}
+          }
+        } as DOMRect
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        bottom: 40,
+        right: 720,
+        width: 720,
+        height: 40,
+        toJSON() {
+          return {}
+        }
+      } as DOMRect
+    }
+
+    const prevVitest = process.env.VITEST
+    process.env.VITEST = ''
+
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u0', role: 'user', content: 'start' },
+      ...Array.from({ length: 179 }, (_, i) => ({
+        kind: 'message' as const,
+        id: `m-${i}`,
+        role: 'assistant' as const,
+        content: `Line ${i}`
+      }))
+    ]
+    const onScrollTopChange = vi.fn()
+    const { rerender } = render(
+      <MessageList items={items} running onScrollTopChange={onScrollTopChange} />
+    )
+    expect(document.querySelector('[data-live-turn-flow]')).toBeTruthy()
+
+    const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    let scrollTop = 12_000
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 800 })
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 40_000 })
+    Object.defineProperty(scroll, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value
+      }
+    })
+    fireEvent.scroll(scroll)
+    onScrollTopChange.mockClear()
+    act(() => {
+      rerender(<MessageList items={items} running onScrollTopChange={onScrollTopChange} />)
+    })
+
+    rerender(<MessageList items={items} running={false} onScrollTopChange={onScrollTopChange} />)
+    expect(scrollTop).toBe(12_000)
+    expect(onScrollTopChange).not.toHaveBeenCalledWith(0)
+
+    process.env.VITEST = prevVitest
+    Element.prototype.getBoundingClientRect = originalGbc
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps scroll stable after the post-live hold enables full virtualization', () => {
+    class ResizeObserverStub {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+
+    const originalGbc = Element.prototype.getBoundingClientRect
+    Element.prototype.getBoundingClientRect = function getBoundingClientRect(this: Element) {
+      if (this.hasAttribute?.('data-transcript-scroll')) {
+        return {
+          x: 0,
+          y: 0,
+          top: 0,
+          left: 0,
+          bottom: 800,
+          right: 720,
+          width: 720,
+          height: 800,
+          toJSON() {
+            return {}
+          }
+        } as DOMRect
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        bottom: 40,
+        right: 720,
+        width: 720,
+        height: 40,
+        toJSON() {
+          return {}
+        }
+      } as DOMRect
+    }
+
+    const prevVitest = process.env.VITEST
+    process.env.VITEST = ''
+
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u0', role: 'user', content: 'start' },
+      ...Array.from({ length: 179 }, (_, i) => ({
+        kind: 'message' as const,
+        id: `m-${i}`,
+        role: 'assistant' as const,
+        content: `Line ${i}`
+      }))
+    ]
+    const { rerender } = render(<MessageList items={items} running />)
+    const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    let scrollTop = 9_500
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 800 })
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 40_000 })
+    Object.defineProperty(scroll, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value: number) => {
+        scrollTop = value
+      }
+    })
+    fireEvent.scroll(scroll)
+    act(() => {
+      rerender(<MessageList items={items} running />)
+    })
+
+    rerender(<MessageList items={items} running={false} />)
+    expect(scrollTop).toBe(9_500)
+
+    vi.useFakeTimers()
+    act(() => {
+      vi.advanceTimersByTime(800)
+    })
+    expect(scrollTop).toBe(9_500)
+
+    vi.useRealTimers()
+
+    process.env.VITEST = prevVitest
+    Element.prototype.getBoundingClientRect = originalGbc
+    vi.unstubAllGlobals()
+  })
+
   it('estimates collapsed activity/thinking near disclosure height, not inflated slots', () => {
     const rows = buildTranscriptRows([
       {
@@ -612,7 +1053,7 @@ describe('MessageList', () => {
     expect(estimateTranscriptRowSize(activity)).toBeLessThanOrEqual(56)
   })
 
-  it('estimates settled todo_write as expanded via familyDefaultExpanded', () => {
+  it('estimates settled todo_write as compact (checklist lives in Tasks dock)', () => {
     const rows = buildTranscriptRows([
       {
         kind: 'tool',
@@ -628,11 +1069,11 @@ describe('MessageList', () => {
         }
       }
     ])
-    const activity = rows.find((r) => r.kind === 'activity')
-    expect(estimateTranscriptRowSize(activity)).toBe(56 + TOOL_BODY_CLAMP_PX)
+    // Successful todo_write is omitted from transcript rows entirely.
+    expect(rows.find((r) => r.kind === 'activity')).toBeUndefined()
   })
 
-  it('estimates live multi-tool activity at the capped list viewport', () => {
+  it('estimates live multi-tool activity from its in-flow row count', () => {
     const multi = buildTranscriptRows([
       {
         kind: 'tool',
@@ -646,7 +1087,17 @@ describe('MessageList', () => {
       }
     ])
     const activity = multi.find((r) => r.kind === 'activity')
-    expect(estimateTranscriptRowSize(activity)).toBe(48 + TOOL_GROUP_LIST_MAX_PX)
+    expect(estimateTranscriptRowSize(activity)).toBe(48 + TOOL_GROUP_LIST_ESTIMATE_MIN_PX)
+
+    const many = buildTranscriptRows(
+      Array.from({ length: 8 }, (_, index) => ({
+        kind: 'tool' as const,
+        id: `t${index + 1}`,
+        tool: { id: `t${index + 1}`, name: 'read', summary: `file-${index}.ts`, status: 'running' as const }
+      }))
+    )
+    const manyActivity = many.find((r) => r.kind === 'activity')
+    expect(estimateTranscriptRowSize(manyActivity)).toBe(48 + 8 * 32)
 
     const collapsedStale = buildTranscriptRows([
       {
@@ -696,7 +1147,7 @@ describe('MessageList', () => {
     expect(estimateTranscriptRowSize(card)).toBe(56 + TOOL_TERMINAL_VIEWPORT_MAX_PX)
   })
 
-  it('estimates collapsed terminal cards with the clamp peek height', () => {
+  it('estimates collapsed terminal cards as header-only (panel fold)', () => {
     const rows = buildTranscriptRows([
       {
         kind: 'tool',
@@ -714,9 +1165,7 @@ describe('MessageList', () => {
       }
     ])
     const card = rows.find((r) => r.kind === 'card')
-    expect(estimateTranscriptRowSize(card)).toBe(
-      56 + Math.min(TOOL_BODY_CLAMP_PX, TOOL_TERMINAL_VIEWPORT_MAX_PX)
-    )
+    expect(estimateTranscriptRowSize(card)).toBe(56)
   })
 
   it('estimates long assistant text tall enough to avoid virtual overlap', () => {
@@ -730,6 +1179,36 @@ describe('MessageList', () => {
     ])
     const text = rows.find((r) => r.kind === 'text')
     expect(estimateTranscriptRowSize(text)).toBeGreaterThan(280)
+  })
+
+  it('estimates multi-option ask_question gates taller than the old 160px floor', () => {
+    const rows = buildTranscriptRows([
+      {
+        kind: 'question',
+        id: 'question:req-q',
+        question: {
+          requestId: 'req-q',
+          toolCallId: 't1',
+          questions: [
+            {
+              id: 'q1',
+              prompt: 'Language?',
+              type: 'single',
+              options: ['Node', 'Python', 'Go', 'Rust']
+            },
+            {
+              id: 'q2',
+              prompt: 'Provider?',
+              type: 'single',
+              options: ['OpenAI', 'Anthropic', 'Local', 'Other', 'Agnostic']
+            }
+          ]
+        }
+      }
+    ])
+    const question = rows.find((r) => r.kind === 'question')
+    expect(estimateTranscriptRowSize(question)).toBeGreaterThanOrEqual(320)
+    expect(estimateTranscriptRowSize(question)).toBeGreaterThan(160)
   })
 
   it('lays out virtual rows without overlapping translateY slots when measured', () => {
@@ -837,7 +1316,7 @@ describe('MessageList', () => {
     expect(indexed.length).toBeGreaterThanOrEqual(2)
 
     const starts = indexed
-      .map((el) => Number(/translateY\(([-\d.]+)px\)/.exec(el.style.transform)?.[1] ?? NaN))
+      .map((el) => Number.parseFloat(el.style.top))
       .filter((n) => Number.isFinite(n))
       .sort((a, b) => a - b)
     expect(starts.length).toBe(indexed.length)
@@ -866,8 +1345,17 @@ describe('MessageList', () => {
 
     const editable = screen.getAllByLabelText('Edit message')
     expect(editable).toHaveLength(2)
-    fireEvent.click(editable[1]!)
+    expect(document.querySelector('[data-prompt-pin]')).toBeNull()
+    fireEvent.click(screen.getByText('first prompt'))
+    expect(onBegin).toHaveBeenCalledWith(0)
+    onBegin.mockClear()
+    fireEvent.click(screen.getByText('second prompt'))
     expect(onBegin).toHaveBeenCalledWith(2)
+    onBegin.mockClear()
+    fireEvent.keyDown(screen.getAllByRole('button', { name: 'Edit user message' })[0]!, {
+      key: 'Enter'
+    })
+    expect(onBegin).toHaveBeenCalledWith(0)
   })
 
   it('shows Revert back only when later transcript content exists', () => {
@@ -951,8 +1439,267 @@ describe('MessageList', () => {
     render(<MessageList items={items} onBeginEditUserMessage={() => {}} />)
 
     const editBtn = screen.getByLabelText('Edit message')
-    const bubble = editBtn.closest('[aria-label="User message"]')
+    const bubble = editBtn.closest('[aria-label="Edit user message"]')
     expect(bubble).toBeTruthy()
     expect(bubble?.className).toContain('group/prompt')
+  })
+
+  it('shows live TurnSummary Compacting… while the run is compacting', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'hi' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'working' }
+    ]
+
+    render(<MessageList items={items} running compacting />)
+
+    expect(screen.getByText('Compacting…')).toBeTruthy()
+    expect(document.querySelector('[data-compact-status]')).toBeNull()
+    expect(screen.queryByText(/Context summarized/)).toBeNull()
+  })
+
+  it('keeps Compacting… on the live TurnSummary when tool chrome is visible', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'hi' },
+      {
+        kind: 'tool',
+        id: 't1',
+        tool: { id: 't1', name: 'read', summary: 'src/auth.ts', status: 'running' }
+      }
+    ]
+
+    render(<MessageList items={items} running compacting />)
+
+    expect(screen.getByText('Compacting…')).toBeTruthy()
+  })
+
+  it('shows idle Compacting… inline in the transcript (not under the composer)', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'hi' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'done' }
+    ]
+
+    render(<MessageList items={items} compacting />)
+
+    const status = document.querySelector('[data-compact-status]')
+    expect(status?.textContent).toContain('Compacting…')
+  })
+
+  it('shows the compaction summary in the transcript after compact completes', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'hi' },
+      {
+        kind: 'compaction',
+        id: 'c1',
+        summary: 'Earlier turns set up auth and the session store.',
+        tokenEstimate: 1200,
+        verifyStatus: 'verified',
+        verifyCoverage: 1
+      }
+    ]
+
+    render(<MessageList items={items} />)
+
+    expect(document.querySelector('[data-compact-status]')).toBeNull()
+    expect(screen.getByText('Context summarized')).toBeTruthy()
+    expect(screen.getByText('Verified 100%')).toBeTruthy()
+    expect(screen.getByText('~1.2k')).toBeTruthy()
+    expect(screen.getByText('Earlier turns set up auth and the session store.')).toBeTruthy()
+  })
+
+  it('shows a failed compact card with the verify reason', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'hi' },
+      {
+        kind: 'compaction',
+        id: 'c1',
+        summary: 'Forgot the decision.',
+        verifyStatus: 'failed',
+        verifyFailures: ['Missing decision: Use JWT']
+      }
+    ]
+
+    render(<MessageList items={items} />)
+
+    expect(screen.getByText('Summary not applied')).toBeTruthy()
+    expect(screen.getByText('Failed')).toBeTruthy()
+    expect(screen.getByText('Missing decision: Use JWT')).toBeTruthy()
+  })
+
+  it('jumps to the latest messages on End', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'Hello there from the user' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'A reply from the assistant' }
+    ]
+    render(<MessageList items={items} />)
+    const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    const scrollTopSet = vi.fn()
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 4000 })
+    Object.defineProperty(scroll, 'scrollTop', {
+      configurable: true,
+      get: () => 200,
+      set: scrollTopSet
+    })
+    Object.defineProperty(scroll, 'scrollTo', {
+      configurable: true,
+      value: ({ top }: { top: number }) => {
+        scrollTopSet(top)
+      }
+    })
+
+    fireEvent.keyDown(window, { key: 'End' })
+    expect(scrollTopSet).toHaveBeenCalledWith(4000)
+  })
+
+  it('jumps to the top on Home', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'Hello there from the user' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'A reply from the assistant' }
+    ]
+    render(<MessageList items={items} />)
+    const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    const scrollTopSet = vi.fn()
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 4000 })
+    Object.defineProperty(scroll, 'scrollTop', {
+      configurable: true,
+      get: () => 200,
+      set: scrollTopSet
+    })
+    Object.defineProperty(scroll, 'scrollTo', {
+      configurable: true,
+      value: ({ top }: { top: number }) => {
+        scrollTopSet(top)
+      }
+    })
+
+    fireEvent.keyDown(window, { key: 'Home' })
+    expect(scrollTopSet).toHaveBeenCalledWith(0)
+  })
+
+  it('does not jump on End from a text field', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'Hello there from the user' }
+    ]
+    render(
+      <>
+        <input aria-label="Other field" />
+        <MessageList items={items} />
+      </>
+    )
+    const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    const scrollTopSet = vi.fn()
+    Object.defineProperty(scroll, 'scrollTop', {
+      configurable: true,
+      get: () => 200,
+      set: scrollTopSet
+    })
+    Object.defineProperty(scroll, 'scrollTo', {
+      configurable: true,
+      value: ({ top }: { top: number }) => {
+        scrollTopSet(top)
+      }
+    })
+    fireEvent.keyDown(screen.getByLabelText('Other field'), { key: 'End' })
+    expect(scrollTopSet).not.toHaveBeenCalled()
+  })
+
+  it('does not jump on Home from a text field', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'Hello there from the user' }
+    ]
+    render(
+      <>
+        <input aria-label="Other field" />
+        <MessageList items={items} />
+      </>
+    )
+    const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    const scrollTopSet = vi.fn()
+    Object.defineProperty(scroll, 'scrollTop', {
+      configurable: true,
+      get: () => 200,
+      set: scrollTopSet
+    })
+    Object.defineProperty(scroll, 'scrollTo', {
+      configurable: true,
+      value: ({ top }: { top: number }) => {
+        scrollTopSet(top)
+      }
+    })
+    fireEvent.keyDown(screen.getByLabelText('Other field'), { key: 'Home' })
+    expect(scrollTopSet).not.toHaveBeenCalled()
+  })
+
+  it('opens transcript find with Ctrl+F, counts matches, and closes on Esc', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'Hello there from the user' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'A reply about JWT tokens' },
+      { kind: 'message', id: 'a2', role: 'assistant', content: 'JWT refresh still pending' }
+    ]
+    render(<MessageList items={items} />)
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true })
+    const find = screen.getByRole('searchbox', { name: 'Find in transcript' })
+    fireEvent.change(find, { target: { value: 'jwt' } })
+    expect(screen.getByText('1 of 2')).toBeTruthy()
+    fireEvent.keyDown(find, { key: 'Enter', shiftKey: true })
+    expect(screen.getByText('2 of 2')).toBeTruthy()
+    fireEvent.keyDown(find, { key: 'Enter' })
+    expect(screen.getByText('1 of 2')).toBeTruthy()
+    fireEvent.keyDown(find, { key: 'Enter' })
+    expect(screen.getByText('2 of 2')).toBeTruthy()
+    fireEvent.keyDown(find, { key: 'Escape' })
+    expect(screen.queryByRole('searchbox', { name: 'Find in transcript' })).toBeNull()
+  })
+
+  it('opens transcript find from the composer and ignores other inputs', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'Hello there from the user' }
+    ]
+    render(
+      <>
+        <input aria-label="Other field" />
+        <div role="textbox" aria-label="Message" contentEditable tabIndex={0} />
+        <MessageList items={items} />
+      </>
+    )
+    fireEvent.keyDown(screen.getByLabelText('Other field'), { key: 'f', ctrlKey: true })
+    expect(screen.queryByRole('searchbox', { name: 'Find in transcript' })).toBeNull()
+
+    fireEvent.keyDown(screen.getByRole('textbox', { name: /^message$/i }), {
+      key: 'f',
+      ctrlKey: true
+    })
+    expect(screen.getByRole('searchbox', { name: 'Find in transcript' })).toBeTruthy()
+  })
+
+  it('counts new messages on the Latest chip while unpinned', () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'Hello there from the user' },
+      { kind: 'message', id: 'a1', role: 'assistant', content: 'A reply from the assistant' }
+    ]
+    const { rerender } = render(<MessageList items={items} />)
+    const scroll = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    Object.defineProperty(scroll, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(scroll, 'scrollHeight', { configurable: true, value: 4000 })
+    Object.defineProperty(scroll, 'scrollTop', { configurable: true, value: 200 })
+    fireEvent.scroll(scroll)
+    expect(screen.getByRole('button', { name: 'Jump to latest messages' })).toBeTruthy()
+
+    rerender(
+      <MessageList
+        items={[
+          ...items,
+          {
+            kind: 'message',
+            id: 'a2',
+            role: 'assistant',
+            content: 'A later reply from the assistant'
+          }
+        ]}
+      />
+    )
+    expect(screen.getByRole('button', { name: 'Jump to latest messages, 1 new' })).toBeTruthy()
+    expect(screen.getByText('Latest · 1')).toBeTruthy()
   })
 })

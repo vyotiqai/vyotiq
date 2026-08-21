@@ -5,9 +5,13 @@ import { VyotiqPluginManifestSchema } from '../../../shared/ipc'
 import { effectiveMarketplaceEnabled } from '../../../shared/domain/marketplaceEnablement'
 import { parseSkillFrontmatter } from './parse'
 import { isSkillMdFilename, resolveSkillMdPath } from './paths'
+import { loadLocalSkills } from './local'
 import { readMarketplaceIndex } from '../../marketplace/indexStore'
 import { resolveInstalledPackageRoot } from '../../marketplace/paths'
 import { resolveInsidePackageRoot } from '../../marketplace/safePath'
+import { wrapPromptSection } from '../promptSections'
+
+export type LoadedSkillSource = 'project' | 'personal' | 'skill' | 'plugin'
 
 export type LoadedSkill = {
   id: string
@@ -18,7 +22,7 @@ export type LoadedSkill = {
   root: string
   /** Absolute path to the resolved SKILL.md (or legacy skill.md) */
   skillPath: string
-  source: 'skill' | 'plugin'
+  source: LoadedSkillSource
 }
 
 function loadSkillFromDir(
@@ -58,12 +62,42 @@ function resolvePluginSkillDir(root: string, rel: string): string | null {
   }
 }
 
-/** Load all effectively enabled skills (standalone + plugin-bundled). */
+function sourceRank(source: LoadedSkillSource): number {
+  switch (source) {
+    case 'project':
+      return 4
+    case 'personal':
+      return 3
+    case 'skill':
+      return 2
+    case 'plugin':
+      return 1
+    default: {
+      const _exhaustive: never = source
+      return _exhaustive
+    }
+  }
+}
+
+/** Load all effectively enabled skills (local filesystem + marketplace). */
 export function loadEnabledSkills(
-  marketplaceOverrides?: MarketplaceOverrides | null
+  marketplaceOverrides?: MarketplaceOverrides | null,
+  workspacePath?: string | null
 ): LoadedSkill[] {
   const index = readMarketplaceIndex()
   const skills: LoadedSkill[] = []
+
+  for (const local of loadLocalSkills(workspacePath)) {
+    skills.push({
+      id: local.id,
+      name: local.name,
+      description: local.description,
+      body: local.body,
+      root: local.root,
+      skillPath: local.skillPath,
+      source: local.source
+    })
+  }
 
   for (const item of index.items) {
     if (item.kind !== 'skill') continue
@@ -120,7 +154,7 @@ export function loadEnabledSkills(
 }
 
 /**
- * Prefer one entry per skill name (standalone over plugin duplicates).
+ * Prefer one entry per skill name (project > personal > marketplace > plugin).
  */
 export function dedupeSkillsByName(skills: LoadedSkill[]): LoadedSkill[] {
   const byName = new Map<string, LoadedSkill>()
@@ -128,11 +162,7 @@ export function dedupeSkillsByName(skills: LoadedSkill[]): LoadedSkill[] {
     const key = skill.name.trim().toLowerCase()
     if (!key) continue
     const existing = byName.get(key)
-    if (!existing) {
-      byName.set(key, skill)
-      continue
-    }
-    if (existing.source === 'plugin' && skill.source === 'skill') {
+    if (!existing || sourceRank(skill.source) > sourceRank(existing.source)) {
       byName.set(key, skill)
     }
   }
@@ -147,12 +177,7 @@ export function buildSkillsSection(skills: LoadedSkill[], maxChars = 12_000): st
   const unique = dedupeSkillsByName(skills)
   if (unique.length === 0) return ''
   const header = [
-    '## Available skills',
-    '',
-    'When a user request matches a skill description, call the `Skill` tool with that',
-    'skill `name` before proceeding, then follow its instructions. To load bundled',
-    '`references/`, `scripts/`, or `assets/` files, call `Skill` again with the same',
-    '`name` and a relative `path`. Users may also invoke a skill explicitly with `/name`.',
+    'Match: call the `Skill` tool with that `name`, then the same `name` plus a relative `path` for bundled files. Users may also `/name`.',
     ''
   ].join('\n')
 
@@ -167,7 +192,7 @@ export function buildSkillsSection(skills: LoadedSkill[], maxChars = 12_000): st
     blocks.push(line)
     used += line.length
   }
-  return blocks.join('').trim()
+  return wrapPromptSection('available_skills', blocks.join('').trim())
 }
 
 /** List shallow relative files under a skill root (for Skill tool discovery). */
@@ -210,17 +235,16 @@ export function resolveSkillResourcePath(skillRoot: string, relPath: string): st
   return resolveInsidePackageRoot(skillRoot, relPath)
 }
 
-/** Find an enabled skill by name (case-insensitive). Prefer standalone over plugin. */
+/** Find an enabled skill by name (case-insensitive). Prefer project/personal over marketplace. */
 export function findEnabledSkillByName(
   name: string,
-  marketplaceOverrides?: MarketplaceOverrides | null
+  marketplaceOverrides?: MarketplaceOverrides | null,
+  workspacePath?: string | null
 ): LoadedSkill | undefined {
   const key = name.trim().toLowerCase()
   if (!key) return undefined
-  const skills = loadEnabledSkills(marketplaceOverrides)
-  const standalone = skills.find((s) => s.source === 'skill' && s.name.toLowerCase() === key)
-  if (standalone) return standalone
-  return skills.find((s) => s.name.toLowerCase() === key)
+  const unique = dedupeSkillsByName(loadEnabledSkills(marketplaceOverrides, workspacePath))
+  return unique.find((s) => s.name.toLowerCase() === key)
 }
 
 export type LoadedPluginRule = {
@@ -307,11 +331,7 @@ export function loadPluginRules(
   const rules = listEnabledPluginRules(marketplaceOverrides)
   if (rules.length === 0) return ''
   const header = [
-    '## Plugin rules',
-    '',
-    'Enabled plugin convention files (metadata only). When a rule matches the task,',
-    'call the `Skill` tool with that rule `id` before proceeding, then follow its body.',
-    'Plugin rules live outside the workspace; do not use `read` for these paths.',
+    'Match: call the `Skill` tool with that rule `id`, then follow its body. Do not `read` plugin-rule paths (they live outside the workspace).',
     ''
   ].join('\n')
 
@@ -326,7 +346,7 @@ export function loadPluginRules(
     blocks.push(line)
     used += line.length
   }
-  return blocks.join('').trim()
+  return wrapPromptSection('plugin_rules', blocks.join('').trim())
 }
 
 /** Resolve a plugin-rule id (case-insensitive) from enabled plugins. */
@@ -339,13 +359,10 @@ export function findPluginRuleById(
   return listEnabledPluginRules(marketplaceOverrides).find((r) => r.id.toLowerCase() === key)
 }
 
-const PLUGIN_RULE_CONTENT_CAP = 120_000
-
 /** Load full plugin rule markdown (sanctioned path outside workspace). */
 export function loadPluginRuleBody(rule: LoadedPluginRule): string {
   const raw = readFileSync(rule.absPath, 'utf8').trim()
-  const out = [`# Plugin rule: ${rule.pluginName}`, `Path: ${rule.relPath}`, '', raw].join('\n')
-  return out.slice(0, PLUGIN_RULE_CONTENT_CAP)
+  return [`# Plugin rule: ${rule.pluginName}`, `Path: ${rule.relPath}`, '', raw].join('\n')
 }
 
 /** @internal for tests — relative path helper */

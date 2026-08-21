@@ -18,6 +18,7 @@ export function parseGlobData(tool: UiToolRow): GlobParsed {
   }
 
   const lines = content.split('\n').filter((l) => l.trim() && !l.startsWith('…'))
-  const truncated = content.includes('more (raise maxResults')
+  const truncated =
+    content.includes('more (raise maxResults') || content.includes('scan cap')
   return { pattern, paths: lines, truncated }
 }

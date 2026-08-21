@@ -8,6 +8,7 @@ import type {
   ChatMessage,
   ComposerSendExtras,
   ProviderId,
+  SecretProvider,
   ServiceTier
 } from '@shared/ipc'
 import {
@@ -116,8 +117,9 @@ export function useComposerEditState(args: {
     ) => {
       if (editingUserMessageIndex == null || !onEditAndResend) return false
       const index = editingUserMessageIndex
-      cancelPromptEdit()
-      return onEditAndResend(index, text, images, files, extras)
+      const ok = await onEditAndResend(index, text, images, files, extras)
+      if (ok !== false) cancelPromptEdit()
+      return ok
     },
     [editingUserMessageIndex, onEditAndResend, cancelPromptEdit]
   )
@@ -163,6 +165,13 @@ export function useComposerEditState(args: {
   }
 }
 
+export function lastUserMessageIndex(messages: readonly ChatMessage[]): number | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.role === 'user') return i
+  }
+  return null
+}
+
 export type BuildComposerSendPropsInput = {
   provider: ProviderId
   model: string
@@ -173,6 +182,7 @@ export type BuildComposerSendPropsInput = {
   ollamaBaseUrl?: string
   customOpenAiBaseUrl?: string
   modelsRefreshKey?: string | number
+  secrets: Record<SecretProvider, boolean>
   draft?: string
   onDraftChange?: (draft: string) => void
   onProviderModel: (provider: ProviderId, model: string) => void
@@ -196,30 +206,22 @@ export type BuildComposerSendPropsInput = {
   onRemoveFollowUp?: (id: string) => void
   onEditFollowUp?: (id: string, text: string) => boolean | Promise<boolean>
   onSendFollowUpNow?: (id: string) => void
-  runNotice?: string | null
-  incomplete?: IncompleteTurnState | null
   onContinue?: () => void
-  onContinueInAgent?: () => void
+  incomplete?: IncompleteTurnState | null
   errorCode?: string | null
   bannerError: string | null
   secondaryBannerError: string | null
-  offlineHint?: string | null
-  onClearOfflineQueue?: () => void
-  networkWait?: {
-    attempt: number
-    maxAttempts: number
-    retryInMs: number
-    code?: string
-  } | null
   activeRunId: string | null
   onDismissError?: () => void
   contextUsage?: ContextUsageState | null
   metaStore?: ChatMetaStore
-  onCompactContext?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
+  onCompactContext?: (
+    focus?: string
+  ) => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   slashHandlers?: SlashClientHandlers
   sideRailPad?: boolean
-  imageReadyHint?: string | null
   onFocus?: () => void
+  onEditLastUserMessage?: () => boolean
 }
 
 /** Shared dock/hero composer prop bag for ChatView and SessionChatColumn. */
@@ -234,6 +236,7 @@ export function buildComposerSendProps(input: BuildComposerSendPropsInput) {
     ollamaBaseUrl: input.ollamaBaseUrl,
     customOpenAiBaseUrl: input.customOpenAiBaseUrl,
     modelsRefreshKey: input.modelsRefreshKey,
+    secrets: input.secrets,
     draft: input.draft,
     onDraftChange: input.onDraftChange,
     workspacePath: input.workspacePath,
@@ -253,17 +256,11 @@ export function buildComposerSendProps(input: BuildComposerSendPropsInput) {
     onRemoveFollowUp: input.onRemoveFollowUp,
     onEditFollowUp: input.onEditFollowUp,
     onSendFollowUpNow: input.onSendFollowUpNow,
-    runNotice: input.runNotice,
     incomplete: input.incomplete,
-    onContinue: input.onContinue,
-    onContinueInAgent: input.onContinueInAgent,
     onRetryNetwork: input.onContinue,
     errorCode: input.errorCode,
     bannerError: input.bannerError,
     secondaryBannerError: input.secondaryBannerError,
-    offlineHint: input.offlineHint,
-    onClearOfflineQueue: input.onClearOfflineQueue,
-    networkWait: input.networkWait,
     activeRunId: input.activeRunId,
     onDismissError: input.onDismissError,
     contextUsage: input.metaStore ? undefined : input.contextUsage,
@@ -271,7 +268,9 @@ export function buildComposerSendProps(input: BuildComposerSendPropsInput) {
     onCompactContext: input.onCompactContext,
     slashHandlers: input.slashHandlers,
     sideRailPad: input.sideRailPad,
-    imageReadyHint: input.imageReadyHint,
-    ...(input.onFocus ? { onFocus: input.onFocus } : {})
+    ...(input.onFocus ? { onFocus: input.onFocus } : {}),
+    ...(input.onEditLastUserMessage
+      ? { onEditLastUserMessage: input.onEditLastUserMessage }
+      : {})
   }
 }

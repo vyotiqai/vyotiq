@@ -56,7 +56,6 @@ vi.mock('@main/agent/context', async (importOriginal) => {
       system: 'system',
       estimatedTokens: 100,
       layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-      contextShrunk: false,
       anthropicNative: undefined,
       compaction: null
     }),
@@ -83,6 +82,10 @@ vi.mock('@main/agent/providers', () => ({
       }
     ]
   })
+}))
+
+vi.mock('@main/agent/tools', () => ({
+  executeTool: vi.fn()
 }))
 
 vi.mock('@main/agent/state', async (importOriginal) => {

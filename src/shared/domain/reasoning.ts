@@ -99,32 +99,70 @@ export function ollamaModelFamily(id: string): string {
   return colon >= 0 ? core.slice(0, colon) : core
 }
 
+/**
+ * Strip a trailing Ollama Cloud source tag (`:cloud` or `-cloud`).
+ * `gpt-oss:120b-cloud` → `gpt-oss:120b`; `glm-5.1:cloud` → `glm-5.1`.
+ */
+export function ollamaIdWithoutCloudSuffix(id: string): string {
+  const trimmed = id.trim()
+  return /[:-]cloud$/i.test(trimmed) ? trimmed.slice(0, -6) : trimmed
+}
+
+/** Cloud vs local pulled ids refer to the same family SKU. */
+export function ollamaModelIdsMatch(a: string, b: string): boolean {
+  if (a === b) return true
+  return (
+    ollamaIdWithoutCloudSuffix(a).toLowerCase() === ollamaIdWithoutCloudSuffix(b).toLowerCase()
+  )
+}
+
+export function findOllamaCatalogModel<T extends { id: string }>(
+  models: readonly T[],
+  id: string
+): T | undefined {
+  const exact = models.find((m) => m.id === id)
+  if (exact) return exact
+  return models.find((m) => ollamaModelIdsMatch(m.id, id))
+}
+
 /** GPT-OSS on Ollama uses `think: "low"|"medium"|"high"` and cannot fully disable. */
 export function isOllamaGptOssModel(id: string): boolean {
   return /^gpt-oss/i.test(ollamaModelFamily(id))
 }
 
 /**
- * Catalog-omitted Ollama thinking defaults (docs.ollama.com/capabilities/thinking).
- * Prefer live catalog fields when present; use these only as fallback.
+ * Ollama chat / OpenAI-compat think|reasoning_effort levels (OpenAPI enum).
+ * Catalog rows do not publish per-model lists — use this protocol set when
+ * live `capabilities` includes `thinking`.
  */
-export function ollamaThinkingHeuristicFields(id: string): {
+export const OLLAMA_THINKING_EFFORTS: ThinkingEffort[] = ['low', 'medium', 'high', 'max']
+
+/** GPT-OSS rejects `none` and `max`; only low|medium|high. */
+export const OLLAMA_GPT_OSS_THINKING_EFFORTS: ThinkingEffort[] = ['low', 'medium', 'high']
+
+/**
+ * Offline seed defaults when a model is known to think but catalog has not
+ * been fetched yet. GPT-OSS cannot disable and has no `max`.
+ */
+export function ollamaThinkingHeuristicFields(id?: string): {
   thinkingMode: ThinkingMode
   thinkingCanDisable: boolean
-  supportedThinkingEfforts?: ThinkingEffort[]
-  thinkingDefaultEffort?: ThinkingEffort
+  supportedThinkingEfforts: ThinkingEffort[]
+  thinkingDefaultEffort: ThinkingEffort
 } {
-  if (isOllamaGptOssModel(id)) {
+  if (id && isOllamaGptOssModel(id)) {
     return {
       thinkingMode: 'effort',
       thinkingCanDisable: false,
-      supportedThinkingEfforts: ['low', 'medium', 'high'],
+      supportedThinkingEfforts: [...OLLAMA_GPT_OSS_THINKING_EFFORTS],
       thinkingDefaultEffort: 'medium'
     }
   }
   return {
-    thinkingMode: 'boolean',
-    thinkingCanDisable: true
+    thinkingMode: 'effort',
+    thinkingCanDisable: true,
+    supportedThinkingEfforts: [...OLLAMA_THINKING_EFFORTS],
+    thinkingDefaultEffort: 'medium'
   }
 }
 
@@ -187,6 +225,10 @@ export function sharedThinkingModelMatch(id: string): boolean {
   if (/(^|[^a-z])r1([^a-z]|$)|reason|think/i.test(core)) return true
   if (/^gpt-oss|^qwen3|^qwq|^magistral|^kimi/i.test(family)) return true
   if (/(r1|reason|think|qwq)/i.test(family)) return true
+  // Current Ollama Cloud thinking families (docs.ollama.com/search?c=thinking)
+  if (/^glm-|\/glm-/i.test(core) || /^glm-/i.test(family)) return true
+  if (/^gemma4|^gemma-4/i.test(core) || /^gemma4|^gemma-4/i.test(family)) return true
+  if (/^minimax/i.test(core) || /^minimax/i.test(family)) return true
   // Mistral reasoning SKUs (also used by shared / openrouter paths)
   if (/^mistral-small|^magistral|mistral-medium-3/i.test(core)) return true
   return false
@@ -431,4 +473,22 @@ export function trailingToolMessages(messages: ChatMessage[]): ChatMessage[] {
     trailing.unshift(m)
   }
   return trailing
+}
+
+/**
+ * Messages to send when chaining `previous_response_id` / `previous_interaction_id`.
+ *
+ * Tool-only suffixes stay tool results. If anything after the last reasoning
+ * assistant is not a tool result (typically a new user turn), return that full
+ * suffix so the provider sees the follow-up instead of an empty tool list.
+ * When no assistant carries reasoning state, fall back to trailing tools.
+ */
+export function statefulContinuationMessages(messages: ChatMessage[]): ChatMessage[] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role !== 'assistant') continue
+    if (!parseProviderReasoningState(m.reasoningState)) continue
+    return messages.slice(i + 1)
+  }
+  return trailingToolMessages(messages)
 }

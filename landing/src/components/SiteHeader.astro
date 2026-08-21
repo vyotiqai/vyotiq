@@ -1,0 +1,85 @@
+---
+import BrandLockup from './BrandLockup.astro'
+import LandingIcon from './LandingIcon.astro'
+import { SITE_PRODUCT } from '../lib/site'
+
+const onDocs = Astro.url.pathname === '/docs' || Astro.url.pathname.startsWith('/docs/')
+const onDocsIndex = Astro.url.pathname === '/docs' || Astro.url.pathname === '/docs/'
+---
+
+<header class="sticky top-0 z-40 border-b border-border/80 bg-bg/90 backdrop-blur-md">
+  <div class="wrap flex flex-wrap items-center justify-between gap-3 py-3">
+    <a href="/" class="flex min-h-11 items-center" aria-label={`${SITE_PRODUCT} home`}>
+      <BrandLockup />
+    </a>
+
+    <nav class="flex flex-wrap items-center gap-1 text-sm" aria-label="Primary">
+      <a class="inline-flex min-h-11 items-center px-3 text-muted hover:text-fg" href="/#overview">
+        Overview
+      </a>
+      <a class="inline-flex min-h-11 items-center px-3 text-muted hover:text-fg" href="/#capabilities">
+        Capabilities
+      </a>
+      <a
+        class:list={[
+          'inline-flex min-h-11 items-center px-3 hover:text-fg',
+          onDocs ? 'text-fg' : 'text-muted'
+        ]}
+        href="/docs"
+        aria-current={onDocsIndex ? 'page' : undefined}
+      >
+        Docs
+      </a>
+      <button
+        type="button"
+        class="inline-flex size-11 items-center justify-center rounded-md text-muted hover:bg-surface hover:text-fg"
+        data-theme-toggle
+        aria-label="Toggle color theme"
+      >
+        <LandingIcon name="sun" size={16} class="dark:hidden" />
+        <LandingIcon name="moon" size={16} class="hidden dark:block" />
+      </button>
+    </nav>
+  </div>
+</header>
+
+<script>
+  const KEY = 'vyotiq-theme'
+  const button = document.querySelector<HTMLButtonElement>('[data-theme-toggle]')
+  const media = window.matchMedia('(prefers-color-scheme: dark)')
+
+  function storedMode(): 'light' | 'dark' | 'system' {
+    const value = localStorage.getItem(KEY)
+    if (value === 'light' || value === 'dark') return value
+    return 'system'
+  }
+
+  function resolved(mode: 'light' | 'dark' | 'system'): 'light' | 'dark' {
+    if (mode === 'system') return media.matches ? 'dark' : 'light'
+    return mode
+  }
+
+  function apply(): void {
+    const mode = storedMode()
+    const theme = resolved(mode)
+    document.documentElement.setAttribute('data-theme', theme)
+    if (button) {
+      const next = mode === 'system' ? 'light' : mode === 'light' ? 'dark' : 'system'
+      button.setAttribute('aria-label', `Color theme: ${mode}. Click for ${next}.`)
+    }
+  }
+
+  button?.addEventListener('click', () => {
+    const mode = storedMode()
+    const next = mode === 'system' ? 'light' : mode === 'light' ? 'dark' : 'system'
+    if (next === 'system') localStorage.removeItem(KEY)
+    else localStorage.setItem(KEY, next)
+    apply()
+  })
+
+  media.addEventListener('change', () => {
+    if (storedMode() === 'system') apply()
+  })
+
+  apply()
+</script>

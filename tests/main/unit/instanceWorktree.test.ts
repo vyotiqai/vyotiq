@@ -1,0 +1,189 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
+import { execFileSync } from 'child_process'
+import { canGit } from '../../helpers/canGit'
+
+const userData = join(tmpdir(), `vyotiq-wt-ud-${process.pid}-${Date.now()}`)
+
+vi.mock('electron', () => ({
+  app: {
+    getPath: (name: string) => {
+      if (name === 'userData') return userData
+      throw new Error(`unexpected getPath(${name})`)
+    },
+    getAppPath: () => '/tmp/vyotiq-app',
+    isPackaged: false
+  }
+}))
+
+import {
+  addInstanceWorktree,
+  instanceWorktreePath,
+  isInstanceWorktreeDir,
+  removeInstanceWorktree,
+  resetInstanceWorktreeCleanupForTests
+} from '@main/git/instanceWorktree'
+
+function git(cwd: string, ...args: string[]): void {
+  execFileSync('git', args, {
+    cwd,
+    stdio: 'ignore',
+    windowsHide: true,
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+  })
+}
+
+describe('isInstanceWorktreeDir', () => {
+  it('detects instance-worktrees path segments', () => {
+    expect(isInstanceWorktreeDir(join('C:', 'workspaces', 'abc', 'instance-worktrees', 'run-1'))).toBe(
+      true
+    )
+    expect(isInstanceWorktreeDir(join('C:', 'Documents', 'project'))).toBe(false)
+  })
+})
+
+describe.skipIf(!canGit)('instanceWorktree concurrent add', () => {
+  let repo = ''
+  let worktreePaths: string[] = []
+
+  afterEach(async () => {
+    for (const wt of worktreePaths) {
+      if (repo) await removeInstanceWorktree(repo, wt)
+    }
+    worktreePaths = []
+    if (repo && existsSync(repo)) {
+      rmSync(repo, { recursive: true, force: true })
+    }
+    if (existsSync(userData)) {
+      rmSync(userData, { recursive: true, force: true })
+    }
+    resetInstanceWorktreeCleanupForTests()
+  })
+
+  it('adds two worktrees on one repo without index.lock', async () => {
+    repo = mkdtempSync(join(tmpdir(), 'vyotiq-wt-repo-'))
+    git(repo, 'init', '--initial-branch=main')
+    writeFileSync(join(repo, 'README.md'), 'base\n', 'utf8')
+    git(repo, 'add', 'README.md')
+    git(
+      repo,
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'user.name=Test',
+      'commit',
+      '-m',
+      'init'
+    )
+
+    const runIdA = `run-a-${process.pid}`
+    const runIdB = `run-b-${process.pid}`
+    worktreePaths = [instanceWorktreePath(repo, runIdA), instanceWorktreePath(repo, runIdB)]
+    const [a, b] = await Promise.all([
+      addInstanceWorktree(repo, runIdA),
+      addInstanceWorktree(repo, runIdB)
+    ])
+
+    if (!a.ok) expect(a.error).not.toMatch(/index\.lock/i)
+    if (!b.ok) expect(b.error).not.toMatch(/index\.lock/i)
+    expect(a.ok).toBe(true)
+    expect(b.ok).toBe(true)
+    if (!a.ok || !b.ok) return
+
+    expect(existsSync(a.worktreePath)).toBe(true)
+    expect(existsSync(b.worktreePath)).toBe(true)
+    expect(a.worktreePath).not.toBe(b.worktreePath)
+  }, 30_000)
+})
+
+describe.skipIf(!canGit)('instanceWorktree locked remove', () => {
+  let repo = ''
+  let worktreePath = ''
+
+  afterEach(async () => {
+    if (repo && worktreePath) await removeInstanceWorktree(repo, worktreePath)
+    worktreePath = ''
+    if (repo && existsSync(repo)) {
+      rmSync(repo, { recursive: true, force: true })
+    }
+    if (existsSync(userData)) {
+      rmSync(userData, { recursive: true, force: true })
+    }
+    resetInstanceWorktreeCleanupForTests()
+  })
+
+  it('removes a git-locked instance worktree left after a crash', async () => {
+    repo = mkdtempSync(join(tmpdir(), 'vyotiq-wt-lock-'))
+    git(repo, 'init', '--initial-branch=main')
+    writeFileSync(join(repo, 'README.md'), 'base\n', 'utf8')
+    git(repo, 'add', 'README.md')
+    git(
+      repo,
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'user.name=Test',
+      'commit',
+      '-m',
+      'init'
+    )
+
+    const runId = `run-lock-${process.pid}`
+    const added = await addInstanceWorktree(repo, runId)
+    expect(added.ok).toBe(true)
+    if (!added.ok) return
+    worktreePath = added.worktreePath
+    git(repo, 'worktree', 'lock', worktreePath)
+
+    await removeInstanceWorktree(repo, worktreePath)
+    expect(existsSync(worktreePath)).toBe(false)
+    worktreePath = ''
+  }, 30_000)
+})
+
+describe.skipIf(!canGit)('instanceWorktree sparse path_scope', () => {
+  let repo = ''
+  let worktreePath = ''
+
+  afterEach(async () => {
+    if (repo && worktreePath) await removeInstanceWorktree(repo, worktreePath)
+    worktreePath = ''
+    if (repo && existsSync(repo)) {
+      rmSync(repo, { recursive: true, force: true })
+    }
+    if (existsSync(userData)) {
+      rmSync(userData, { recursive: true, force: true })
+    }
+    resetInstanceWorktreeCleanupForTests()
+  })
+
+  it('materializes only path_scope cones', async () => {
+    repo = mkdtempSync(join(tmpdir(), 'vyotiq-wt-sparse-'))
+    git(repo, 'init', '--initial-branch=main')
+    mkdirSync(join(repo, 'src'), { recursive: true })
+    mkdirSync(join(repo, 'extra'), { recursive: true })
+    writeFileSync(join(repo, 'src', 'app.ts'), 'export const n = 1\n', 'utf8')
+    writeFileSync(join(repo, 'extra', 'skip.ts'), 'export const s = 1\n', 'utf8')
+    git(repo, 'add', '.')
+    git(
+      repo,
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'user.name=Test',
+      'commit',
+      '-m',
+      'init'
+    )
+
+    const runId = `run-sparse-${process.pid}`
+    const added = await addInstanceWorktree(repo, runId, ['src'])
+    expect(added.ok).toBe(true)
+    if (!added.ok) return
+    worktreePath = added.worktreePath
+    expect(existsSync(join(worktreePath, 'src', 'app.ts'))).toBe(true)
+    expect(existsSync(join(worktreePath, 'extra', 'skip.ts'))).toBe(false)
+  }, 30_000)
+})

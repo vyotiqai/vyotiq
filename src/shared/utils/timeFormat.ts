@@ -34,7 +34,14 @@ export function formatElapsed(ms: number): string {
   if (ms < 1000) return `${Math.max(1, ms)}ms`
   const sec = Math.round(ms / 1000)
   if (sec < 60) return `${sec}s`
-  const m = Math.floor(sec / 60)
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
   const s = sec % 60
+  if (h > 0) {
+    const parts = [`${h}h`]
+    if (m > 0) parts.push(`${m}m`)
+    if (s > 0) parts.push(`${s}s`)
+    return parts.join(' ')
+  }
   return s === 0 ? `${m}m` : `${m}m ${s}s`
 }

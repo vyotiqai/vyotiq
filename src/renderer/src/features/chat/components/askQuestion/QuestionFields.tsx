@@ -2,10 +2,17 @@ import { useRef, type JSX, type KeyboardEvent } from 'react'
 import { cn } from '@renderer/lib/ui'
 import type { UiAgentQuestionItem } from '@shared/transcript'
 
-const OPTION_BASE =
-  'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm vy-transition disabled:opacity-[var(--vy-disabled-opacity)]'
-const OPTION_IDLE = 'text-secondary hover:bg-surface-2/60 hover:text-fg'
-const OPTION_ACTIVE = 'bg-surface-2 text-fg'
+/** Inset focus — outer outline clashes with selection and clips under overflow-hidden. */
+const OPTION_FOCUS =
+  'outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-border-strong'
+const OPTION_BASE = cn(
+  'flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm vy-transition',
+  'disabled:opacity-[var(--vy-disabled-opacity)]',
+  OPTION_FOCUS
+)
+/** Hover stays lighter than selected fill so hover ≠ answered. */
+const OPTION_IDLE = 'text-secondary hover:bg-surface/50 hover:text-fg'
+const OPTION_ACTIVE = 'bg-surface-2 text-fg ring-1 ring-inset ring-border/70'
 
 export type QuestionFieldProps = {
   item: UiAgentQuestionItem
@@ -59,7 +66,10 @@ function CustomOther({
   return (
     <input
       type="text"
-      className="mt-1 w-full rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg"
+      className={cn(
+        'mt-1 w-full rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg',
+        OPTION_FOCUS
+      )}
       placeholder="Other…"
       aria-label="Other answer"
       disabled={disabled}
@@ -141,6 +151,7 @@ export function SingleChoiceField({
     <div
       role="radiogroup"
       aria-labelledby={promptId}
+      tabIndex={-1}
       className="flex flex-col gap-0.5"
       onKeyDown={onGroupKeyDown}
     >
@@ -159,7 +170,7 @@ export function SingleChoiceField({
             onClick={() => onChange([option], '')}
           >
             <OptionMark kind="radio" active={active} />
-            <span className="min-w-0">{option}</span>
+            <span className="min-w-0 break-words">{option}</span>
           </button>
         )
       })}
@@ -199,7 +210,6 @@ export function MultiChoiceField({
       role="group"
       aria-labelledby={promptId}
       className="flex flex-col gap-0.5"
-      onKeyDown={onGroupKeyDown}
     >
       {options.map((option, index) => {
         const active = selected.has(option)
@@ -222,9 +232,10 @@ export function MultiChoiceField({
                 customText
               )
             }}
+            onKeyDown={onGroupKeyDown}
           >
             <OptionMark kind="check" active={active} />
-            <span className="min-w-0">{option}</span>
+            <span className="min-w-0 break-words">{option}</span>
           </button>
         )
       })}
@@ -260,6 +271,7 @@ export function BooleanField({
     <div
       role="radiogroup"
       aria-labelledby={promptId}
+      tabIndex={-1}
       className="flex gap-1.5"
       onKeyDown={onGroupKeyDown}
     >
@@ -275,10 +287,12 @@ export function BooleanField({
             tabIndex={tabIndexFor(index)}
             disabled={disabled}
             className={cn(
-              'min-w-[4.5rem] rounded-md border px-3 py-1.5 text-sm vy-transition disabled:opacity-[var(--vy-disabled-opacity)]',
+              'min-w-[4.5rem] rounded-md border px-3 py-1.5 text-sm vy-transition',
+              'disabled:opacity-[var(--vy-disabled-opacity)]',
+              OPTION_FOCUS,
               active
-                ? 'border-border bg-surface-2 text-fg'
-                : 'border-border text-secondary hover:bg-surface'
+                ? 'border-border-strong bg-surface-2 text-fg'
+                : 'border-border text-secondary hover:bg-surface/50'
             )}
             onClick={() => onChange([option], '')}
           >
@@ -299,7 +313,10 @@ export function TextField({
   return (
     <textarea
       id={`${promptId}-input`}
-      className="min-h-[64px] w-full resize-y rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg"
+      className={cn(
+        'min-h-[64px] w-full resize-y rounded-md border border-border bg-bg px-2 py-1.5 text-sm text-fg',
+        OPTION_FOCUS
+      )}
       placeholder="Your answer…"
       aria-labelledby={promptId}
       disabled={disabled}
@@ -319,5 +336,9 @@ export function QuestionField(props: QuestionFieldProps): JSX.Element {
       return <BooleanField {...props} />
     case 'text':
       return <TextField {...props} />
+    default: {
+      const _exhaustive: never = props.item.type
+      throw new Error(`Unhandled question field type: ${String(_exhaustive)}`)
+    }
   }
 }

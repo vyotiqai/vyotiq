@@ -11,6 +11,9 @@ export const SETTINGS_GUTTER = CHAT_GUTTER
  */
 export const CHAT_STAGE_INSET = 'pl-4 pr-10 sm:pl-5'
 
+/** Top inset for chat stage surfaces (transcript, side rail) — keeps vertical rhythm aligned. */
+export const CHAT_STAGE_TOP_INSET = 'pt-4'
+
 /** Width of the floating chat side rail (icon strip) in pixels (`w-10`). */
 export const CHAT_SIDE_RAIL_WIDTH_PX = 40
 
@@ -73,14 +76,20 @@ export const COMPOSER_DOCK_LIVE_CLEARANCE_PX = 16
 /** Fallback dock reserve when measured height is not yet available (`8rem`). */
 export const COMPOSER_DOCK_FALLBACK_PX = 128
 
-/** Composer textarea auto-grow cap — keep in sync with `max-h-40` on the field. */
-export const COMPOSER_TEXTAREA_MAX_PX = 160
+/** Composer textarea auto-grow cap — keep in sync with `COMPOSER_TEXTAREA_MAX_CLASS`. */
+export const COMPOSER_TEXTAREA_MAX_PX = 280
+
+/** Tailwind max-height matching `COMPOSER_TEXTAREA_MAX_PX`. */
+export const COMPOSER_TEXTAREA_MAX_CLASS = 'max-h-[280px]'
+
+/** Settings sidebar width (sm+). */
+export const SETTINGS_NAV_WIDTH = 'sm:w-[220px]'
 
 /** Shared max width for settings content column. */
-export const SETTINGS_COLUMN_MAX = 'max-w-[520px]'
+export const SETTINGS_COLUMN_MAX = 'max-w-[680px]'
 
-/** Centered settings column. */
-export const SETTINGS_COLUMN = `mx-auto w-full ${SETTINGS_COLUMN_MAX}`
+/** Settings content column — left-aligned beside the section nav. */
+export const SETTINGS_COLUMN = `w-full ${SETTINGS_COLUMN_MAX}`
 
 /** Shared max width for marketplace content column. */
 export const MARKETPLACE_COLUMN_MAX = 'max-w-[1040px]'
@@ -106,16 +115,27 @@ export const TRANSCRIPT_WORK_PAIR_GAP = 'pb-1.5'
 /** Lead-in above a user prompt that opens a new turn. */
 export const TRANSCRIPT_TURN_GAP = 'pt-8'
 
+/** User prompt typography. */
+export const USER_PROMPT_TEXT =
+  'text-sm leading-relaxed tracking-[var(--vy-tracking-body)] text-fg [overflow-wrap:anywhere]'
+
 /** User prompt block — thin border matching composer chrome. */
 export const USER_PROMPT_SURFACE =
-  'rounded-xl border border-border bg-bg px-2.5 py-2 text-sm leading-relaxed tracking-[var(--vy-tracking-body)] text-fg [overflow-wrap:anywhere]'
+  `rounded-xl border border-border bg-bg px-2.5 py-2 ${USER_PROMPT_TEXT}`
 
 /** Quiet activity row — no fill, no border. */
 export const ACTIVITY_ROW = 'text-xs tracking-[var(--vy-tracking)]'
 
 /** One line of a disclosure list: label, detail, trailing meta. */
 export const DISCLOSURE_ROW =
-  'flex min-w-0 items-center gap-1.5 rounded-sm py-1 text-xs vy-transition hover:opacity-80'
+  'flex min-w-0 items-center gap-1.5 rounded-sm py-1.5 text-xs vy-transition hover:opacity-80'
+
+/**
+ * Disclosure chevron — hidden until the row is hovered or focused.
+ * Pair with `group` on the disclosure control; add rotate when expanded.
+ */
+export const DISCLOSURE_CHEVRON =
+  'shrink-0 text-tertiary opacity-0 vy-transition group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100'
 
 /** Tool card chrome — bordered terminal / edit ToolCard surfaces. */
 export const TOOL_CARD_SURFACE = 'overflow-hidden rounded-lg border border-border'
@@ -139,15 +159,8 @@ export const TOOL_BODY_CLAMP_PX = 168
  */
 export const READ_BODY_PREVIEW_LINES = 8
 
-/**
- * Cap streaming tool-group list so it cannot dominate the transcript.
- * ~12rem — keep in sync with TOOL_GROUP_LIST_MAX_PX for virtualizer estimates.
- */
-export const TOOL_GROUP_LIST_VIEWPORT =
-  'max-h-[min(12rem,28vh)] overflow-y-auto overscroll-contain'
-
-/** Pixel ceiling matching TOOL_GROUP_LIST_VIEWPORT (12rem @ 16px). */
-export const TOOL_GROUP_LIST_MAX_PX = 192
+/** Minimum first-paint estimate for an expanded multi-tool group. */
+export const TOOL_GROUP_LIST_ESTIMATE_MIN_PX = 192
 
 /**
  * Cap terminal tool output so streaming cannot inflate the transcript.
@@ -167,6 +180,10 @@ export const TOOL_BODY_INNER = 'px-3 py-1.5'
 
 /** Flow with parent scroll — no nested max-height scrollport; pr-5 clears disclosure chrome. */
 export const TOOL_BODY_FLOW = 'overflow-visible pr-5'
+
+/** Nested scrollport for browser snapshot refs / page text (keeps SERP dumps from flooding the timeline). */
+export const TOOL_SNAPSHOT_SCROLL =
+  'max-h-[min(12rem,28vh)] overflow-y-auto overscroll-contain'
 
 /** Family shells — compact todo / delete / read-only terminal (not bordered cards). */
 export const TOOL_FAMILY_TERMINAL = 'overflow-hidden'
@@ -198,6 +215,9 @@ export const TITLE_BAR_HEIGHT_PX = 36
  */
 export const WINDOW_CONTROLS_WIDTH_PX = 132
 
+/** Right padding for titlebar-embedded dock actions (Add panel / expand). */
+export const TITLEBAR_ACTIONS_PAD = 'pr-2'
+
 /** True when the shell draws custom min/max/close (Win/Linux; also jsdom fallback). */
 export function showsWindowControls(
   platform: string | undefined = typeof window !== 'undefined'
@@ -218,6 +238,9 @@ export const SIDEBAR_WIDTH_COLLAPSED_DARWIN = 'w-[72px]'
 
 /** Named container — children use `@sidebar/…` for width-aware density. */
 export const SIDEBAR_CONTAINER = '@container/sidebar'
+
+/** Transcript scrollport — floating tasks use `@transcript/…` to sit beside the Plan rail. */
+export const TRANSCRIPT_CONTAINER = '@container/transcript'
 
 /** Sidebar shell — same surface as main column, no elevated chrome. */
 export const SIDEBAR_SURFACE = 'bg-bg'
@@ -306,6 +329,7 @@ export const BROWSER_PANEL_OPEN_KEY = 'vyotiq.browserPanelOpen'
 export const RIGHT_PANEL_KEY = 'vyotiq.rightPanel'
 
 export const CHAT_RIGHT_PANEL_IDS = [
+  'files',
   'browser',
   'terminal',
   'changes',

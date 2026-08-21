@@ -4,12 +4,12 @@ import type { DiffLine } from '../toolUi'
 import { useDiffHighlight, type DiffTokens } from './useDiffHighlight'
 
 /** Enough of the change to recognise it without turning the transcript into a file. */
-const COLLAPSED_LINES = 14
+export const DIFF_COLLAPSED_LINES = 14
 /**
  * Hard cap even when expanded. Full diffs (up to ~100k chars from git) as DOM +
  * syntax highlight freeze the renderer — especially Expand All.
  */
-const MAX_EXPANDED_LINES = 200
+export const DIFF_MAX_EXPANDED_LINES = 200
 
 export type DiffLayout = 'unified' | 'split'
 
@@ -41,12 +41,15 @@ function DiffLines({
   lines,
   path,
   expanded,
+  followEnd,
   findQuery,
   wordWrap
 }: {
   lines: DiffLine[]
   path: string
   expanded?: boolean
+  /** While streaming: show newest lines in the peek instead of the head. */
+  followEnd?: boolean
   findQuery?: string
   wordWrap?: boolean
 }) {
@@ -59,26 +62,44 @@ function DiffLines({
   }, [lines, q])
 
   const visible = useMemo(() => {
-    const limit = expanded ? MAX_EXPANDED_LINES : COLLAPSED_LINES
-    return filtered.length > limit ? filtered.slice(0, limit) : filtered
-  }, [filtered, expanded])
-  const tokens: DiffTokens = useDiffHighlight(visible, path)
+    const limit = expanded ? DIFF_MAX_EXPANDED_LINES : DIFF_COLLAPSED_LINES
+    if (filtered.length <= limit) return filtered
+    return followEnd ? filtered.slice(-limit) : filtered.slice(0, limit)
+  }, [filtered, expanded, followEnd])
+  const tokens: DiffTokens = useDiffHighlight(visible, path, followEnd)
+  const hiddenBeforeCount = followEnd && filtered.length > visible.length
+    ? filtered.length - visible.length
+    : 0
+
+  const gutterCh = useMemo(() => {
+    let maxLn = 0
+    for (const line of visible) {
+      if (line.lineNumber != null && line.lineNumber > maxLn) maxLn = line.lineNumber
+    }
+    return Math.max(2, String(maxLn || 0).length)
+  }, [visible])
 
   if (!filtered.length) return null
   const hidden = filtered.length - visible.length
+  const hiddenBefore = hiddenBeforeCount > 0
 
   return (
     <div
       className={cn(
-        'overflow-hidden font-mono text-caption leading-mono',
-        wordWrap && '[&_pre]:whitespace-pre-wrap'
+        'font-mono text-caption leading-mono',
+        wordWrap ? 'overflow-hidden' : 'overflow-x-auto overflow-y-hidden'
       )}
     >
+      {hiddenBefore ? (
+        <p className="m-0 px-2 py-1 text-2xs text-tertiary">
+          {hidden} earlier {hidden === 1 ? 'line' : 'lines'}
+        </p>
+      ) : null}
       {visible.map((line, index) => {
         if (line.kind === 'gap') {
           return (
             <div
-              key={`gap-${index}`}
+              key={line.rowKey ?? `gap-${hiddenBeforeCount + index}`}
               className="h-3 border-y border-border/60 bg-surface-2/40"
               aria-hidden
             />
@@ -89,7 +110,7 @@ function DiffLines({
 
         return (
           <div
-            key={`${line.kind}-${index}`}
+            key={line.rowKey ?? `diff-${hiddenBeforeCount + index}-${line.kind}`}
             className={cn(
               'flex min-w-0',
               line.kind === 'add' && 'diff-row-add',
@@ -98,18 +119,26 @@ function DiffLines({
             )}
           >
             <span
-              className="w-5 shrink-0 select-none pr-1 text-right tabular-nums text-2xs text-tertiary/55"
+              className="shrink-0 select-none pr-1 text-right tabular-nums text-2xs text-tertiary/55"
+              style={{ width: `${gutterCh}ch`, minWidth: '2ch' }}
               aria-hidden={line.lineNumber == null}
             >
               {line.lineNumber ?? ''}
             </span>
-            <span className="min-w-0 flex-1 whitespace-pre-wrap pr-2 text-fg/85 [overflow-wrap:anywhere]">
+            <span
+              className={cn(
+                'min-w-0 flex-1 pr-2 text-fg/85',
+                wordWrap
+                  ? 'whitespace-pre-wrap [overflow-wrap:anywhere]'
+                  : 'whitespace-pre'
+              )}
+            >
               <LineText line={line} tokens={tokens.get(index)} />
             </span>
           </div>
         )
       })}
-      {hidden > 0 ? (
+      {!hiddenBefore && hidden > 0 ? (
         <p className="m-0 px-2 py-1 text-2xs text-tertiary">
           {hidden} more {hidden === 1 ? 'line' : 'lines'}
         </p>
@@ -122,14 +151,17 @@ export const DiffPreview = memo(function DiffPreview({
   lines,
   path,
   expanded,
+  followEnd,
   layout = 'unified',
   findQuery,
-  wordWrap
+  wordWrap = true
 }: {
   lines: DiffLine[]
   /** Used to pick a grammar for syntax colours. */
   path: string
   expanded?: boolean
+  /** Prefer the newest lines when collapsed (live streaming). */
+  followEnd?: boolean
   layout?: DiffLayout
   findQuery?: string
   wordWrap?: boolean
@@ -152,6 +184,7 @@ export const DiffPreview = memo(function DiffPreview({
             lines={splitSides.left}
             path={path}
             expanded={expanded}
+            followEnd={followEnd}
             findQuery={findQuery}
             wordWrap={wordWrap}
           />
@@ -161,6 +194,7 @@ export const DiffPreview = memo(function DiffPreview({
             lines={splitSides.right}
             path={path}
             expanded={expanded}
+            followEnd={followEnd}
             findQuery={findQuery}
             wordWrap={wordWrap}
           />
@@ -174,6 +208,7 @@ export const DiffPreview = memo(function DiffPreview({
       lines={lines}
       path={path}
       expanded={expanded}
+      followEnd={followEnd}
       findQuery={findQuery}
       wordWrap={wordWrap}
     />

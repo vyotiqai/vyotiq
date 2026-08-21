@@ -40,6 +40,10 @@ vi.mock('@main/marketplace', async (importOriginal) => {
   }
 })
 
+vi.mock('@main/app/window', () => ({
+  getMainWindow: () => null
+}))
+
 import { executeTool } from '@main/agent/tools'
 
 describe('mcp_list_tools filtering', () => {
@@ -132,6 +136,59 @@ describe('mcp_list_tools filtering', () => {
     expect(invalidated).toBe(true)
   })
 
+  it('pins deferred optional builtins into the sticky catalog via request_mcp_tools', async () => {
+    const pinned = new Set<string>()
+    const sticky = new Set<string>(['read', 'browser_navigate'])
+    let invalidated = false
+    const result = await executeTool(
+      'request_mcp_tools',
+      JSON.stringify({ tools: ['browser_hover'] }),
+      '/tmp/ws',
+      new AbortController().signal,
+      {
+        runPinnedMcpToolNames: pinned,
+        runStickyToolNames: sticky,
+        invalidateMcpToolCatalogCache: () => {
+          invalidated = true
+        }
+      }
+    )
+    expect(result.ok).toBe(true)
+    expect(sticky.has('browser_hover')).toBe(true)
+    expect(pinned.size).toBe(0)
+    expect(invalidated).toBe(true)
+  })
+
+  it('pins PascalCase deferred builtins via request_mcp_tools', async () => {
+    const pinned = new Set<string>()
+    const sticky = new Set<string>(['read', 'browser_navigate'])
+    const result = await executeTool(
+      'request_mcp_tools',
+      JSON.stringify({ tools: ['BrowserHover'] }),
+      '/tmp/ws',
+      new AbortController().signal,
+      {
+        runPinnedMcpToolNames: pinned,
+        runStickyToolNames: sticky
+      }
+    )
+    expect(result.ok).toBe(true)
+    expect(sticky.has('browser_hover')).toBe(true)
+    expect(pinned.size).toBe(0)
+  })
+
+  it('rejects request_mcp_tools with empty args', async () => {
+    const result = await executeTool(
+      'request_mcp_tools',
+      '{}',
+      '/tmp/ws',
+      new AbortController().signal,
+      { runPinnedMcpToolNames: new Set() }
+    )
+    expect(result.ok).toBe(false)
+    expect(result.content).toMatch(/tools: string\[\] and\/or serverId/)
+  })
+
   it('releases pinned tools via release_mcp_tools', async () => {
     const pinned = new Set(['mcp__github__create_issue', 'mcp__github__list_issues'])
     const lastUsed = new Map([
@@ -171,5 +228,29 @@ describe('mcp_list_tools filtering', () => {
     expect(result.ok).toBe(true)
     expect(pinned.has('mcp__github__create_issue')).toBe(false)
     expect(pinned.has('mcp__gitlab__list_issues')).toBe(true)
+  })
+
+  it('succeeds when request_mcp_tools serverId has no connected tools', async () => {
+    const result = await executeTool(
+      'request_mcp_tools',
+      JSON.stringify({ serverId: 'missing-server' }),
+      '/tmp/ws',
+      new AbortController().signal,
+      { runPinnedMcpToolNames: new Set() }
+    )
+    expect(result.ok).toBe(true)
+    expect(result.content).toMatch(/No connected MCP tools for serverId=missing-server/)
+  })
+
+  it('succeeds when release_mcp_tools serverId has nothing pinned', async () => {
+    const result = await executeTool(
+      'release_mcp_tools',
+      JSON.stringify({ serverId: 'github' }),
+      '/tmp/ws',
+      new AbortController().signal,
+      { runPinnedMcpToolNames: new Set() }
+    )
+    expect(result.ok).toBe(true)
+    expect(result.content).toMatch(/No pinned MCP tools for serverId=github/)
   })
 })

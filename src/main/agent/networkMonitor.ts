@@ -4,7 +4,25 @@ import { isRetriableNetworkError } from './providers/fetchWithRetry'
 const DEFAULT_PROBE_URL = 'https://1.1.1.1/cdn-cgi/trace'
 const PROBE_TIMEOUT_MS = 5000
 const OFFLINE_POLL_MS = 2000
-const MAX_OFFLINE_WAIT_MS = 60_000
+export const MAX_OFFLINE_WAIT_MS = 60_000
+const EXTENDED_OFFLINE_WAIT_MS = 900_000
+
+export type OfflineWaitMode = 'default' | 'extended' | 'wait_forever'
+
+/** Resolve offline wait budget from settings (autonomous gates wait_forever). */
+export function resolveOfflineWaitMs(settings: {
+  offlineWaitMode?: OfflineWaitMode
+  autonomousMode?: boolean
+}): number {
+  const mode = settings.offlineWaitMode ?? 'default'
+  if (mode === 'extended') return EXTENDED_OFFLINE_WAIT_MS
+  if (mode === 'wait_forever') {
+    return settings.autonomousMode === true
+      ? Number.POSITIVE_INFINITY
+      : EXTENDED_OFFLINE_WAIT_MS
+  }
+  return MAX_OFFLINE_WAIT_MS
+}
 
 function probeTimeoutSignal(parent?: AbortSignal): AbortSignal {
   if (typeof AbortSignal.timeout === 'function') {

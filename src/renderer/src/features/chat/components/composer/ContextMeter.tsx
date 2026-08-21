@@ -1,5 +1,6 @@
-import { useId, useRef, useState, type ReactNode } from 'react'
+import { useId, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
+import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui/cn'
 import { useDropdownMenu } from '@renderer/lib/hooks/useDropdownMenu'
 import { formatTokens } from '@renderer/lib/utils/formatTokens'
@@ -8,114 +9,164 @@ import {
   type ContextUsageState
 } from '@shared/utils/contextUsage'
 import type { StepUsageTotals } from '@shared/utils/runTelemetry'
-import { shouldShowTaskBoundaryTip } from '@shared/utils/tokenCost'
 import {
-  clampComposerDropdownPanel,
-  composerDropdownSectionHeader
-} from './composerDropdownLayout'
+  LONG_RUN_BILLED_INPUT_HINT_THRESHOLD,
+  LONG_RUN_STEP_HINT_THRESHOLD
+} from '@shared/utils/tokenCost'
+import { clampComposerDropdownPanel } from './composerDropdownLayout'
 
 export type { ContextUsageState }
 
-const CONTEXT_METER_MAX_PX = 320
+const PANEL_MAX_PX = 300
+const RING_STROKE = 2.5
+const LONG_RUN_TIP_CUE = 'Long run — /clear between unrelated tasks'
+
+function longRunTipCue(
+  usage: ContextUsageState,
+  advisoryHint?: string | null
+): string | null {
+  if (advisoryHint && /Long run — \/clear/i.test(advisoryHint)) return advisoryHint
+  if (
+    usage.stepUsage.steps >= LONG_RUN_STEP_HINT_THRESHOLD ||
+    usage.stepUsage.billedInputTokens >= LONG_RUN_BILLED_INPUT_HINT_THRESHOLD
+  ) {
+    return LONG_RUN_TIP_CUE
+  }
+  return advisoryHint ?? null
+}
+
+type UsageLevel = 'normal' | 'warning' | 'danger'
+
+function usageLevel(ratio: number, overBudget: boolean): UsageLevel {
+  if (overBudget || ratio >= 0.9) return 'danger'
+  if (ratio >= 0.7) return 'warning'
+  return 'normal'
+}
+
+const levelRing: Record<UsageLevel, string> = {
+  normal: 'text-fg',
+  warning: 'text-warning',
+  danger: 'text-danger'
+}
+
+const levelFill: Record<UsageLevel, string> = {
+  normal: 'bg-fg',
+  warning: 'bg-warning',
+  danger: 'bg-danger'
+}
+
+const levelSoft: Record<UsageLevel, string> = {
+  normal: 'bg-fg/10',
+  warning: 'bg-warning/12',
+  danger: 'bg-danger/12'
+}
 
 function formatPct(n: number, total: number): string {
   if (total <= 0) return '0%'
-  return `${Math.round((n / total) * 100)}%`
+  const pct = (n / total) * 100
+  if (pct > 0 && pct < 1) return `${pct.toFixed(1)}%`
+  if (pct >= 10) return `${Math.round(pct)}%`
+  return `${pct.toFixed(1)}%`
 }
 
-function usageTone(ratio: number): string {
-  if (ratio >= 0.9) return 'text-danger'
-  if (ratio >= 0.7) return 'text-warning'
-  return 'text-fg'
+function usageMetrics(usage: ContextUsageState) {
+  const budget = Math.max(1, usage.contentWindow > 0 ? usage.contentWindow : usage.window)
+  const overBudget = usage.used > budget || usage.overflow === true
+  const ratio = Math.min(1, usage.used / budget)
+  const displayPct = overBudget ? Math.round((usage.used / budget) * 100) : Math.round(ratio * 100)
+  const level = usageLevel(ratio, overBudget)
+  const overage = overBudget ? usage.used - budget : 0
+  const compactRatio =
+    usage.compactionTrigger > 0 ? Math.min(1, usage.compactionTrigger / budget) : null
+  return { budget, overBudget, ratio, displayPct, level, overage, compactRatio }
 }
 
-function usageFill(ratio: number): string {
-  if (ratio >= 0.9) return 'bg-danger'
-  if (ratio >= 0.7) return 'bg-warning'
-  return 'bg-fg'
-}
-
-/** Telemetry only when estimate-only, or when estimate and provider disagree. */
-export function shouldShowContextTelemetry(usage: ContextUsageState): boolean {
-  if (usage.inputTokens == null) return usage.source === 'estimate'
-  return usage.inputTokens !== usage.estimatedTokens
-}
-
-function PanelSection({
-  title,
-  children,
-  className
+function UsageRing({
+  ratio,
+  size,
+  level,
+  className,
+  children
 }: {
-  title?: string
-  children: ReactNode
+  ratio: number
+  size: number
+  level: UsageLevel
   className?: string
+  children?: React.ReactNode
 }) {
+  const stroke = RING_STROKE
+  const r = (size - stroke) / 2
+  const c = 2 * Math.PI * r
+  const clamped = Math.min(1, Math.max(0, ratio))
+  const offset = c * (1 - clamped)
+
   return (
-    <section className={cn('px-3 py-2.5', className)}>
-      {title ? <h3 className={cn(composerDropdownSectionHeader, 'mb-2 px-0')}>{title}</h3> : null}
-      {children}
-    </section>
+    <span
+      className={cn('relative inline-grid shrink-0 place-items-center', className)}
+      style={{ width: size, height: size }}
+      aria-hidden={children ? undefined : true}
+    >
+      <svg width={size} height={size} className="-rotate-90">
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={stroke}
+          className="text-surface-2"
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={r}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={c}
+          strokeDashoffset={offset}
+          className={cn(levelRing[level], 'vy-transition')}
+        />
+      </svg>
+      {children ? (
+        <span className="absolute inset-0 grid place-items-center text-3xs font-semibold tabular-nums leading-none">
+          {children}
+        </span>
+      ) : null}
+    </span>
   )
 }
 
-function StatCard({
-  label,
-  value,
-  detail,
-  tone
-}: {
-  label: string
-  value: string
-  detail?: string
-  tone?: string
-}) {
-  return (
-    <div className="flex min-w-0 flex-col gap-0.5 rounded-xl bg-surface/50 px-2.5 py-2">
-      <span className="text-3xs text-secondary">{label}</span>
-      <span className={cn('truncate text-sm font-semibold tabular-nums leading-tight', tone ?? 'text-fg')}>
-        {value}
-      </span>
-      {detail ? <span className="truncate text-3xs text-secondary">{detail}</span> : null}
-    </div>
-  )
-}
-
-function MetricRow({ label, value, tone }: { label: string; value: string; tone?: string }) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 text-2xs">
-      <span className="shrink-0 text-secondary">{label}</span>
-      <span className={cn('min-w-0 truncate text-right tabular-nums', tone ?? 'text-fg')}>{value}</span>
-    </div>
-  )
-}
-
-function LayerRow({
+function BreakdownRow({
   label,
   tokens,
   total,
-  hint
+  color
 }: {
   label: string
   tokens: number
   total: number
-  hint?: string
+  color: string
 }) {
-  const ratio = total > 0 ? Math.min(1, tokens / total) : 0
+  if (tokens <= 0) return null
   return (
-    <div className="grid grid-cols-[4.5rem_minmax(0,1fr)_5.5rem] items-center gap-x-2">
-      <span className="truncate text-2xs text-secondary">
-        {label}
-        {hint ? <span className="sr-only"> {hint}</span> : null}
-      </span>
-      <div className="h-1 overflow-hidden rounded-full bg-surface-2">
-        <div
-          className="h-full rounded-full bg-fg/50 vy-transition"
-          style={{ width: `${ratio * 100}%` }}
-        />
+    <div className="flex items-center gap-2">
+      <span className={cn('size-1.5 shrink-0 rounded-full', color)} aria-hidden />
+      <span className="w-14 shrink-0 text-2xs text-secondary">{label}</span>
+      <div className="min-w-0 flex-1">
+        <div className="h-1 overflow-hidden rounded-full bg-surface-2">
+          <div
+            className={cn('h-full rounded-full vy-transition', color)}
+            style={{ width: `${total > 0 ? Math.min(100, (tokens / total) * 100) : 0}%` }}
+          />
+        </div>
       </div>
-      <span className="shrink-0 text-right text-2xs tabular-nums text-fg">
+      <span className="w-10 shrink-0 text-right text-2xs tabular-nums text-fg">
         {formatTokens(tokens)}
-        <span className="text-secondary"> · {formatPct(tokens, total)}</span>
+      </span>
+      <span className="w-9 shrink-0 text-right text-2xs tabular-nums text-secondary">
+        {formatPct(tokens, total)}
       </span>
     </div>
   )
@@ -133,147 +184,27 @@ export function billedCacheHitPct(totals: StepUsageTotals): number | null {
   return Math.round((totals.billedCachedInputTokens / totals.billedInputTokens) * 100)
 }
 
-function PromptCacheSection({ totals }: { totals: StepUsageTotals }) {
-  const hitPct = cacheHitPct(totals)
-  const hasHit = totals.cachedInputTokens > 0
-  const hasWrite = totals.cacheCreationInputTokens > 0
-  if (!hasHit && !hasWrite) return null
-
-  const input = Math.max(1, totals.inputTokens)
-  const hitRatio = Math.min(1, totals.cachedInputTokens / input)
-  const freshTokens = Math.max(0, totals.inputTokens - totals.cachedInputTokens)
-
+function RunStat({
+  label,
+  value,
+  tone,
+  title
+}: {
+  label: string
+  value: string
+  tone?: string
+  title?: string
+}) {
   return (
-    <PanelSection title="Prompt cache" className="border-t border-border">
-      {hasHit ? (
-        <>
-          <div className="relative h-1.5 overflow-hidden rounded-full bg-surface-2">
-            <div
-              className="absolute inset-y-0 left-0 rounded-full bg-success/70 vy-transition"
-              style={{ width: `${hitRatio * 100}%` }}
-              title={`Cached ${formatTokens(totals.cachedInputTokens)}`}
-            />
-          </div>
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <StatCard
-              label="Cache hit"
-              value={hitPct != null ? `${hitPct}%` : formatTokens(totals.cachedInputTokens)}
-              detail={`${formatTokens(totals.cachedInputTokens)} cached`}
-              tone="text-success"
-            />
-            <StatCard
-              label="Uncached input"
-              value={formatTokens(freshTokens)}
-              detail={`${formatTokens(totals.inputTokens)} total input`}
-            />
-          </div>
-        </>
-      ) : null}
-      <div className={cn('flex flex-col gap-1.5', hasHit ? 'mt-2' : undefined)}>
-        {hasWrite ? (
-          <MetricRow
-            label="Cache write"
-            value={formatTokens(totals.cacheCreationInputTokens)}
-            tone="text-warning"
-          />
-        ) : null}
-        {hasHit ? (
-          <p className="m-0 text-3xs leading-snug text-secondary">
-            Hit rate is for the latest step’s input window
-          </p>
-        ) : (
-          <p className="m-0 text-3xs leading-snug text-secondary">
-            Cache write tokens accumulate across steps this run
-          </p>
-        )}
-      </div>
-    </PanelSection>
-  )
-}
-
-function StepUsageSection({ totals }: { totals: StepUsageTotals }) {
-  if (
-    totals.steps <= 0 &&
-    totals.outputTokens <= 0 &&
-    totals.reasoningTokens <= 0 &&
-    totals.billedInputTokens <= 0
-  ) {
-    return null
-  }
-  const reasoningPct =
-    totals.reasoningTokens > 0 && totals.outputTokens > 0
-      ? Math.round((totals.reasoningTokens / totals.outputTokens) * 100)
-      : null
-  const runHit = billedCacheHitPct(totals)
-  const taskBoundary = shouldShowTaskBoundaryTip({
-    steps: totals.steps,
-    billedInputTokens: totals.billedInputTokens
-  })
-
-  return (
-    <PanelSection title="Step usage" className="border-t border-border">
-      <div className="flex flex-col gap-1.5">
-        {totals.steps > 0 ? <MetricRow label="Steps" value={String(totals.steps)} /> : null}
-        {totals.billedInputTokens > 0 ? (
-          <MetricRow label="Billed input" value={formatTokens(totals.billedInputTokens)} />
-        ) : null}
-        {totals.peakInputTokens > 0 ? (
-          <MetricRow label="Peak input" value={formatTokens(totals.peakInputTokens)} />
-        ) : null}
-        {totals.outputTokens > 0 ? (
-          <MetricRow label="Output" value={formatTokens(totals.outputTokens)} />
-        ) : null}
-        {totals.reasoningTokens > 0 ? (
-          <MetricRow
-            label="Reasoning"
-            value={`${formatTokens(totals.reasoningTokens)}${reasoningPct != null ? ` · ${reasoningPct}%` : ''}`}
-            tone={reasoningPct != null && reasoningPct >= 40 ? 'text-warning' : undefined}
-          />
-        ) : null}
-        {reasoningPct != null && reasoningPct >= 40 ? (
-          <p className="m-0 text-3xs leading-snug text-secondary">
-            Reasoning is a large share of output — lower Think effort for simpler work (settings are
-            never changed automatically).
-          </p>
-        ) : null}
-        {runHit != null ? (
-          <MetricRow label="Run cache hit" value={`${runHit}%`} tone="text-success" />
-        ) : null}
-        {taskBoundary ? (
-          <p className="m-0 text-3xs leading-snug text-warning" role="status">
-            Long run — /clear (new chat) zeros history for an unrelated task; /compact keeps
-            continuity on this one.
-          </p>
-        ) : null}
-      </div>
-    </PanelSection>
-  )
-}
-
-function TelemetrySection({ usage }: { usage: ContextUsageState }) {
-  if (!shouldShowContextTelemetry(usage)) return null
-
-  const estimateDelta =
-    usage.inputTokens != null && usage.inputTokens !== usage.estimatedTokens
-      ? usage.inputTokens - usage.estimatedTokens
-      : null
-
-  return (
-    <PanelSection title="Telemetry" className="border-t border-border">
-      <div className="flex flex-col gap-1.5">
-        <MetricRow label="Estimate" value={formatTokens(usage.estimatedTokens)} />
-        {usage.inputTokens != null ? (
-          <MetricRow label="Provider input" value={formatTokens(usage.inputTokens)} />
-        ) : null}
-        {estimateDelta != null ? (
-          <MetricRow
-            label="Delta"
-            value={`${estimateDelta > 0 ? '+' : ''}${formatTokens(estimateDelta, true)}`}
-            tone={estimateDelta > 0 ? 'text-warning' : 'text-success'}
-          />
-        ) : null}
-      </div>
-    </PanelSection>
+    <div
+      className="flex min-w-0 flex-col gap-0.5 rounded-lg bg-surface/40 px-2 py-1.5"
+      title={title}
+    >
+      <span className="text-3xs text-secondary">{label}</span>
+      <span className={cn('truncate text-xs font-medium tabular-nums', tone ?? 'text-fg')}>
+        {value}
+      </span>
+    </div>
   )
 }
 
@@ -283,7 +214,8 @@ function ContextMeterPanel({
   compacting,
   compactDisabled,
   compactMessage,
-  compactFailed
+  compactFailed,
+  advisoryHint
 }: {
   usage: ContextUsageState
   onCompact?: () => void
@@ -291,98 +223,212 @@ function ContextMeterPanel({
   compactDisabled?: boolean
   compactMessage?: string | null
   compactFailed?: boolean
+  advisoryHint?: string | null
 }) {
-  const denominator = Math.max(1, usage.contentWindow > 0 ? usage.contentWindow : usage.window)
-  const ratio = Math.min(1, usage.used / denominator)
-  const pct = Math.round(ratio * 100)
-  const compactionPct = Math.min(
-    100,
-    Math.round((usage.compactionTrigger / denominator) * 100)
-  )
-  const hasLayers =
-    usage.layers.system + usage.layers.history + usage.layers.tools > 0 || usage.layers.buffer > 0
-  const fill = usageFill(ratio)
-  const tone = usageTone(ratio)
+  const { budget, overBudget, ratio, displayPct, level, overage, compactRatio } =
+    usageMetrics(usage)
+  const contentTotal = usage.layers.system + usage.layers.history + usage.layers.tools
+  const headroom = Math.max(0, budget - usage.used)
+  const hitPct = cacheHitPct(usage.stepUsage)
+  const runHit = billedCacheHitPct(usage.stepUsage)
+  const reasoningPct =
+    usage.stepUsage.reasoningTokens > 0 && usage.stepUsage.outputTokens > 0
+      ? Math.round((usage.stepUsage.reasoningTokens / usage.stepUsage.outputTokens) * 100)
+      : null
+  const effectiveAdvisoryHint = longRunTipCue(usage, advisoryHint)
+  const hasRunStats =
+    usage.stepUsage.steps > 0 ||
+    usage.stepUsage.billedInputTokens > 0 ||
+    usage.stepUsage.outputTokens > 0 ||
+    hitPct != null ||
+    runHit != null
 
   return (
-    <>
-      <header className="shrink-0 border-b border-border px-3 py-2.5">
-        <div className="mb-2 flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <p className="m-0 text-xs font-medium text-fg">Context window</p>
-            <p className="m-0 mt-0.5 text-3xs text-secondary">
-              Step {usage.step} · {formatTokens(usage.window)} window
+    <div className="flex min-h-0 flex-1 flex-col">
+      <header className="shrink-0 px-3.5 pt-3.5 pb-3">
+        <div className="flex items-start gap-3">
+          <UsageRing ratio={ratio} size={56} level={level}>
+            <span className={levelRing[level]}>{displayPct}%</span>
+          </UsageRing>
+          <div className="min-w-0 flex-1 pt-0.5">
+            <p className="m-0 text-sm font-medium text-fg">Context</p>
+            <p className="m-0 mt-0.5 text-2xs leading-snug text-secondary">
+              Current step {usage.step}
+              <span className="text-tertiary"> · </span>
+              {formatTokens(usage.window)} model
+              {usage.source === 'estimate' ? (
+                <span className="text-tertiary"> · estimated</span>
+              ) : null}
+            </p>
+            <p className="m-0 mt-1.5 text-xs tabular-nums text-fg">
+              <span className="font-semibold">{formatTokens(usage.used)}</span>
+              <span className="text-secondary"> used of </span>
+              <span className="font-medium">{formatTokens(budget)}</span>
             </p>
           </div>
-          <span
-            className={cn(
-              'shrink-0 rounded-lg px-1.5 py-0.5 text-3xs font-medium uppercase tracking-wide',
-              usage.source === 'provider'
-                ? 'bg-success/15 text-success'
-                : 'bg-warning/15 text-warning'
-            )}
-          >
-            {usage.source === 'provider' ? 'Provider' : 'Estimated'}
-          </span>
         </div>
 
-        <div className="grid grid-cols-2 gap-2 @max-[17rem]/panel:grid-cols-1">
-          <StatCard
-            label="Used"
-            value={`${pct}%`}
-            detail={`${formatTokens(usage.used)} of ${formatTokens(denominator)}`}
-            tone={tone}
+        <div className="relative mt-3 h-2 overflow-hidden rounded-full bg-surface-2">
+          <div
+            className={cn('absolute inset-y-0 left-0 rounded-full vy-transition', levelFill[level])}
+            style={{ width: `${Math.min(100, displayPct)}%` }}
           />
-          <StatCard
-            label="Content budget"
-            value={formatTokens(denominator)}
-            detail={`${formatTokens(usage.window)} total window`}
-          />
+          {compactRatio != null ? (
+            <div
+              className="absolute inset-y-0 w-px bg-warning/80"
+              style={{ left: `${compactRatio * 100}%` }}
+              title={`Auto-compact at ${formatTokens(usage.compactionTrigger)}`}
+            />
+          ) : null}
+        </div>
+
+        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5 text-3xs text-secondary">
+          {usage.compactionTrigger > 0 ? (
+            <span>Auto-compact at {formatTokens(usage.compactionTrigger)}</span>
+          ) : (
+            <span />
+          )}
+          {headroom > 0 ? <span>{formatTokens(headroom)} headroom</span> : null}
         </div>
       </header>
 
-      <div className="sidebar-scroll @container/panel min-h-0 flex-1 overflow-y-auto">
-        <PanelSection>
-          <div className="relative h-1.5 overflow-hidden rounded-full bg-surface-2">
-            <div
-              className={cn('absolute inset-y-0 left-0 rounded-full vy-transition', fill)}
-              style={{ width: `${pct}%` }}
-            />
-            {compactionPct > 0 ? (
-              <div
-                className="absolute inset-y-0 w-px bg-fg/35"
-                style={{ left: `${compactionPct}%` }}
-                title={`Compaction at ${formatTokens(usage.compactionTrigger)}`}
-              />
-            ) : null}
-          </div>
-          <div className="mt-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1.5">
-            <p className="m-0 min-w-0 flex-1 text-3xs leading-snug text-secondary">
-              Compaction at {formatTokens(usage.compactionTrigger)} ·{' '}
-              {formatPct(usage.compactionTrigger, denominator)} of budget
+      <div className="sidebar-scroll min-h-0 flex-1 overflow-y-auto border-t border-border px-3.5 py-3">
+        {overBudget ? (
+          <p className="m-0 mb-3 rounded-lg bg-danger/10 px-2.5 py-2 text-3xs leading-snug text-danger" role="alert">
+            {usage.overflow
+              ? 'Context still exceeds the model window after compaction. Start a new chat if the agent cannot fold further.'
+              : `${formatTokens(overage)} over budget — auto-compact will fold at the threshold, or use Compact when the run is stopped.`}
+          </p>
+        ) : null}
+
+        {effectiveAdvisoryHint ? (
+          <p className="m-0 mb-3 rounded-lg bg-warning/10 px-2.5 py-2 text-3xs leading-snug text-warning" role="status">
+            {effectiveAdvisoryHint}
+          </p>
+        ) : null}
+
+        {contentTotal > 0 ? (
+          <div className="mb-3 flex flex-col gap-2">
+            <p className="m-0 text-3xs font-medium uppercase tracking-[var(--vy-tracking-caps)] text-secondary">
+              Breakdown
             </p>
-            {onCompact ? (
-              <button
-                type="button"
-                onClick={onCompact}
-                disabled={compacting || compactDisabled}
-                title={
-                  compactDisabled
-                    ? 'Unavailable while the agent is running'
-                    : compacting
-                      ? 'Compacting…'
-                      : 'Compact older history now'
-                }
-                className="shrink-0 rounded-xl border border-border px-2 py-1 text-3xs font-medium text-fg vy-transition hover:bg-surface disabled:opacity-[var(--vy-disabled-opacity)]"
-              >
-                {compacting ? 'Compacting…' : 'Compact now'}
-              </button>
+            <BreakdownRow
+              label="System"
+              tokens={usage.layers.system}
+              total={contentTotal}
+              color="bg-fg/35"
+            />
+            <BreakdownRow
+              label="History"
+              tokens={usage.layers.history}
+              total={contentTotal}
+              color="bg-fg/70"
+            />
+            <BreakdownRow
+              label="Tools"
+              tokens={usage.layers.tools}
+              total={contentTotal}
+              color="bg-fg"
+            />
+          </div>
+        ) : null}
+
+        {hasRunStats ? (
+          <div className="flex flex-col gap-2">
+            <p className="m-0 text-3xs font-medium uppercase tracking-[var(--vy-tracking-caps)] text-secondary">
+              This run
+            </p>
+            <div className="grid grid-cols-2 gap-1.5">
+              {usage.stepUsage.steps > 0 ? (
+                <RunStat
+                  label="Completed steps"
+                  value={String(usage.stepUsage.steps)}
+                  title="Provider calls finished this run"
+                />
+              ) : null}
+              {usage.stepUsage.billedInputTokens > 0 ? (
+                <RunStat
+                  label="Run input"
+                  value={formatTokens(usage.stepUsage.billedInputTokens)}
+                  title="Sum of billed input across all completed steps"
+                />
+              ) : null}
+              {usage.stepUsage.peakInputTokens > 0 ? (
+                <RunStat
+                  label="Largest step"
+                  value={formatTokens(usage.stepUsage.peakInputTokens)}
+                  title="Peak context size in a single step"
+                />
+              ) : null}
+              {usage.stepUsage.outputTokens > 0 ? (
+                <RunStat label="Output" value={formatTokens(usage.stepUsage.outputTokens)} />
+              ) : null}
+              {hitPct != null ? (
+                <RunStat
+                  label="Step cache"
+                  value={`${hitPct}%`}
+                  tone="text-success"
+                  title="Cache hit rate on the latest step"
+                />
+              ) : null}
+              {runHit != null ? (
+                <RunStat
+                  label="Run cache"
+                  value={`${runHit}%`}
+                  tone="text-success"
+                  title="Cache hit rate across all completed steps"
+                />
+              ) : null}
+              {usage.stepUsage.cacheCreationInputTokens > 0 ? (
+                <RunStat
+                  label="Cache write"
+                  value={formatTokens(usage.stepUsage.cacheCreationInputTokens)}
+                  tone="text-warning"
+                />
+              ) : null}
+              {usage.stepUsage.reasoningTokens > 0 ? (
+                <RunStat
+                  label="Reasoning"
+                  value={`${formatTokens(usage.stepUsage.reasoningTokens)}${reasoningPct != null ? ` · ${reasoningPct}%` : ''}`}
+                  tone={reasoningPct != null && reasoningPct >= 40 ? 'text-warning' : undefined}
+                />
+              ) : null}
+            </div>
+            {reasoningPct != null && reasoningPct >= 40 ? (
+              <p className="m-0 text-3xs leading-snug text-secondary">
+                Reasoning is a large share of output — lower Think effort for simpler work.
+              </p>
             ) : null}
           </div>
+        ) : null}
+      </div>
+
+      {onCompact ? (
+        <footer className="shrink-0 border-t border-border p-3">
+          <button
+            type="button"
+            onClick={onCompact}
+            disabled={compacting || compactDisabled}
+            title={
+              compactDisabled
+                ? 'Unavailable while the agent is running'
+                : compacting
+                  ? 'Compacting…'
+                  : 'Summarize older history'
+            }
+            className={cn(
+              'flex w-full items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-xs font-medium vy-transition',
+              'bg-surface text-fg hover:bg-surface-2',
+              'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
+            )}
+          >
+            <Icon name="stack" size={14} className="shrink-0 opacity-70" />
+            {compacting ? 'Compacting…' : 'Compact history'}
+          </button>
           {compactMessage ? (
             <p
               className={cn(
-                'm-0 mt-2 text-3xs leading-snug',
+                'm-0 mt-2 text-center text-3xs leading-snug',
                 compactFailed ? 'text-danger' : 'text-secondary'
               )}
               role={compactFailed ? 'alert' : 'status'}
@@ -390,69 +436,27 @@ function ContextMeterPanel({
               {compactMessage}
             </p>
           ) : null}
-          {usage.overflow ? (
-            <p className="m-0 mt-2 text-3xs leading-snug text-danger" role="alert">
-              Context still exceeds the model window after compaction. Run /compact with a focus, or
-              /clear (new chat) when starting an unrelated task.
-            </p>
-          ) : usage.used >= usage.compactionTrigger ? (
-            <p className="m-0 mt-2 text-3xs leading-snug text-warning" role="status">
-              Past the compaction line — /compact keeps continuity; /clear is free when switching
-              tasks.
-            </p>
-          ) : null}
-        </PanelSection>
-
-        {hasLayers ? (
-          <PanelSection title="Layers" className="border-t border-border pt-2.5">
-            <div className="flex flex-col gap-2">
-              <LayerRow label="System" tokens={usage.layers.system} total={denominator} />
-              <LayerRow label="History" tokens={usage.layers.history} total={denominator} />
-              <LayerRow label="Tools" tokens={usage.layers.tools} total={denominator} />
-              <LayerRow
-                label="Buffer"
-                tokens={usage.layers.buffer}
-                total={usage.window}
-                hint="reserved allocation, not counted in usage bar"
-              />
-            </div>
-            <p className="m-0 mt-2 text-3xs leading-snug text-secondary">
-              Buffer is reserved, not counted in usage
-            </p>
-          </PanelSection>
-        ) : null}
-
-        <TelemetrySection usage={usage} />
-        <PromptCacheSection totals={usage.stepUsage} />
-        <StepUsageSection totals={usage.stepUsage} />
-      </div>
-
-      <footer className="shrink-0 border-t border-border px-3 py-1.5">
-        <p className="m-0 text-3xs text-secondary">
-          Updated {new Date(usage.updatedAt).toLocaleTimeString()}
-        </p>
-      </footer>
-    </>
+        </footer>
+      ) : null}
+    </div>
   )
 }
 
 export function ContextMeter({
   usage,
   modelWindow,
-  compactionTriggerRatio,
   onCompact,
   compactDisabled = false,
+  advisoryHint = null,
   className
 }: {
   usage: ContextUsageState | null
-  /** Current model context window — realigns stale hydrated events (e.g. 128k fallback). */
   modelWindow?: number | null
-  /** Compaction threshold used when realigning usage against the model window. */
-  compactionTriggerRatio?: number
-  /** Summarize the run's older history on demand; omitted when no run exists. */
-  onCompact?: () => Promise<{ ok: true; message: string } | { ok: false; message: string }>
-  /** When true, Compact stays visible but disabled (e.g. agent is running). */
+  onCompact?: (
+    focus?: string
+  ) => Promise<{ ok: true; message: string } | { ok: false; message: string }>
   compactDisabled?: boolean
+  advisoryHint?: string | null
   className?: string
 }) {
   const [open, setOpen] = useState(false)
@@ -464,7 +468,7 @@ export function ContextMeter({
   const panelId = useId()
   const alignedUsage =
     usage && modelWindow && modelWindow > 0
-      ? alignContextUsageToModelWindow(usage, modelWindow, compactionTriggerRatio)
+      ? alignContextUsageToModelWindow(usage, modelWindow)
       : usage
   const { position } = useDropdownMenu({
     open,
@@ -492,39 +496,20 @@ export function ContextMeter({
 
   if (!alignedUsage || alignedUsage.window <= 0) return null
 
-  const denominator = Math.max(
-    1,
-    alignedUsage.contentWindow > 0 ? alignedUsage.contentWindow : alignedUsage.window
-  )
-  const ratio = Math.min(1, alignedUsage.used / denominator)
-  const pct = Math.round(ratio * 100)
+  const { budget, overBudget, ratio, displayPct, level } = usageMetrics(alignedUsage)
   const estimate = alignedUsage.source === 'estimate'
   const usedLabel = formatTokens(alignedUsage.used)
-  const windowLabel = formatTokens(denominator)
-  const fillTone = usageFill(ratio)
-  const usedTone = usageTone(ratio)
-  const tipCue =
-    shouldShowTaskBoundaryTip({
-      steps: alignedUsage.stepUsage.steps,
-      billedInputTokens: alignedUsage.stepUsage.billedInputTokens
-    }) || alignedUsage.used >= alignedUsage.compactionTrigger
-  const triggerUsedTone = tipCue && ratio < 0.9 ? 'text-warning' : usedTone
+  const budgetLabel = formatTokens(budget)
   const hitPct = cacheHitPct(alignedUsage.stepUsage)
-  const cacheHint =
-    hitPct != null
-      ? ` · ${hitPct}% cached`
-      : alignedUsage.stepUsage.cacheCreationInputTokens > 0
-        ? ` · ${formatTokens(alignedUsage.stepUsage.cacheCreationInputTokens)} cache write`
-        : ''
+  const tipCue = longRunTipCue(alignedUsage, advisoryHint)
 
   const panelLayout =
     open && position
       ? (() => {
           const desired = Math.min(
-            CONTEXT_METER_MAX_PX,
+            PANEL_MAX_PX,
             Math.max(0, (typeof window !== 'undefined' ? window.innerWidth : 1024) - 16)
           )
-          // align:end → position.left is the trigger's right edge
           const unclampedLeft = position.left - desired
           return clampComposerDropdownPanel({
             position: {
@@ -532,7 +517,7 @@ export function ContextMeter({
               top: position.top,
               placement: position.placement
             },
-            maxWidthPx: CONTEXT_METER_MAX_PX
+            maxWidthPx: PANEL_MAX_PX
           })
         })()
       : null
@@ -543,41 +528,24 @@ export function ContextMeter({
         ref={triggerRef}
         type="button"
         className={cn(
-          'group relative inline-flex h-7 max-w-[8.5rem] min-w-0 items-center overflow-hidden rounded-xl px-1.5 text-2xs leading-none tracking-[var(--vy-tracking)] @min-[480px]:max-w-[9.5rem]',
-          'vy-transition',
-          tipCue
-            ? 'bg-warning/10 text-warning hover:bg-warning/15 active:bg-warning/15'
-            : 'hover:bg-surface active:bg-surface',
-          open && (tipCue ? 'bg-warning/15' : 'bg-surface')
+          'inline-grid size-7 shrink-0 place-items-center rounded-md vy-transition',
+          overBudget
+            ? cn(levelSoft.danger, levelRing.danger, 'hover:bg-danger/15')
+            : 'text-muted hover:bg-surface hover:text-fg',
+          open && (overBudget ? 'bg-danger/15' : 'bg-surface text-fg')
         )}
         aria-expanded={open}
         aria-haspopup="dialog"
         aria-controls={open ? panelId : undefined}
-        aria-label={`Context window ${pct}% full${estimate ? ' (estimated)' : ''}: ${usedLabel} of ${windowLabel}${cacheHint}. Open breakdown.`}
-        title={`Context ${usedLabel} · ${windowLabel}${estimate ? ' (estimated)' : ''}${cacheHint}`}
+        aria-label={`Context window ${displayPct}% full: ${estimate ? '~' : ''}${usedLabel} of ${budgetLabel}${hitPct != null ? `. ${hitPct}% cached` : ''}.${tipCue ? ' Long-run tip available.' : ''} Open details.`}
+        title={`${estimate ? '~' : ''}${usedLabel} / ${budgetLabel} (${displayPct}%)${hitPct != null ? ` · ${hitPct}% cached` : ''}`}
+        onMouseDown={(e) => e.preventDefault()}
         onClick={() => setOpen((v) => !v)}
       >
-        <span
-          className={cn(
-            'absolute inset-y-0 left-0 opacity-[0.08] vy-transition group-hover:opacity-[0.12]',
-            tipCue && ratio < 0.7 ? 'bg-warning' : fillTone
-          )}
-          style={{ width: `${ratio * 100}%` }}
-          aria-hidden
-        />
-        <span className="relative flex min-w-0 items-center gap-0.5 tabular-nums">
-          <span className={cn('shrink-0', triggerUsedTone)}>
-            {estimate ? '~' : ''}
-            {usedLabel}
-          </span>
-          <span className="shrink-0 text-tertiary">·</span>
-          <span className="min-w-0 truncate text-muted">{windowLabel}</span>
-          {hitPct != null ? (
-            <>
-              <span className="shrink-0 text-tertiary @max-[480px]:hidden">·</span>
-              <span className="shrink-0 text-success @max-[480px]:hidden">{hitPct}%</span>
-            </>
-          ) : null}
+        <UsageRing ratio={ratio} size={16} level={level} />
+        <span className="sr-only">
+          {displayPct}% · {usedLabel} of {budgetLabel}
+          {hitPct != null ? ` · ${hitPct}% cached` : ''}
         </span>
       </button>
 
@@ -587,7 +555,7 @@ export function ContextMeter({
               ref={panelRef}
               id={panelId}
               role="dialog"
-              aria-label="Context window breakdown"
+              aria-label="Context details"
               className="fixed z-dropdown flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-fade-in"
               style={{
                 top: position.placement === 'up' ? undefined : position.top,
@@ -608,6 +576,7 @@ export function ContextMeter({
                 compactDisabled={compactDisabled}
                 compactMessage={compactMessage}
                 compactFailed={compactFailed}
+                advisoryHint={advisoryHint}
               />
             </div>,
             document.body

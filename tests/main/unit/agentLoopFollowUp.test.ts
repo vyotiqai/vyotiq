@@ -56,7 +56,6 @@ vi.mock('@main/agent/context', async (importOriginal) => {
       system: 'system',
       estimatedTokens: 100,
       layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-      contextShrunk: false,
       anthropicNative: undefined,
       compaction: null
     }),
@@ -92,8 +91,17 @@ vi.mock('@main/agent/tools', () => ({
 }))
 
 import { runAgent } from '@main/agent/loop'
-import { enqueueFollowUp, promoteFollowUp, resetActiveRunsForTests } from '@main/agent/runRegistry'
+import {
+  enqueueFollowUp,
+  promoteFollowUp,
+  resetActiveRunsForTests,
+  peekFollowUps,
+  drainFollowUps,
+  registerRunAbort
+} from '@main/agent/runRegistry'
+import { hydrateFollowUpsFromDisk, loadFollowUps, syncFollowUpsToDisk } from '@main/agent/followUpStore'
 import { loadMessages } from '@main/agent/state'
+import { resolveRunDir } from '@main/storage/paths'
 import { executeTool } from '@main/agent/tools'
 
 describe('runAgent mid-run follow-ups', () => {
@@ -340,5 +348,31 @@ describe('runAgent mid-run follow-ups', () => {
     const secondIdx = messages.findIndex((m) => m.role === 'user' && m.content === 'second queued')
     expect(firstIdx).toBeGreaterThanOrEqual(0)
     expect(secondIdx).toBeGreaterThan(firstIdx)
+  })
+
+  it('survives simulated crash via followups.json hydrate', () => {
+    const runId = 'follow-up-crash-resume'
+    const runDir = resolveRunDir(workspace, runId)
+    mkdirSync(runDir, { recursive: true })
+    registerRunAbort(runId, workspace)
+
+    const queued = enqueueFollowUp(runId, { role: 'user', content: 'after crash' })
+    expect(queued.ok).toBe(true)
+    syncFollowUpsToDisk(runDir, runId)
+
+    drainFollowUps(runId)
+    resetActiveRunsForTests()
+    registerRunAbort(runId, workspace)
+    hydrateFollowUpsFromDisk(runDir, runId)
+
+    expect(peekFollowUps(runId)).toHaveLength(1)
+    expect(peekFollowUps(runId)[0]?.message).toEqual({
+      role: 'user',
+      content: 'after crash'
+    })
+    expect(loadFollowUps(runDir)[0]?.message).toEqual({
+      role: 'user',
+      content: 'after crash'
+    })
   })
 })

@@ -1,4 +1,5 @@
 import type { ModelInfo, ProviderId } from '../ipc/schemas/providers'
+import { ollamaIdWithoutCloudSuffix, ollamaModelFamily } from './reasoning'
 
 /**
  * Provider `/models` endpoints often omit `context_length` (notably DeepSeek).
@@ -42,6 +43,59 @@ const EXACT_CONTEXT_WINDOWS: Record<string, number> = {
   'openrouter/auto': 128_000
 }
 
+/**
+ * Ollama Cloud maxima after stripping `:cloud` / `-cloud`.
+ * Live `/api/show` still wins via resolveModelContextWindow.
+ * Seeded from Ollama `cmd/launch/models.go` plus current Cloud ids.
+ */
+const OLLAMA_CLOUD_CONTEXT_EXACT: Record<string, number> = {
+  'gpt-oss:120b': 131_072,
+  'gpt-oss:20b': 131_072,
+  'glm-5.1': 202_752,
+  'glm-4.6': 202_752,
+  'glm-4.7': 202_752,
+  'glm-5': 202_752,
+  'glm-5.2': 976_000,
+  'gemma4:31b': 262_144,
+  'kimi-k2.6': 262_144,
+  'kimi-k2.5': 262_144,
+  'kimi-k2:1t': 262_144,
+  'kimi-k2-thinking': 262_144,
+  'qwen3.5': 262_144,
+  'qwen3-coder:480b': 262_144,
+  'qwen3-coder-next': 262_144,
+  'qwen3-next:80b': 262_144,
+  'minimax-m2.7': 204_800,
+  'minimax-m3': 512_000,
+  'cogito-2.1:671b': 163_840,
+  'deepseek-v3.1:671b': 163_840,
+  'deepseek-v3.2': 163_840,
+  'nemotron-3-nano:30b': 1_048_576
+}
+
+const OLLAMA_CLOUD_CONTEXT_FAMILY: Record<string, number> = {
+  'gpt-oss': 131_072,
+  'glm-5.1': 202_752,
+  'glm-5.2': 976_000,
+  gemma4: 262_144,
+  'kimi-k2.6': 262_144,
+  'qwen3.5': 262_144,
+  'minimax-m3': 512_000,
+  'kimi-k3': 1_048_576,
+  'nemotron-3-nano': 1_048_576
+}
+
+function knownOllamaCloudContextWindow(modelId: string): number | undefined {
+  const stripped = ollamaIdWithoutCloudSuffix(modelId).toLowerCase()
+  const exact = OLLAMA_CLOUD_CONTEXT_EXACT[stripped]
+  if (exact != null) return exact
+  const family = ollamaModelFamily(stripped)
+  const familyWin = OLLAMA_CLOUD_CONTEXT_FAMILY[family]
+  if (familyWin != null) return familyWin
+  if (/^deepseek-v4/i.test(stripped) || /^deepseek-v4/i.test(family)) return 1_048_576
+  return undefined
+}
+
 /** Strip `vendor/` prefixes used by OpenRouter-style ids. */
 export function coreModelId(modelId: string): string {
   const trimmed = modelId.trim()
@@ -54,6 +108,12 @@ export function knownContextWindow(
   providerId?: ProviderId
 ): number | undefined {
   const core = coreModelId(modelId)
+  const ollamaCloud =
+    providerId === 'ollama' || /[:-]cloud$/i.test(core)
+      ? knownOllamaCloudContextWindow(core)
+      : undefined
+  if (ollamaCloud != null) return ollamaCloud
+
   const exact = EXACT_CONTEXT_WINDOWS[core]
   if (exact != null) return exact
 
@@ -76,19 +136,30 @@ export function knownContextWindow(
   return undefined
 }
 
+/**
+ * Resolve the effective context window: live catalog/API value wins when valid;
+ * known table backfills when omitted or when a gateway invents generic 128k for a
+ * model we know is larger.
+ */
+export function resolveModelContextWindow(
+  model: Pick<ModelInfo, 'id' | 'contextWindow'>,
+  providerId?: ProviderId
+): number | undefined {
+  const known = knownContextWindow(model.id, providerId)
+  const reported = model.contextWindow
+  if (reported != null && reported > 0) {
+    if (reported === 128_000 && known != null && known > 128_000) return known
+    return reported
+  }
+  return known
+}
+
 /** Fill missing/invalid contextWindow from the known table; leave real API values intact. */
 export function withResolvedContextWindow(
   model: ModelInfo,
   providerId?: ProviderId
 ): ModelInfo {
-  const known = knownContextWindow(model.id, providerId)
-  if (known == null) return model
-
-  const reported = model.contextWindow
-  // Prefer known when API omitted length, or when a gateway invents the generic
-  // 128k default for a model we know is larger (common for DeepSeek).
-  if (reported == null || reported <= 0 || (reported === 128_000 && known > 128_000)) {
-    return { ...model, contextWindow: known }
-  }
-  return model
+  const resolved = resolveModelContextWindow(model, providerId)
+  if (resolved == null || resolved === model.contextWindow) return model
+  return { ...model, contextWindow: resolved }
 }

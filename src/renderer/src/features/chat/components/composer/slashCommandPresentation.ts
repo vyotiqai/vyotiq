@@ -20,13 +20,10 @@ export function slashGroupDisplayName(group: string): string {
   return GROUP_DISPLAY[group] ?? group
 }
 
-function normalizeSlashToken(s: string): string {
-  return s.toLowerCase().replace(/[\s/_-]+/g, '')
-}
-
 /**
  * Primary = what to read; secondary = how to type it.
- * Drops a redundant label when it matches the trigger (common for skills).
+ * Always prefer a human label when the catalog has one so `/create-rule`
+ * and `Create rule` do not look like different kinds of row.
  * Omits long MCP triggers from the secondary line (still in `title`).
  */
 export function slashCommandRowCopy(cmd: SlashCommandDescriptor): {
@@ -36,21 +33,22 @@ export function slashCommandRowCopy(cmd: SlashCommandDescriptor): {
 } {
   const trigger = `/${cmd.trigger}`
   const label = cmd.label.trim()
-  const title =
-    label && normalizeSlashToken(label) !== normalizeSlashToken(cmd.trigger)
-      ? `${label} · ${trigger}`
-      : trigger
-
-  if (!label || normalizeSlashToken(label) === normalizeSlashToken(cmd.trigger)) {
-    return { primary: trigger, secondary: null, title }
+  if (!label) {
+    return { primary: trigger, secondary: null, title: trigger }
   }
-
   const showSecondary = trigger.length <= SECONDARY_TRIGGER_MAX
   return {
     primary: label,
     secondary: showSecondary ? trigger : null,
-    title
+    title: `${label} · ${trigger}`
   }
+}
+
+const COMPOSER_MODE_TRIGGERS = new Set(['ask', 'plan', 'agent'])
+
+/** Toolbar Mode picker owns mode switching. Keep `/ask` `/plan` `/agent` typable. */
+export function isComposerModeSlashCommand(cmd: SlashCommandDescriptor): boolean {
+  return cmd.kind === 'builtin' && COMPOSER_MODE_TRIGGERS.has(cmd.trigger)
 }
 
 /** First sentence / clause, capped for the menu footer. */

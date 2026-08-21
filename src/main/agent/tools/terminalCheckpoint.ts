@@ -1,4 +1,5 @@
 import { getWriteCheckpoint } from '../checkpoints'
+import { isPlausibleWorkspaceFilePath } from '../loopPolicy'
 import { resolveInsideWorkspace } from '@main/workspace/safePath'
 
 /**
@@ -15,7 +16,7 @@ export function extractTerminalWritePaths(command: string): string[] {
   const redirectRe = /(?:^|[\s;|&])(?:\d*)>>?\s*(?!\d)(?!&)'([^']+)'|(?:^|[\s;|&])(?:\d*)>>?\s*(?!\d)(?!&)"([^"]+)"|(?:^|[\s;|&])(?:\d*)>>?\s*(?!\d)(?!&)([^\s;|&<>]+)/g
   let m: RegExpExecArray | null
   while ((m = redirectRe.exec(raw)) !== null) {
-    const path = (m[1] ?? m[2] ?? m[3] ?? '').trim()
+    const path = stripShellTrailer(m[1] ?? m[2] ?? m[3] ?? '')
     if (path && path !== '/dev/null' && path !== 'NUL' && path !== 'nul') {
       found.add(path)
     }
@@ -23,7 +24,7 @@ export function extractTerminalWritePaths(command: string): string[] {
 
   // Common mutators: cp/mv/rm/del/mkdir/touch/git checkout -- / git restore
   const mutatorRe =
-    /(?:^|[\s;|&])(?:(?:copy|cp|move|mv|del|rm|rmdir|rd|mkdir|md|touch|ni|New-Item)\b|(?:git\s+(?:checkout|restore)\s+--))\s+(.+?)(?=(?:[\s;|&](?:&&|\|\||;|\|)\s*)|$)/gi
+    /(?:^|[\s;|&])(?:(?:copy|cp|move|mv|del|rm|rmdir|rd|mkdir|md|touch|ni|New-Item)\b|(?:git\s+(?:checkout|restore)\b))\s+(.+?)(?=(?:[\s;|&](?:&&|\|\||;|\|)\s*)|$)/gi
   while ((m = mutatorRe.exec(raw)) !== null) {
     const tail = (m[1] ?? '').trim()
     if (!tail) continue
@@ -31,7 +32,8 @@ export function extractTerminalWritePaths(command: string): string[] {
       if (token.startsWith('-')) continue
       if (token === '--') continue
       if (token.includes('*') || token.includes('?')) continue
-      found.add(token)
+      const path = stripShellTrailer(token)
+      if (path) found.add(path)
     }
   }
 
@@ -39,7 +41,7 @@ export function extractTerminalWritePaths(command: string): string[] {
   const psWriteRe =
     /\b(?:Set-Content|Out-File|Add-Content)\b(?:\s+-(?:Path|FilePath|LiteralPath)\s+|\s+)('([^']+)'|"([^"]+)"|([^\s;|&<>]+))/gi
   while ((m = psWriteRe.exec(raw)) !== null) {
-    const path = (m[2] ?? m[3] ?? m[4] ?? '').trim()
+    const path = stripShellTrailer(m[2] ?? m[3] ?? m[4] ?? '')
     if (path && path !== '/dev/null' && path !== 'NUL' && path !== 'nul') {
       found.add(path)
     }
@@ -48,13 +50,18 @@ export function extractTerminalWritePaths(command: string): string[] {
   // tee / tee -a
   const teeRe = /\btee\b(?:\s+-a)?\s+(['"]?)([^\s'";|&]+)\1/gi
   while ((m = teeRe.exec(raw)) !== null) {
-    const path = (m[2] ?? '').trim()
+    const path = stripShellTrailer(m[2] ?? '')
     if (path && path !== '/dev/null' && path !== 'NUL' && path !== 'nul') {
       found.add(path)
     }
   }
 
-  return [...found]
+  return [...found].filter((path) => isPlausibleWorkspaceFilePath(path))
+}
+
+/** Drop trailing `mkdir src/stores;` separators so the path stays plausible. */
+function stripShellTrailer(token: string): string {
+  return token.trim().replace(/[;]+$/g, '').trim()
 }
 
 function tokenizeShellArgs(tail: string): string[] {

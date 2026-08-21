@@ -95,7 +95,7 @@ describe('ModelPicker', () => {
         model="gpt-5.6"
         favoriteModels={[]}
         recentModels={[]}
-        modelsWarning={null}
+        warningsByProvider={{ openai: null, anthropic: null }}
         serviceTier="default"
         onModelChange={vi.fn()}
         onToggleFavorite={vi.fn()}
@@ -123,7 +123,7 @@ describe('ModelPicker', () => {
         model="gpt-5.6"
         favoriteModels={[]}
         recentModels={[]}
-        modelsWarning={null}
+        warningsByProvider={{ openai: null, anthropic: null }}
         serviceTier="default"
         onModelChange={onModelChange}
         onToggleFavorite={vi.fn()}
@@ -151,7 +151,7 @@ describe('ModelPicker', () => {
         model="gpt-5.6"
         favoriteModels={[]}
         recentModels={[]}
-        modelsWarning={null}
+        warningsByProvider={{ openai: null, anthropic: null }}
         serviceTier="default"
         onModelChange={vi.fn()}
         onToggleFavorite={vi.fn()}
@@ -162,8 +162,37 @@ describe('ModelPicker', () => {
     )
 
     fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
-    fireEvent.click(screen.getByRole('button', { name: /^Fast$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /^Fast\b/i }))
     expect(onServiceTierChange).toHaveBeenCalledWith('priority')
+  })
+
+  it('shows empty catalog message when browsed provider has a seed fallback warning', () => {
+    render(
+      <ModelPicker
+        providers={['ollama']}
+        optionsByProvider={{ ...optionsByProvider, ollama: [] }}
+        seedsByProvider={{ ...seedsByProvider, ollama: [] }}
+        modelMetaByValue={{}}
+        provider="ollama"
+        model="qwen2.5"
+        favoriteModels={[]}
+        recentModels={[]}
+        warningsByProvider={{
+          ollama:
+            'Cannot reach Ollama at http://127.0.0.1:11434. Showing seed defaults (not live models).'
+        }}
+        serviceTier="default"
+        onModelChange={vi.fn()}
+        onToggleFavorite={vi.fn()}
+        onServiceTierChange={vi.fn()}
+        onRefreshCatalog={vi.fn()}
+        triggerClassName="test-trigger"
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
+    expect(screen.getByText(/No live models available/i)).toBeTruthy()
+    expect(screen.queryByRole('option', { name: /qwen2\.5/i })).toBeNull()
   })
 
   it('shows catalog warning banner', () => {
@@ -177,7 +206,7 @@ describe('ModelPicker', () => {
         model="gpt-5.6"
         favoriteModels={[]}
         recentModels={[]}
-        modelsWarning="Using offline model list"
+        warningsByProvider={{ openai: 'Using offline model list' }}
         serviceTier="default"
         onModelChange={vi.fn()}
         onToggleFavorite={vi.fn()}
@@ -202,7 +231,7 @@ describe('ModelPicker', () => {
         model="gpt-5.6"
         favoriteModels={[]}
         recentModels={[]}
-        modelsWarning={null}
+        warningsByProvider={{ openai: null, anthropic: null }}
         serviceTier="default"
         onModelChange={vi.fn()}
         onToggleFavorite={vi.fn()}
@@ -237,7 +266,7 @@ describe('ModelPicker', () => {
         model="gpt-5.6"
         favoriteModels={[]}
         recentModels={[]}
-        modelsWarning={null}
+        warningsByProvider={{ openai: null, anthropic: null }}
         serviceTier="default"
         onModelChange={vi.fn()}
         onToggleFavorite={vi.fn()}
@@ -252,5 +281,53 @@ describe('ModelPicker', () => {
     const label = within(row).getByTitle('gpt-5.6')
     expect(label).toBeTruthy()
     expect(label.className).toMatch(/truncate/)
+  })
+
+  it('scrolls the keyboard-active option into view while navigating', () => {
+    const scrollIntoView = vi.fn()
+    const original = Element.prototype.scrollIntoView
+    Element.prototype.scrollIntoView = scrollIntoView
+    try {
+      render(
+        <ModelPicker
+          providers={['openai']}
+          optionsByProvider={optionsByProvider}
+          seedsByProvider={seedsByProvider}
+          modelMetaByValue={{}}
+          provider="openai"
+          model="gpt-5.6"
+          favoriteModels={[]}
+          recentModels={[]}
+          warningsByProvider={{ openai: null, anthropic: null }}
+          serviceTier="default"
+          onModelChange={vi.fn()}
+          onToggleFavorite={vi.fn()}
+          onServiceTierChange={vi.fn()}
+          onRefreshCatalog={vi.fn()}
+          triggerClassName="test-trigger"
+        />
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
+      const search = screen.getByLabelText('Search models')
+      expect(scrollIntoView).not.toHaveBeenCalled()
+
+      fireEvent.keyDown(search, { key: 'ArrowDown' })
+      expect(scrollIntoView).toHaveBeenCalledTimes(1)
+      const active = scrollIntoView.mock.instances[0] as HTMLElement
+      expect(active.closest('[role="option"]')).toBe(
+        screen.getByRole('option', { name: /gpt-5\.6/i })
+      )
+      expect(scrollIntoView.mock.calls[0]![0]).toEqual({ block: 'nearest' })
+
+      fireEvent.keyDown(search, { key: 'ArrowDown' })
+      expect(scrollIntoView).toHaveBeenCalledTimes(2)
+      const next = scrollIntoView.mock.instances[1] as HTMLElement
+      expect(next.closest('[role="option"]')).toBe(
+        screen.getByRole('option', { name: /gpt-4\.1/i })
+      )
+    } finally {
+      Element.prototype.scrollIntoView = original
+    }
   })
 })

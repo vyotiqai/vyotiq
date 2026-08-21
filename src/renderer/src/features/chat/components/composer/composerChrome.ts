@@ -13,3 +13,10 @@ export const chromePillButton = [
   'vy-transition hover:bg-surface hover:text-fg active:bg-surface',
   'disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
 ].join(' ')
+
+/** 28px icon control — idle plus/mic and dictation plus/cancel/confirm. */
+export const chromeIconButton =
+  'inline-grid size-7 shrink-0 place-items-center rounded-md border-0 bg-transparent text-muted vy-transition hover:bg-surface hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)] disabled:hover:bg-transparent disabled:hover:text-muted'
+
+/** One 28px composer chrome row — toolbar and dictation. */
+export const chromeRow = 'flex h-7 min-w-0 items-center gap-1'

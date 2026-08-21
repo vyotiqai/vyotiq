@@ -8,6 +8,7 @@ import {
   isCuratedDocPath,
   isSafeWorkspaceRelPath
 } from '@shared/utils/workspacePath'
+import { canGit } from '../../helpers/canGit'
 
 describe('workspacePath mention safety', () => {
   it('accepts relative workspace paths and rejects escapes', () => {
@@ -50,7 +51,7 @@ describe('readGitDiff for mention IPC', () => {
     if (!result.ok) expect(result.error).toBe('Not a git repository')
   })
 
-  it('returns unified diff for a dirty tracked file', async () => {
+  it.skipIf(!canGit)('returns unified diff for a dirty tracked file', async () => {
     git('init', '--initial-branch=main')
     git('config', 'user.email', 'test@example.com')
     git('config', 'user.name', 'Test')

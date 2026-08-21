@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import {
   contextUsageFromEvent,
   summarizeContextUsageFromEvents,
-  alignContextUsageToModelWindow
+  alignContextUsageToModelWindow,
+  reconcileContextLayers
 } from '@shared/utils/contextUsage'
 
 describe('contextUsage', () => {
@@ -46,7 +47,10 @@ describe('contextUsage', () => {
       undefined,
       prior
     )
-    expect(state?.layers).toEqual(prior)
+    expect(state?.layers.system).toBe(100)
+    expect(state?.layers.tools).toBe(200)
+    expect(state?.layers.history).toBe(800)
+    expect(state?.layers.buffer).toBe(89600 - 1100)
     expect(state?.source).toBe('provider')
     expect(state?.used).toBe(1100)
   })
@@ -67,7 +71,10 @@ describe('contextUsage', () => {
       undefined,
       prior
     )
-    expect(state?.layers).toEqual(prior)
+    expect(state?.layers.system).toBe(100)
+    expect(state?.layers.history).toBe(900)
+    expect(state?.layers.tools).toBe(200)
+    expect(state?.layers.buffer).toBe(89600 - 1200)
     expect(state?.source).toBe('estimate')
   })
 
@@ -151,7 +158,24 @@ describe('contextUsage', () => {
     ])
     expect(state?.used).toBe(900)
     expect(state?.source).toBe('provider')
-    expect(state?.layers).toEqual({ system: 50, history: 600, tools: 150, buffer: 4800 })
+    expect(state?.layers.system).toBe(50)
+    expect(state?.layers.tools).toBe(150)
+    expect(state?.layers.history).toBe(700)
+    expect(state?.layers.buffer).toBe(22400 - 900)
+  })
+
+  it('reconciles provider totals into history and content-budget headroom', () => {
+    const layers = reconcileContextLayers(
+      { system: 2300, history: 1000, tools: 3500, buffer: 0 },
+      7000,
+      1_000_000,
+      850_000
+    )
+    expect(layers.system).toBe(2300)
+    expect(layers.tools).toBe(3500)
+    expect(layers.history).toBe(1200)
+    expect(layers.buffer).toBe(843_000)
+    expect(layers.system + layers.history + layers.tools).toBe(7000)
   })
 
   it('realigns stale 128k events to the real model window', () => {
@@ -171,7 +195,8 @@ describe('contextUsage', () => {
     const aligned = alignContextUsageToModelWindow(stale!, 1_000_000)
     expect(aligned.window).toBe(1_000_000)
     expect(aligned.contentWindow).toBe(850_000)
-    expect(aligned.layers.buffer).toBe(150_000)
+    expect(aligned.compactionTrigger).toBe(595_000)
+    expect(aligned.layers.buffer).toBe(841_000)
     expect(aligned.used).toBe(9000)
     expect(aligned.layers.system).toBe(2000)
   })

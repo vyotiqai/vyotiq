@@ -13,6 +13,13 @@ export type DockPanelDef = {
 /** Single source of truth for side rail + dock tab chrome. */
 export const DOCK_PANELS: readonly DockPanelDef[] = [
   {
+    id: 'files',
+    icon: 'folder',
+    label: 'Files',
+    showLabel: 'Show files panel',
+    hideLabel: 'Hide files panel'
+  },
+  {
     id: 'browser',
     icon: 'globe',
     label: 'Browser',
@@ -42,7 +49,7 @@ export const DOCK_PANELS: readonly DockPanelDef[] = [
   },
   {
     id: 'plan',
-    icon: 'listTodo',
+    icon: 'doc',
     label: 'Plan',
     showLabel: 'Show plan panel',
     hideLabel: 'Hide plan panel'

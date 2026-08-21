@@ -8,8 +8,18 @@ import {
   contentToText
 } from '../ipc'
 import { isAgentEvent } from '../utils/eventUtils'
+import { isRetryableTurnFailure } from '../utils/errors'
 import { summarizeToolArgs } from '../utils/toolSummary'
-import { finalizeInterruptedTodoContent } from '../utils/todoContent'
+import { truncateToolArgsPreview } from '../utils/toolResultIpc'
+import { finalizeTodoContentOnRunEnd } from '../utils/todoContent'
+
+const KEEP_FULL_ARGS_TOOLS = new Set(['edit', 'multi_edit', 'str_replace', 'delete'])
+
+function uiArgsPreview(name: string, args: string | undefined): string | undefined {
+  if (!args) return undefined
+  if (KEEP_FULL_ARGS_TOOLS.has(name)) return args
+  return truncateToolArgsPreview(args)
+}
 
 export type ToolPresentation = 'prominent' | 'compact'
 
@@ -76,6 +86,11 @@ export type UiAgentQuestionAnswer = {
   values: string[]
 }
 
+export type CompactionVerifyStatus = 'verifying' | 'retrying' | 'verified' | 'failed'
+
+/** Stable id for the in-flight compact card (replaced when the fold settles). */
+export const LIVE_COMPACTION_ID = 'compaction:in-flight'
+
 export type UiItem =
   | {
       kind: 'message'
@@ -124,6 +139,18 @@ export type UiItem =
       code?: string
       at?: string
     }
+  | {
+      /** LLM summary of folded history — shown inline in the transcript. */
+      kind: 'compaction'
+      id: string
+      summary: string
+      tokenEstimate?: number
+      expanded?: boolean
+      at?: string
+      verifyStatus?: CompactionVerifyStatus
+      verifyFailures?: string[]
+      verifyCoverage?: number
+    }
 
 /** Attachment chips for a message: names and sizes only, never the quoted text. */
 export function uiAttachments(content: MessageContent): UiAttachment[] {
@@ -161,11 +188,17 @@ function toolContentText(content: MessageContent): string {
 export function inferToolStatus(content: MessageContent, ok?: boolean): 'done' | 'fail' {
   if (ok !== undefined) return ok ? 'done' : 'fail'
   const text = toolContentText(content)
-  if (text === 'Cancelled' || text === 'Interrupted' || text === 'Stopped') return 'fail'
+  if (
+    text === 'Cancelled' ||
+    text === 'Interrupted' ||
+    text === 'Stopped' ||
+    text === 'Not completed' ||
+    text === 'Connection lost'
+  )
+    return 'fail'
   if (!text) return 'done'
   if (/^Failed to parse tool arguments/i.test(text)) return 'fail'
-  if (/^Unknown tool:/i.test(text)) return 'fail'
-  if (/invalid args/i.test(text)) return 'fail'
+  if (/^Unknown tool[:\s"]/i.test(text)) return 'fail'
   if (/exit_code:\s*(?!0\b)\d+/i.test(text)) return 'fail'
   return 'done'
 }
@@ -464,6 +497,15 @@ export function mergeThinking(previous: string | undefined, next: string): strin
   return `${before}\n\n${after}`
 }
 
+/** Provider snapshot replaces streamed deltas; empty snapshot keeps the buffer. */
+export function applyThinkingSnapshot(
+  previous: string | undefined,
+  snapshot: string | undefined
+): string | undefined {
+  if (snapshot?.trim()) return snapshot
+  return previous
+}
+
 /** Rebuild chat UI items from persisted messages (includes tool rows). */
 export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
   const items: UiItem[] = []
@@ -477,13 +519,15 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
     if (m.role === 'user') {
       const images = contentImages(m.content)
       const attachments = uiAttachments(m.content)
+      const display = contentDisplayText(m.content)
       items.push({
         kind: 'message',
         id: messageUiId('user', i),
         role: 'user',
-        content: contentDisplayText(m.content),
+        content: display,
         images: images.length ? images : undefined,
-        attachments: attachments.length ? attachments : undefined
+        attachments: attachments.length ? attachments : undefined,
+        ...(m.at ? { at: m.at } : {})
       })
       continue
     }
@@ -516,7 +560,7 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
               name: tc.name,
               summary,
               status: 'running',
-              argsPreview: tc.arguments || undefined
+              argsPreview: uiArgsPreview(tc.name, tc.arguments || undefined)
             }
           })
         }
@@ -541,7 +585,7 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
           status: inferToolStatus(m.content, m.ok),
           content,
           contentTruncated: m.contentTruncated,
-          argsPreview: pending?.arguments || undefined
+          argsPreview: uiArgsPreview(name, pending?.arguments || undefined)
         }
       }
       const existingIdx = items.findIndex((item) => item.kind === 'tool' && item.id === id)
@@ -600,6 +644,20 @@ export function applyPersistedLiveTools(items: UiItem[], events: PersistedEvent[
         arguments: current?.arguments ?? '',
         startSummary: event.summary
       })
+      continue
+    }
+    if (event.type === 'tool_result') {
+      // Settled on disk — do not rebuild spinning chrome for this id.
+      live.delete(event.toolCallId)
+      continue
+    }
+    if (event.type === 'assistant_message') {
+      // Inner-retry / validation drops emit assistant_message without the
+      // provisional tool_calls — mirror live pruneOrphanDeltaToolRows.
+      const keep = new Set((event.toolCalls ?? []).map((tc) => tc.id))
+      for (const id of live.keys()) {
+        if (!keep.has(id)) live.delete(id)
+      }
     }
   }
 
@@ -614,7 +672,7 @@ export function applyPersistedLiveTools(items: UiItem[], events: PersistedEvent[
         name: value.name,
         summary: value.startSummary ?? summarizeToolArgs(value.name, value.arguments),
         status: 'running',
-        argsPreview: value.arguments || undefined
+        argsPreview: uiArgsPreview(value.name, value.arguments || undefined)
       }
     }))
   return extras.length ? [...items, ...extras] : items
@@ -713,20 +771,33 @@ export function applyEventTimestamps(items: UiItem[], events: PersistedEvent[]):
   const startAtById = new Map<string, string>()
   let runStartAt: string | undefined
   let runDoneAt: string | undefined
+  let lastTerminal: 'done' | 'cancelled' | 'error' | null = null
+  const extraUserStartAts: string[] = []
   const allAssistantMessageAts: string[] = []
   const visibleAssistantMessageAts: string[] = []
 
   for (const row of events) {
     if (!isAgentEvent(row.event)) continue
     if (row.event.type === 'status') {
-      if (row.event.status === 'running' && !runStartAt) runStartAt = row.at
-      if (
+      if (row.event.status === 'running') {
+        if (!runStartAt) runStartAt = row.at
+        else if (lastTerminal === 'done' || lastTerminal === 'error') {
+          extraUserStartAts.push(row.at)
+          lastTerminal = null
+        }
+      } else if (
         row.event.status === 'done' ||
         row.event.status === 'error' ||
         row.event.status === 'cancelled'
       ) {
         runDoneAt = row.at
+        lastTerminal = row.event.status
       }
+    }
+    if (row.event.type === 'follow_up_applied') {
+      const appliedUsers = row.event.messages.filter((message) => message.role === 'user')
+      const count = appliedUsers.length || row.event.ids.length
+      for (let i = 0; i < count; i++) extraUserStartAts.push(row.at)
     }
     if (row.event.type === 'assistant_message') {
       allAssistantMessageAts.push(row.at)
@@ -760,16 +831,136 @@ export function applyEventTimestamps(items: UiItem[], events: PersistedEvent[]):
   const messageAtById = messageTimestampsFromEvents(withTools, {
     runStartAt,
     runDoneAt,
+    extraUserStartAts,
     allAssistantMessageAts,
     visibleAssistantMessageAts
   })
 
   const withMessages = withTools.map((item) => {
     if (item.kind !== 'message') return item
+    if (item.role === 'user' && item.at) return item
     const at = messageAtById.get(item.id)
     return at ? { ...item, at } : item
   })
   return applyToolProgressUpdates(withMessages, events)
+}
+
+function compactionUiItemFromEvent(
+  row: PersistedEvent,
+  index: number
+): Extract<UiItem, { kind: 'compaction' }> | null {
+  if (!isAgentEvent(row.event)) return null
+  if (row.event.type === 'compaction') {
+    const summary = row.event.summary.trim()
+    if (!summary) return null
+    return {
+      kind: 'compaction',
+      id: `compaction:${row.at}:${index}`,
+      summary,
+      ...(typeof row.event.tokenEstimate === 'number'
+        ? { tokenEstimate: row.event.tokenEstimate }
+        : {}),
+      at: row.at,
+      verifyStatus:
+        row.event.verified === true
+          ? 'verified'
+          : row.event.verified === false
+            ? 'failed'
+            : undefined,
+      ...(row.event.verifyCoverage != null ? { verifyCoverage: row.event.verifyCoverage } : {}),
+      ...(row.event.verifyFailures && row.event.verifyFailures.length > 0
+        ? { verifyFailures: row.event.verifyFailures }
+        : {})
+    }
+  }
+  if (row.event.type === 'compaction_verify_failed') {
+    const summary = row.event.summary?.trim() || 'Summary failed verification and was not applied.'
+    return {
+      kind: 'compaction',
+      id: `compaction:${row.at}:${index}`,
+      summary,
+      ...(typeof row.event.tokenEstimate === 'number'
+        ? { tokenEstimate: row.event.tokenEstimate }
+        : {}),
+      at: row.at,
+      verifyStatus: 'failed',
+      verifyFailures: row.event.failures
+    }
+  }
+  return null
+}
+
+export function weaveCompactionItems(
+  items: UiItem[],
+  extras: Extract<UiItem, { kind: 'compaction' }>[]
+): UiItem[] {
+  if (extras.length === 0) return items
+  if (items.length === 0) return extras
+  const out = [...items]
+  for (const extra of extras) {
+    const extraMs = extra.at ? Date.parse(extra.at) : Number.NaN
+    if (Number.isNaN(extraMs)) {
+      out.push(extra)
+      continue
+    }
+    let insertAt = out.length
+    for (let i = 0; i < out.length; i++) {
+      const at = out[i]?.at
+      if (!at) continue
+      const ms = Date.parse(at)
+      if (Number.isNaN(ms)) continue
+      if (ms > extraMs) {
+        insertAt = i
+        break
+      }
+      insertAt = i + 1
+    }
+    out.splice(insertAt, 0, extra)
+  }
+  return out
+}
+
+function compactionItemsMatch(
+  row: UiItem,
+  extra: Extract<UiItem, { kind: 'compaction' }>
+): boolean {
+  if (row.kind !== 'compaction') return false
+  if (
+    (row.verifyStatus === 'failed' || row.verifyStatus === 'verified') &&
+    (extra.verifyStatus === 'failed' || extra.verifyStatus === 'verified') &&
+    row.verifyStatus !== extra.verifyStatus
+  ) {
+    return false
+  }
+  if (row.id === extra.id) return true
+  if (row.at && extra.at) return row.at === extra.at && row.summary === extra.summary
+  return !row.at && !extra.at && row.summary === extra.summary
+}
+
+/** Insert one live/manual fold summary in timestamp order (no duplicate). */
+export function insertCompactionItem(
+  items: UiItem[],
+  extra: Extract<UiItem, { kind: 'compaction' }>
+): UiItem[] {
+  if (items.some((row) => compactionItemsMatch(row, extra))) return items
+  return weaveCompactionItems(
+    items.filter((item) => item.kind !== 'compaction' || item.id !== extra.id),
+    [extra]
+  )
+}
+
+/** Insert persisted compaction summaries into the transcript in event order. */
+export function applyCompactionItems(items: UiItem[], events: PersistedEvent[]): UiItem[] {
+  const extras: Extract<UiItem, { kind: 'compaction' }>[] = []
+  for (let i = 0; i < events.length; i++) {
+    const row = events[i]
+    if (!row) continue
+    const item = compactionUiItemFromEvent(row, i)
+    if (item) extras.push(item)
+  }
+  const base = items.filter((item) => item.kind !== 'compaction')
+  if (extras.length === 0) return base
+  return weaveCompactionItems(base, extras)
 }
 
 function messageTimestampsFromEvents(
@@ -777,6 +968,7 @@ function messageTimestampsFromEvents(
   meta: {
     runStartAt?: string
     runDoneAt?: string
+    extraUserStartAts: string[]
     allAssistantMessageAts: string[]
     visibleAssistantMessageAts: string[]
   }
@@ -784,18 +976,23 @@ function messageTimestampsFromEvents(
   const out = new Map<string, string>()
   let assistantEventIdx = 0
   let visibleAssistantEventIdx = 0
-  let lastTurnEndAt: string | undefined
+  let extraUserIdx = 0
+  let seenUser = false
   let turnHasVisibleAssistant = false
 
   for (const item of items) {
     if (item.kind === 'message' && item.role === 'user') {
       if (!out.has(item.id)) {
-        if (!lastTurnEndAt && meta.runStartAt) {
+        if (item.at) {
+          out.set(item.id, item.at)
+        } else if (!seenUser && meta.runStartAt) {
           out.set(item.id, meta.runStartAt)
-        } else if (lastTurnEndAt) {
-          out.set(item.id, lastTurnEndAt)
+        } else if (seenUser && extraUserIdx < meta.extraUserStartAts.length) {
+          out.set(item.id, meta.extraUserStartAts[extraUserIdx]!)
+          extraUserIdx += 1
         }
       }
+      seenUser = true
       turnHasVisibleAssistant = false
       continue
     }
@@ -811,15 +1008,11 @@ function messageTimestampsFromEvents(
         out.set(item.id, meta.visibleAssistantMessageAts[visibleAssistantEventIdx]!)
         visibleAssistantEventIdx += 1
       }
-      if (assistantEventIdx > 0) {
-        lastTurnEndAt = meta.allAssistantMessageAts[assistantEventIdx - 1]
-      }
       continue
     }
 
     if (item.kind === 'tool') {
       if (!turnHasVisibleAssistant && assistantEventIdx < meta.allAssistantMessageAts.length) {
-        lastTurnEndAt = meta.allAssistantMessageAts[assistantEventIdx]!
         assistantEventIdx += 1
         turnHasVisibleAssistant = true
       }
@@ -856,7 +1049,10 @@ function messageTimestampsFromEvents(
   return out
 }
 
-type TerminalRunStatus = 'done' | 'cancelled' | 'error'
+export type TerminalRunStatus = 'done' | 'cancelled' | 'error'
+
+/** UI outcome for the latest turn, including a run recovered after a crash. */
+export type TurnOutcome = TerminalRunStatus | 'interrupted'
 
 /** Last persisted run status event, if any. */
 export function lastPersistedRunStatus(
@@ -882,8 +1078,8 @@ function interruptedToolContent(
     for (let i = (events?.length ?? 0) - 1; i >= 0; i--) {
       const event = events?.[i]?.event
       if (!isAgentEvent(event)) continue
-      if (event.type === 'incomplete' && event.reason === 'network_interrupted') {
-        return 'Connection lost'
+      if (event.type === 'incomplete' && isRetryableTurnFailure({ incompleteReason: event.reason })) {
+        return event.reason === 'circuit_open' ? 'Temporarily paused' : 'Connection lost'
       }
     }
     return 'Interrupted'
@@ -892,7 +1088,7 @@ function interruptedToolContent(
     case 'cancelled':
       return 'Cancelled'
     case 'done':
-      return 'Stopped'
+      return 'Not completed'
     default: {
       const _exhaustive: never = status
       return _exhaustive
@@ -921,12 +1117,51 @@ function closeOpenGroupTimingsOnHydrate(items: UiItem[], endedAt: number): UiIte
   return out
 }
 
+/** Tool call ids that reached execution (`tool_start` on disk). */
+export function toolCallIdsWithStart(events: PersistedEvent[]): Set<string> {
+  const out = new Set<string>()
+  for (const row of events) {
+    const event = row.event
+    if (!event || typeof event !== 'object' || !('type' in event)) continue
+    if ((event as { type: string }).type !== 'tool_start') continue
+    const id = (event as { toolCallId?: string }).toolCallId
+    if (typeof id === 'string' && id) out.add(id)
+  }
+  return out
+}
+
+/** Drop provisional delta chrome that never reached `tool_start`. */
+export function dropNeverStartedRunningTools(
+  items: UiItem[],
+  startedIds: Set<string>
+): UiItem[] {
+  let changed = false
+  const next = items.filter((item) => {
+    if (item.kind !== 'tool' || item.tool.status !== 'running') return true
+    if (startedIds.has(item.id) || startedIds.has(item.tool.id)) return true
+    changed = true
+    return false
+  })
+  return changed ? next : items
+}
+
 /**
  * After a terminal run is reloaded from disk, close any tool rows still marked
  * `running` because crash interrupt never wrote matching tool_result rows.
+ *
+ * When the process is gone but disk still says `running`, pass
+ * `treatRunningAs` (usually `cancelled`) so idle hydrate does not leave
+ * spinning tool chrome until stale-run reconciliation.
  */
-export function finalizeHydratedTranscript(items: UiItem[], events: PersistedEvent[]): UiItem[] {
-  const lastStatus = lastPersistedRunStatus(events)
+export function finalizeHydratedTranscript(
+  items: UiItem[],
+  events: PersistedEvent[],
+  opts?: { treatRunningAs?: TerminalRunStatus }
+): UiItem[] {
+  let lastStatus = lastPersistedRunStatus(events)
+  if (lastStatus === 'running' && opts?.treatRunningAs) {
+    lastStatus = opts.treatRunningAs
+  }
   if (!lastStatus || lastStatus === 'running') return items
 
   const stub = interruptedToolContent(lastStatus, events)
@@ -939,7 +1174,10 @@ export function finalizeHydratedTranscript(items: UiItem[], events: PersistedEve
     if (!Number.isNaN(ms)) endedAt = ms
   }
 
-  const finalized = items.map((item) => {
+  const startedIds = toolCallIdsWithStart(events)
+  const scrubbed = dropNeverStartedRunningTools(items, startedIds)
+
+  const finalized = scrubbed.map((item) => {
     if (item.kind === 'message') {
       if (!item.streaming && !item.thinkingStreaming) return item
       return {
@@ -961,9 +1199,9 @@ export function finalizeHydratedTranscript(items: UiItem[], events: PersistedEve
     if (
       tool.name === 'todo_write' &&
       tool.content &&
-      (lastStatus === 'cancelled' || lastStatus === 'error')
+      (lastStatus === 'done' || lastStatus === 'error' || lastStatus === 'cancelled')
     ) {
-      const content = finalizeInterruptedTodoContent(tool.content)
+      const content = finalizeTodoContentOnRunEnd(tool.content, lastStatus)
       if (content !== tool.content) tool = { ...tool, content }
     }
 

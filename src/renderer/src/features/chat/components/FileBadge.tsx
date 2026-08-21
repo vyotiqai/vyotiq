@@ -7,10 +7,12 @@ import { FileTypeIcon } from '@renderer/lib/fileIcons'
  */
 export const FileBadge = memo(function FileBadge({
   path,
-  className
+  className,
+  size = 14
 }: {
   path: string
   className?: string
+  size?: number
 }) {
-  return <FileTypeIcon path={path} size={14} className={className} />
+  return <FileTypeIcon path={path} size={size} className={className} />
 })

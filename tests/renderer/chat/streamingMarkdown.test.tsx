@@ -59,10 +59,14 @@ describe('prepareStreamingMarkdown fence nesting', () => {
     )
   })
 
-  it('ignores a fence marker that carries an info string as a closer', () => {
-    expect(prepareStreamingMarkdown('```js\nconst x = 1\n```ts\nlet y = 2\n```')).toBe(
-      '```js\nconst x = 1\n```ts\nlet y = 2\n```'
+  it('keeps a nested fence opener while the outer fence is still streaming', () => {
+    expect(prepareStreamingMarkdown('```md\nHere is the patch:\n```ts')).toBe(
+      '```md\nHere is the patch:\n```ts\n```'
     )
+  })
+
+  it('closes a language fence that is only the opener so far', () => {
+    expect(prepareStreamingMarkdown('```js')).toBe('```js\n```')
   })
 })
 
@@ -118,6 +122,10 @@ describe('balanceIncompleteMarkdown', () => {
 
   it('balances italic outside fences when a stream completes', () => {
     expect(balanceIncompleteMarkdown('Partial *italic')).toBe('Partial *italic*')
+  })
+
+  it('closes an open fence when a stream completes', () => {
+    expect(balanceIncompleteMarkdown('```ts\nconst x = 1')).toBe('```ts\nconst x = 1\n```')
   })
 })
 

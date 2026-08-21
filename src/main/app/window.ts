@@ -1,4 +1,5 @@
 import { BrowserWindow, nativeTheme } from 'electron'
+import { existsSync } from 'node:fs'
 import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import icon from '../../../resources/icon.png?asset'
@@ -11,6 +12,7 @@ import {
   MACOS_TRAFFIC_LIGHT_Y
 } from '../../shared/windowChrome'
 import { attachWebContentsCrashLogging } from '@main/logging/init'
+import { logger } from '../../shared/logger'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -22,6 +24,18 @@ export function getMainWindow(): BrowserWindow | null {
 function windowBackground(resolved: 'light' | 'dark'): string {
   if (process.platform === 'darwin') return '#00000000'
   return resolved === 'dark' ? '#000000' : '#ffffff'
+}
+
+function appIconPath(): string {
+  const fileName = process.platform === 'win32' ? 'icon.ico' : 'icon.png'
+  const candidates = is.dev
+    ? [join(process.cwd(), 'resources', fileName), icon]
+    : [
+        join(process.resourcesPath, 'app.asar.unpacked', 'resources', fileName),
+        join(process.resourcesPath, 'app.asar', 'resources', fileName)
+      ]
+
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]
 }
 
 export function applyTitleBarTheme(theme: ThemeId): void {
@@ -63,7 +77,7 @@ export function createWindow(): BrowserWindow {
         }
       : {}),
     backgroundColor: windowBackground(resolved),
-    ...(process.platform === 'linux' ? { icon } : {}),
+    icon: appIconPath(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -86,10 +100,21 @@ export function createWindow(): BrowserWindow {
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
-    void mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
-    mainWindow.webContents.openDevTools({ mode: 'detach' })
+    void mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL']).catch((err: unknown) => {
+      logger.error('Failed to load renderer URL', { scope: 'main', err })
+    })
+    // Open after first paint so DevTools detach does not race renderer boot / logging IPC.
+    mainWindow.webContents.once('did-finish-load', () => {
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      setTimeout(() => {
+        if (!mainWindow || mainWindow.isDestroyed()) return
+        mainWindow.webContents.openDevTools({ mode: 'detach' })
+      }, 750)
+    })
   } else {
-    void mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+    void mainWindow.loadFile(join(__dirname, '../renderer/index.html')).catch((err: unknown) => {
+      logger.error('Failed to load renderer file', { scope: 'main', err })
+    })
   }
 
   return mainWindow

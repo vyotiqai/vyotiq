@@ -3,7 +3,12 @@ import { readFile, readdir } from 'fs/promises'
 import { join, basename } from 'path'
 import { atomicWriteFile, atomicWriteJson } from '../storage/atomicWrite'
 import { enqueueEventAppend, flushEventAppends } from './eventAppendQueue'
-import { enqueueMessageAppend, flushMessageAppends, takeMessageAppendFailureNotice } from './messageAppendQueue'
+import {
+  enqueueMessageAppend,
+  enqueueMessageRewrite,
+  flushMessageAppends,
+  takeMessageAppendFailureNotice
+} from './messageAppendQueue'
 import { enqueueStatusPatch, flushStatusWrites, writeStatusImmediate } from './statusWriteQueue'
 import { getCachedListRuns, invalidateListRunsCache } from './runListCache'
 import {
@@ -11,6 +16,8 @@ import {
   PersistedEventSchema,
   RunStatusSchema,
   contentToText,
+  runDoneDedupeKey,
+  runErrorDedupeKey,
   type AgentInteractionMode,
   type ChatMessage,
   type ListRunsResult,
@@ -20,13 +27,24 @@ import {
   type RunSummary
 } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
+import { RUN_INTERRUPTED_ERROR } from '../../shared/runInterrupt'
 import { workspaceIdFromPath } from '../../shared/utils/workspaceId'
 import { toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
-import { finalizeInterruptedTodoContent } from '../../shared/utils/todoContent'
 import { finalizeInterruptedTodos } from './tools/todo'
+import { finalizeTodoContentOnRunEnd, type TodoFinalizeOutcome } from '../../shared/utils/todoContent'
+import { DEFAULT_PLAN_STUB, stripPlanStubChrome } from '../../shared/planStub'
 import { ensureWorkspaceStorage, resolveRunDir, workspaceSessionsRoot } from '../storage/paths'
 import { isActive } from './runRegistry'
+import { dismissLifecycleNotification } from '../notifications/bus'
+import {
+  finalizeInstanceWorktree,
+  isSafeInstanceWorktreePath
+} from '../git/instanceWorktree'
 import { CompactionRecordSchema, type CompactionRecord } from './context/types'
+import {
+  applyFoldedMessagesWatermark,
+  stripLeadingOrphanToolMessages
+} from './context/foldWatermark'
 import { writeRunReceiptBestEffort } from './runReceipt'
 import { RUN_LIST_CAP } from '@shared/domain/runs'
 
@@ -62,26 +80,7 @@ export async function readContractAsync(runDir: string): Promise<string> {
   }
 }
 
-const PLAN_STUB_MARKER = '_Draft the plan here.'
-
-export const DEFAULT_PLAN_STUB = [
-  '# Plan',
-  '',
-  `${PLAN_STUB_MARKER} Update as you learn. Do not edit product source in Plan mode.`,
-  '',
-  '## Goal',
-  '',
-  '## Approach',
-  '',
-  '## Files',
-  '',
-  '## Risks',
-  '',
-  '## Test plan',
-  '',
-  '## Open questions',
-  ''
-].join('\n')
+export { DEFAULT_PLAN_STUB }
 
 /** Approved/draft plan artifact; empty when missing or still the Plan-mode stub. */
 export async function readPlanAsync(runDir: string): Promise<string> {
@@ -90,15 +89,8 @@ export async function readPlanAsync(runDir: string): Promise<string> {
   try {
     const text = (await readFile(p, 'utf8')).trim()
     if (!text) return ''
-    if (text.includes(PLAN_STUB_MARKER)) {
-      const withoutStub = text
-        .replace(PLAN_STUB_MARKER, '')
-        .replace(/^#\s*Plan\s*/i, '')
-        .replace(/^##\s+(Goal|Approach|Files|Risks|Test plan|Open questions)\s*/gim, '')
-        .trim()
-      // Still mostly empty aside from the stub boilerplate.
-      if (withoutStub.replace(/[_*.\s]/g, '').length < 20) return ''
-    }
+    const withoutStub = stripPlanStubChrome(text)
+    if (withoutStub.replace(/[_*.\s]/g, '').length < 20) return ''
     if (text.length <= CONTRACT_CAP) return text
     return text.slice(0, CONTRACT_CAP) + '\n…'
   } catch {
@@ -259,7 +251,9 @@ export async function resumeRun(workspacePath: string, runId: string): Promise<s
       status: 'running',
       // Keep prior step count across invokes (do not reset progress metadata).
       step: prior?.step ?? 0,
-      error: undefined
+      error: undefined,
+      resumable: undefined,
+      interruptedAt: undefined
     },
     { sync: true }
   )
@@ -278,6 +272,15 @@ export function loadStatus(dir: string): RunStatus | null {
   }
 }
 
+/** Stamp `at` on user messages that were persisted without a send time. */
+export function ensureUserMessageAt(
+  message: ChatMessage,
+  at = new Date().toISOString()
+): ChatMessage {
+  if (message.role !== 'user' || message.at) return message
+  return { ...message, at }
+}
+
 export function syncMessages(dir: string, messages: ChatMessage[]): void {
   const body = messages.map((m) => JSON.stringify(m)).join('\n')
   atomicWriteFile(join(dir, 'messages.jsonl'), body ? `${body}\n` : '')
@@ -290,16 +293,28 @@ export async function syncMessagesAsync(dir: string, messages: ChatMessage[]): P
 }
 
 export function appendMessage(dir: string, message: ChatMessage): Promise<void> {
-  const line = `${JSON.stringify(message)}\n`
+  const line = `${JSON.stringify(ensureUserMessageAt(message))}\n`
   return enqueueMessageAppend(dir, line)
+}
+
+export type CreateRunOptions = {
+  mode?: AgentInteractionMode
+  parentRunId?: string
+  inlineInstance?: true
+  pathScope?: string[]
+  worktreePath?: string
+  worktreeBranch?: string
 }
 
 export function createRun(
   workspacePath: string,
   runId: string,
   goal: string,
-  mode: AgentInteractionMode = 'agent'
+  modeOrOptions: AgentInteractionMode | CreateRunOptions = 'agent'
 ): string {
+  const options: CreateRunOptions =
+    typeof modeOrOptions === 'string' ? { mode: modeOrOptions } : modeOrOptions
+  const mode = options.mode ?? 'agent'
   const dir = resolveRunDir(workspacePath, runId)
   ensureWorkspaceStorage(workspacePath)
   mkdirSync(dir, { recursive: true })
@@ -326,7 +341,11 @@ export function createRun(
     goal: goalText.slice(0, 200),
     workspacePath,
     mode,
-    consecutiveToolFailureSteps: 0
+    ...(options.parentRunId ? { parentRunId: options.parentRunId } : {}),
+    ...(options.inlineInstance ? { inlineInstance: true as const } : {}),
+    ...(options.pathScope?.length ? { pathScope: options.pathScope } : {}),
+    ...(options.worktreePath ? { worktreePath: options.worktreePath } : {}),
+    ...(options.worktreeBranch ? { worktreeBranch: options.worktreeBranch } : {})
   }
   atomicWriteJson(join(dir, 'status.json'), status)
   atomicWriteFile(join(dir, 'messages.jsonl'), '')
@@ -386,15 +405,28 @@ export async function updateStatus(
 }
 
 function parseMessagesJsonl(content: string): ChatMessage[] {
+  return parseMessagesJsonlSkipping(content, 0)
+}
+
+/**
+ * Parse messages.jsonl but skip the first `skipCount` successfully-parsed
+ * messages (fold watermark). Avoids retaining folded tool bodies as ChatMessage
+ * objects — the dominant heap cost of a full reload after compaction.
+ */
+function parseMessagesJsonlSkipping(content: string, skipCount: number): ChatMessage[] {
   const messages: ChatMessage[] = []
-  for (const [index, line] of content.split('\n').filter(Boolean).entries()) {
+  let skipped = 0
+  let lineNo = 0
+  for (const line of content.split('\n')) {
+    if (!line) continue
+    lineNo++
     let json: unknown
     try {
       json = JSON.parse(line)
     } catch {
       logger.warn('Skipping invalid messages.jsonl line (JSON)', {
         scope: 'state',
-        line: index + 1
+        line: lineNo
       })
       continue
     }
@@ -402,8 +434,12 @@ function parseMessagesJsonl(content: string): ChatMessage[] {
     if (!parsed.success) {
       logger.warn('Skipping invalid messages.jsonl line (schema)', {
         scope: 'state',
-        line: index + 1
+        line: lineNo
       })
+      continue
+    }
+    if (skipped < skipCount) {
+      skipped++
       continue
     }
     messages.push(parsed.data)
@@ -416,6 +452,23 @@ export function loadMessages(workspacePath: string, runId: string): ChatMessage[
   const p = join(dir, 'messages.jsonl')
   if (!existsSync(p)) return []
   return parseMessagesJsonl(readFileSync(p, 'utf8'))
+}
+
+/**
+ * Load only the post-fold working set from disk (skip parsing folded prefix).
+ * Equivalent to `applyFoldedMessagesWatermark(loadMessages(...), fold)` without
+ * materializing the folded ChatMessage objects.
+ */
+export function loadMessagesAfterFold(
+  workspacePath: string,
+  runId: string,
+  foldedMessages: number
+): ChatMessage[] {
+  const dir = resolveRunDir(workspacePath, runId)
+  const p = join(dir, 'messages.jsonl')
+  if (!existsSync(p)) return []
+  const skip = Math.max(0, Math.floor(foldedMessages))
+  return parseMessagesJsonlSkipping(readFileSync(p, 'utf8'), skip)
 }
 
 export async function loadMessagesAsync(
@@ -432,6 +485,49 @@ export async function loadMessagesAsync(
     logger.warn('Failed to read messages.jsonl', { scope: 'state', runId, err })
     return []
   }
+}
+
+export async function loadMessagesAfterFoldAsync(
+  workspacePath: string,
+  runId: string,
+  foldedMessages: number
+): Promise<ChatMessage[]> {
+  const dir = resolveRunDir(workspacePath, runId)
+  await flushMessageAppends(dir)
+  const p = join(dir, 'messages.jsonl')
+  if (!existsSync(p)) return []
+  try {
+    const skip = Math.max(0, Math.floor(foldedMessages))
+    return parseMessagesJsonlSkipping(await readFile(p, 'utf8'), skip)
+  } catch (err) {
+    logger.warn('Failed to read messages.jsonl', { scope: 'state', runId, err })
+    return []
+  }
+}
+
+/**
+ * Post-fold working set without materializing folded ChatMessage bodies.
+ * Falls back to a full parse only when the post-fold window is entirely orphan tools
+ * (matches `applyFoldedMessagesWatermark` rewind semantics).
+ */
+export function loadWorkingMessagesForFold(
+  workspacePath: string,
+  runId: string,
+  foldedMessages: number
+): { messages: ChatMessage[]; foldedMessages: number } {
+  const fold = Math.max(0, Math.floor(foldedMessages))
+  if (fold <= 0) {
+    return { messages: loadMessages(workspacePath, runId), foldedMessages: 0 }
+  }
+  const after = loadMessagesAfterFold(workspacePath, runId, fold)
+  const kept = stripLeadingOrphanToolMessages(after)
+  if (kept.length > 0) {
+    return {
+      messages: kept,
+      foldedMessages: fold + (after.length - kept.length)
+    }
+  }
+  return applyFoldedMessagesWatermark(loadMessages(workspacePath, runId), fold)
 }
 
 function toolMessageText(content: MessageContent): string {
@@ -459,12 +555,23 @@ export async function loadToolResultContent(
     })
     return null
   }
-  const messages = parseMessagesJsonl(raw)
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]
-    if (m?.role === 'tool' && m.toolCallId === toolCallId) {
-      return toolMessageText(m.content)
+  // Scan newest-first without materializing the full ChatMessage[] array.
+  const lines = raw.split('\n')
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]
+    if (!line) continue
+    let json: unknown
+    try {
+      json = JSON.parse(line)
+    } catch {
+      continue
     }
+    if (!json || typeof json !== 'object') continue
+    const row = json as { role?: unknown; toolCallId?: unknown; content?: unknown }
+    if (row.role !== 'tool' || row.toolCallId !== toolCallId) continue
+    const parsed = ChatMessageSchema.safeParse(json)
+    if (!parsed.success || parsed.data.role !== 'tool') continue
+    return toolMessageText(parsed.data.content)
   }
   return null
 }
@@ -588,7 +695,8 @@ const CRITICAL_HYDRATION_TYPES = new Set([
   'incomplete',
   'error',
   'status',
-  'mode_changed'
+  'mode_changed',
+  'compaction_verify_failed'
 ])
 
 /**
@@ -703,13 +811,17 @@ export async function loadEventsForRunAsync(
 }
 
 
-async function collectRunsFromRoot(root: string): Promise<RunSummary[]> {
-  const summaries: RunSummary[] = []
+async function collectRunsFromRoot(root: string): Promise<{
+  parents: RunSummary[]
+  instances: RunSummary[]
+}> {
+  const parents: RunSummary[] = []
+  const instances: RunSummary[] = []
   let entries
   try {
     entries = await readdir(root, { withFileTypes: true })
   } catch {
-    return summaries
+    return { parents, instances }
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue
@@ -726,12 +838,24 @@ async function collectRunsFromRoot(root: string): Promise<RunSummary[]> {
         continue
       }
       const status = parsed.data
-      summaries.push({
+      const summary: RunSummary = {
         runId: entry.name,
         status: status.status,
         updatedAt: status.updatedAt,
-        goal: status.goal
-      })
+        goal: status.goal,
+        ...(status.resumable ? { resumable: true as const } : {}),
+        ...(status.error ? { error: status.error } : {}),
+        ...(status.parentRunId ? { parentRunId: status.parentRunId } : {}),
+        ...(status.inlineInstance ? { inlineInstance: true as const } : {}),
+        ...(status.pathScope?.length ? { pathScope: status.pathScope } : {}),
+        ...(status.worktreePath ? { worktreePath: status.worktreePath } : {}),
+        ...(status.worktreeBranch ? { worktreeBranch: status.worktreeBranch } : {})
+      }
+      if (status.inlineInstance && status.parentRunId) {
+        instances.push(summary)
+      } else if (!status.inlineInstance) {
+        parents.push(summary)
+      }
     } catch (err) {
       logger.warn('Run listing skipped entry', {
         scope: 'runs',
@@ -740,18 +864,25 @@ async function collectRunsFromRoot(root: string): Promise<RunSummary[]> {
       })
     }
   }
-  return summaries
+  return { parents, instances }
 }
 
 export async function listRuns(workspacePath: string): Promise<ListRunsResult> {
   return getCachedListRuns(workspacePath, async () => {
     // Reconcile only on cache miss/TTL expiry — avoids disk walk every sidebar poll.
     await reconcileStaleRuns(workspacePath)
-    const summaries = await collectRunsFromRoot(workspaceSessionsRoot(workspacePath))
-    const sorted = summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    const { parents, instances } = await collectRunsFromRoot(
+      workspaceSessionsRoot(workspacePath)
+    )
+    const sortedParents = parents.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    const parentIds = new Set(sortedParents.slice(0, RUN_LIST_CAP).map((r) => r.runId))
+    const instanceRuns = instances
+      .filter((r) => r.parentRunId != null && parentIds.has(r.parentRunId))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     return {
-      runs: sorted.slice(0, RUN_LIST_CAP),
-      capped: sorted.length > RUN_LIST_CAP
+      runs: sortedParents.slice(0, RUN_LIST_CAP),
+      instanceRuns,
+      capped: sortedParents.length > RUN_LIST_CAP
     }
   })
 }
@@ -799,21 +930,37 @@ function appendOrphanToolStubs(dir: string, runId: string): void {
   if (changed) syncMessages(dir, repaired)
 }
 
-/** Patch the latest todo_write tool message when interrupt leaves tasks in progress. */
-function patchInterruptedTodoMessage(dir: string): void {
-  const messagesPath = join(dir, 'messages.jsonl')
-  if (!existsSync(messagesPath)) return
-  const messages = parseMessagesJsonl(readFileSync(messagesPath, 'utf8'))
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index]
-    if (message?.role !== 'tool' || message.toolName !== 'todo_write') continue
-    const current = toolMessageText(message.content)
-    const next = finalizeInterruptedTodoContent(current)
-    if (next === current) return
-    messages[index] = { ...message, content: next }
-    syncMessages(dir, messages)
-    return
-  }
+/**
+ * Demote in-progress markers on every todo_write tool message after run-end.
+ * Keeps historical checklist snapshots; only clears spinners (`[~]`).
+ */
+export async function patchLatestTodoWriteMessage(
+  dir: string,
+  outcomeOrContent: TodoFinalizeOutcome | string
+): Promise<void> {
+  // Queued behind pending appends: the terminal error paths flush a partial
+  // assistant message without awaiting, and an unserialized rewrite would drop it.
+  await enqueueMessageRewrite(dir, () => {
+    const messagesPath = join(dir, 'messages.jsonl')
+    if (!existsSync(messagesPath)) return
+    const messages = parseMessagesJsonl(readFileSync(messagesPath, 'utf8'))
+    let changed = false
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index]
+      if (message?.role !== 'tool' || message.toolName !== 'todo_write') continue
+      const current = toolMessageText(message.content)
+      const next =
+        outcomeOrContent === 'done' ||
+        outcomeOrContent === 'error' ||
+        outcomeOrContent === 'cancelled'
+          ? finalizeTodoContentOnRunEnd(current, outcomeOrContent)
+          : outcomeOrContent
+      if (next === current) continue
+      messages[index] = { ...message, content: next }
+      changed = true
+    }
+    if (changed) syncMessages(dir, messages)
+  })
 }
 
 /**
@@ -869,6 +1016,33 @@ function isRunStaleByAge(updatedAt: string, maxAgeMs: number): boolean {
   return Date.now() - ts >= maxAgeMs
 }
 
+async function finalizeInlineInstanceWorktreeBestEffort(
+  workspacePath: string,
+  status: RunStatus,
+  opts?: { keepBranch?: boolean }
+): Promise<void> {
+  if (!status.inlineInstance || !status.worktreePath) return
+  if (!isSafeInstanceWorktreePath(workspacePath, status.worktreePath)) {
+    logger.warn('orphan interrupt skipped unsafe instance worktree path', {
+      scope: 'runs',
+      worktreePath: status.worktreePath
+    })
+    return
+  }
+  try {
+    await finalizeInstanceWorktree(workspacePath, status.worktreePath, {
+      keepBranch: opts?.keepBranch ?? status.status === 'done',
+      branch: status.worktreeBranch
+    })
+  } catch (err) {
+    logger.warn('orphan interrupt worktree finalize failed', {
+      scope: 'runs',
+      worktreePath: status.worktreePath,
+      err
+    })
+  }
+}
+
 async function interruptRunningRunOnDisk(
   workspacePath: string,
   runId: string,
@@ -877,12 +1051,16 @@ async function interruptRunningRunOnDisk(
 ): Promise<void> {
   appendOrphanToolStubs(dir, runId)
   finalizeInterruptedTodos(dir)
-  patchInterruptedTodoMessage(dir)
+  await patchLatestTodoWriteMessage(dir, 'cancelled')
+  await finalizeInlineInstanceWorktreeBestEffort(workspacePath, status, { keepBranch: false })
   await updateStatus(
     dir,
     {
       status: 'cancelled',
-      error: 'Interrupted: app exited while run was active',
+      error: RUN_INTERRUPTED_ERROR,
+      resumable: true,
+      interruptedAt: new Date().toISOString(),
+      step: status.step,
       ...(status.invokeId != null ? { invokeId: status.invokeId } : {})
     },
     { sync: true }
@@ -955,10 +1133,17 @@ export async function reconcileStaleRuns(
   return count
 }
 
-export function deleteRun(
+function dismissRunLifecycleInbox(runId: string): void {
+  const id = runId.trim()
+  if (!id) return
+  dismissLifecycleNotification(runDoneDedupeKey(id))
+  dismissLifecycleNotification(runErrorDedupeKey(id))
+}
+
+export async function deleteRun(
   workspacePath: string,
   runId: string
-): { ok: true } | { ok: false; error: string } {
+): Promise<{ ok: true } | { ok: false; error: string }> {
   if (isActive(runId)) {
     return { ok: false, error: 'Cancel run first' }
   }
@@ -966,7 +1151,34 @@ export function deleteRun(
   if (!existsSync(dir)) {
     return { ok: false, error: 'Run not found' }
   }
+  const status = loadStatus(dir)
+
+  if (!status?.inlineInstance) {
+    const { instances } = await collectRunsFromRoot(workspaceSessionsRoot(workspacePath))
+    const children = instances.filter((r) => r.parentRunId === runId)
+    if (children.some((c) => isActive(c.runId))) {
+      return { ok: false, error: 'Cancel instance runs first' }
+    }
+    for (const child of children) {
+      const childDir = resolveRunDir(workspacePath, child.runId)
+      const childStatus = loadStatus(childDir)
+      if (childStatus) {
+        await finalizeInlineInstanceWorktreeBestEffort(workspacePath, childStatus, {
+          keepBranch: false
+        })
+      }
+      if (existsSync(childDir)) {
+        rmSync(childDir, { recursive: true, force: true })
+      }
+      dismissRunLifecycleInbox(child.runId)
+    }
+  }
+
+  if (status?.inlineInstance && status.worktreePath) {
+    await finalizeInlineInstanceWorktreeBestEffort(workspacePath, status)
+  }
   rmSync(dir, { recursive: true, force: true })
+  dismissRunLifecycleInbox(runId)
   invalidateListRunsCache(workspacePath)
   logger.info('Deleted run', {
     scope: 'agent',
@@ -999,17 +1211,16 @@ export function renameRun(workspacePath: string, runId: string, goal: string): R
     goal: goalText,
     updatedAt: new Date().toISOString()
   }
-  writeFileSync(statusPath, JSON.stringify(next, null, 2), 'utf8')
-  invalidateListRunsCache(workspacePath)
-
   const contractPath = join(dir, 'contract.md')
   if (existsSync(contractPath)) {
     const contract = readFileSync(contractPath, 'utf8')
     const updated = GOAL_SECTION_RE.test(contract)
       ? contract.replace(GOAL_SECTION_RE, `$1${goalText}$3`)
       : contract
-    writeFileSync(contractPath, updated, 'utf8')
+    atomicWriteFile(contractPath, updated)
   }
+  atomicWriteJson(statusPath, next)
+  invalidateListRunsCache(workspacePath)
 
   return {
     runId,

@@ -4,12 +4,13 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { readGitStatus, stageAll } from '@main/git/git'
+import { canGit } from '../../helpers/canGit'
 
 function git(cwd: string, ...args: string[]): void {
   execFileSync('git', args, { cwd, stdio: 'ignore' })
 }
 
-describe('readGitStatus noise filtering', () => {
+describe.skipIf(!canGit)('readGitStatus noise filtering', () => {
   let repo: string
 
   beforeAll(() => {

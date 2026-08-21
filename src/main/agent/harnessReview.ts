@@ -16,7 +16,7 @@ import {
   upsertReceiptNotes,
   workspaceHasEditableHarness
 } from './harnessApply'
-import { workspaceHarnessPath } from './harness'
+import { workspaceHarnessPath, HARNESS_PROPOSALS_REL } from './harness'
 
 const DEFAULT_LIMIT = 20
 
@@ -166,10 +166,6 @@ export function summarizeWeaknesses(
     for (const path of receipt.unreadEditPaths) {
       unreadCounts.set(path, (unreadCounts.get(path) ?? 0) + 1)
       addRunSource(unreadRuns, path, runId)
-    }
-    if ((receipt.consecutiveToolFailureSteps ?? 0) >= 3) {
-      highFailureStreaks++
-      highFailureRuns.add(runId)
     }
     if (receipt.compactionCount >= 2) {
       compactionHeavy++
@@ -388,14 +384,13 @@ export function writeHarnessProposal(
   summary: WeaknessSummary,
   opts?: { llmAssisted?: boolean; proposedBody?: string }
 ): { proposalPath: string; relativePath: string } {
-  const dirRel = join('.vyotiq', 'harness', 'proposals')
-  const dirAbs = resolveInsideWorkspace(workspacePath, dirRel)
+  const dirAbs = resolveInsideWorkspace(workspacePath, HARNESS_PROPOSALS_REL)
   mkdirSync(dirAbs, { recursive: true })
 
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
   const shortId = randomBytes(3).toString('hex')
   const fileName = `${stamp}-${shortId}.md`
-  const relativePath = `.vyotiq/harness/proposals/${fileName}`
+  const relativePath = `${HARNESS_PROPOSALS_REL}/${fileName}`.replace(/\\/g, '/')
   const proposalPath = resolveInsideWorkspace(workspacePath, relativePath)
   writeFileSync(proposalPath, buildProposalMarkdown(workspacePath, summary, opts), 'utf8')
   return { proposalPath, relativePath }

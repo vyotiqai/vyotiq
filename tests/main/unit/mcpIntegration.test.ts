@@ -14,7 +14,13 @@ vi.mock('electron', () => ({
     isEncryptionAvailable: () => false,
     encryptString: (s: string) => Buffer.from(s, 'utf8'),
     decryptString: (b: Buffer) => b.toString('utf8')
-  }
+  },
+  BrowserWindow: class {},
+  nativeTheme: { shouldUseDarkColors: false, on: () => undefined }
+}))
+
+vi.mock('@main/app/window', () => ({
+  getMainWindow: () => null
 }))
 
 import {
@@ -27,6 +33,7 @@ import {
   getMcpServerStatus,
   gitMcpNotARepoMessage,
   isGitMcpNotARepoError,
+  refreshMcpServers,
   resetMcpSessionsForTests,
   setMcpStdioWorkspace,
   shutdownMcpServers,
@@ -196,6 +203,36 @@ describe('syncMcpServers', () => {
     )
     expect(result.ok).toBe(true)
     expect(result.content).toContain('still-up')
+  })
+
+  it('refreshMcpServers reconnects after disconnecting (does not skip via fingerprint)', async () => {
+    const ws = mkdtempSync(join(tmpdir(), 'vyotiq-mcp-refresh-'))
+    try {
+      setMcpStdioWorkspace(ws)
+      await syncMcpServers([echoServer])
+      expect(listConnectedMcpServerIdsForTests()).toEqual(['echo'])
+
+      const statuses = await refreshMcpServers([echoServer])
+      expect(listConnectedMcpServerIdsForTests()).toEqual(['echo'])
+      expect(statuses[0]?.connected).toBe(true)
+      expect(statuses[0]?.error).toBeUndefined()
+
+      const result = await invokeMcpTool(
+        'echo',
+        'echo',
+        { message: 'after-refresh' },
+        new AbortController().signal,
+        undefined,
+        undefined,
+        ws
+      )
+      expect(result.ok).toBe(true)
+      expect(result.content).toContain('after-refresh')
+    } finally {
+      await shutdownMcpServers()
+      resetMcpSessionsForTests()
+      rmSync(ws, { recursive: true, force: true })
+    }
   })
 
   it('survives connect failures without leaving partial sessions', async () => {

@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { validateAgainstJsonSchema } from '@main/agent/schemas/jsonSchemaValidate'
-import {
-  combineLoopHints,
-  loopHintForOmittedMcpTools
-} from '@main/agent/loopPolicy'
-import { trimToolsToBudget } from '@main/agent/context/toolsBudget'
+import { buildStepToolCatalog } from '@main/agent/context/toolsBudget'
 import type { ToolDefinition } from '@main/agent/providers/types'
 import { geminiFunctionCallingMode } from '@main/agent/providers/gemini'
 import {
@@ -14,63 +9,25 @@ import {
   resetActiveRunsForTests
 } from '@main/agent/runRegistry'
 
-describe('validateAgainstJsonSchema', () => {
-  const echoSchema = {
-    type: 'object',
-    properties: {
-      message: { type: 'string' }
-    },
-    required: ['message']
-  }
-
-  it('accepts valid objects', () => {
-    expect(validateAgainstJsonSchema(echoSchema, { message: 'hi' })).toEqual({ ok: true })
-  })
-
-  it('rejects missing required properties', () => {
-    const result = validateAgainstJsonSchema(echoSchema, {})
-    expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.error).toMatch(/message/)
-  })
-
-  it('rejects wrong primitive types', () => {
-    const result = validateAgainstJsonSchema(echoSchema, { message: 123 })
-    expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.error).toMatch(/string/)
-  })
-
-  it('rejects malformed patterns without crashing', () => {
-    const result = validateAgainstJsonSchema(
-      { type: 'string', pattern: '[invalid' },
-      'hello'
-    )
-    expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.error).toMatch(/Invalid pattern/)
-  })
-
-  it('applies type before enum so a contradictory enum does not bypass type', () => {
-    const result = validateAgainstJsonSchema(
-      { type: 'string', enum: [null] },
-      null
-    )
-    expect(result.ok).toBe(false)
-    if (!result.ok) expect(result.error).toMatch(/Expected a string/)
-  })
-})
-
 describe('omitted MCP tools hint', () => {
-  it('names omitted MCP tools for the run notice', () => {
+  it('keeps the full catalog even when the tools budget is tiny', () => {
     const tools: ToolDefinition[] = [
       { name: 'read', description: 'r', parameters: {} },
       { name: 'mcp__a__one', description: 'x'.repeat(800), parameters: {} },
       { name: 'mcp__b__two', description: 'y'.repeat(800), parameters: {} }
     ]
-    const trimmed = trimToolsToBudget(tools, 50)
-    expect(trimmed.omittedMcp).toBeGreaterThan(0)
-    expect(trimmed.omittedMcpNames.length).toBe(trimmed.omittedMcp)
-    const hint = loopHintForOmittedMcpTools(trimmed.omittedMcpNames)
-    expect(hint).toMatch(/deferred/)
-    expect(combineLoopHints(hint, undefined)).toBe(hint)
+    const result = buildStepToolCatalog(tools, 50, {
+      pinnedMcpNames: new Set(['mcp__a__one', 'mcp__b__two'])
+    })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.tools.map((t) => t.name)).toEqual([
+      'read',
+      'mcp__a__one',
+      'mcp__b__two'
+    ])
+    expect(result.evictedMcpNames).toEqual([])
+    expect(result.budgetOmittedMcpNames).toEqual([])
   })
 })
 

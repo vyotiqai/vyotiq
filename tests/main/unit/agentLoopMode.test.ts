@@ -67,7 +67,6 @@ vi.mock('@main/agent/context', async (importOriginal) => {
       system: 'system',
       estimatedTokens: 100,
       layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-      contextShrunk: false,
       overflow: false,
       anthropicNative: undefined,
       compaction: null
@@ -193,7 +192,13 @@ describe('runAgent mode and API key', () => {
     const planBody = readFileSync(planPath, 'utf8')
     expect(planBody).toContain('# Plan')
     expect(planBody).toContain('## Goal')
+    expect(planBody).toContain('## Success criteria')
+    expect(planBody).toContain('## Scope')
+    expect(planBody).toContain('## Open questions')
     expect(planBody).toContain('## Approach')
+    expect(planBody).toContain('## Ordered steps')
+    expect(planBody).toContain('## Verification')
+    expect(planBody).toContain('## Risks or trade-offs')
     expect(existsSync(join(workspace, '.vyotiq'))).toBe(false)
   })
 
@@ -248,35 +253,107 @@ describe('runAgent mode and API key', () => {
     expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
   })
 
-  it('exits early with PROVIDER_AUTH when Ollama Cloud API key is missing', async () => {
+  it('picks up autoModeSwitch toggle at the next step of a live run', async () => {
     getSettings.mockImplementation(() => ({
       ...DEFAULT_SETTINGS,
       provider: 'ollama' as const,
-      model: 'gpt-oss:120b',
-      ollamaBaseUrl: 'https://ollama.com'
+      model: 'qwen2.5',
+      ollamaBaseUrl: 'http://127.0.0.1:11434',
+      autoModeSwitch: false
     }))
-    getSecret.mockReturnValue(null)
-    hasStoredSecretBlob.mockReturnValue(false)
-    secretStatus.mockReturnValue({
-      encryptionAvailable: true,
-      keys: {} as Record<string, never>
+
+    const seenToolsByCall: string[][] = []
+    let call = 0
+    streamChat.mockImplementation(async function* (
+      req: ProviderChatRequest
+    ): AsyncGenerator<StreamChunk> {
+      call += 1
+      seenToolsByCall.push((req.tools ?? []).map((t) => t.name))
+      if (call === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
+        }
+        yield { type: 'done', stopReason: 'tool_calls' }
+        return
+      }
+      yield { type: 'text', text: 'done' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+    executeTool.mockImplementation(async () => {
+      getSettings.mockImplementation(() => ({
+        ...DEFAULT_SETTINGS,
+        provider: 'ollama' as const,
+        model: 'qwen2.5',
+        ollamaBaseUrl: 'http://127.0.0.1:11434',
+        autoModeSwitch: true
+      }))
+      return { ok: true, summary: 'file', content: 'ok' }
     })
 
-    const events: Array<{ type: string; status?: string; code?: string; message?: string }> = []
-    for await (const ev of runAgent({
-      runId: 'ollama-cloud-missing-key',
-      messages: [{ role: 'user', content: 'hi' }],
-      workspacePath: workspace
+    for await (const _ of runAgent({
+      runId: 'auto-mode-mid-run',
+      messages: [{ role: 'user', content: 'work' }],
+      workspacePath: workspace,
+      mode: 'agent'
     })) {
-      events.push(ev)
+      // drain
     }
 
-    expect(streamChat).not.toHaveBeenCalled()
-    const err = events.find((e) => e.type === 'error')
-    expect(err?.code).toBe('PROVIDER_AUTH')
-    expect(err?.message).toBe(
-      'Ollama Cloud (ollama.com) requires an API key. Add it in Settings → Providers, or switch the Ollama base URL to a local host (e.g. http://127.0.0.1:11434).'
-    )
-    expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
+    expect(seenToolsByCall.length).toBe(2)
+    expect(seenToolsByCall[0]).not.toContain('switch_mode')
+    expect(seenToolsByCall[1]).toContain('switch_mode')
+  })
+
+  it('drops switch_mode on the next step when autoModeSwitch is turned off mid-run', async () => {
+    getSettings.mockImplementation(() => ({
+      ...DEFAULT_SETTINGS,
+      provider: 'ollama' as const,
+      model: 'qwen2.5',
+      ollamaBaseUrl: 'http://127.0.0.1:11434',
+      autoModeSwitch: true
+    }))
+
+    const seenToolsByCall: string[][] = []
+    let call = 0
+    streamChat.mockImplementation(async function* (
+      req: ProviderChatRequest
+    ): AsyncGenerator<StreamChunk> {
+      call += 1
+      seenToolsByCall.push((req.tools ?? []).map((t) => t.name))
+      if (call === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
+        }
+        yield { type: 'done', stopReason: 'tool_calls' }
+        return
+      }
+      yield { type: 'text', text: 'done' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+    executeTool.mockImplementation(async () => {
+      getSettings.mockImplementation(() => ({
+        ...DEFAULT_SETTINGS,
+        provider: 'ollama' as const,
+        model: 'qwen2.5',
+        ollamaBaseUrl: 'http://127.0.0.1:11434',
+        autoModeSwitch: false
+      }))
+      return { ok: true, summary: 'file', content: 'ok' }
+    })
+
+    for await (const _ of runAgent({
+      runId: 'auto-mode-mid-run-off',
+      messages: [{ role: 'user', content: 'work' }],
+      workspacePath: workspace,
+      mode: 'agent'
+    })) {
+      // drain
+    }
+
+    expect(seenToolsByCall.length).toBe(2)
+    expect(seenToolsByCall[0]).toContain('switch_mode')
+    expect(seenToolsByCall[1]).not.toContain('switch_mode')
   })
 })

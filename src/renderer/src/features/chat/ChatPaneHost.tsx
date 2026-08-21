@@ -8,6 +8,7 @@ import {
 import { CHAT_COLUMN_MIN_USABLE_PX } from '@renderer/lib/utils/layout'
 import { PanelResizeHandle } from '@renderer/lib/ui'
 import { cn } from '@renderer/lib/ui/cn'
+import type { WorkspaceFileOpenOptions } from './components/FilesPanel'
 
 type DropHighlight = {
   paneId: string
@@ -20,8 +21,8 @@ export type PaneRenderOptions = {
   sideRailPad: boolean
   /** Open Changes dock (agent scope) — injected by ChatView when multi-pane. */
   onOpenChanges?: () => void
-  /** Open Changes dock (uncommitted) — git-leading in pane composer. */
-  onOpenUncommittedChanges?: () => void
+  /** Open a workspace path in the Files dock — injected by ChatView. */
+  onOpenWorkspaceFile?: (path: string, options?: WorkspaceFileOpenOptions) => void
 }
 
 function zoneFromEvent(e: React.DragEvent): PaneDropZone {

@@ -31,6 +31,7 @@ describe('ChatRow drag', () => {
     const row = screen.getByTitle('List files')
     expect(row.getAttribute('data-session-open')).toBe('1')
     expect(row.getAttribute('data-session-focused')).toBe('0')
+    expect(screen.getByRole('img', { name: 'Drag to open in a split pane' })).toBeTruthy()
 
     rerender(
       <ChatRow
@@ -74,5 +75,63 @@ describe('ChatRow drag', () => {
       'text/plain',
       JSON.stringify({ workspacePath: '/ws/home', runId: 'run-1' })
     )
+  })
+
+  it('does not mark nested instance rows as draggable', () => {
+    render(
+      <ChatRow
+        run={{ ...run, runId: 'child-1', inlineInstance: true, parentRunId: 'run-1' }}
+        workspacePath="/ws/home"
+        active={false}
+        nested
+        onSelect={() => {}}
+        onRename={() => {}}
+        onDelete={() => {}}
+      />
+    )
+    const row = screen.getByTitle('Instance · List files')
+    expect(row.getAttribute('draggable')).toBe('false')
+    expect(screen.queryByRole('img', { name: 'Drag to open in a split pane' })).toBeNull()
+    const setData = vi.fn()
+    fireEvent.dragStart(row, {
+      dataTransfer: {
+        types: [],
+        setData,
+        effectAllowed: 'copy'
+      }
+    })
+    expect(setData).not.toHaveBeenCalled()
+  })
+
+  it('cancels rename on Escape', () => {
+    render(
+      <ChatRow
+        run={run}
+        workspacePath="/ws/home"
+        active={false}
+        onSelect={() => {}}
+        onRename={() => {}}
+        onDelete={() => {}}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Rename List files' }))
+    const input = screen.getByLabelText('Rename chat')
+    fireEvent.keyDown(input, { key: 'Escape' })
+    expect(screen.queryByLabelText('Rename chat')).toBeNull()
+  })
+
+  it('starts rename on double-click', () => {
+    render(
+      <ChatRow
+        run={run}
+        workspacePath="/ws/home"
+        active={false}
+        onSelect={() => {}}
+        onRename={() => {}}
+        onDelete={() => {}}
+      />
+    )
+    fireEvent.doubleClick(screen.getByTitle('List files'))
+    expect(screen.getByLabelText('Rename chat')).toBeTruthy()
   })
 })

@@ -2,23 +2,61 @@ import { BrowserWindow, session } from 'electron'
 import { shell } from 'electron'
 import { logger } from '../../shared/logger'
 
-const ALLOWED_EXTERNAL = [/^https:\/\//i]
+/** True only for parseable https: URLs (rejects https: with a userinfo/host trick via URL). */
+export function isAllowedHttpsUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'https:' && !parsed.username && !parsed.password
+  } catch {
+    return false
+  }
+}
+
+/** Renderer allow-list: dictation (`media`) + copy buttons (`clipboard-sanitized-write`). */
+const ALLOWED_PERMISSIONS = new Set(['media', 'clipboard-sanitized-write'])
+
+export function isAllowedPermission(permission: string): boolean {
+  return ALLOWED_PERMISSIONS.has(permission)
+}
+
+function denyOffRendererNavigation(
+  event: { preventDefault: () => void },
+  url: string,
+  current: string
+): void {
+  if (url !== current) event.preventDefault()
+}
 
 export function attachSecurity(win: BrowserWindow): void {
   win.webContents.setWindowOpenHandler(({ url }) => {
-    if (ALLOWED_EXTERNAL.some((re) => re.test(url))) {
-      void shell.openExternal(url)
+    if (isAllowedHttpsUrl(url)) {
+      void shell.openExternal(url).catch((err) => {
+        logger.warn('Failed to open external URL', { scope: 'security', err })
+      })
     }
     return { action: 'deny' }
   })
 
   win.webContents.on('will-navigate', (event, url) => {
-    const current = win.webContents.getURL()
-    if (url !== current) event.preventDefault()
+    denyOffRendererNavigation(event, url, win.webContents.getURL())
   })
 
-  win.webContents.session.setPermissionRequestHandler((_wc, _permission, callback) => {
-    callback(false)
+  win.webContents.on('will-redirect', (event, url) => {
+    denyOffRendererNavigation(event, url, win.webContents.getURL())
+  })
+
+  win.webContents.session.setPermissionRequestHandler((wc, permission, callback, details) => {
+    if (permission === 'media') {
+      const types = details && 'mediaTypes' in details ? (details.mediaTypes ?? []) : []
+      const audioOnly = types.length > 0 && types.every((type) => type === 'audio')
+      callback(wc === win.webContents && audioOnly)
+      return
+    }
+    callback(isAllowedPermission(permission))
+  })
+
+  win.webContents.session.setPermissionCheckHandler((wc, permission) => {
+    return wc === win.webContents && isAllowedPermission(permission)
   })
 }
 

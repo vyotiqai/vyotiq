@@ -1,13 +1,32 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'fs'
 import { readFile } from 'fs/promises'
-import { dirname, join, relative, resolve, sep } from 'path'
+import { dirname, join, relative, resolve } from 'path'
+import { canonicalizeWorkspacePath } from '../../../shared/utils/workspacePath'
+import { isInsideRoot } from '../../workspace/safePath'
 import { MEMORY_INDEX_CAP, MEMORY_STATE_CAP } from './types'
 
 export function memoryRoot(workspacePath: string): string {
   return join(workspacePath, '.vyotiq', 'memory')
 }
 
+function workspaceRealRoot(workspacePath: string): string {
+  const root = canonicalizeWorkspacePath(workspacePath)
+  return existsSync(root) ? realpathSync(root) : root
+}
+
+/** Memory root must resolve inside the workspace (blocks junction/symlink escape). */
+function assertMemoryRootInsideWorkspace(workspacePath: string): string {
+  const rootResolved = resolve(memoryRoot(workspacePath))
+  const wsReal = workspaceRealRoot(workspacePath)
+  const realRoot = existsSync(rootResolved) ? realpathSync(rootResolved) : rootResolved
+  if (!isInsideRoot(realRoot, wsReal)) {
+    throw new Error('Memory directory escapes workspace')
+  }
+  return realRoot
+}
+
 export function ensureMemoryLayout(workspacePath: string): void {
+  assertMemoryRootInsideWorkspace(workspacePath)
   const root = memoryRoot(workspacePath)
   const notes = join(root, 'notes')
   if (!existsSync(notes)) mkdirSync(notes, { recursive: true })
@@ -22,21 +41,15 @@ export function ensureMemoryLayout(workspacePath: string): void {
 }
 
 function assertUnderMemory(workspacePath: string, targetPath: string): string {
-  const rootResolved = resolve(memoryRoot(workspacePath))
-  const realRoot = existsSync(rootResolved) ? realpathSync(rootResolved) : rootResolved
+  const realRoot = assertMemoryRootInsideWorkspace(workspacePath)
+  const wsReal = workspaceRealRoot(workspacePath)
   const candidate = resolve(realRoot, targetPath)
   const checkContained = (resolved: string): void => {
-    const prefix = realRoot.endsWith(sep) ? realRoot : realRoot + sep
-    const equal =
-      process.platform === 'win32'
-        ? resolved.toLowerCase() === realRoot.toLowerCase()
-        : resolved === realRoot
-    const inside =
-      process.platform === 'win32'
-        ? resolved.toLowerCase().startsWith(prefix.toLowerCase())
-        : resolved.startsWith(prefix)
-    if (!equal && !inside) {
+    if (!isInsideRoot(resolved, realRoot)) {
       throw new Error(`Path escapes memory dir: ${targetPath}`)
+    }
+    if (!isInsideRoot(resolved, wsReal)) {
+      throw new Error(`Path escapes workspace: ${targetPath}`)
     }
   }
   checkContained(candidate)
@@ -118,7 +131,7 @@ export function listMemoryNotes(workspacePath: string): {
     notes = []
   }
   return {
-    indexExcerpt: readMemoryIndex(workspacePath, MEMORY_LIST_INDEX_EXCERPT),
+    indexExcerpt: readMemoryIndex(workspacePath, Number.POSITIVE_INFINITY),
     notes,
     hasState: existsSync(join(root, 'state.md'))
   }

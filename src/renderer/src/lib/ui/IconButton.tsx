@@ -3,8 +3,7 @@ import { Icon, type IconName } from '../icons'
 import { cn } from './cn'
 import { Tooltip } from './Tooltip'
 
-const interactive =
-  'vy-transition disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]'
+const interactive = 'vy-transition disabled:vy-disabled-state'
 
 const iconButtonVariants = {
   ghost: 'text-fg hover:bg-surface active:bg-surface-2',
@@ -53,7 +52,7 @@ export const IconButton = forwardRef<
 ) {
   const tip = title ?? label
   const buttonClass = cn(
-    'inline-grid place-items-center rounded-md focus-visible:vy-focus-ring',
+    'inline-grid place-items-center rounded-md focus-visible:vy-focus-ring active:scale-[0.98]',
     interactive,
     iconButtonSizes[size],
     iconButtonVariants[variant],

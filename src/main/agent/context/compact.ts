@@ -1,20 +1,84 @@
 import type { ChatMessage, ModelInfo } from '../../../shared/ipc'
 import { contentToText } from '../../../shared/ipc'
+import { isAbortError } from '../../../shared/errors'
 import { logger } from '../../../shared/logger'
-import type { LlmProvider } from '../providers/types'
+import {
+  isRetriableProviderMessage,
+  RetriableStreamError
+} from '../providers/fetchWithRetry'
+import type { LlmProvider, ProviderChatRequest, ToolDefinition } from '../providers/types'
 import {
   parseCompactionJson,
   toCompactionJsonSchema,
   type CompactionData
 } from '../schemas/compaction'
 import { collectStructuredResponse } from '../schemas/structured'
+import { circuitKeyProvider, isCircuitOpenError } from '../circuitBreaker'
+import { runWithStreamRetry } from '../streamRetry'
 import {
   estimateMessagesTokens,
   estimateMessagesTokensAsync,
   estimateTextTokensAsync
 } from './estimate'
-import { stripLeadingOrphanToolMessages } from './historyTrim'
+import { stripLeadingOrphanToolMessages } from './foldWatermark'
 import { KEEP_RECENT_TURNS, type CompactionRecord } from './types'
+
+/** Count user turns in a message list (manual + auto keep-recent). */
+export function countUserTurns(messages: readonly ChatMessage[]): number {
+  let n = 0
+  for (const m of messages) {
+    if (m.role === 'user') n++
+  }
+  return n
+}
+
+/**
+ * Keep-recent for on-demand compact. Always leaves at least one older user turn
+ * foldable when multiple exist — unlike auto assemble, which may keep the full
+ * working set when `userTurns < keepRecentTurns` and history fits the budget.
+ */
+export function manualKeepRecentTurns(userTurns: number, configuredKeep: number): number {
+  const keep = Math.max(1, configuredKeep)
+  if (userTurns <= 1) return 1
+  return Math.min(keep, userTurns - 1)
+}
+
+/** Last-resort suffix keep so a non-empty prefix can still be summarized. */
+export function forceCompactKeepTail(messages: ChatMessage[]): ChatMessage[] {
+  if (messages.length < 2) return messages
+  const keepCount = Math.max(2, Math.floor(messages.length / 2))
+  const start = Math.max(0, messages.length - keepCount)
+  if (start <= 0) return messages
+  const kept = stripLeadingOrphanToolMessages(messages.slice(start))
+  if (kept.length === 0 || kept.length >= messages.length) return messages
+  return kept
+}
+
+/**
+ * When assembled usage is at/above the auto-compact trigger, keep-recent can
+ * leave almost all history verbatim (e.g. 5 of 6 user turns → 16-message fold
+ * of a 243-message run). Force a half-history suffix keep so the fold is large
+ * enough to drop remaining history.
+ */
+export function ensureSubstantialFold(
+  working: ChatMessage[],
+  kept: ChatMessage[]
+): ChatMessage[] {
+  const folded = working.length - kept.length
+  if (folded >= Math.floor(working.length / 2)) return kept
+  const forced = forceCompactKeepTail(working)
+  return forced.length < kept.length ? forced : kept
+}
+
+export function applyTriggerFold(
+  working: ChatMessage[],
+  kept: ChatMessage[],
+  estimatedTokens: number,
+  triggerTokens: number
+): ChatMessage[] {
+  if (!(triggerTokens > 0 && estimatedTokens >= triggerTokens)) return kept
+  return ensureSubstantialFold(working, kept)
+}
 
 const COMPACTION_PROMPT = `Summarize this coding-agent session for future context. Be concise and factual. Do not invent files or decisions.`
 
@@ -29,11 +93,105 @@ const COMPACTION_FREEFORM_PROMPT = `Summarize this coding-agent session for futu
 
 Be concise and factual. Do not invent files or decisions.`
 
+const COMPACTION_NEXT_STEPS_GUIDANCE =
+  'In Next Steps and Open Bugs/Blockers, name concrete files, todos, or commands the next turn should reopen — do not assume they remain in the verbatim window.'
+
+/** Parent-step prefix so auto-compact can share the live stream cache. */
+export type CompactForkPrefix = {
+  systemStable: string
+  /** Exact tool defs from the parent step, same order. */
+  toolDefs: ToolDefinition[]
+}
+
+const FOCUS_MAX_CHARS = 2000
+const VERIFY_RETRY_FOCUS_PREFIX = 'Previous summary failed verification.'
+
+function isRequiredFactsFocus(focus: string): boolean {
+  return (
+    focus.startsWith(VERIFY_RETRY_FOCUS_PREFIX) ||
+    focus.includes('Preserve these user decisions verbatim') ||
+    focus.includes('Preserve this contract goal') ||
+    focus.includes('Written files that must appear') ||
+    focus.includes('Open todos to mention') ||
+    focus.includes('Contract done-when:') ||
+    focus.includes('Files from this history')
+  )
+}
+
+/** Build system prompt for summarizer; optional operator focus is preserved (capped unless required facts). */
+export function buildCompactionSystemPrompt(base: string, focus?: string): string {
+  let prompt = `${base}\n\n${COMPACTION_NEXT_STEPS_GUIDANCE}`
+  const trimmed = focus?.trim()
+  if (trimmed) {
+    const body = isRequiredFactsFocus(trimmed) ? trimmed : trimmed.slice(0, FOCUS_MAX_CHARS)
+    prompt += `\n\nOperator focus (priority for what to preserve):\n${body}`
+  }
+  return prompt
+}
+
 function capRollingSummary(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text
   const tail = text.slice(-maxChars)
   const firstNewline = tail.indexOf('\n')
   return firstNewline > 0 ? `…${tail.slice(firstNewline)}` : `… ${tail}`
+}
+
+/** Compact instruction as a trailing user message — must not rewrite systemStable. */
+function buildCompactForkUserMessage(focus?: string, priorSummary?: string): string {
+  let body = buildCompactionSystemPrompt(COMPACTION_FREEFORM_PROMPT, focus)
+  const prior = priorSummary?.trim()
+  if (prior) {
+    body = `Previous session summary (already folded; stay consistent, do not drop its files or decisions):\n${prior}\n\n---\n\n${body}`
+  }
+  return body
+}
+
+async function collectCompactionStreamText(input: {
+  provider: LlmProvider
+  req: ProviderChatRequest
+  logCode: 'COMPACTION_STREAM' | 'COMPACTION_FORK'
+}): Promise<string> {
+  let summary = ''
+  try {
+    await runWithStreamRetry({
+      signal: input.req.signal,
+      circuitKey: circuitKeyProvider(input.provider.id, input.req.baseUrl),
+      onAttemptStart: () => {
+        summary = ''
+      },
+      runAttempt: async () => {
+        for await (const chunk of input.provider.streamChat(input.req)) {
+          if (input.req.signal.aborted) return 'terminal'
+          if (chunk.type === 'text' && chunk.text) summary += chunk.text
+          if (chunk.type === 'error') {
+            const message = chunk.error ?? 'Provider error'
+            if (isRetriableProviderMessage(message)) {
+              throw new RetriableStreamError(message)
+            }
+            logger.warn('Compaction stream error', {
+              scope: 'agent',
+              code: input.logCode
+            })
+            summary = ''
+            return 'terminal'
+          }
+        }
+        return 'complete'
+      }
+    })
+  } catch (err) {
+    if (isAbortError(err) || input.req.signal.aborted) return ''
+    if (err instanceof RetriableStreamError || isCircuitOpenError(err)) {
+      logger.warn('Compaction stream error', {
+        scope: 'agent',
+        code: input.logCode
+      })
+      return ''
+    }
+    throw err
+  }
+  if (input.req.signal.aborted) return ''
+  return summary.trim()
 }
 
 async function streamFreeformSummary(input: {
@@ -43,28 +201,59 @@ async function streamFreeformSummary(input: {
   baseUrl?: string
   signal: AbortSignal
   historyText: string
+  focus?: string
 }): Promise<string> {
-  let summary = ''
-  for await (const chunk of input.provider.streamChat({
-    model: input.model,
-    apiKey: input.apiKey,
-    baseUrl: input.baseUrl,
-    signal: input.signal,
-    tools: [],
-    system: COMPACTION_FREEFORM_PROMPT,
-    messages: [{ role: 'user', content: input.historyText }]
-  })) {
-    if (input.signal.aborted) return ''
-    if (chunk.type === 'text' && chunk.text) summary += chunk.text
-    if (chunk.type === 'error') {
-      logger.warn('Compaction freeform stream error', {
-        scope: 'agent',
-        code: 'COMPACTION_STREAM'
-      })
-      return ''
+  return collectCompactionStreamText({
+    provider: input.provider,
+    logCode: 'COMPACTION_STREAM',
+    req: {
+      model: input.model,
+      apiKey: input.apiKey,
+      baseUrl: input.baseUrl,
+      signal: input.signal,
+      tools: [],
+      toolChoice: 'none',
+      thinking: { enabled: false },
+      system: buildCompactionSystemPrompt(COMPACTION_FREEFORM_PROMPT, input.focus),
+      messages: [{ role: 'user', content: input.historyText }]
     }
-  }
-  return summary.trim()
+  })
+}
+
+async function streamCacheSafeForkSummary(input: {
+  provider: LlmProvider
+  model: string
+  apiKey?: string | null
+  baseUrl?: string
+  signal: AbortSignal
+  forkPrefix: CompactForkPrefix
+  messages: ChatMessage[]
+  focus?: string
+  priorSummary?: string
+  promptCacheKey?: string
+  modelInfo?: ModelInfo
+}): Promise<string> {
+  return collectCompactionStreamText({
+    provider: input.provider,
+    logCode: 'COMPACTION_FORK',
+    req: {
+      model: input.model,
+      apiKey: input.apiKey,
+      baseUrl: input.baseUrl,
+      signal: input.signal,
+      tools: input.forkPrefix.toolDefs,
+      toolChoice: 'none',
+      thinking: { enabled: false },
+      system: input.forkPrefix.systemStable,
+      systemStable: input.forkPrefix.systemStable,
+      messages: [
+        ...input.messages,
+        { role: 'user', content: buildCompactForkUserMessage(input.focus, input.priorSummary) }
+      ],
+      ...(input.promptCacheKey ? { promptCacheKey: input.promptCacheKey } : {}),
+      ...(input.modelInfo ? { modelInfo: input.modelInfo } : {})
+    }
+  })
 }
 
 function formatMessagesForCompaction(messages: ChatMessage[]): string {
@@ -107,9 +296,11 @@ async function summarizeHistoryChunk(input: {
   signal: AbortSignal
   historyText: string
   supportsStructuredOutput?: boolean
+  focus?: string
 }): Promise<string> {
   let summary = ''
   const useStructured = input.supportsStructuredOutput !== false
+  const system = buildCompactionSystemPrompt(COMPACTION_PROMPT, input.focus)
 
   if (useStructured) {
     try {
@@ -121,7 +312,9 @@ async function summarizeHistoryChunk(input: {
           baseUrl: input.baseUrl,
           signal: input.signal,
           tools: [],
-          system: COMPACTION_PROMPT,
+          toolChoice: 'none',
+          thinking: { enabled: false },
+          system,
           messages: [{ role: 'user', content: input.historyText }],
           responseFormat: {
             type: 'json_schema',
@@ -136,16 +329,27 @@ async function summarizeHistoryChunk(input: {
           return { ok: false, error: 'invalid compaction schema' }
         }
       )
+      // Abort leaves partial rawText — never treat it as a summary.
+      if (
+        input.signal.aborted ||
+        (!result.ok && result.error === 'Request aborted')
+      )
+        return ''
       const parsed = parseCompactionJson(result.rawText)
-      if (result.ok || parsed.markdown) {
+      if (result.ok || parsed.structured) {
+        summary = parsed.markdown
+      } else if (parsed.markdown) {
+        // Completed stream that failed schema but still returned usable text.
         summary = parsed.markdown
       }
     } catch (err) {
-      logger.warn('Structured compaction failed, falling back to freeform', {
-        scope: 'agent',
-        code: 'COMPACTION',
-        err
-      })
+      if (!isAbortError(err) && !input.signal.aborted) {
+        logger.warn('Structured compaction failed, falling back to freeform', {
+          scope: 'agent',
+          code: 'COMPACTION',
+          err
+        })
+      }
     }
   }
 
@@ -157,7 +361,8 @@ async function summarizeHistoryChunk(input: {
       apiKey: input.apiKey,
       baseUrl: input.baseUrl,
       signal: input.signal,
-      historyText: input.historyText
+      historyText: input.historyText,
+      focus: input.focus
     })
   }
   return summary.trim()
@@ -174,6 +379,15 @@ export async function compactMessages(input: {
   contextWindow?: number
   /** Previous compaction summary to retain across successive folds. */
   priorSummary?: string
+  /** Optional operator focus directive for what to preserve. */
+  focus?: string
+  /**
+   * Parent-step cache prefix. When set, the primary path is a freeform fork
+   * (same systemStable + toolDefs + real messages + trailing compact prompt).
+   */
+  forkPrefix?: CompactForkPrefix
+  promptCacheKey?: string
+  modelInfo?: ModelInfo
 }): Promise<CompactionRecord | null> {
   if (input.signal.aborted) return null
 
@@ -184,6 +398,40 @@ export async function compactMessages(input: {
   const charCap = tokenCap * 4
 
   const prior = capRollingSummary(input.priorSummary?.trim() ?? '', charCap)
+
+  const mergeForkSummary = async (summary: string): Promise<CompactionRecord> => {
+    const merged = prior
+      ? capRollingSummary(`${prior}\n\n---\n\n${summary}`, charCap)
+      : capRollingSummary(summary, charCap)
+    return {
+      summary: merged,
+      createdAt: new Date().toISOString(),
+      tokenEstimate: await estimateTextTokensAsync(merged)
+    }
+  }
+
+  if (input.forkPrefix && input.messages.length > 0) {
+    const forked = await streamCacheSafeForkSummary({
+      provider: input.provider,
+      model: input.model,
+      apiKey: input.apiKey,
+      baseUrl: input.baseUrl,
+      signal: input.signal,
+      forkPrefix: input.forkPrefix,
+      messages: input.messages,
+      focus: input.focus,
+      priorSummary: prior || undefined,
+      promptCacheKey: input.promptCacheKey,
+      modelInfo: input.modelInfo
+    })
+    if (input.signal.aborted) return null
+    if (forked) return mergeForkSummary(forked)
+    logger.warn('Cache-safe compact fork produced no summary; falling back to structured tools=[] path', {
+      scope: 'agent',
+      code: 'COMPACTION'
+    })
+  }
+
   const chunks = chunkMessagesForCap(input.messages, Math.max(2000, charCap - 500))
   if (chunks.length === 0) {
     return prior
@@ -198,9 +446,17 @@ export async function compactMessages(input: {
   let mergedPrior = prior
   const parts: string[] = []
 
-  for (const chunk of chunks) {
+  for (let i = 0; i < chunks.length; i++) {
     if (input.signal.aborted) return null
-    const historyText = formatMessagesForCompaction(chunk).slice(0, charCap)
+    const chunk = chunks[i]!
+    const rollingPrefix =
+      i === 0 && prior
+        ? `Previous session summary (already folded; stay consistent, do not drop its files or decisions):\n${prior}\n\n---\n\n`
+        : i > 0 && mergedPrior
+          ? `Summary so far this fold (preserve these facts):\n${mergedPrior}\n\n---\n\n`
+          : ''
+    const room = Math.max(2000, charCap - rollingPrefix.length)
+    const historyText = `${rollingPrefix}${formatMessagesForCompaction(chunk).slice(0, room)}`
     if (!historyText.trim()) continue
 
     const summary = await summarizeHistoryChunk({
@@ -210,14 +466,18 @@ export async function compactMessages(input: {
       baseUrl: input.baseUrl,
       signal: input.signal,
       historyText,
-      supportsStructuredOutput: input.supportsStructuredOutput
+      supportsStructuredOutput: input.supportsStructuredOutput,
+      focus: input.focus
     })
+    if (input.signal.aborted) return null
     if (!summary) continue
     parts.push(summary)
     mergedPrior = mergedPrior
       ? capRollingSummary(`${mergedPrior}\n\n---\n\n${summary}`, charCap)
       : capRollingSummary(summary, charCap)
   }
+
+  if (input.signal.aborted) return null
 
   if (parts.length === 0) {
     logger.warn('Compaction produced no summary despite eligible history', {

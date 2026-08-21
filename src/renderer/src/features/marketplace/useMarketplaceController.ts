@@ -10,8 +10,16 @@ import type {
   McpImportExternalRequest,
   McpImportExternalResult,
   McpServerStatus,
-  Settings
+  Settings,
+  LocalSkillItem,
+  WorkspaceSettingsOverride
 } from '@shared/ipc'
+import {
+  workspaceOverrideForId,
+  type MarketplaceOverrideKind
+} from '@shared/domain/marketplaceEnablement'
+import { findByWorkspacePath } from '@shared/workspacePathMatch'
+import { indexMcpStatusById } from './mcpStatus'
 
 export type MarketplaceFeedback = { kind: 'success' | 'error' | 'warning'; text: string }
 
@@ -22,13 +30,15 @@ export function useMarketplaceController({
   settings,
   onUpdate,
   onReloadSettings,
-  activeWorkspacePath
+  activeWorkspacePath,
+  settingsOverridesByPath
 }: {
   settings: Settings
   onUpdate: (partial: Partial<Settings>) => Promise<{ ok: true } | { ok: false; error: string }>
   /** Reload settings from main after marketplace mutations that write mcpServers on disk. */
   onReloadSettings?: () => Promise<void>
   activeWorkspacePath?: string | null
+  settingsOverridesByPath?: Record<string, WorkspaceSettingsOverride>
 }) {
   const [kindFilter, setKindFilter] = useState<MarketplaceKind | 'all'>('all')
   const [query, setQuery] = useState('')
@@ -36,15 +46,21 @@ export function useMarketplaceController({
   const [catalog, setCatalog] = useState<MarketplaceCatalogEntry[]>([])
   const [catalogLoading, setCatalogLoading] = useState(true)
   const [installed, setInstalled] = useState<MarketplaceIndex>({ schemaVersion: 1, items: [] })
+  const [localSkills, setLocalSkills] = useState<LocalSkillItem[]>([])
   const [busy, setBusy] = useState(false)
+  const [busyTargetId, setBusyTargetId] = useState<string | null>(null)
   const busyDepthRef = useRef(0)
-  const beginBusy = useCallback(() => {
+  const beginBusy = useCallback((targetId?: string | null) => {
     busyDepthRef.current += 1
     if (busyDepthRef.current === 1) setBusy(true)
+    if (targetId != null) setBusyTargetId(targetId)
   }, [])
   const endBusy = useCallback(() => {
     busyDepthRef.current = Math.max(0, busyDepthRef.current - 1)
-    if (busyDepthRef.current === 0) setBusy(false)
+    if (busyDepthRef.current === 0) {
+      setBusy(false)
+      setBusyTargetId(null)
+    }
   }, [])
   const [saving, setSaving] = useState(false)
   const [feedback, setFeedbackState] = useState<MarketplaceFeedback | null>(null)
@@ -70,11 +86,22 @@ export function useMarketplaceController({
     return () => window.clearTimeout(timer)
   }, [query])
 
-  const mcpStatusById = useMemo(() => {
-    const map = new Map<string, McpServerStatus>()
-    for (const row of mcpStatus) map.set(row.id, row)
-    return map
-  }, [mcpStatus])
+  const mcpStatusById = useMemo(
+    () => indexMcpStatusById(mcpStatus, settings.mcpServers),
+    [mcpStatus, settings.mcpServers]
+  )
+
+  const workspaceEnabledForId = useCallback(
+    (kind: MarketplaceOverrideKind, id: string): boolean | undefined => {
+      if (!activeWorkspacePath || !settingsOverridesByPath) return undefined
+      const overrides = findByWorkspacePath(
+        settingsOverridesByPath,
+        activeWorkspacePath
+      )?.marketplaceOverrides
+      return workspaceOverrideForId(overrides, kind, id)
+    },
+    [activeWorkspacePath, settingsOverridesByPath]
+  )
 
   const installedIds = useMemo(() => new Set(installed.items.map((i) => i.id)), [installed.items])
 
@@ -124,23 +151,28 @@ export function useMarketplaceController({
     const reqId = ++reloadReqIdRef.current
     setCatalogLoading(true)
     try {
-      const [browseRes, installedRes] = await Promise.all([
+      const [browseRes, installedRes, localRes] = await Promise.all([
         window.vyotiq.marketplaceBrowse(
           kindFilter === 'all'
             ? { q: debouncedQuery || undefined }
             : { kind: kindFilter, q: debouncedQuery || undefined }
         ),
-        window.vyotiq.marketplaceListInstalled()
+        window.vyotiq.marketplaceListInstalled(),
+        window.vyotiq.skillsListLocal
+          ? window.vyotiq.skillsListLocal({ workspacePath: activeWorkspacePath ?? null })
+          : Promise.resolve({ ok: true as const, data: { skills: [] as LocalSkillItem[] } })
       ])
       if (reqId !== reloadReqIdRef.current) return
       if (browseRes.ok) setCatalog(browseRes.data.packages)
       else setFeedback({ kind: 'error', text: browseRes.error })
       if (installedRes.ok) setInstalled(installedRes.data)
       else setFeedback({ kind: 'error', text: installedRes.error })
+      if (localRes.ok) setLocalSkills(localRes.data.skills)
+      else setFeedback({ kind: 'error', text: localRes.error })
     } finally {
       if (reqId === reloadReqIdRef.current) setCatalogLoading(false)
     }
-  }, [kindFilter, debouncedQuery, setFeedback])
+  }, [kindFilter, debouncedQuery, setFeedback, activeWorkspacePath])
 
   const refreshCatalog = useCallback(async () => {
     setCatalogLoading(true)
@@ -174,8 +206,15 @@ export function useMarketplaceController({
   }, [reload])
 
   useEffect(() => {
-    // Refresh connections on open so connect errors / recovery are visible.
-    void loadMcpStatus(true)
+    if (!window.vyotiq?.onSkillsChanged) return
+    return window.vyotiq.onSkillsChanged(() => {
+      void reload()
+    })
+  }, [reload])
+
+  useEffect(() => {
+    // Poll status only — full disconnect/reconnect is reserved for Refresh MCP connections.
+    void loadMcpStatus(false)
   }, [loadMcpStatus, installed.items.length, settings.mcpServers])
 
   const ensureRemoteAck = useCallback(async (): Promise<boolean> => {
@@ -188,8 +227,11 @@ export function useMarketplaceController({
   }, [onReloadSettings, settings.marketplace?.remoteInstallAcked])
 
   const runInstall = useCallback(
-    async (payload: MarketplaceInstallRequest): Promise<boolean> => {
-      beginBusy()
+    async (
+      payload: MarketplaceInstallRequest,
+      opts?: { busyTargetId?: string | null }
+    ): Promise<boolean> => {
+      beginBusy(opts?.busyTargetId)
       const epoch = setFeedback(null)
       try {
         if (REMOTE_INSTALL_SOURCES.has(payload.source)) {
@@ -215,7 +257,8 @@ export function useMarketplaceController({
         })
         await reload()
         await onReloadSettings?.()
-        await loadMcpStatus(true)
+        // Install IPC already syncs MCP; poll status without disconnecting.
+        await loadMcpStatus(false)
         return true
       } finally {
         endBusy()
@@ -237,17 +280,23 @@ export function useMarketplaceController({
     async (entry: MarketplaceCatalogEntry): Promise<boolean> => {
       if (entry.installable === false) return false
       if (entry.bundledPath) {
-        return runInstall({
-          source: 'bundled',
-          target: entry.bundledPath,
-          kind: entry.kind
-        })
+        return runInstall(
+          {
+            source: 'bundled',
+            target: entry.bundledPath,
+            kind: entry.kind
+          },
+          { busyTargetId: entry.id }
+        )
       }
-      return runInstall({
-        source: 'registry',
-        target: entry.id,
-        kind: entry.kind
-      })
+      return runInstall(
+        {
+          source: 'registry',
+          target: entry.id,
+          kind: entry.kind
+        },
+        { busyTargetId: entry.id }
+      )
     },
     [runInstall]
   )
@@ -265,7 +314,7 @@ export function useMarketplaceController({
         setInstalled(res.data)
         if (item.kind === 'mcp' || item.kind === 'plugin') {
           await onReloadSettings?.()
-          await loadMcpStatus(true)
+          await loadMcpStatus(false)
           setFeedbackIfCurrent(epoch, {
             kind: 'success',
             text: enabled
@@ -301,7 +350,7 @@ export function useMarketplaceController({
         setInstalled(res.data)
         setFeedbackIfCurrent(epoch, { kind: 'success', text: 'Uninstalled' })
         await onReloadSettings?.()
-        await loadMcpStatus(true)
+        await loadMcpStatus(false)
       } finally {
         endBusy()
       }
@@ -366,7 +415,7 @@ export function useMarketplaceController({
         })
         await reload()
         await onReloadSettings?.()
-        await loadMcpStatus(true)
+        await loadMcpStatus(false)
         return true
       } finally {
         endBusy()
@@ -432,7 +481,7 @@ export function useMarketplaceController({
         })
         await reload()
         await onReloadSettings?.()
-        await loadMcpStatus(true)
+        await loadMcpStatus(false)
         return true
       } finally {
         endBusy()
@@ -450,13 +499,16 @@ export function useMarketplaceController({
     catalogLoading,
     setCatalog,
     installed,
+    localSkills,
     installedIds,
     busy,
+    busyTargetId,
     formLocked,
     feedback,
     setFeedback,
     mcpStatusById,
     mcpStatusLoading,
+    workspaceEnabledForId,
     loadMcpStatus,
     runUpdate,
     reload,

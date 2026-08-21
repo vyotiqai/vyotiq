@@ -1,6 +1,7 @@
 import { memo, useMemo, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
+import { formatUrlLabel } from '@shared/utils/displayPath'
 import { FileBadge } from './FileBadge'
 import { TextShimmer } from './TextShimmer'
 import type { ToolItem } from '../utils/transcriptRows'
@@ -8,31 +9,28 @@ import {
   ProminentChrome,
   ToolBodyView,
   getToolHeaderMeta,
+  toolDefaultExpanded,
   toolHasBody,
+  toolUsesPeekCollapse,
   type ToolBodyTiming
 } from '../toolUi'
 
 export const ToolCard = memo(function ToolCard({
   item,
   expanded,
-  live = false,
-  keepOpen = false,
   onToggle,
   onLoadFullContent,
   mcpServerNames
 }: {
   item: ToolItem
   expanded?: boolean
-  /** Active-turn run is live — stay open like ToolGroup until the turn settles. */
-  live?: boolean
-  keepOpen?: boolean
   onToggle?: (next: boolean) => void
   onLoadFullContent?: (toolCallId: string) => Promise<string | null>
   mcpServerNames?: ReadonlyMap<string, string>
 }) {
   const { tool } = item
   const [localOverride, setLocalOverride] = useState<boolean | null>(null)
-  const isOpen = expanded ?? localOverride ?? (live || keepOpen || tool.status === 'running')
+  const isOpen = expanded ?? localOverride ?? toolDefaultExpanded(tool.name, tool.status)
   const failed = tool.status === 'fail'
   const running = tool.status === 'running'
 
@@ -50,17 +48,18 @@ export const ToolCard = memo(function ToolCard({
       }),
     [tool, item.toolProgress]
   )
-  /** Real wall-clock from transcript item — never invent timestamps. */
+  /**
+   * Wall-clock only from groupTiming. Bare `item.at` invents a startedAt without
+   * endedAt on non-lead tools, which hides TerminalBody cwd/shell and duration.
+   */
   const timing = useMemo((): ToolBodyTiming | undefined => {
-    const fromAt = item.at ? Date.parse(item.at) : Number.NaN
-    const startedAt =
-      item.groupTiming?.startedAt ?? (Number.isFinite(fromAt) ? fromAt : undefined)
+    const startedAt = item.groupTiming?.startedAt
     if (startedAt == null || !Number.isFinite(startedAt)) return undefined
     return {
       startedAt,
       endedAt: item.groupTiming?.endedAt
     }
-  }, [item.at, item.groupTiming?.startedAt, item.groupTiming?.endedAt])
+  }, [item.groupTiming?.startedAt, item.groupTiming?.endedAt])
 
   const toggle = (): void => {
     const next = !isOpen
@@ -77,14 +76,14 @@ export const ToolCard = memo(function ToolCard({
   const header = (
     <>
       {headerMeta.filePath ? (
-        <FileBadge path={headerMeta.filePath} />
-      ) : (
+        <FileBadge path={headerMeta.filePath} size={16} />
+      ) : headerMeta.icon ? (
         <Icon
-          name={headerMeta.icon ?? 'file'}
+          name={headerMeta.icon}
           size={14}
           className={cn('shrink-0', failed ? 'text-danger' : 'text-tertiary')}
         />
-      )}
+      ) : null}
       {running ? (
         <TextShimmer className="shrink-0 font-medium text-fg">{headerMeta.verb}</TextShimmer>
       ) : (
@@ -99,13 +98,13 @@ export const ToolCard = memo(function ToolCard({
       )}
       <span
         className={cn(
-          'min-w-0 flex-1 truncate text-tertiary',
+          'min-w-0 flex-1 truncate text-secondary',
           // Command snippets stay mono; free-form edit paths use the default UI face.
           headerMeta.icon === 'terminal' && 'font-mono text-caption'
         )}
         title={headerMeta.target}
       >
-        {headerMeta.target}
+        {formatUrlLabel(headerMeta.target)}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-2 tabular-nums">
         {failed && headerMeta.exitCode == null ? (
@@ -122,20 +121,25 @@ export const ToolCard = memo(function ToolCard({
             {headerMeta.exitCode === 0 ? 'exit 0' : `failed (${headerMeta.exitCode})`}
           </span>
         ) : null}
-        {headerMeta.added != null && headerMeta.added > 0 ? (
+        {!failed && headerMeta.added != null && headerMeta.added > 0 ? (
           <span className="text-success">+{headerMeta.added}</span>
         ) : null}
-        {headerMeta.removed != null && headerMeta.removed > 0 ? (
+        {!failed && headerMeta.removed != null && headerMeta.removed > 0 ? (
           <span className="text-danger">-{headerMeta.removed}</span>
         ) : null}
       </span>
     </>
   )
 
+  const foldMode = toolUsesPeekCollapse(tool.name) ? 'peek' : 'panel'
+
   return (
     <ProminentChrome
       header={header}
-      clampWhenCollapsed
+      foldMode={foldMode}
+      // Peek only: live diffs use followEnd — clamping would hide newest lines.
+      // DiffPreview still self-limits to the 14-line peek while collapsed.
+      clampWhenCollapsed={foldMode === 'peek' ? !running : true}
       ariaLabel={disclosureLabel}
       body={
         <ToolBodyView

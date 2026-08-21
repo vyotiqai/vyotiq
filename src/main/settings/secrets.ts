@@ -31,12 +31,38 @@ function mcpOauthKey(serverId: string): string {
 
 let secretsFileLoadError = false
 
+function isStringToStringRecord(value: unknown): value is SecretsFile {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) return false
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof key !== 'string' || typeof entry !== 'string') return false
+  }
+  return true
+}
+
+const SECRETS_STORE_UNREADABLE =
+  'Secrets store could not be read; the on-disk file was left unchanged'
+
+function assertSecretsStoreWritable(): void {
+  if (secretsFileLoadError) {
+    throw new Error(SECRETS_STORE_UNREADABLE)
+  }
+}
+
 function readFile(): SecretsFile {
   secretsFileLoadError = false
   const p = secretsPath()
   if (!existsSync(p)) return {}
   try {
-    return JSON.parse(readFileSync(p, 'utf8')) as SecretsFile
+    const parsed: unknown = JSON.parse(readFileSync(p, 'utf8'))
+    if (!isStringToStringRecord(parsed)) {
+      secretsFileLoadError = true
+      logger.warn('Secrets file is not a string-to-string record', {
+        scope: 'secrets',
+        code: 'SECRETS'
+      })
+      return {}
+    }
+    return parsed
   } catch (err) {
     secretsFileLoadError = true
     logger.warn('Failed to read secrets file', { scope: 'secrets', code: 'SECRETS', err })
@@ -44,7 +70,14 @@ function readFile(): SecretsFile {
   }
 }
 
+function readMutableSecretsFile(): SecretsFile {
+  const data = readFile()
+  assertSecretsStoreWritable()
+  return data
+}
+
 function writeFile(data: SecretsFile): void {
+  assertSecretsStoreWritable()
   const dir = app.getPath('userData')
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
   const p = secretsPath()
@@ -135,14 +168,14 @@ export function setSecret(provider: SecretProvider, key: string): void {
     })
     throw err
   }
-  const data = readFile()
+  const data = readMutableSecretsFile()
   data[provider] = encrypted
   writeFile(data)
   logger.info('Secret saved', { scope: 'secrets', provider })
 }
 
 export function clearSecret(provider: SecretProvider): void {
-  const data = readFile()
+  const data = readMutableSecretsFile()
   if (!(provider in data)) return
   delete data[provider]
   writeFile(data)
@@ -199,7 +232,7 @@ export function setMcpAuthToken(serverId: string, token: string): void {
   if (!id) throw new Error('MCP server id is required')
   const trimmed = token.trim()
   if (!trimmed) throw new Error('MCP auth token cannot be empty')
-  const data = readFile()
+  const data = readMutableSecretsFile()
   data[mcpAuthKey(id)] = encryptBlob(trimmed)
   writeFile(data)
   logger.info('MCP auth token saved', { scope: 'secrets', serverId: id })
@@ -208,7 +241,7 @@ export function setMcpAuthToken(serverId: string, token: string): void {
 export function clearMcpAuthToken(serverId: string): void {
   const id = serverId.trim()
   if (!id) return
-  const data = readFile()
+  const data = readMutableSecretsFile()
   const key = mcpAuthKey(id)
   if (!(key in data)) return
   delete data[key]
@@ -273,7 +306,7 @@ export type McpOAuthStoredState = {
 export function setMcpOAuthState(serverId: string, state: McpOAuthStoredState): void {
   const id = serverId.trim()
   if (!id) throw new Error('MCP server id is required')
-  const data = readFile()
+  const data = readMutableSecretsFile()
   data[mcpOauthKey(id)] = encryptBlob(JSON.stringify(state))
   writeFile(data)
   logger.info('MCP OAuth state saved', { scope: 'secrets', serverId: id })
@@ -301,7 +334,7 @@ export function hasMcpOAuthState(serverId: string): boolean {
 export function clearMcpOAuthState(serverId: string): void {
   const id = serverId.trim()
   if (!id) return
-  const data = readFile()
+  const data = readMutableSecretsFile()
   const key = mcpOauthKey(id)
   if (!(key in data)) return
   delete data[key]
@@ -323,7 +356,7 @@ export function patchMcpOAuthState(
 export function setGithubAccessToken(token: string): void {
   const trimmed = token.trim()
   if (!trimmed) throw new Error('GitHub token cannot be empty')
-  const data = readFile()
+  const data = readMutableSecretsFile()
   data[GITHUB_TOKEN_KEY] = encryptBlob(trimmed)
   writeFile(data)
   logger.info('GitHub access token saved', { scope: 'secrets' })
@@ -341,7 +374,7 @@ export function hasGithubAccessToken(): boolean {
 }
 
 export function clearGithubAccessToken(): void {
-  const data = readFile()
+  const data = readMutableSecretsFile()
   if (!(GITHUB_TOKEN_KEY in data)) return
   delete data[GITHUB_TOKEN_KEY]
   writeFile(data)
@@ -362,7 +395,7 @@ function mcpServerSecretsKey(serverId: string): string {
 export function setMcpServerSecrets(serverId: string, secrets: McpServerSecrets): void {
   const id = serverId.trim()
   if (!id) throw new Error('MCP server id is required')
-  const data = readFile()
+  const data = readMutableSecretsFile()
   const key = mcpServerSecretsKey(id)
   if (Object.keys(secrets.env).length === 0 && Object.keys(secrets.headers).length === 0) {
     if (key in data) {
@@ -413,7 +446,7 @@ export function hasMcpServerSecrets(serverId: string): boolean {
 export function clearMcpServerSecrets(serverId: string): void {
   const id = serverId.trim()
   if (!id) return
-  const data = readFile()
+  const data = readMutableSecretsFile()
   const key = mcpServerSecretsKey(id)
   if (!(key in data)) return
   delete data[key]

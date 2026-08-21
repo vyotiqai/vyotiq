@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MarketplaceCatalogEntry, Settings, WorkspaceSettingsOverride } from '@shared/ipc'
 import { CHAT_GUTTER, MARKETPLACE_COLUMN, SIDEBAR_NAV_ACTIVE } from '@renderer/lib/utils/layout'
 import { handleTabListKeyDown } from '@renderer/lib/utils/tabListKeyboard'
+import { useEscapeToClose } from '@renderer/lib/hooks/useEscapeToClose'
 import { Button, PageHeader, cn } from '@renderer/lib/ui'
 import { Icon } from '@renderer/lib/icons'
 import { useMarketplaceController } from './useMarketplaceController'
@@ -34,7 +35,11 @@ export function MarketplaceView({
   onSetSettingsOverride,
   onClose,
   focusServerId,
-  onFocusServerConsumed
+  focusSkillPath,
+  focusRulePath,
+  onFocusServerConsumed,
+  onFocusSkillConsumed,
+  onFocusRuleConsumed
 }: {
   settings: Settings
   onUpdate: (partial: Partial<Settings>) => Promise<{ ok: true } | { ok: false; error: string }>
@@ -47,25 +52,40 @@ export function MarketplaceView({
   ) => Promise<{ ok: true } | { ok: false; error: string }>
   onClose?: () => void
   focusServerId?: string | null
+  focusSkillPath?: string | null
+  focusRulePath?: string | null
   onFocusServerConsumed?: () => void
+  onFocusSkillConsumed?: () => void
+  onFocusRuleConsumed?: () => void
 }) {
   const [pane, setPane] = useState<Pane>(() =>
-    focusServerId ? { kind: 'manage' } : { kind: 'home' }
+    focusServerId || focusSkillPath || focusRulePath ? { kind: 'manage' } : { kind: 'home' }
   )
   const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null)
   const [manageFocusServerId, setManageFocusServerId] = useState<string | null>(
     focusServerId ?? null
   )
+  const [manageFocusSkillPath, setManageFocusSkillPath] = useState<string | null>(
+    focusSkillPath ?? null
+  )
+  const [manageFocusRulePath, setManageFocusRulePath] = useState<string | null>(
+    focusRulePath ?? null
+  )
+  const [manageOpenMcpAdd, setManageOpenMcpAdd] = useState(false)
   const controller = useMarketplaceController({
     settings,
     onUpdate,
     onReloadSettings,
-    activeWorkspacePath
+    activeWorkspacePath,
+    settingsOverridesByPath
   })
-  const closeRef = useRef<HTMLButtonElement>(null)
+  const searchRef = useRef<HTMLInputElement>(null)
+  const paneRef = useRef(pane)
+  paneRef.current = pane
 
   useEffect(() => {
-    window.setTimeout(() => closeRef.current?.focus(), 0)
+    const id = window.setTimeout(() => searchRef.current?.focus(), 0)
+    return () => window.clearTimeout(id)
   }, [])
 
   useEffect(() => {
@@ -74,6 +94,20 @@ export function MarketplaceView({
     setManageFocusServerId(focusServerId)
     onFocusServerConsumed?.()
   }, [focusServerId, onFocusServerConsumed])
+
+  useEffect(() => {
+    if (!focusSkillPath) return
+    setPane({ kind: 'manage' })
+    setManageFocusSkillPath(focusSkillPath)
+    onFocusSkillConsumed?.()
+  }, [focusSkillPath, onFocusSkillConsumed])
+
+  useEffect(() => {
+    if (!focusRulePath) return
+    setPane({ kind: 'manage' })
+    setManageFocusRulePath(focusRulePath)
+    onFocusRuleConsumed?.()
+  }, [focusRulePath, onFocusRuleConsumed])
 
   const detailEntry =
     pane.kind === 'detail'
@@ -87,12 +121,49 @@ export function MarketplaceView({
 
   const openBrowse = (): void => {
     setManageFocusServerId(null)
+    setManageFocusSkillPath(null)
+    setManageFocusRulePath(null)
+    setManageOpenMcpAdd(false)
     setPane({ kind: 'home' })
   }
 
-  const openManage = (returnTo?: { entryId: string; fallback: MarketplaceCatalogEntry }): void => {
+  const openManage = (
+    returnTo?: { entryId: string; fallback: MarketplaceCatalogEntry },
+    opts?: { mcpAdd?: boolean }
+  ): void => {
+    if (opts?.mcpAdd) setManageOpenMcpAdd(true)
     setPane(returnTo ? { kind: 'manage', returnTo } : { kind: 'manage' })
   }
+
+  const popOrClose = useCallback((): void => {
+    const current = paneRef.current
+    if (current.kind === 'detail') {
+      openBrowse()
+      return
+    }
+    if (current.kind === 'manage') {
+      setManageFocusServerId(null)
+      setManageFocusSkillPath(null)
+      setManageFocusRulePath(null)
+      setManageOpenMcpAdd(false)
+      if (current.returnTo) {
+        setSelectedEntryId(current.returnTo.entryId)
+        setPane({
+          kind: 'detail',
+          entryId: current.returnTo.entryId,
+          fallback: current.returnTo.fallback
+        })
+      } else {
+        setPane({ kind: 'home' })
+      }
+      return
+    }
+    onClose?.()
+  }, [onClose])
+
+  useEscapeToClose(popOrClose, pane.kind !== 'home' || Boolean(onClose), {
+    deferToMenus: true
+  })
 
   const browseActive = pane.kind === 'home' || pane.kind === 'detail'
   const manageActive = pane.kind === 'manage'
@@ -104,13 +175,14 @@ export function MarketplaceView({
         bordered={false}
         className={cn('shrink-0 border-b border-border/30 bg-bg py-3', CHAT_GUTTER)}
         title="Marketplace"
-        description="MCP servers, skills, and plugins for the agent."
+        description="MCP servers, skills, and packages for the agent."
         trailing={
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             <div
               className="flex gap-0.5"
               role="tablist"
               aria-label="Marketplace sections"
+              tabIndex={-1}
               onKeyDown={(e) =>
                 handleTabListKeyDown(e, {
                   tabs: [...SECTION_TABS],
@@ -149,7 +221,6 @@ export function MarketplaceView({
             </div>
             {onClose ? (
               <button
-                ref={closeRef}
                 type="button"
                 className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-2 text-sm text-muted vy-transition hover:bg-surface/50 hover:text-fg focus-visible:vy-focus-ring"
                 onClick={onClose}
@@ -174,8 +245,10 @@ export function MarketplaceView({
                 <MarketplaceHome
                   controller={controller}
                   selectedEntryId={selectedEntryId}
+                  searchRef={searchRef}
                   onOpenDetail={openDetail}
-                  onOpenManage={() => openManage()}
+                  onOpenManage={(opts) => openManage(undefined, opts)}
+                  onRequestClose={popOrClose}
                 />
               ) : null}
               {pane.kind === 'detail' && detailEntry ? (
@@ -199,23 +272,19 @@ export function MarketplaceView({
               <MarketplaceManage
                 controller={controller}
                 settings={settings}
+                onUpdate={onUpdate}
+                onReloadSettings={onReloadSettings}
                 activeWorkspacePath={activeWorkspacePath}
                 settingsOverridesByPath={settingsOverridesByPath}
                 onSetSettingsOverride={onSetSettingsOverride}
                 focusServerId={manageFocusServerId}
-                onBack={() => {
-                  setManageFocusServerId(null)
-                  if (pane.returnTo) {
-                    setSelectedEntryId(pane.returnTo.entryId)
-                    setPane({
-                      kind: 'detail',
-                      entryId: pane.returnTo.entryId,
-                      fallback: pane.returnTo.fallback
-                    })
-                  } else {
-                    setPane({ kind: 'home' })
-                  }
-                }}
+                focusSkillPath={manageFocusSkillPath}
+                focusRulePath={manageFocusRulePath}
+                openMcpAdd={manageOpenMcpAdd}
+                onOpenMcpAddConsumed={() => setManageOpenMcpAdd(false)}
+                onFocusSkillConsumed={() => setManageFocusSkillPath(null)}
+                onFocusRuleConsumed={() => setManageFocusRulePath(null)}
+                onBack={popOrClose}
               />
             </div>
           ) : null}

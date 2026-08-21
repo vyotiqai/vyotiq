@@ -1,50 +1,39 @@
-import type { ChatMessage, ModelInfo } from '../../../shared/ipc'
+import type { ChatMessage, ModelInfo, ProviderId } from '../../../shared/ipc'
 import { contentToText, flattenFileParts } from '../../../shared/ipc'
 import type { LlmProvider } from '../providers/types'
 import { anthropicNativeOptions } from './anthropicContext'
-import { crossesCompactionTrigger } from '../../../shared/domain/contextBudget'
-import { allocateBudget, compactionTriggerTokens, contentWindow } from './budget'
-import { compactMessages, preserveRecentMessagesAsync } from './compact'
+import { allocateBudget, contentWindow, contextWindowFor } from './budget'
+import { remainingContentTokens } from '../../../shared/domain/contextBudget'
 import {
-  blendInputTokens,
   estimateMessagesTokensAsync,
   estimateTextTokens,
   estimateTextTokensAsync
 } from './estimate'
-import { readMemoryIndexAsync, readMemoryStateAsync } from './memory'
-import { trimHistoryToBudgetAsync } from './historyTrim'
-import { trimToolResults } from './toolTrim'
 import { stubPastSkillInvocationsInMessages } from '../../../shared/slashCommands'
 import {
   KEEP_RECENT_TURNS,
-  KEEP_LAST_TOOL_RESULTS,
-  isTrimWatermarkCompaction,
   type AssembleInput,
   type AssembleResult,
   type CompactionRecord,
   type ContextLayerBreakdown
 } from './types'
-import {
-  extractAskQuestionDecisions,
-  loopHintForRetainedDecisions
-} from './retainedDecisions'
 import { stripUnsupportedModalitiesFromMessages, wireCapsFromModel } from './stripImages'
 import { buildWorkspaceRulesSection } from './rules'
+import { formatUserRules } from './userRules'
 import { buildWorkspaceSnapshotAsync } from './workspaceSnapshot'
-import { logger } from '../../../shared/logger'
 import { perfLog, perfNow } from './perfDebug'
-import {
-  combineLoopHints,
-  loopHintForCompactionFailure,
-  loopHintForCompactionPaybackSkip
-} from '../loopPolicy'
-import {
-  residualFloorAfterFold,
-  shouldInvokeCompactionLlm
-} from './compactionPayback'
+import { logger } from '../../../shared/logger'
+import { splitHarnessSections } from '../harnessSections'
+import { formatPromptSection, parseOuterPromptSection, wrapPromptSection } from '../promptSections'
 
-const COMPACTION_MIN_MESSAGES = 4
-const COMPACTION_MIN_TOKENS = 2000
+/** Full request for `assembleContext` (AssembleInput + provider/stream fields). */
+export type AssembleContextRequest = AssembleInput & {
+  providerId: ProviderId
+  provider: LlmProvider
+  apiKey?: string | null
+  baseUrl?: string
+  signal: AbortSignal
+}
 
 /** In-process cache for the stable instruction prefix only (not the volatile tail). */
 type SystemCacheEntry = { fingerprint: string; stable: string }
@@ -57,97 +46,122 @@ export function clearSystemPromptCache(): void {
 
 /**
  * Fingerprint of durable instruction layers only. Volatile data (clock, snapshot,
- * memory, loop hints, compaction summary) must not appear here or the cache
- * never hits across steps.
+ * loop hints) must not appear here or the cache never hits across steps.
+ * Compaction summary is session-stable until the next fold and must be included
+ * so a new fold busts the in-process prefix cache.
  */
 function stableSystemFingerprint(parts: {
   harness: string
+  userRules: string
   rules: string
   skillsSection: string
   pluginRulesSection: string
   contract: string
   plan: string
   modeSection?: string
+  compactionSummary: string
   systemBudget: number
 }): string {
   return [
     parts.harness,
+    parts.userRules,
     parts.rules,
     parts.skillsSection,
     parts.pluginRulesSection,
     parts.contract,
     parts.plan,
     parts.modeSection ?? '',
+    parts.compactionSummary,
     String(parts.systemBudget)
   ].join('\0')
 }
 
-function capText(text: string, maxTokens: number): string {
-  const maxChars = Math.max(200, maxTokens * 4)
+function capPlainText(text: string, maxChars: number): string {
+  if (maxChars <= 0) return ''
   if (text.length <= maxChars) return text
-  return text.slice(0, maxChars) + '\n…'
+  const ellipsis = '\n…'
+  if (maxChars <= ellipsis.length) return '…'.slice(0, maxChars)
+  return text.slice(0, maxChars - ellipsis.length) + ellipsis
 }
 
-/**
- * Token-accurate clamp on top of the char heuristic: dense text (CJK, code)
- * tokenizes well above 4 chars/token, so a char-only cap can overshoot the
- * budget and let sections sum past the system layer.
- */
-function capToTokenBudget(text: string, maxTokens: number, model: ModelInfo): string {
+function capText(text: string, maxTokens: number): string {
+  const maxChars = Math.max(200, maxTokens * 4)
+  const parsed = parseOuterPromptSection(text)
+  if (!parsed) return capPlainText(text, maxChars)
+  const overhead = formatPromptSection(parsed.tag, '').length
+  const innerMax = Math.max(0, maxChars - overhead)
+  if (parsed.inner.length <= innerMax) return formatPromptSection(parsed.tag, parsed.inner)
+  return formatPromptSection(parsed.tag, capPlainText(parsed.inner, innerMax))
+}
+
+/** @internal — token cap that keeps a single overlay wrap paired. */
+export function capToTokenBudget(text: string, maxTokens: number, model: ModelInfo): string {
+  const parsed = parseOuterPromptSection(text)
+  if (parsed) {
+    let inner = parseOuterPromptSection(capText(text, maxTokens))?.inner ?? parsed.inner
+    let out = formatPromptSection(parsed.tag, inner)
+    while (out.length > 200 && estimateTextTokens(out, model) > maxTokens) {
+      if (inner.length === 0) break
+      inner = inner.slice(0, Math.max(0, Math.floor(inner.length * 0.8)))
+      out = formatPromptSection(parsed.tag, inner)
+    }
+    return out
+  }
   let out = capText(text, maxTokens)
   while (out.length > 200 && estimateTextTokens(out, model) > maxTokens) {
-    out = out.slice(0, Math.floor(out.length * 0.8))
+    const next = out.slice(0, Math.floor(out.length * 0.8))
+    if (next === out) break
+    out = next
   }
   return out
 }
 
-/**
- * Tally of wire-relevant content. Catches in-place trims (tool stubs, thinking
- * drops) that leave message count unchanged.
- */
-function wireContentChars(messages: ChatMessage[]): number {
-  let n = 0
-  for (const m of messages) {
-    n += contentToText(m.content).length
-    if (m.thinking) n += m.thinking.length
-    if (m.reasoningState) n += 1
-  }
-  return n
+function harnessSectionPriority(heading: string, fromAppendix: boolean): number {
+  const h = heading.toLowerCase().replace(/_/g, ' ')
+  // Workspace appendix must never outrank first-party Constraints / Tool policy.
+  const spineCap = fromAppendix ? 49 : 100
+  let priority = 20
+  if (h.includes('role')) priority = 100
+  else if (h.includes('tool')) priority = 99
+  else if (h.includes('constraints')) priority = 98
+  else if (h.includes('output format') || h.includes('patterns')) priority = 97
+  else if (h.includes('capabilities')) priority = 96
+  else if (h.includes('work style') || h.includes('workstyle')) priority = 95
+  else if (h.includes('scope boundaries')) priority = 94
+  else if (h.includes('compaction')) priority = 90
+  else if (h.includes('reference points')) priority = 72
+  else if (h.includes('aliases')) priority = 58
+  else if (h.includes('memory')) priority = 50
+  else if (h.includes('examples')) priority = 42
+  else if (h.includes('workspace harness')) priority = 30
+  return Math.min(priority, spineCap)
 }
 
-/**
- * Lower priority = drop first when capping. Core instruction sections kept longest.
- * All core instruction headings are >= 95 so capHarness never discards them.
- */
-function harnessSectionPriority(heading: string): number {
-  const h = heading.toLowerCase()
-  if (h.includes('role')) return 100
-  if (h.includes('tool')) return 99
-  if (h.includes('constraints')) return 98
-  if (h.includes('output format')) return 97
-  if (h.includes('capabilities')) return 96
-  if (h.includes('work style') || h.includes('workstyle')) return 95
-  if (h.includes('memory')) return 50
-  if (h.includes('context')) return 40
-  return 20
+function isAppendixSectionName(name: string): boolean {
+  const h = name.toLowerCase().replace(/_/g, ' ')
+  return h === 'workspace harness' || h === 'untrusted content'
 }
 
-/**
- * Cap harness text by dropping lowest-priority ## sections first,
- * then truncating what remains.
- */
-function capHarness(text: string, maxTokens: number): string {
+/** @internal — section-aware harness trim under system-budget pressure (tests). */
+export function capHarness(text: string, maxTokens: number): string {
   const maxChars = Math.max(200, maxTokens * 4)
   if (text.length <= maxChars) return text
 
-  const chunks = text.split(/(?=^##\s+)/m).map((c) => c.trimEnd()).filter(Boolean)
+  const chunks = splitHarnessSections(text)
   if (chunks.length <= 1) return capText(text, maxTokens)
 
+  // Everything from the workspace-harness / appendix marker onward is untrusted.
+  let inAppendix = false
   type Sec = { text: string; priority: number; keep: boolean }
   const sections: Sec[] = chunks.map((chunk) => {
-    const m = /^##\s+(.+)$/m.exec(chunk)
-    const priority = m ? harnessSectionPriority(m[1].trim()) : 95
-    return { text: chunk, priority, keep: true }
+    if (isAppendixSectionName(chunk.name)) inAppendix = true
+    const fromAppendix = inAppendix
+    const priority = chunk.name
+      ? harnessSectionPriority(chunk.name, fromAppendix)
+      : fromAppendix
+        ? 40
+        : 95
+    return { text: chunk.text, priority, keep: true }
   })
 
   const joined = (): string =>
@@ -161,37 +175,87 @@ function capHarness(text: string, maxTokens: number): string {
   if (out.length <= maxChars) return out
 
   const dropOrder = [...sections.keys()].sort(
-    (a, b) => sections[a].priority - sections[b].priority
+    (a, b) => sections[a]!.priority - sections[b]!.priority
   )
   for (const idx of dropOrder) {
-    if (sections[idx].priority >= 95) continue
-    sections[idx].keep = false
+    if (sections[idx]!.priority >= 95) continue
+    sections[idx]!.keep = false
     out = joined()
     if (out.length <= maxChars) return out
   }
 
-  return capText(out || text, maxTokens)
+  const shrinkOrder = [...sections.keys()]
+    .filter((i) => sections[i]!.keep)
+    .sort((a, b) => sections[a]!.priority - sections[b]!.priority)
+
+  const shrinkSection = (idx: number): boolean => {
+    const sec = sections[idx]!
+    const parsed = parseOuterPromptSection(sec.text)
+    if (parsed) {
+      if (parsed.inner.length === 0) return false
+      const nextInner = parsed.inner.slice(0, Math.max(0, Math.floor(parsed.inner.length * 0.8)))
+      sec.text = formatPromptSection(parsed.tag, nextInner === parsed.inner ? '' : nextInner)
+      return true
+    }
+    if (sec.text.length === 0) return false
+    const next = sec.text.slice(0, Math.max(0, Math.floor(sec.text.length * 0.8)))
+    if (next === sec.text) {
+      sec.text = ''
+      return true
+    }
+    sec.text = next
+    return true
+  }
+
+  for (const idx of shrinkOrder) {
+    out = joined()
+    const overflow = out.length - maxChars
+    if (overflow <= 0) return out
+    const sec = sections[idx]!
+    const parsed = parseOuterPromptSection(sec.text)
+    if (parsed) {
+      const innerMax = Math.max(0, parsed.inner.length - overflow)
+      sec.text = formatPromptSection(parsed.tag, capPlainText(parsed.inner, innerMax))
+      continue
+    }
+    sec.text = capPlainText(sec.text, Math.max(0, sec.text.length - overflow))
+  }
+
+  while (joined().length > maxChars) {
+    const idx = shrinkOrder.find((i) => {
+      const parsed = parseOuterPromptSection(sections[i]!.text)
+      return parsed ? parsed.inner.length > 0 : sections[i]!.text.length > 0
+    })
+    if (idx === undefined || !shrinkSection(idx)) break
+  }
+
+  out = joined()
+  return out || capText(text, maxTokens)
 }
 
 function buildStableSystem(parts: {
   harness: string
+  userRules: string
   rules: string
   skillsSection?: string
   pluginRulesSection?: string
   contract?: string
   plan?: string
   modeSection?: string
+  compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
   model: ModelInfo
 }): string {
   const fingerprint = stableSystemFingerprint({
     harness: parts.harness,
+    userRules: parts.userRules,
     rules: parts.rules,
     skillsSection: parts.skillsSection ?? '',
     pluginRulesSection: parts.pluginRulesSection ?? '',
     contract: parts.contract ?? '',
     plan: parts.plan ?? '',
     modeSection: parts.modeSection,
+    compactionSummary: parts.compaction?.summary ?? '',
     systemBudget: parts.budgets.system
   })
   if (systemPromptCache?.fingerprint === fingerprint) {
@@ -228,24 +292,23 @@ function buildStableSystem(parts: {
     if (mode) sections.push(mode)
   }
 
-  // Run directives come before rules/skills so they are not buried.
   if (parts.contract?.trim()) {
-    // Strip an existing `# Run contract` or `## Run contract` heading so we
-    // don't duplicate the wrapper we prepend.
     const contractBody = parts.contract.trim().replace(/^#+\s*Run contract\s*(?:\r?\n)*/i, '')
     const contract = capWithinSystem(
-      `## Run contract\n${contractBody}`,
+      wrapPromptSection('run_contract', contractBody),
       Math.floor(parts.budgets.system * 0.4)
     )
     if (contract) sections.push(contract)
   }
   if (parts.plan?.trim()) {
     const planBody = parts.plan.trim().replace(/^#+\s*Plan\s*(?:\r?\n)*/i, '')
-    const plan = capWithinSystem(`## Plan\n${planBody}`, Math.floor(parts.budgets.system * 0.4))
+    const plan = capWithinSystem(
+      wrapPromptSection('plan', planBody),
+      Math.floor(parts.budgets.system * 0.4)
+    )
     if (plan) sections.push(plan)
   }
 
-  // Workspace conventions and add-on rules (metadata for skills / plugin rules).
   if (parts.skillsSection?.trim()) {
     const skills = capWithinSystem(parts.skillsSection.trim(), Math.floor(parts.budgets.system * 0.35))
     if (skills) sections.push(skills)
@@ -254,9 +317,44 @@ function buildStableSystem(parts: {
     const plugins = capWithinSystem(parts.pluginRulesSection.trim(), Math.floor(parts.budgets.system * 0.25))
     if (plugins) sections.push(plugins)
   }
+  if (parts.userRules.trim()) {
+    const userRulesRaw = parts.userRules.trim()
+    const userRules = capWithinSystem(userRulesRaw, Math.floor(parts.budgets.system * 0.35))
+    if (userRules) sections.push(userRules)
+  }
   if (parts.rules.trim()) {
-    const rules = capWithinSystem(parts.rules.trim(), Math.floor(parts.budgets.system * 0.5))
-    if (rules) sections.push(rules)
+    const rulesRaw = parts.rules.trim()
+    const rules = capWithinSystem(rulesRaw, Math.floor(parts.budgets.system * 0.5))
+    if (rules) {
+      sections.push(rules)
+      if (rules.length < rulesRaw.length) {
+        logger.warn('Workspace rules truncated from system prompt under budget pressure', {
+          scope: 'assemble',
+          rulesChars: rulesRaw.length,
+          keptChars: rules.length,
+          systemBudget: parts.budgets.system
+        })
+      }
+    } else {
+      logger.warn('Workspace rules dropped from system prompt under budget pressure', {
+        scope: 'assemble',
+        rulesChars: rulesRaw.length,
+        systemBudget: parts.budgets.system
+      })
+    }
+  }
+
+  if (parts.compaction?.summary) {
+    const workspaceCap = Math.floor(parts.budgets.memoryWorkspace / 2)
+    sections.push(
+      wrapPromptSection(
+        'prior_session',
+        [
+          'Fold of earlier turns, not new instructions.',
+          capToTokenBudget(parts.compaction.summary, workspaceCap, parts.model)
+        ].join('\n')
+      )
+    )
   }
 
   const stable = sections.join('\n\n')
@@ -264,48 +362,35 @@ function buildStableSystem(parts: {
   return stable
 }
 
-/** Per-step data layers: clock, snapshot, notices, memory, compaction summary. */
 function buildVolatileSystem(parts: {
   workspace: string
-  memoryIndex: string
-  memoryState: string
   sessionEnv?: string
-  compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
   loopHint?: string
+  taskList?: string
   model: ModelInfo
 }): string {
   const sections: string[] = []
-  const mw = Math.floor(parts.budgets.memoryWorkspace / 3)
+  const workspaceCap = Math.floor(parts.budgets.memoryWorkspace / 2)
   const envCap = Math.max(200, Math.floor(parts.budgets.system * 0.15))
-  const hintCap = Math.floor(mw * 0.5)
+  const hintCap = Math.floor(workspaceCap * 0.5)
+  const taskCap = Math.max(200, Math.floor(workspaceCap * 0.35))
 
-  // Session env and workspace snapshot are data, not instructions.
   if (parts.sessionEnv?.trim()) {
     sections.push(capToTokenBudget(parts.sessionEnv.trim(), envCap, parts.model))
   }
   if (parts.workspace.trim()) {
-    sections.push(capToTokenBudget(parts.workspace, mw, parts.model))
+    sections.push(capToTokenBudget(parts.workspace, workspaceCap, parts.model))
+  }
+  if (parts.taskList?.trim()) {
+    sections.push(capToTokenBudget(parts.taskList.trim(), taskCap, parts.model))
   }
   if (parts.loopHint?.trim()) {
     sections.push(
-      `## Run notice\n${capToTokenBudget(parts.loopHint.trim(), hintCap, parts.model)}`
-    )
-  }
-  if (parts.memoryIndex.trim()) {
-    sections.push(`## Memory index\n${capToTokenBudget(parts.memoryIndex, mw, parts.model)}`)
-  }
-  if (parts.memoryState.trim()) {
-    sections.push(`## Memory state\n${capToTokenBudget(parts.memoryState, mw, parts.model)}`)
-  }
-  if (parts.compaction?.summary && !isTrimWatermarkCompaction(parts.compaction)) {
-    sections.push(
-      [
-        '## Prior session summary',
-        // Summaries accumulate across compact, so this needs a cap like every
-        // other section or it can crowd out the harness it sits beside.
-        capToTokenBudget(parts.compaction.summary, mw, parts.model)
-      ].join('\n')
+      wrapPromptSection(
+        'run_notice',
+        capToTokenBudget(parts.loopHint.trim(), hintCap, parts.model)
+      )
     )
   }
   return sections.join('\n\n')
@@ -313,19 +398,13 @@ function buildVolatileSystem(parts: {
 
 type SystemZones = { stable: string; volatile: string; system: string }
 
-/**
- * Two-zone system string: stable instruction prefix + volatile data tail.
- * Combined `system` is a fallback for providers that ignore zones; prefer
- * `systemStable` / `systemVolatile` (OpenAI, Gemini, Anthropic cache prefixes).
- */
 function buildSystemZones(parts: {
   harness: string
   workspace: string
+  userRules: string
   rules: string
   skillsSection?: string
   pluginRulesSection?: string
-  memoryIndex: string
-  memoryState: string
   contract?: string
   plan?: string
   modeSection?: string
@@ -333,27 +412,28 @@ function buildSystemZones(parts: {
   compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
   loopHint?: string
+  taskList?: string
   model: ModelInfo
 }): SystemZones {
   const stable = buildStableSystem({
     harness: parts.harness,
+    userRules: parts.userRules,
     rules: parts.rules,
     skillsSection: parts.skillsSection,
     pluginRulesSection: parts.pluginRulesSection,
     contract: parts.contract,
     plan: parts.plan,
     modeSection: parts.modeSection,
+    compaction: parts.compaction,
     budgets: parts.budgets,
     model: parts.model
   })
   const volatile = buildVolatileSystem({
     workspace: parts.workspace,
-    memoryIndex: parts.memoryIndex,
-    memoryState: parts.memoryState,
     sessionEnv: parts.sessionEnv,
-    compaction: parts.compaction,
     budgets: parts.budgets,
     loopHint: parts.loopHint,
+    taskList: parts.taskList,
     model: parts.model
   })
   const system = !volatile ? stable : !stable ? volatile : `${stable}\n\n${volatile}`
@@ -364,18 +444,19 @@ async function computeLayers(
   system: string,
   messages: ChatMessage[],
   toolsJsonEstimate: number,
-  model: ModelInfo,
-  budgets: ReturnType<typeof allocateBudget>
+  model: ModelInfo
 ): Promise<ContextLayerBreakdown> {
   const [systemTokens, history] = await Promise.all([
     estimateTextTokensAsync(system, model),
     estimateMessagesTokensAsync(messages, model)
   ])
+  const used = systemTokens + history + toolsJsonEstimate
+  const budget = contentWindow(model)
   return {
     system: systemTokens,
     history,
     tools: toolsJsonEstimate,
-    buffer: budgets.buffer
+    buffer: remainingContentTokens(budget, used)
   }
 }
 
@@ -383,401 +464,66 @@ function totalFromLayers(layers: ContextLayerBreakdown): number {
   return layers.system + layers.history + layers.tools
 }
 
-/** Overflow last-resort: drop UI thinking and provider reasoning replay from the wire set. */
-export function stripThinkingForCompaction(messages: ChatMessage[]): ChatMessage[] {
-  return messages.map((m) => {
-    if (!m.thinking && !m.reasoningState) return m
-    // Drop UI thinking *and* provider replay state (what actually rides on the wire
-    // for Anthropic / OpenAI-compat / Responses).
-    const { thinking: _thinking, reasoningState: _reasoningState, ...rest } = m
-    return rest
-  })
-}
-
-async function shouldCompactHistory(
-  toSummarize: ChatMessage[],
-  model: ModelInfo
-): Promise<boolean> {
-  if (toSummarize.length > COMPACTION_MIN_MESSAGES) return true
-  return (await estimateMessagesTokensAsync(toSummarize, model)) >= COMPACTION_MIN_TOKENS
-}
-
-function resolveUsedTokens(
-  estimated: number,
-  lastUsage: AssembleInput['lastUsage'],
-  trigger: number
-): number {
-  const providerHint = lastUsage?.inputTokens
-  // Provider bill already near the trigger and well above the local estimate —
-  // trust the provider so we do not defer compaction behind the 1.1× blend cap.
-  if (
-    providerHint !== undefined &&
-    providerHint >= trigger * 0.85 &&
-    providerHint > estimated * 1.15
-  ) {
-    return Math.max(providerHint, trigger)
-  }
-  // Prefer local estimate only when the provider hint looks inflated *and*
-  // is still below the compaction trigger. If the provider already reports
-  // at/over trigger, trust it so we do not defer compaction.
-  if (
-    providerHint !== undefined &&
-    providerHint > estimated &&
-    estimated < trigger * 0.5 &&
-    providerHint < trigger
-  ) {
-    return estimated
-  }
-  return blendInputTokens(estimated, lastUsage)
-}
-
 export async function assembleContext(
-  input: AssembleInput & {
-    providerId: import('../../../shared/ipc').ProviderId
-    provider: LlmProvider
-    apiKey?: string | null
-    baseUrl?: string
-    signal: AbortSignal
-  }
+  input: AssembleContextRequest
 ): Promise<AssembleResult> {
   const assembleStarted = perfNow()
   const budgets = allocateBudget(input.model)
-  const keepRecent = input.keepRecentTurns ?? KEEP_RECENT_TURNS
-  const triggerRatio = input.compactionTriggerRatio ?? 0.7
   const window = contentWindow(input.model)
 
   const [workspace, rules] = await Promise.all([
     buildWorkspaceSnapshotAsync(input.workspacePath, input.goal),
     buildWorkspaceRulesSection(input.workspacePath)
   ])
-  const [memoryIndex, memoryState] = input.workspacePath
-    ? await Promise.all([
-        readMemoryIndexAsync(input.workspacePath),
-        readMemoryStateAsync(input.workspacePath)
-      ])
-    : ['', '']
 
-  // Text attachments flatten to text; audio/native files stay until caps apply.
-  // Tool bodies must NOT be stubbed here — only the budget-pressure paths below
-  // trim them. Unconditional stubbing amnesia-looped the model into re-reading
-  // cleared files every step (run 2791fd89: 168 reads / 1.18M billed tokens).
   let messages = input.messages.map((message) =>
     typeof message.content === 'string'
       ? message
       : { ...message, content: flattenFileParts(message.content) }
   )
-  // Drop full skill bodies from past turns (keep open skill turn intact).
   messages = stubPastSkillInvocationsInMessages(messages).messages
   messages = stripUnsupportedModalitiesFromMessages(messages, wireCapsFromModel(input.model))
-  let compaction = input.priorCompaction ?? null
-  let contextShrunk = false
-
-  // Resume after a stub-only shrink: durable history still has full tool bodies.
-  // Re-apply the wire trim before estimates so we do not re-inflate and re-trim.
-  if (compaction?.wireTrimApplied) {
-    const beforeWire = wireContentChars(messages)
-    messages = trimToolResults(messages, KEEP_LAST_TOOL_RESULTS)
-    if (wireContentChars(messages) !== beforeWire) contextShrunk = true
-  }
+  const compaction = input.priorCompaction ?? null
 
   const estimateStarted = perfNow()
+  const userRules = formatUserRules(input.userRules ?? [])
   const systemParts = {
     harness: input.harness,
     workspace,
+    userRules,
     rules,
     skillsSection: input.skillsSection,
     pluginRulesSection: input.pluginRulesSection,
-    memoryIndex,
-    memoryState,
     contract: input.contract,
     plan: input.plan,
     modeSection: input.modeSection,
     sessionEnv: input.sessionEnv,
     budgets,
     loopHint: input.loopHint,
+    taskList: input.taskList,
     model: input.model
   }
 
-  const systemDraftZones = buildSystemZones({
+  const zones = buildSystemZones({
     ...systemParts,
     compaction
   })
 
-  let layers = await computeLayers(
-    systemDraftZones.system,
+  const layers = await computeLayers(
+    zones.system,
     messages,
     input.toolsJsonEstimate,
-    input.model,
-    budgets
+    input.model
   )
-  let estimated = totalFromLayers(layers)
+  const estimated = totalFromLayers(layers)
   perfLog('estimateMessagesTokens', estimateStarted, {
     messages: messages.length,
     estimated
   })
 
-  const trigger = compactionTriggerTokens(input.model, triggerRatio)
-  let used = resolveUsedTokens(estimated, input.lastUsage, trigger)
-
-  if (crossesCompactionTrigger(used, estimated, trigger)) {
-    // Cheap trim first — clear ephemeral tool bodies only (durable tools excluded).
-    const beforeCheap = messages.length
-    // Stub-only trims keep message count; compare wire content so the loop's
-    // adoption gate still picks them up (otherwise compaction re-fires every step).
-    const beforeCheapChars = wireContentChars(messages)
-    messages = trimToolResults(messages, KEEP_LAST_TOOL_RESULTS)
-    messages = await trimHistoryToBudgetAsync(
-      messages,
-      Math.max(1500, trigger - layers.system - (input.toolsJsonEstimate || 0)),
-      input.model
-    )
-    if (messages.length < beforeCheap || wireContentChars(messages) !== beforeCheapChars) {
-      contextShrunk = true
-    }
-    layers = await computeLayers(
-      buildSystemZones({ ...systemParts, compaction }).system,
-      messages,
-      input.toolsJsonEstimate,
-      input.model,
-      budgets
-    )
-    estimated = totalFromLayers(layers)
-    used = contextShrunk ? estimated : resolveUsedTokens(estimated, input.lastUsage, trigger)
-
-    if (crossesCompactionTrigger(used, estimated, trigger)) {
-      const keptForBoundary = await preserveRecentMessagesAsync(
-        messages,
-        keepRecent,
-        budgets.history,
-        input.model
-      )
-      const toSummarize = messages.slice(0, Math.max(0, messages.length - keptForBoundary.length))
-      if (await shouldCompactHistory(toSummarize, input.model)) {
-        const foldTokens = await estimateMessagesTokensAsync(toSummarize, input.model)
-        const keptTokens = await estimateMessagesTokensAsync(keptForBoundary, input.model)
-        const payback = shouldInvokeCompactionLlm({
-          foldTokens,
-          residualFloor: residualFloorAfterFold({
-            keptTokens,
-            systemTokens: layers.system,
-            toolsTokens: input.toolsJsonEstimate || 0
-          }),
-          trigger,
-          hasPriorLlmSummary: Boolean(
-            compaction?.summary && !isTrimWatermarkCompaction(compaction)
-          )
-        })
-        if (!payback.invokeLlm) {
-          // Preserve ask_question answers before dropping the fold prefix.
-          const retained = extractAskQuestionDecisions(toSummarize)
-          messages = keptForBoundary
-          contextShrunk = true
-          systemParts.loopHint = combineLoopHints(
-            systemParts.loopHint,
-            loopHintForCompactionPaybackSkip(payback.reason),
-            loopHintForRetainedDecisions(retained)
-          )
-          logger.info('Compaction LLM skipped (payback gate)', {
-            scope: 'agent',
-            code: 'TOKEN_COST',
-            reason: payback.reason,
-            foldTokens,
-            trigger,
-            estimated,
-            retainedDecisions: retained.length
-          })
-        } else {
-          const record = await compactMessages({
-            provider: input.provider,
-            model: input.model.id,
-            apiKey: input.apiKey,
-            baseUrl: input.baseUrl,
-            signal: input.signal,
-            messages: stripThinkingForCompaction(toSummarize),
-            supportsStructuredOutput: input.model.supportsStructuredOutput,
-            contextWindow: window,
-            priorSummary: isTrimWatermarkCompaction(compaction)
-              ? undefined
-              : compaction?.summary
-          })
-          if (record) {
-            messages = keptForBoundary
-            compaction = record
-            contextShrunk = true
-          } else {
-            // Summarize failed — keep recent turns and shrink so the next step does
-            // not re-invoke the same compaction LLM call. The loop persists a trim
-            // watermark from contextShrunk + dropped count.
-            messages = keptForBoundary
-            contextShrunk = true
-            systemParts.loopHint = combineLoopHints(
-              systemParts.loopHint,
-              loopHintForCompactionFailure()
-            )
-          }
-        }
-      }
-    }
-  }
-  messages = await trimHistoryToBudgetAsync(messages, budgets.history, input.model)
-
-  let zones = buildSystemZones({
-    ...systemParts,
-    compaction
-  })
-
-  layers = await computeLayers(zones.system, messages, input.toolsJsonEstimate, input.model, budgets)
-  estimated = totalFromLayers(layers)
-
-  if (estimated > window) {
-    const priorLen = messages.length
-    messages = await trimHistoryToBudgetAsync(messages, Math.floor(budgets.history * 0.5), input.model)
-    if (messages.length < priorLen) contextShrunk = true
-    zones = buildSystemZones({
-      ...systemParts,
-      compaction
-    })
-    layers = await computeLayers(zones.system, messages, input.toolsJsonEstimate, input.model, budgets)
-    estimated = totalFromLayers(layers)
-
-    if (estimated > window) {
-      // Tighter keep set before fold so residual can land under the hard window.
-      const keptForOverflow = await preserveRecentMessagesAsync(
-        messages,
-        Math.max(2, Math.floor(keepRecent / 2)),
-        budgets.history,
-        input.model
-      )
-      const toSummarize = messages.slice(0, Math.max(0, messages.length - keptForOverflow.length))
-      if (await shouldCompactHistory(toSummarize, input.model)) {
-        const foldTokens = await estimateMessagesTokensAsync(toSummarize, input.model)
-        const keptTokens = await estimateMessagesTokensAsync(keptForOverflow, input.model)
-        // Payback vs hard content window (not soft trigger) — we are already over window.
-        const overflowPayback = shouldInvokeCompactionLlm({
-          foldTokens,
-          residualFloor: residualFloorAfterFold({
-            keptTokens,
-            systemTokens: layers.system,
-            toolsTokens: input.toolsJsonEstimate || 0
-          }),
-          trigger: window,
-          hasPriorLlmSummary: Boolean(
-            compaction?.summary && !isTrimWatermarkCompaction(compaction)
-          )
-        })
-        if (!overflowPayback.invokeLlm) {
-          const retained = extractAskQuestionDecisions(toSummarize)
-          messages = keptForOverflow
-          contextShrunk = true
-          systemParts.loopHint = combineLoopHints(
-            systemParts.loopHint,
-            loopHintForCompactionPaybackSkip(overflowPayback.reason),
-            loopHintForRetainedDecisions(retained)
-          )
-          logger.info('Overflow compaction LLM skipped (payback gate)', {
-            scope: 'agent',
-            code: 'TOKEN_COST',
-            reason: overflowPayback.reason,
-            foldTokens,
-            window,
-            estimated,
-            retainedDecisions: retained.length
-          })
-          zones = buildSystemZones({
-            ...systemParts,
-            compaction
-          })
-          layers = await computeLayers(
-            zones.system,
-            messages,
-            input.toolsJsonEstimate,
-            input.model,
-            budgets
-          )
-          estimated = totalFromLayers(layers)
-        } else {
-          const record = await compactMessages({
-            provider: input.provider,
-            model: input.model.id,
-            apiKey: input.apiKey,
-            baseUrl: input.baseUrl,
-            signal: input.signal,
-            messages: stripThinkingForCompaction(toSummarize),
-            supportsStructuredOutput: input.model.supportsStructuredOutput,
-            contextWindow: window,
-            priorSummary: isTrimWatermarkCompaction(compaction)
-              ? undefined
-              : compaction?.summary
-          })
-          if (record) {
-            // Drop the folded prefix — mirror trigger-path `messages = keptForBoundary`.
-            messages = keptForOverflow
-            compaction = record
-            contextShrunk = true
-            zones = buildSystemZones({
-              ...systemParts,
-              compaction
-            })
-            layers = await computeLayers(
-              zones.system,
-              messages,
-              input.toolsJsonEstimate,
-              input.model,
-              budgets
-            )
-            estimated = totalFromLayers(layers)
-          } else {
-            // Summarize failed — keep recent turns and shrink so the next step does
-            // not re-invoke the same compaction LLM call. The loop persists a trim
-            // watermark from contextShrunk + dropped count.
-            messages = keptForOverflow
-            contextShrunk = true
-            zones = buildSystemZones({
-              ...systemParts,
-              compaction
-            })
-            layers = await computeLayers(
-              zones.system,
-              messages,
-              input.toolsJsonEstimate,
-              input.model,
-              budgets
-            )
-            estimated = totalFromLayers(layers)
-          }
-        }
-      }
-    }
-
-    if (estimated > window) {
-      // Last-resort shrink before declaring overflow: drop thinking from the
-      // wire set and keep only the latest tool result.
-      const beforeLastResort = wireContentChars(messages)
-      messages = stripThinkingForCompaction(messages)
-      messages = trimToolResults(messages, KEEP_LAST_TOOL_RESULTS)
-      if (wireContentChars(messages) !== beforeLastResort) contextShrunk = true
-      zones = buildSystemZones({
-        ...systemParts,
-        compaction
-      })
-      layers = await computeLayers(zones.system, messages, input.toolsJsonEstimate, input.model, budgets)
-      estimated = totalFromLayers(layers)
-    }
-
-    if (estimated > window) {
-      logger.warn('Context still exceeds model window after compaction', {
-        scope: 'agent',
-        code: 'CONTEXT_OVERFLOW',
-        estimated,
-        window
-      })
-    }
-  }
-
   perfLog('assembleContext', assembleStarted, {
     messages: messages.length,
-    estimated,
-    contextShrunk
+    estimated
   })
 
   return {
@@ -788,13 +534,8 @@ export async function assembleContext(
     compaction,
     estimatedTokens: estimated,
     layers,
-    contextShrunk,
     overflow: estimated > window,
-    anthropicNative: anthropicNativeOptions(
-      input.providerId,
-      input.model,
-      triggerRatio
-    )
+    anthropicNative: anthropicNativeOptions(input.providerId, input.model)
   }
 }
 

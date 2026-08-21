@@ -37,7 +37,7 @@ function splitRoot(path: string, windows: boolean): { root: string; rest: string
 
 /** Normalize separators, drive casing, `.`/`..` segments and trailing slashes. */
 export function canonicalizeWorkspacePath(workspacePath: string): string {
-  const trimmed = workspacePath.trim()
+  const trimmed = workspacePath
   if (!trimmed) return ''
   const windows = isWindowsStylePath(trimmed)
   const separator = windows ? '\\' : '/'
@@ -61,7 +61,7 @@ export function assertInsideWorkspace(workspaceRoot: string, relPath: string): s
   const windows = isWindowsStylePath(root)
   const separator = windows ? '\\' : '/'
   const candidate =
-    splitRoot(relPath.trim(), isWindowsStylePath(relPath)).root !== ''
+    splitRoot(relPath, isWindowsStylePath(relPath)).root !== ''
       ? canonicalizeWorkspacePath(relPath)
       : canonicalizeWorkspacePath(`${root}${separator}${relPath}`)
 
@@ -79,8 +79,9 @@ export function assertInsideWorkspace(workspaceRoot: string, relPath: string): s
  * drive letter, UNC, empty segments, or `..` escapes.
  */
 export function isSafeWorkspaceRelPath(path: string): boolean {
-  const t = path.trim().replace(/\\/g, '/')
+  const t = path.replace(/\\/g, '/')
   if (!t || t === '.') return false
+  if (t.includes('\0')) return false
   if (t.startsWith('/') || t.startsWith('//')) return false
   if (WINDOWS_DRIVE.test(t)) return false
   if (UNC_PREFIX.test(t)) return false

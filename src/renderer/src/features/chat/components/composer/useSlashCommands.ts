@@ -5,6 +5,7 @@ import { findSlashChipSubmit } from './mentionModel'
 import {
   SLASH_GROUP_ORDER,
   clusterMcpByServer,
+  isComposerModeSlashCommand,
   partitionSlashGroupByAvailability
 } from './slashCommandPresentation'
 
@@ -13,7 +14,11 @@ export function buildSlashDisplayList(
   query: string,
   commands: SlashCommandDescriptor[]
 ): SlashCommandDescriptor[] {
-  const matched = fuzzyMatchCommands(query, commands)
+  const catalog =
+    query.trim().length === 0
+      ? commands.filter((cmd) => !isComposerModeSlashCommand(cmd))
+      : commands
+  const matched = fuzzyMatchCommands(query, catalog)
   const byGroup = new Map<string, SlashCommandDescriptor[]>()
   for (const cmd of matched) {
     const list = byGroup.get(cmd.group) ?? []
@@ -57,6 +62,8 @@ export function useSlashCommands({
   const reqIdRef = useRef(0)
   const onListErrorRef = useRef(onListError)
   onListErrorRef.current = onListError
+  const hasLoadedRef = useRef(false)
+  const commandsStaleRef = useRef(false)
 
   const reload = useCallback(async (): Promise<SlashCommandDescriptor[]> => {
     if (!window.vyotiq?.slashCommandsList) {
@@ -71,6 +78,8 @@ export function useSlashCommands({
       })
       if (reqId !== reqIdRef.current) return []
       if (res.ok) {
+        hasLoadedRef.current = true
+        commandsStaleRef.current = false
         setCommands(res.data.commands)
         setListError(null)
         return res.data.commands
@@ -92,9 +101,23 @@ export function useSlashCommands({
     }
   }, [workspacePath])
 
-  /** Prefer in-memory catalog; load once when empty (chip submit / edit remount). */
+  useEffect(() => {
+    setCommands([])
+    if (hasLoadedRef.current) void reload()
+  }, [workspacePath, reload])
+
+  useEffect(() => {
+    if (!window.vyotiq?.onSkillsChanged) return
+    return window.vyotiq.onSkillsChanged(() => {
+      commandsStaleRef.current = true
+      void reload()
+    })
+  }, [reload])
+
+  /** Prefer in-memory catalog unless a skills/slash invalidation landed. */
   const ensureCommands = useCallback(async (): Promise<SlashCommandDescriptor[]> => {
-    if (commands.length > 0) return commands
+    if (commands.length > 0 && !commandsStaleRef.current) return commands
+    commandsStaleRef.current = false
     return reload()
   }, [commands, reload])
 

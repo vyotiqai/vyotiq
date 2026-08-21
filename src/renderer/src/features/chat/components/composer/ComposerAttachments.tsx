@@ -1,5 +1,7 @@
 import type { AttachedAudio, AttachedFile, AttachedNativeFile } from '@shared/ipc'
+import { parseOpenableAttachmentPath } from '@shared/utils/linkableWorkspacePath'
 import { FileChip, ImageChip } from '@renderer/lib/ui'
+import { useRunSession } from '../../RunSessionContext'
 
 export function ComposerAttachments({
   images,
@@ -30,7 +32,15 @@ export function ComposerAttachments({
   onRemoveNativeFile?: (index: number) => void
   onRemoveAudio?: (index: number) => void
 }) {
+  const { onOpenWorkspaceFile } = useRunSession()
   const notice = [imageError, fileError, audioError].filter(Boolean).join(' · ')
+
+  const openAttachment = (name: string): (() => void) | undefined => {
+    if (!onOpenWorkspaceFile) return undefined
+    const parsed = parseOpenableAttachmentPath(name)
+    if (!parsed) return undefined
+    return () => onOpenWorkspaceFile(parsed.path, parsed.line ? { line: parsed.line } : undefined)
+  }
   const hasChips = images.length || files.length || nativeFiles.length || audio.length
   if (!hasChips && !notice && !extracting) return null
 
@@ -54,6 +64,7 @@ export function ComposerAttachments({
               name={file.name}
               chars={file.text.length}
               disabled={attachLocked}
+              onOpen={openAttachment(file.name)}
               onRemove={onRemoveFile ? () => onRemoveFile(i) : undefined}
             />
           ))}
@@ -63,6 +74,7 @@ export function ComposerAttachments({
               name={file.name}
               chars={Math.ceil((file.data.length * 3) / 4)}
               disabled={attachLocked}
+              onOpen={openAttachment(file.name)}
               onRemove={onRemoveNativeFile ? () => onRemoveNativeFile(i) : undefined}
             />
           ))}

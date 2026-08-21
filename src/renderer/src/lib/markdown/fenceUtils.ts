@@ -87,13 +87,8 @@ export function closeOpenFence(content: string): string {
 
   if (!open) return content
 
-  const lastLine = lines[lines.length - 1] ?? ''
-  const lastParsed = parseFenceLine(lastLine)
-  if (lastParsed && !lastParsed.isCloser) {
-    lines[lines.length - 1] = `${lastParsed.indent}${open.char.repeat(open.length)}`
-    return lines.join('\n')
-  }
-
+  // Always append a closer. Replacing a last-line opener (e.g. ```js while a
+  // fence is already open) dropped that line for a frame and stripped info strings.
   return `${content}\n${open.char.repeat(open.length)}`
 }
 

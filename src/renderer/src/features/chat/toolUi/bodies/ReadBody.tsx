@@ -9,7 +9,27 @@ const DIR_SECTION_LABEL =
   'text-2xs font-medium uppercase tracking-[var(--vy-tracking-caps)] text-tertiary'
 
 export function ReadBody({ tool, loading, loadFailed }: ToolBodyProps) {
+  const failed = tool.status === 'fail'
   const data = useMemo(() => parseReadData(tool), [tool])
+  const status = (tool.content ?? '').trim()
+
+  if (failed) {
+    return (
+      <div>
+        {status ? (
+          <p
+            className={cn(
+              TOOL_BODY_PAD,
+              'm-0 text-caption text-danger [overflow-wrap:anywhere]'
+            )}
+          >
+            {status}
+          </p>
+        ) : null}
+      </div>
+    )
+  }
+
   const totalLines = data.lines.length
   const previewLines = data.isDirectory
     ? data.lines
@@ -36,6 +56,7 @@ export function ReadBody({ tool, loading, loadFailed }: ToolBodyProps) {
       ) : null}
       {data.isDirectory ? (
         <DirListing
+          basePath={data.path}
           entries={data.lines.map((line) => {
             const dir = line.match(/^\[dir\]\s+(.+)$/)
             if (dir) return { kind: 'dir' as const, name: dir[1]!, size: '' }
@@ -49,7 +70,7 @@ export function ReadBody({ tool, loading, loadFailed }: ToolBodyProps) {
           style={{ maxHeight: TOOL_BODY_CLAMP_PX }}
           data-testid="read-body-clamp"
         >
-          <CodeBlock lines={previewLines} />
+          <CodeBlock lines={previewLines} startLine={data.startLine} />
         </div>
       )}
     </div>

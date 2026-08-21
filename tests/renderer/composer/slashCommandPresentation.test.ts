@@ -29,12 +29,17 @@ describe('slashCommandPresentation', () => {
     expect(slashGroupDisplayName('Skills')).toBe('Skills')
   })
 
-  it('uses a single line when label matches the trigger', () => {
+  it('pairs a human label with the /trigger even when they share a token', () => {
     const copy = slashCommandRowCopy(
-      cmd({ id: 'skill:a', trigger: 'code-review', group: 'Skills', label: 'code-review' })
+      cmd({
+        id: 'builtin:create-rule',
+        trigger: 'create-rule',
+        group: 'App',
+        label: 'Create rule'
+      })
     )
-    expect(copy.primary).toBe('/code-review')
-    expect(copy.secondary).toBeNull()
+    expect(copy.primary).toBe('Create rule')
+    expect(copy.secondary).toBe('/create-rule')
   })
 
   it('pairs a distinct label with the /trigger', () => {

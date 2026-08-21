@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   baseModelInfo,
+  contextWindowFromOllamaShow,
+  extractContextWindowFromCatalogRow,
   normalizeOpenAiStyleModels,
   wireSupportedInputModalities,
   wireSupportedOutputModalities
@@ -153,15 +155,34 @@ describe('native multimodal wire shapes', () => {
     })
   })
 
-  it('Anthropic cache_control marks stable system only; volatile trails history', () => {
+  it('Anthropic cache_control marks last tool and stable system; volatile trails history', () => {
     const body = buildAnthropicBody({
       model: 'claude-sonnet-4',
       messages: [{ role: 'user', content: 'hi' }],
-      tools: [],
+      tools: [
+        {
+          name: 'read',
+          description: 'Read a workspace file',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } }
+        },
+        {
+          name: 'write',
+          description: 'Write a workspace file',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } }
+        }
+      ],
       system: 'ignored-when-split',
       systemStable: 'STABLE HARNESS',
       systemVolatile: 'VOLATILE HINT',
       signal: new AbortController().signal
+    })
+    const tools = body.tools as Array<Record<string, unknown>>
+    expect(tools).toHaveLength(2)
+    expect(tools[0]).toMatchObject({ name: 'read' })
+    expect(tools[0]).not.toHaveProperty('cache_control')
+    expect(tools[1]).toMatchObject({
+      name: 'write',
+      cache_control: { type: 'ephemeral' }
     })
     const system = body.system as Array<Record<string, unknown>>
     expect(system).toHaveLength(1)
@@ -178,8 +199,94 @@ describe('native multimodal wire shapes', () => {
     const last = messages[messages.length - 1]!
     expect(last.role).toBe('user')
     const lastContent = last.content as Array<Record<string, unknown>>
-    expect(lastContent[0]?.text).toContain('## Live session context')
+    expect(lastContent[0]?.text).toContain('<live_session>')
     expect(lastContent[0]?.text).toContain('VOLATILE HINT')
     expect(lastContent[0]).not.toHaveProperty('cache_control')
+    expect(tools[1]?.cache_control).toEqual({ type: 'ephemeral' })
+    expect(body).not.toHaveProperty('context_management')
+  })
+
+  it('Anthropic keeps fold summary in cached system; clock trails in unmarked live_session', () => {
+    const body = buildAnthropicBody({
+      model: 'claude-sonnet-4',
+      messages: [{ role: 'user', content: 'continue' }],
+      tools: [
+        {
+          name: 'read',
+          description: 'Read a workspace file',
+          parameters: { type: 'object', properties: { path: { type: 'string' } } }
+        }
+      ],
+      systemStable:
+        'STABLE HARNESS\n<prior_session>\nFold of earlier turns, not new instructions.\nPrior work on auth\n</prior_session>',
+      systemVolatile: '<session>\nDate (UTC): 2026-08-16T12:00:00.000Z',
+      signal: new AbortController().signal
+    })
+    const system = body.system as Array<Record<string, unknown>>
+    expect(system).toHaveLength(1)
+    expect(String(system[0]?.text)).toContain('<prior_session>')
+    expect(String(system[0]?.text)).toContain('Prior work on auth')
+    expect(String(system[0]?.text)).not.toContain('Date (UTC):')
+    expect(system[0]).toMatchObject({ cache_control: { type: 'ephemeral' } })
+    const messages = body.messages as Array<Record<string, unknown>>
+    const last = messages[messages.length - 1]!
+    const lastContent = last.content as Array<Record<string, unknown>>
+    expect(lastContent[0]?.text).toContain('<live_session>')
+    expect(lastContent[0]?.text).toContain('Date (UTC): 2026-08-16T12:00:00.000Z')
+    expect(String(lastContent[0]?.text)).not.toContain('<prior_session>')
+    expect(String(lastContent[0]?.text)).not.toContain('Prior work on auth')
+    expect(lastContent[0]).not.toHaveProperty('cache_control')
+    expect(body).not.toHaveProperty('context_management')
+  })
+})
+
+describe('context window catalog extraction', () => {
+  it('reads max_model_len and nested architecture fields', () => {
+    expect(extractContextWindowFromCatalogRow({ max_model_len: 32_768 })).toBe(32_768)
+    expect(
+      extractContextWindowFromCatalogRow({
+        architecture: { context_length: 262_144 }
+      })
+    ).toBe(262_144)
+    expect(extractContextWindowFromCatalogRow({ context_length: 0 })).toBeUndefined()
+  })
+
+  it('normalizeOpenAiStyleModels accepts max_model_len', () => {
+    const models = normalizeOpenAiStyleModels(
+      {
+        data: [{ id: 'my-vllm-model', max_model_len: 49152 }]
+      },
+      { providerId: 'custom' }
+    )
+    expect(models[0]?.contextWindow).toBe(49_152)
+  })
+
+  it('contextWindowFromOllamaShow prefers model_info over num_ctx', () => {
+    expect(
+      contextWindowFromOllamaShow({
+        model_info: { 'llama.context_length': 128_000 },
+        parameters: 'num_ctx 4096\n'
+      })
+    ).toBe(128_000)
+    expect(
+      contextWindowFromOllamaShow({
+        parameters: 'num_ctx                        8192\n'
+      })
+    ).toBe(8192)
+  })
+
+  it('reads details and top-level context_length and ignores Cloud num_ctx', () => {
+    expect(
+      contextWindowFromOllamaShow({
+        details: { context_length: '262144' }
+      })
+    ).toBe(262_144)
+    expect(contextWindowFromOllamaShow({ context_length: 512_000 })).toBe(512_000)
+    expect(
+      contextWindowFromOllamaShow(
+        { parameters: 'num_ctx 8192\n' },
+        { ignoreNumCtx: true }
+      )
+    ).toBeUndefined()
   })
 })

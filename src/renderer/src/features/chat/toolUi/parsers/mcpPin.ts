@@ -107,7 +107,9 @@ export function parseMcpPinData(tool: UiToolRow): McpPinParsed {
       parsed.noneMessage = line
       matched = true
     } else if (
-      /^(Definitions are append-admitted|Schemas drop from the sticky catalog)\b/.test(line)
+      /^(Definitions are append-admitted|Schemas drop from the sticky catalog|Connected MCP tools are already in the step catalog|Pins are optional bookkeeping|No connected MCP tools for serverId=|No pinned MCP tools for serverId=)/.test(
+        line
+      )
     ) {
       parsed.note = parsed.note ? `${parsed.note} ${line}` : line
       matched = true

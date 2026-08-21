@@ -16,6 +16,7 @@ export type ErrorCode =
   | 'PROVIDER_RATE'
   | 'PROVIDER_STREAM'
   | 'PROVIDER_TIMEOUT'
+  | 'CIRCUIT_OPEN'
   | 'SECRETS'
   | 'SETTINGS'
   | 'TOOL_APPROVAL'
@@ -57,13 +58,28 @@ export function isAppError(err: unknown): err is AppError {
   return err instanceof AppError
 }
 
+export function abortError(): DOMException {
+  return new DOMException('Aborted', 'AbortError')
+}
+
 export function isAbortError(err: unknown): boolean {
   if (err instanceof DOMException && err.name === 'AbortError') return true
   if (err instanceof Error && err.name === 'AbortError') return true
+  if (err instanceof Error && err.message === 'Aborted') return true
   if (isAppError(err) && err.cause instanceof DOMException && err.cause.name === 'AbortError') {
     return true
   }
   return false
+}
+
+/**
+ * Attach a no-op rejection handler so a promise cannot become an
+ * unhandledRejection before the caller awaits it (Electron `loadURL` +
+ * `did-fail-load` can reject two promises for one navigation).
+ */
+export function observePromise<T>(promise: Promise<T>): Promise<T> {
+  void promise.catch(() => {})
+  return promise
 }
 
 export function isExpectedToolError(message: string): boolean {
@@ -80,8 +96,30 @@ const EXPECTED_CODES = new Set<ErrorCode>([
   'IPC_VALIDATION',
   'IPC_CLIENT',
   'MCP_CONNECT',
-  'MCP_SPAWN'
+  'MCP_SPAWN',
+  'CIRCUIT_OPEN'
 ])
+
+const RETRYABLE_TURN_ERROR_CODES = new Set([
+  'PROVIDER_NETWORK',
+  'PROVIDER_STREAM',
+  'CIRCUIT_OPEN'
+])
+
+const RETRYABLE_INCOMPLETE_REASONS = new Set(['network_interrupted', 'circuit_open'])
+
+/** Continue / retry affordance for transient provider, stream, and circuit-open failures. */
+export function isRetryableTurnFailure(opts: {
+  errorCode?: string | null
+  incompleteReason?: string | null
+}): boolean {
+  const code = opts.errorCode
+  const reason = opts.incompleteReason
+  return (
+    (typeof code === 'string' && RETRYABLE_TURN_ERROR_CODES.has(code)) ||
+    (typeof reason === 'string' && RETRYABLE_INCOMPLETE_REASONS.has(reason))
+  )
+}
 
 /** Classify stdio/spawn failures vs generic MCP connect errors. */
 export function mcpConnectErrorCode(err: unknown): 'MCP_SPAWN' | 'MCP_CONNECT' {

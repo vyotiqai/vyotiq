@@ -4,7 +4,9 @@ import {
   modelSupportsThinking,
   thinkingApiFor,
   anthropicUsesAdaptiveThinking,
-  ollamaThinkingHeuristicFields
+  isOllamaGptOssModel,
+  OLLAMA_GPT_OSS_THINKING_EFFORTS,
+  OLLAMA_THINKING_EFFORTS
 } from '../../../shared/reasoning'
 import { inferSupportedServiceTiers } from '../../../shared/domain/serviceTier'
 
@@ -110,6 +112,109 @@ function supportedParamsList(row: Record<string, unknown>): string[] | undefined
   return undefined
 }
 
+/** Ollama `/api/show` + newer `/api/tags` send `capabilities` as a string array. */
+export function ollamaCapabilityNames(caps: unknown): string[] | undefined {
+  if (!Array.isArray(caps)) return undefined
+  const names = caps
+    .filter((c): c is string => typeof c === 'string')
+    .map((c) => c.toLowerCase())
+  return names.length > 0 ? names : undefined
+}
+
+function positiveIntTokens(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
+    return Math.floor(value)
+  }
+  if (typeof value === 'string') {
+    const n = Number(value.trim())
+    if (Number.isFinite(n) && n > 0) return Math.floor(n)
+  }
+  return undefined
+}
+
+/**
+ * Extract context window from provider catalog/list rows.
+ * Prefer common OpenAI-compat / gateway field names; ignore non-positive values.
+ */
+export function extractContextWindowFromCatalogRow(
+  row: Record<string, unknown>
+): number | undefined {
+  const direct =
+    positiveIntTokens(row.context_length) ??
+    positiveIntTokens(row.context_window) ??
+    positiveIntTokens(row.max_model_len) ??
+    positiveIntTokens(row.max_input_tokens) ??
+    positiveIntTokens(row.max_sequence_length) ??
+    positiveIntTokens(row.n_ctx_train)
+  if (direct != null) return direct
+
+  const details = row.details
+  if (details && typeof details === 'object') {
+    const d = details as Record<string, unknown>
+    const fromDetails =
+      positiveIntTokens(d.context_length) ??
+      positiveIntTokens(d.context_window)
+    if (fromDetails != null) return fromDetails
+  }
+
+  const arch = row.architecture
+  if (arch && typeof arch === 'object') {
+    const a = arch as Record<string, unknown>
+    return (
+      positiveIntTokens(a.context_length) ??
+      positiveIntTokens(a.context_window) ??
+      positiveIntTokens(a.max_model_len) ??
+      positiveIntTokens(a.max_sequence_length) ??
+      positiveIntTokens(a.n_ctx_train)
+    )
+  }
+  return undefined
+}
+
+/**
+ * Context length from Ollama `/api/show` or `/api/tags`.
+ * Prefer architecture max in `model_info`, then `details` / top-level
+ * `context_length`. Cloud ignores Modelfile `num_ctx` (no-op per Ollama #16598).
+ */
+export function contextWindowFromOllamaShow(
+  row: Record<string, unknown>,
+  opts?: { ignoreNumCtx?: boolean }
+): number | undefined {
+  const modelInfo = row.model_info
+  if (modelInfo && typeof modelInfo === 'object') {
+    const info = modelInfo as Record<string, unknown>
+    const general = positiveIntTokens(info['general.context_length'])
+    if (general != null) return general
+    let best: number | undefined
+    for (const [key, value] of Object.entries(info)) {
+      if (!key.endsWith('.context_length')) continue
+      const n = positiveIntTokens(value)
+      if (n == null) continue
+      if (best == null || n > best) best = n
+    }
+    if (best != null) return best
+  }
+
+  const fromRow = extractContextWindowFromCatalogRow(row)
+  if (fromRow != null) return fromRow
+
+  if (!opts?.ignoreNumCtx) {
+    const params = row.parameters
+    if (typeof params === 'string') {
+      const m = /(?:^|\n)\s*num_ctx\s+(\d+)/i.exec(params)
+      if (m) return positiveIntTokens(Number(m[1]))
+    }
+  }
+  return undefined
+}
+
+function catalogRowModelId(row: Record<string, unknown>): string {
+  if (typeof row.id === 'string' && row.id) return row.id
+  if (typeof row.name === 'string' && row.name) return row.name
+  if (typeof row.model === 'string' && row.model) return row.model
+  return ''
+}
+
 /**
  * Extract thinking capability fields from a provider catalog row.
  * Prefer OpenRouter-style `reasoning` object and `supported_parameters`.
@@ -151,18 +256,43 @@ export function thinkingPartialFromCatalogRow(
       : 'effort'
   }
 
-  const caps = row.capabilities as Record<string, unknown> | undefined
-  if (caps) {
-    if (caps.thinking === true || caps.extended_thinking === true || caps.adaptive_thinking === true) {
+  if (Array.isArray(row.capabilities)) {
+    const ollamaCaps = ollamaCapabilityNames(row.capabilities)
+    if (ollamaCaps?.includes('thinking')) {
       partial.supportsThinking = true
-    }
-    // Do not overwrite adaptive_thinking true with thinking/extended false.
-    if (
-      caps.adaptive_thinking !== true &&
-      caps.thinking === false &&
-      caps.extended_thinking === false
-    ) {
+      // Ollama OpenAPI: think / reasoning_effort = none|low|medium|high|max.
+      // Catalog only affirms capability — apply the request-schema enum.
+      if (!partial.thinkingMode) partial.thinkingMode = 'effort'
+      const modelId = catalogRowModelId(row)
+      if (isOllamaGptOssModel(modelId)) {
+        partial.thinkingCanDisable = false
+        partial.supportedThinkingEfforts = [...OLLAMA_GPT_OSS_THINKING_EFFORTS]
+      } else {
+        if (!partial.supportedThinkingEfforts) {
+          partial.supportedThinkingEfforts = [...OLLAMA_THINKING_EFFORTS]
+        }
+        if (partial.thinkingCanDisable === undefined) partial.thinkingCanDisable = true
+      }
+      if (!partial.thinkingDefaultEffort) partial.thinkingDefaultEffort = 'medium'
+    } else if (ollamaCaps && (providerId === 'ollama' || providerId == null)) {
+      // Non-empty capabilities array that omits thinking — confirmed false, not unknown.
+      // Empty / non-string arrays stay unset so Cloud list stubs do not hide Think.
       partial.supportsThinking = false
+    }
+  } else {
+    const caps = row.capabilities as Record<string, unknown> | undefined
+    if (caps) {
+      if (caps.thinking === true || caps.extended_thinking === true || caps.adaptive_thinking === true) {
+        partial.supportsThinking = true
+      }
+      // Do not overwrite adaptive_thinking true with thinking/extended false.
+      if (
+        caps.adaptive_thinking !== true &&
+        caps.thinking === false &&
+        caps.extended_thinking === false
+      ) {
+        partial.supportsThinking = false
+      }
     }
   }
 
@@ -182,6 +312,8 @@ export function catalogRowHasReasoningSignal(row: Record<string, unknown>): bool
   const reasoning = row.reasoning
   if (reasoning === true) return true
   if (reasoning && typeof reasoning === 'object') return true
+  const ollamaCaps = ollamaCapabilityNames(row.capabilities)
+  if (ollamaCaps?.includes('thinking')) return true
   const params = supportedParamsList(row)
   if (!params) return false
   return (
@@ -237,22 +369,22 @@ function providerThinkingDefaults(
       supportedThinkingEfforts = ['low', 'high', 'max']
       thinkingDefaultEffort = 'high'
       break
-    case 'ollama': {
-      const ollama = ollamaThinkingHeuristicFields(id)
-      thinkingMode = ollama.thinkingMode
-      thinkingCanDisable = ollama.thinkingCanDisable
-      supportedThinkingEfforts = ollama.supportedThinkingEfforts
-      thinkingDefaultEffort = ollama.thinkingDefaultEffort
+    case 'ollama':
+      // Mode/efforts come from live catalog (`capabilities: thinking` → protocol enum).
+      // GPT-OSS is the documented exception: cannot disable, no max.
+      if (isOllamaGptOssModel(id)) {
+        thinkingMode = 'effort'
+        thinkingCanDisable = false
+        supportedThinkingEfforts = [...OLLAMA_GPT_OSS_THINKING_EFFORTS]
+        thinkingDefaultEffort = 'medium'
+      } else {
+        thinkingMode = undefined
+      }
       break
-    }
-    case 'custom': {
-      const custom = ollamaThinkingHeuristicFields(id)
-      thinkingMode = custom.thinkingMode === 'boolean' ? 'effort' : custom.thinkingMode
-      thinkingCanDisable = custom.thinkingCanDisable
-      supportedThinkingEfforts = custom.supportedThinkingEfforts
-      thinkingDefaultEffort = custom.thinkingDefaultEffort
+    case 'custom':
+      // Prefer catalog; when only id-heuristic affirmed thinking, use OpenAI-compat effort.
+      thinkingMode = 'effort'
       break
-    }
     case 'groq':
       thinkingMode = 'effort'
       break
@@ -281,10 +413,14 @@ export function baseModelInfo(
   providerId?: ProviderId
 ): ModelInfo {
   const supportsVision = partial?.supportsVision ?? idSuggestsVision(id)
-  const supportsThinking = partial?.supportsThinking ?? modelSupportsThinking(id, providerId)
+  // Ollama: true only from capabilities including thinking; false only when a
+  // capabilities array is present and omits it. Missing stays unset (unknown).
+  const supportsThinking =
+    partial?.supportsThinking ??
+    (providerId === 'ollama' ? undefined : modelSupportsThinking(id, providerId))
   const supportedServiceTiers =
     partial?.supportedServiceTiers ?? inferSupportedServiceTiers(id, providerId)
-  const defaults = providerThinkingDefaults(id, providerId, supportsThinking)
+  const defaults = providerThinkingDefaults(id, providerId, supportsThinking === true)
 
   const thinkingApi = supportsThinking
     ? (partial?.thinkingApi ?? defaults.thinkingApi)
@@ -358,12 +494,7 @@ export function normalizeOpenAiStyleModels(
       ? supportedParams.includes('tools')
       : looksLikeChatModel(id)
 
-    const contextWindow =
-      typeof row.context_length === 'number'
-        ? row.context_length
-        : typeof row.context_window === 'number'
-          ? row.context_window
-          : undefined
+    const contextWindow = extractContextWindowFromCatalogRow(row)
 
     const serviceTiers = inferSupportedServiceTiers(id, providerId, supportedParams)
     const thinkingPartial = thinkingPartialFromCatalogRow(row, providerId)

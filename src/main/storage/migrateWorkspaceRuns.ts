@@ -1,10 +1,10 @@
 import {
   cpSync,
   existsSync,
+  lstatSync,
   readdirSync,
   renameSync,
-  rmSync,
-  statSync
+  rmSync
 } from 'fs'
 import { join } from 'path'
 import { logger } from '../../shared/logger'
@@ -101,7 +101,8 @@ export function migrateWorkspaceRunsAtPath(workspacePath: string): number {
   for (const runId of readdirSync(legacyRuns)) {
     const from = join(legacyRuns, runId)
     try {
-      if (!statSync(from).isDirectory()) continue
+      const st = lstatSync(from)
+      if (st.isSymbolicLink() || !st.isDirectory()) continue
       if (!existsSync(join(from, 'status.json'))) continue
       const to = join(sessionsRoot, runId)
       if (existsSync(to)) {

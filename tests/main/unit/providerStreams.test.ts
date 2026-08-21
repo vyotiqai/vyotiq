@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { anthropicProvider } from '@main/agent/providers/anthropic'
-import { mistralProvider, openrouterProvider } from '@main/agent/providers/openai'
+import { mistralProvider, ollamaProvider, openrouterProvider } from '@main/agent/providers/openai'
 import { streamGeminiInteractions } from '@main/agent/providers/geminiInteractions'
 import { streamOpenAiResponses } from '@main/agent/providers/openaiResponses'
 import { iterateSseData, iterateSseJson, STREAM_IDLE_TIMEOUT_MS } from '@main/agent/providers/sse'
@@ -178,6 +178,7 @@ describe('anthropic stream usage', () => {
     // own usage fields instead of being summed into the meter input.
     expect(done?.usage).toEqual({
       inputTokens: 1200,
+      inputTokensIncludesCache: false,
       outputTokens: 42,
       cachedInputTokens: 900,
       cacheCreationInputTokens: 10,
@@ -255,6 +256,49 @@ describe('openai responses stream', () => {
     expect(chunks.filter((c) => c.type === 'tool_call')).toHaveLength(1)
   })
 
+  it('sends previous_response_id with the new user turn instead of empty tool input', async () => {
+    let capturedBody: Record<string, unknown> | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return sseBody([
+          'data: {"type":"response.output_text.delta","delta":"Sure."}\n\n',
+          'data: {"type":"response.completed","response":{"id":"resp_2"}}\n\n'
+        ])
+      })
+    )
+
+    await collect(
+      streamOpenAiResponses(
+        baseReq({
+          model: 'gpt-5',
+          messages: [
+            { role: 'user', content: 'read file' },
+            {
+              role: 'assistant',
+              content: 'done',
+              reasoningState: {
+                kind: 'openai_responses',
+                responseId: 'resp_1',
+                outputItems: []
+              }
+            },
+            { role: 'user', content: 'now summarize it' }
+          ],
+          reasoningState: {
+            kind: 'openai_responses',
+            responseId: 'resp_1',
+            outputItems: []
+          }
+        })
+      )
+    )
+
+    expect(capturedBody?.previous_response_id).toBe('resp_1')
+    expect(capturedBody?.input).toEqual([{ role: 'user', content: 'now summarize it' }])
+  })
+
   it('emits thinking_done before answer text when reasoning precedes content', async () => {
     vi.stubGlobal(
       'fetch',
@@ -289,6 +333,37 @@ describe('DeepInfra DeepSeek dual-field SSE', () => {
       thinking: { enabled: true, effort: 'high', display: 'summarized' },
       ...partial
     })
+
+  it('surfaces DeepInfra SSE error frames instead of empty done (live 071005c7)', async () => {
+    const { customProvider } = await import('@main/agent/providers/openai')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseBody([
+          'data: {"error":{"message":"\'list\' object has no attribute \'items\'","type":"api_error","param":null,"code":500}}\n\n'
+        ])
+      )
+    )
+
+    const chunks = await collect(customProvider.streamChat(flash0731Req()))
+    expect(chunks).toEqual([
+      {
+        type: 'error',
+        error: "'list' object has no attribute 'items'",
+        errorCode: 'PROVIDER_HTTP'
+      }
+    ])
+  })
+
+  it('surfaces SSE errors when choices carry empty tool_calls arrays', async () => {
+    const { openAiCompatSseErrorMessage } = await import('@main/agent/providers/openai')
+    expect(
+      openAiCompatSseErrorMessage({
+        error: { message: 'rate limited' },
+        choices: [{ delta: { tool_calls: [] } }]
+      })
+    ).toBe('rate limited')
+  })
 
   it('yields thinking_delta from delta.reasoning_content only (Flash-0731)', async () => {
     const { customProvider } = await import('@main/agent/providers/openai')
@@ -390,6 +465,72 @@ describe('DeepInfra DeepSeek dual-field SSE', () => {
       name: 'web_fetch',
       arguments: '{"url":"https://example.com"}'
     })
+  })
+
+  it('yields suffix-only deltas when the host re-sends growing full tool arguments', async () => {
+    const { customProvider } = await import('@main/agent/providers/openai')
+    // Growing full JSON each SSE event (some OpenAI-compat hosts).
+    const frames = [
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_edit1","type":"function","function":{"name":"edit","arguments":"{\\"path\\":\\"a.ts\\",\\"diff\\":\\""}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_edit1","type":"function","function":{"arguments":"{\\"path\\":\\"a.ts\\",\\"diff\\":\\"@@\\\\n+LIVE"}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_edit1","type":"function","function":{"arguments":"{\\"path\\":\\"a.ts\\",\\"diff\\":\\"@@\\\\n+LIVE\\\\n\\"}"}}]}}]}\n\n',
+      'data: {"choices":[{"finish_reason":"tool_calls"}]}\n\n'
+    ]
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => sseBody(frames))
+    )
+
+    const chunks = await collect(customProvider.streamChat(flash0731Req({ tools: [] as never })))
+    const deltas = chunks.filter((c) => c.type === 'tool_call_delta')
+    expect(deltas.length).toBeGreaterThanOrEqual(3)
+    const argParts = deltas.map((d) => d.toolCallDelta?.arguments ?? '')
+    const joined = argParts.join('')
+    // UI concatenates these — must equal the final JSON, not full1+full2+full3.
+    expect(joined).toBe('{"path":"a.ts","diff":"@@\\n+LIVE\\n"}')
+    expect(argParts.some((p) => p === '@@\\n+LIVE' || p.endsWith('@@\\n+LIVE'))).toBe(true)
+    expect(chunks.filter((c) => c.type === 'tool_call')[0]?.toolCall?.arguments).toBe(
+      '{"path":"a.ts","diff":"@@\\n+LIVE\\n"}'
+    )
+  })
+
+  it('yields growing message.tool_calls when delta only has empty chrome args', async () => {
+    const { customProvider } = await import('@main/agent/providers/openai')
+    const frames = [
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_edit_msg","type":"function","function":{"name":"edit","arguments":""}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_edit_msg","type":"function","function":{"arguments":""}}]},"message":{"tool_calls":[{"id":"call_edit_msg","type":"function","function":{"name":"edit","arguments":"{\\"path\\":\\"a.ts\\"}"}}]}}]}\n\n',
+      'data: {"choices":[{"message":{"tool_calls":[{"id":"call_edit_msg","type":"function","function":{"name":"edit","arguments":"{\\"path\\":\\"a.ts\\",\\"contents\\":\\"hello\\\\nworld\\"}"}}]}}]}\n\n',
+      'data: {"choices":[{"finish_reason":"tool_calls"}]}\n\n'
+    ]
+    vi.stubGlobal('fetch', vi.fn(async () => sseBody(frames)))
+
+    const chunks = await collect(customProvider.streamChat(flash0731Req({ tools: [] as never })))
+    const deltas = chunks.filter((c) => c.type === 'tool_call_delta')
+    const argParts = deltas.map((d) => d.toolCallDelta?.arguments ?? '')
+    expect(argParts.some((p) => p.includes('"path":"a.ts"'))).toBe(true)
+    expect(argParts.some((p) => p.includes('hello'))).toBe(true)
+    expect(chunks.filter((c) => c.type === 'tool_call')[0]?.toolCall).toMatchObject({
+      id: 'call_edit_msg',
+      name: 'edit',
+      arguments: '{"path":"a.ts","contents":"hello\\nworld"}'
+    })
+  })
+
+  it('yields when function.arguments is a growing parsed object', async () => {
+    const { customProvider } = await import('@main/agent/providers/openai')
+    const frames = [
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_obj","type":"function","function":{"name":"edit","arguments":{"path":"a.ts"}}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_obj","type":"function","function":{"arguments":{"path":"a.ts","contents":"hello\\nworld"}}}]}}]}\n\n',
+      'data: {"choices":[{"finish_reason":"tool_calls"}]}\n\n'
+    ]
+    vi.stubGlobal('fetch', vi.fn(async () => sseBody(frames)))
+
+    const chunks = await collect(customProvider.streamChat(flash0731Req({ tools: [] as never })))
+    const argParts = chunks
+      .filter((c) => c.type === 'tool_call_delta')
+      .map((d) => d.toolCallDelta?.arguments ?? '')
+    expect(argParts.some((p) => p.includes('hello'))).toBe(true)
+    expect(chunks.filter((c) => c.type === 'tool_call')[0]?.toolCall?.arguments).toContain('hello')
   })
 })
 
@@ -635,6 +776,68 @@ describe('mistral ThinkChunk stream', () => {
     expect(secondBody.stream_options).toBeUndefined()
     expect(chunks.some((c) => c.type === 'text' && c.text === 'ok')).toBe(true)
   })
+
+  it('captures Ollama include_usage chunk with empty choices', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      sseBody([
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}\n\n',
+        'data: {"choices":[],"usage":{"prompt_tokens":31,"completion_tokens":28,"total_tokens":0}}\n\n'
+      ])
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const chunks = await collect(
+      ollamaProvider.streamChat(
+        baseReq({ model: 'gemma4:31b', baseUrl: 'https://ollama.com', apiKey: 'test-key' })
+      )
+    )
+
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)) as {
+      stream_options?: unknown
+    }
+    expect(firstBody.stream_options).toEqual({ include_usage: true })
+    const done = chunks.find((c) => c.type === 'done')
+    expect(done?.usage?.inputTokens).toBe(31)
+    expect(done?.usage?.outputTokens).toBe(28)
+  })
+
+  it('retries Ollama without include_usage when the host rejects stream_options', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: { message: 'Extra inputs are not permitted: stream_options' }
+          }),
+          { status: 400, headers: { 'content-type': 'application/json' } }
+        )
+      )
+      .mockResolvedValueOnce(
+        sseBody([
+          'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n',
+          'data: {"choices":[{"finish_reason":"stop"}]}\n\n'
+        ])
+      )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const chunks = await collect(
+      ollamaProvider.streamChat(
+        baseReq({ model: 'gemma4:31b', baseUrl: 'http://127.0.0.1:11434/v1' })
+      )
+    )
+
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0]![1]?.body)) as {
+      stream_options?: unknown
+    }
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]![1]?.body)) as {
+      stream_options?: unknown
+    }
+    expect(firstBody.stream_options).toEqual({ include_usage: true })
+    expect(secondBody.stream_options).toBeUndefined()
+    expect(chunks.some((c) => c.type === 'text' && c.text === 'ok')).toBe(true)
+  })
 })
 
 describe('anthropic thinking block boundaries', () => {
@@ -856,6 +1059,7 @@ describe('gemini interactions stream', () => {
 
     expect(done?.usage).toEqual({
       inputTokens: 100,
+      inputTokensIncludesCache: true,
       outputTokens: 25,
       totalTokens: 125,
       cachedInputTokens: 40,
@@ -906,6 +1110,40 @@ describe('gemini interactions stream', () => {
       interactionId: 'int_next'
     })
   })
+
+  it('sends previous_interaction_id with the new user turn instead of empty tool input', async () => {
+    let capturedBody: Record<string, unknown> | undefined
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+      return sseBody([
+        'data: {"event_type":"step.delta","interaction":{"id":"int_next"},"delta":{"type":"text","text":"Next."}}\n\n',
+        'data: {"event_type":"interaction.completed","interaction":{"id":"int_next","finish_reason":"stop"}}\n\n'
+      ])
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await collect(
+      streamGeminiInteractions(
+        baseReq({
+          model: 'gemini-3-pro',
+          system: 'system',
+          messages: [
+            { role: 'user', content: 'hi' },
+            {
+              role: 'assistant',
+              content: 'hello',
+              reasoningState: { kind: 'gemini_interactions', interactionId: 'int_prev' }
+            },
+            { role: 'user', content: 'what next?' }
+          ],
+          reasoningState: { kind: 'gemini_interactions', interactionId: 'int_prev' }
+        })
+      )
+    )
+
+    expect(capturedBody?.previous_interaction_id).toBe('int_prev')
+    expect(capturedBody?.input).toBe('what next?')
+  })
 })
 
 describe('openai responses thinking boundaries', () => {
@@ -930,5 +1168,94 @@ describe('openai responses thinking boundaries', () => {
 
     expect(types.indexOf('thinking_done')).toBeLessThan(types.indexOf('text'))
     expect(chunks.filter((c) => c.type === 'thinking_done')).toHaveLength(1)
+  })
+})
+
+describe('provider HTTP/network error codes', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  function unauthorized(): Response {
+    return new Response(JSON.stringify({ error: { message: 'invalid api key' } }), {
+      status: 401,
+      headers: { 'content-type': 'application/json' }
+    })
+  }
+
+  it('tags Anthropic HTTP 401 as PROVIDER_HTTP', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => unauthorized()))
+    const chunks = await collect(anthropicProvider.streamChat(baseReq()))
+    expect(chunks.find((c) => c.type === 'error')).toMatchObject({
+      type: 'error',
+      errorCode: 'PROVIDER_HTTP'
+    })
+  })
+
+  it('tags Gemini generateContent HTTP 401 as PROVIDER_HTTP', async () => {
+    const { geminiProvider } = await import('@main/agent/providers/gemini')
+    vi.stubGlobal('fetch', vi.fn(async () => unauthorized()))
+    const chunks = await collect(
+      geminiProvider.streamChat(baseReq({ model: 'gemini-2.0-flash', apiKey: 'test-key' }))
+    )
+    expect(chunks.find((c) => c.type === 'error')).toMatchObject({
+      type: 'error',
+      errorCode: 'PROVIDER_HTTP'
+    })
+  })
+
+  it('tags OpenAI Responses HTTP 401 as PROVIDER_HTTP', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => unauthorized()))
+    const chunks = await collect(streamOpenAiResponses(baseReq({ model: 'gpt-5' })))
+    expect(chunks.find((c) => c.type === 'error')).toMatchObject({
+      type: 'error',
+      errorCode: 'PROVIDER_HTTP'
+    })
+  })
+
+  it('tags Gemini Interactions HTTP 401 as PROVIDER_HTTP', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => unauthorized()))
+    const chunks = await collect(streamGeminiInteractions(baseReq({ model: 'gemini-3-pro' })))
+    expect(chunks.find((c) => c.type === 'error')).toMatchObject({
+      type: 'error',
+      errorCode: 'PROVIDER_HTTP'
+    })
+  })
+
+  it('tags OpenAI Responses in-band failure as PROVIDER_STREAM', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseBody([
+          'data: {"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"message":"invalid content"}}}\n\n'
+        ])
+      )
+    )
+    const chunks = await collect(streamOpenAiResponses(baseReq({ model: 'gpt-5' })))
+    expect(chunks.find((c) => c.type === 'error')).toMatchObject({
+      type: 'error',
+      errorCode: 'PROVIDER_STREAM',
+      error: 'invalid content'
+    })
+  })
+
+  it('tags Anthropic network failure as PROVIDER_NETWORK after chat fetch budget', async () => {
+    vi.useFakeTimers()
+    try {
+      const fetchMock = vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' }))
+      vi.stubGlobal('fetch', fetchMock)
+      const pending = collect(anthropicProvider.streamChat(baseReq()))
+      await vi.runAllTimersAsync()
+      const chunks = await pending
+      expect(chunks.find((c) => c.type === 'error')).toMatchObject({
+        type: 'error',
+        errorCode: 'PROVIDER_NETWORK'
+      })
+      expect(fetchMock).toHaveBeenCalledTimes(5)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

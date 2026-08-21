@@ -1,15 +1,12 @@
 /**
  * Freeze-style regression invariants from docs/research/token-cost-jun-aug-2026
- * (session 80bd4074: compaction soft-cap trigger + cumulative billed Σ semantics).
+ * (hard content-window compaction trigger + cumulative billed Σ semantics).
  * Do not weaken these without an explicit product decision.
  */
 import { describe, expect, it } from 'vitest'
 import {
-  COMPACTION_SOFT_CAP_TOKENS,
-  TOOLS_SOFT_CAP_TOKENS,
-  MCP_PIN_IDLE_TTL_STEPS,
-  MCP_PINNED_SOFT_MAX,
   compactionTriggerFromRaw,
+  contentWindowFromRaw,
   toolsBudgetFromRaw
 } from '../../src/shared/domain/contextBudget'
 import {
@@ -19,22 +16,14 @@ import {
 } from '../../src/shared/utils/runTelemetry'
 
 describe('token-cost freeze invariants', () => {
-  it('keeps 1M-window compaction trigger at the soft cap (not ratio×content)', () => {
-    const trigger = compactionTriggerFromRaw(1_000_000, 0.5)
-    expect(trigger).toBe(COMPACTION_SOFT_CAP_TOKENS)
-    expect(trigger).toBe(64_000)
+  it('keeps 1M-window compaction trigger at the hard content window', () => {
+    const trigger = compactionTriggerFromRaw(1_000_000)
+    expect(trigger).toBe(contentWindowFromRaw(1_000_000))
+    expect(trigger).toBe(850_000)
   })
 
-  it('keeps tools budget soft-capped on huge windows', () => {
-    expect(toolsBudgetFromRaw(1_000_000)).toBe(TOOLS_SOFT_CAP_TOKENS)
-  })
-
-  it('keeps MCP pin idle TTL and soft max (unload, not immortal sticky pins)', () => {
-    // Tuned from AppData 80bd4074 (read/terminal-heavy gaps between MCP uses).
-    expect(MCP_PIN_IDLE_TTL_STEPS).toBe(16)
-    expect(MCP_PINNED_SOFT_MAX).toBe(12)
-    expect(MCP_PIN_IDLE_TTL_STEPS).toBeGreaterThan(0)
-    expect(MCP_PINNED_SOFT_MAX).toBeGreaterThan(0)
+  it('keeps tools budget as raw window share on huge windows', () => {
+    expect(toolsBudgetFromRaw(1_000_000)).toBe(180_000)
   })
 
   it('treats billed input as Σ step inputs, not latest window', () => {
@@ -62,7 +51,6 @@ describe('token-cost freeze invariants', () => {
     expect(totals.peakInputTokens).toBe(47_049)
     expect(totals.inputTokens).toBe(35_000)
     expect(totals.peakInputTokens).toBeLessThan(totals.billedInputTokens)
-    expect(totals.peakInputTokens).toBeLessThanOrEqual(COMPACTION_SOFT_CAP_TOKENS)
   })
 
   it('rebuilds billed Σ from durable inputTokens and ignores carried billed fields', () => {

@@ -9,8 +9,20 @@ import { isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
 import { scrubString } from '../../shared/utils/scrub'
+import { BUILTIN_TOOL_NAMES, canonicalizeAgentToolName } from './schemas/tools'
 import { isApprovalExemptTool } from './tools/classify'
+import { ASK_SAFE_BUILTIN } from './tools/modePolicy'
 import { streamSignalFor } from './runRegistry'
+import { dismissLifecycleNotification } from '../notifications/bus'
+import { needsYouDedupeKey } from '../../shared/ipc'
+
+/** Browse/fetch egress — gated, but not workspace-mutating.
+ * Legacy `web_fetch` / `web_search` kept for transcript approval replay only
+ * (removed from TOOL_REGISTRY); live network browse is `browser_*`.
+ */
+function isNetworkBrowseTool(name: string): boolean {
+  return name.startsWith('browser_') && ASK_SAFE_BUILTIN.has(name)
+}
 
 export type ApprovalSender = (request: ToolApprovalRequest) => void
 
@@ -66,6 +78,7 @@ export function resolveToolApproval(response: ToolApprovalResponse): boolean {
   if (!entry) return false
   if (entry.runId !== response.runId) return false
   entry.resolve(response.decision)
+  dismissLifecycleNotification(needsYouDedupeKey(response.runId))
   return true
 }
 
@@ -80,6 +93,7 @@ export function cancelPendingApprovals(runId: string, invokeId?: number): void {
     if (invokeId !== undefined && entry.invokeId !== invokeId) continue
     entry.cancel(abortApprovalError())
   }
+  dismissLifecycleNotification(needsYouDedupeKey(runId))
 }
 
 export function isToolGated(
@@ -89,10 +103,27 @@ export function isToolGated(
   workspaceAllowlist: readonly string[]
 ): boolean {
   if (mode === 'off') return false
-  if (sessionAllowlist.has(name)) return false
-  if (workspaceAllowlist.includes(name)) return false
+  const canonical = canonicalizeAgentToolName(name)
+  if (sessionAllowlist.has(canonical) || sessionAllowlist.has(name)) return false
+  if (workspaceAllowlist.includes(canonical) || workspaceAllowlist.includes(name)) return false
   if (mode === 'all') return true
-  return !isApprovalExemptTool(name)
+  return !isApprovalExemptTool(canonical)
+}
+
+/** High-risk tools that stay gated in autonomous mode unless workspace-allowlisted. */
+export function isAutonomousHighRiskTool(name: string): boolean {
+  const canonical = canonicalizeAgentToolName(name)
+  return (
+    canonical === 'delete' ||
+    canonical === 'terminal' ||
+    canonical === 'edit' ||
+    canonical === 'multi_edit' ||
+    canonical === 'str_replace' ||
+    canonical === 'git_commit' ||
+    canonical === 'merge_agent_instance' ||
+    canonical.startsWith('mcp__') ||
+    !(BUILTIN_TOOL_NAMES as readonly string[]).includes(canonical)
+  )
 }
 
 export type AuthorizeResult = { allowed: true } | { allowed: false; reason: string }
@@ -115,6 +146,8 @@ export type ApprovalGateOptions = {
   mode: ToolApprovalMode
   workspaceAllowlist: readonly string[]
   signal: AbortSignal
+  /** When true, auto-approve gated tools except high-risk (delete, terminal, edits). */
+  autonomousMode?: boolean
   /** Persists an "always allow" choice; omitted in tests and headless runs. */
   persistAlways?: (toolName: string) => void
   /** Overridable so tests can drive the decision without an Electron window. */
@@ -136,7 +169,7 @@ function askThroughRenderer(
     })
     return Promise.reject(
       new Error(
-        'Tool approval required but no app window is listening. Reopen Vyotiq and retry, or turn off tool approval in Settings.'
+        'Tool approval required but no app window is listening. Reopen Vyotiq and retry, or turn off tool approval in Settings → Tools.'
       )
     )
   }
@@ -208,7 +241,22 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
 
   return {
     async authorize(call): Promise<AuthorizeResult> {
-      if (!isToolGated(call.name, options.mode, sessionAllowlist, workspaceAllowlist)) {
+      const name = canonicalizeAgentToolName(call.name)
+      if (!isToolGated(name, options.mode, sessionAllowlist, workspaceAllowlist)) {
+        return { allowed: true }
+      }
+
+      if (
+        options.autonomousMode &&
+        !isAutonomousHighRiskTool(name) &&
+        !workspaceAllowlist.includes(name)
+      ) {
+        logger.info('Tool approval auto-granted (autonomous mode)', {
+          scope: 'agent',
+          correlationId: options.runId,
+          tool: name,
+          decision: 'once'
+        })
         return { allowed: true }
       }
 
@@ -216,10 +264,10 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
         requestId: randomUUID(),
         runId: options.runId,
         toolCallId: call.id,
-        name: call.name,
-        summary: summarizeToolArgs(call.name, call.arguments),
+        name,
+        summary: summarizeToolArgs(name, call.arguments),
         argsPreview: scrubString(call.arguments.slice(0, 4000)),
-        mutating: !isApprovalExemptTool(call.name)
+        mutating: isNetworkBrowseTool(name) ? false : !isApprovalExemptTool(name)
       }
 
       const decision = await ask(request).catch((err: unknown) => {
@@ -238,7 +286,7 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
       logger.info('Tool approval decision', {
         scope: 'agent',
         correlationId: options.runId,
-        tool: call.name,
+        tool: name,
         decision
       })
 
@@ -246,19 +294,19 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
         case 'timeout':
           return {
             allowed: false,
-            reason: `Tool approval for ${call.name} timed out and was auto-denied. Do not retry it; ask what to do instead or continue without it.`
+            reason: `Tool approval for ${name} timed out and was auto-denied. Do not retry it; ask what to do instead or continue without it.`
           }
         case 'deny':
           return {
             allowed: false,
-            reason: `The user denied permission to run ${call.name}. Do not retry it; ask what to do instead or continue without it.`
+            reason: `The user denied permission to run ${name}. Do not retry it; ask what to do instead or continue without it.`
           }
         case 'session':
-          sessionAllowlist.add(call.name)
+          sessionAllowlist.add(name)
           return { allowed: true }
         case 'always':
-          workspaceAllowlist.push(call.name)
-          options.persistAlways?.(call.name)
+          workspaceAllowlist.push(name)
+          options.persistAlways?.(name)
           return { allowed: true }
         case 'once':
           return { allowed: true }

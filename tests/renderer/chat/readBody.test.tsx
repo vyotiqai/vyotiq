@@ -80,4 +80,33 @@ describe('read tool transcript presentation', () => {
     expect(clamp.className).toMatch(/mask-fade-bottom/)
     expect(clamp.style.maxHeight).toBe(`${TOOL_BODY_CLAMP_PX}px`)
   })
+
+  it('shows a failed read as an error caption, not a 1-line file slice', () => {
+    const error = 'offset: offset/limit cannot be combined with startLine/endLine'
+    const tools: Extract<UiItem, { kind: 'tool' }>[] = [
+      {
+        kind: 'tool',
+        id: 'r1',
+        tool: {
+          id: 'r1',
+          name: 'read',
+          summary: 'package.json',
+          status: 'fail',
+          argsPreview: JSON.stringify({
+            path: 'package.json',
+            startLine: 1,
+            endLine: 240,
+            offset: 1,
+            limit: 240
+          }),
+          content: error
+        }
+      }
+    ]
+    render(<ToolGroup tools={tools} />)
+    expect(screen.getByText(error)).toBeTruthy()
+    expect(screen.queryByText(/1 line/)).toBeNull()
+    expect(screen.queryByText(/L1-240/)).toBeNull()
+    expect(screen.queryByTestId('read-body-clamp')).toBeNull()
+  })
 })

@@ -1,6 +1,7 @@
-import { useEffect, useRef } from 'react'
+import { useId, useRef } from 'react'
 import type { ToolApprovalMode } from '@shared/ipc'
-import { Button } from '@renderer/lib/ui'
+import { Dialog } from '@renderer/lib/a11y'
+import { Alert, Button } from '@renderer/lib/ui'
 
 const MODES: { mode: ToolApprovalMode; label: string; description: string }[] = [
   {
@@ -23,44 +24,43 @@ const MODES: { mode: ToolApprovalMode; label: string; description: string }[] = 
 export function ToolApprovalOnboardingModal({
   open,
   onChoose,
-  onDismiss
+  onDismiss,
+  error = null
 }: {
   open: boolean
   onChoose: (mode: ToolApprovalMode) => void
   onDismiss: () => void
+  error?: string | null
 }) {
-  const dialogRef = useRef<HTMLDialogElement>(null)
-
-  useEffect(() => {
-    const el = dialogRef.current
-    if (!el) return
-    if (open && !el.open) el.showModal()
-    if (!open && el.open) el.close()
-  }, [open])
-
-  if (!open) return null
+  const titleId = useId()
+  const descId = useId()
+  const initialFocusRef = useRef<HTMLButtonElement>(null)
 
   return (
-    <dialog
-      ref={dialogRef}
-      className="max-w-md rounded-2xl border border-border bg-surface p-0 text-fg shadow-xl backdrop:bg-black/40"
-      onCancel={(e) => {
-        e.preventDefault()
-        onDismiss()
-      }}
+    <Dialog
+      open={open}
+      onClose={onDismiss}
+      labelledBy={titleId}
+      describedBy={descId}
+      initialFocusRef={initialFocusRef}
+      useNativeDialog
     >
       <div className="flex flex-col gap-3 p-5">
         <div>
-          <h2 className="m-0 text-md font-semibold text-fg-strong">Tool approval</h2>
-          <p className="m-0 mt-1 text-sm text-secondary">
-            Choose whether Vyotiq should ask before the agent runs tools. You can change this
-            anytime in Settings → Agent.
+          <h2 id={titleId} className="m-0 text-md font-semibold text-fg-strong">
+            Tool approval
+          </h2>
+          <p id={descId} className="m-0 mt-1 text-sm text-secondary">
+            Choose whether Agent V should ask before the agent runs tools. You can change this
+            anytime in Settings → Tools.
           </p>
         </div>
+        {error ? <Alert>{error}</Alert> : null}
         <div className="flex flex-col gap-2">
           {MODES.map((item) => (
             <button
               key={item.mode}
+              ref={item.mode === 'off' ? initialFocusRef : undefined}
               type="button"
               className="rounded-xl border border-border bg-surface-2 px-3 py-2 text-left transition-colors hover:bg-surface"
               onClick={() => onChoose(item.mode)}
@@ -76,6 +76,6 @@ export function ToolApprovalOnboardingModal({
           </Button>
         </div>
       </div>
-    </dialog>
+    </Dialog>
   )
 }

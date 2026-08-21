@@ -5,6 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { Sidebar } from '@renderer/app/sidebar'
 import { createRef } from 'react'
+import {
+  resetDockImmersiveStore,
+  setDockImmersive
+} from '@renderer/lib/hooks/dockImmersiveStore'
+import {
+  resetWorkspaceHotUiStoreForTests,
+  setWorkspaceHotUi
+} from '@renderer/lib/hooks/workspaceHotUiStore'
 
 const searchRef = createRef<HTMLInputElement>()
 
@@ -44,11 +52,15 @@ const baseProps = {
 beforeEach(() => {
   // @ts-expect-error test bridge
   window.vyotiq = { platform: 'win32' }
+  resetDockImmersiveStore()
+  resetWorkspaceHotUiStoreForTests()
 })
 
 afterEach(() => {
   cleanup()
   vi.restoreAllMocks()
+  resetDockImmersiveStore()
+  resetWorkspaceHotUiStoreForTests()
 })
 
 describe('Sidebar chrome', () => {
@@ -99,12 +111,30 @@ describe('Sidebar chrome', () => {
     expect(onNewChat).toHaveBeenCalledTimes(1)
   })
 
+  it('calls onNewChat from the collapsed header button', () => {
+    const onNewChat = vi.fn()
+    render(<Sidebar {...baseProps} collapsed onNewChat={onNewChat} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /new chat/i }))
+    expect(onNewChat).toHaveBeenCalledTimes(1)
+  })
+
   it('calls onOpenSettings from the footer', () => {
     const onOpenSettings = vi.fn()
     render(<Sidebar {...baseProps} onOpenSettings={onOpenSettings} />)
 
     fireEvent.click(screen.getByRole('button', { name: /^settings$/i }))
     expect(onOpenSettings).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the brand mark in the collapsed header with a hover toggle', () => {
+    const { container } = render(<Sidebar {...baseProps} collapsed />)
+
+    expect(container.querySelector('[data-collapsed]')).toBeTruthy()
+    expect(container.querySelector('[data-sidebar-brand-toggle] [data-brand-mark]')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /expand sidebar/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /new chat/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^settings$/i })).toBeTruthy()
   })
 
   it('uses a flat bg-bg shell without footer tray chrome', () => {
@@ -133,10 +163,52 @@ describe('Sidebar chrome', () => {
     expect(wrapper!.className).not.toContain('border-border')
   })
 
-  it('shows full Marketplace label in the stacked footer', () => {
+  it('shows a notifications bell above Settings', () => {
     render(<Sidebar {...baseProps} />)
+    expect(screen.getByRole('button', { name: /^notifications$/i })).toBeTruthy()
+    const settings = screen.getByRole('button', { name: /^settings$/i })
+    const footer = settings.parentElement
+    expect(footer?.textContent).toMatch(/Notifications/i)
+  })
 
-    const marketplace = screen.getByRole('button', { name: /^marketplace$/i })
-    expect(marketplace.textContent).toBe('Marketplace')
+  it('keeps session search while dock is immersive and hides chat rows until you search', () => {
+    const props = {
+      ...baseProps,
+      runsByWorkspacePath: {
+        '/ws/demo': {
+          runs: [
+            {
+              runId: 'run-1',
+              goal: 'Hidden in immersive',
+              status: 'done' as const,
+              updatedAt: new Date().toISOString()
+            }
+          ],
+          runsCapped: false,
+          runsError: null,
+          runsLoaded: true,
+          activeRunId: 'run-1'
+        }
+      }
+    }
+    const { rerender } = render(<Sidebar {...props} />)
+    expect(screen.getByRole('textbox', { name: /search chats/i })).toBeTruthy()
+    expect(screen.getByText('Hidden in immersive')).toBeTruthy()
+
+    setDockImmersive(true)
+    rerender(<Sidebar {...props} />)
+    expect(screen.getByRole('textbox', { name: /search chats/i })).toBeTruthy()
+    expect(screen.queryByText('Hidden in immersive')).toBeNull()
+    expect(screen.getByText('Workspaces')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /new chat/i })).toBeTruthy()
+
+    setWorkspaceHotUi('/ws/demo', { sessionQuery: 'Hidden' })
+    rerender(<Sidebar {...props} />)
+    expect(screen.getByText('Hidden in immersive')).toBeTruthy()
+
+    setDockImmersive(false)
+    rerender(<Sidebar {...props} />)
+    expect(screen.getByRole('textbox', { name: /search chats/i })).toBeTruthy()
+    expect(screen.getByText('Hidden in immersive')).toBeTruthy()
   })
 })

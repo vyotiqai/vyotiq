@@ -3,12 +3,11 @@ import {
   useEffect,
   useRef,
   useState,
-  useSyncExternalStore,
-  type ReactNode
+  useSyncExternalStore
 } from 'react'
 import type { UiItem } from '@shared/transcript'
-import { GitBranchStrip, GitChangePills, type GitChrome } from './GitChrome'
-import type { ChatItemsStore } from '../chatStores'
+import type { StepUsageTotals } from '@shared/utils/runTelemetry'
+import type { ChatItemsStore, ChatMetaStore } from '../chatStores'
 
 /** Bumps on workspace change, run end, and (debounced) mid-run mutating tool results. */
 const MUTATING_GIT_TOOLS = new Set([
@@ -109,26 +108,17 @@ export function useChatLiveItems(
   return useLiveItems(itemsStore, items)
 }
 
-/** Changes pills left, branch + refresh right — one leading chrome row. */
-export function ChatGitLeading({
-  chrome,
-  onOpenChanges
-}: {
-  chrome: GitChrome
-  onOpenChanges?: () => void
-}): ReactNode {
-  return (
-    <div
-      className="flex w-full min-w-0 items-center justify-between gap-2"
-      data-composer-git-leading
-    >
-      <GitChangePills chrome={chrome} onOpenChanges={onOpenChanges} />
-      <GitBranchStrip chrome={chrome} />
-    </div>
+/** Turn receipts — subscribe on the transcript leaf, not ChatView. */
+export function useResolvedTurnUsage(
+  metaStore: ChatMetaStore | undefined,
+  turnUsage: readonly StepUsageTotals[] | undefined
+): readonly StepUsageTotals[] | undefined {
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => metaStore?.subscribeMeta(onStoreChange) ?? (() => {}),
+    [metaStore]
   )
-}
-
-/** @deprecated Branch strip lives in ChatGitLeading; keep for callers that still pass trailing. */
-export function ChatGitTrailing(_props: { chrome: GitChrome }): ReactNode {
-  return null
+  const getRevision = useCallback(() => metaStore?.getMetaRevision() ?? 0, [metaStore])
+  useSyncExternalStore(subscribe, getRevision, getRevision)
+  if (metaStore?.getTurnUsage) return metaStore.getTurnUsage()
+  return turnUsage
 }

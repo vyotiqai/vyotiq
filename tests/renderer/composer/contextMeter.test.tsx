@@ -5,8 +5,7 @@ import { describe, expect, it } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import {
   ContextMeter,
-  cacheHitPct,
-  shouldShowContextTelemetry
+  cacheHitPct
 } from '@renderer/features/chat/components/composer/ContextMeter'
 import type { ContextUsageState } from '@shared/utils/contextUsage'
 
@@ -30,65 +29,39 @@ const baseUsage: ContextUsageState = {
     cacheCreationInputTokens: 0,
     reasoningTokens: 0,
     steps: 3,
-    stepsWithCacheReport: 3
+    stepsWithCacheReport: 3,
+    billedCost: 0,
+    billedCostSaved: 0,
+    stepsWithCostReport: 0,
+    generationMs: 0
   },
   updatedAt: '2026-01-01T12:00:00.000Z'
 }
 
-describe('shouldShowContextTelemetry', () => {
-  it('hides when estimate equals provider input', () => {
-    expect(
-      shouldShowContextTelemetry({
-        ...baseUsage,
-        estimatedTokens: 5600,
-        inputTokens: 5600,
-        source: 'estimate'
-      })
-    ).toBe(false)
-  })
-
-  it('shows when estimate and provider differ', () => {
-    expect(shouldShowContextTelemetry(baseUsage)).toBe(true)
-  })
-
-  it('shows estimate-only when no provider input', () => {
-    expect(
-      shouldShowContextTelemetry({
-        ...baseUsage,
-        inputTokens: undefined,
-        source: 'estimate'
-      })
-    ).toBe(true)
-  })
-})
-
 describe('ContextMeter', () => {
-  it('opens a structured breakdown popover on click', () => {
+  it('opens a context details popover on click', () => {
     render(<ContextMeter usage={baseUsage} />)
 
-    const trigger = screen.getByRole('button', { name: /context window/i })
-    expect(trigger.textContent).toContain('45k')
-    expect(trigger.textContent).toContain('90k')
-    expect(trigger.textContent).toContain('44%')
+    const trigger = screen.getByRole('button', { name: /context window 50% full/i })
+    expect(trigger.textContent).toContain('50%')
 
     fireEvent.click(trigger)
 
-    const dialog = screen.getByRole('dialog', { name: /context window breakdown/i })
-    expect(dialog).toBeTruthy()
-    expect(screen.getByText(/^Layers$/i)).toBeTruthy()
-    expect(screen.getByText(/^Telemetry$/i)).toBeTruthy()
-    expect(screen.getByText(/^Prompt cache$/i)).toBeTruthy()
-    expect(screen.getAllByText(/Cache hit/i).length).toBeGreaterThanOrEqual(1)
-    expect(screen.getByText(/Step usage/i)).toBeTruthy()
-    expect(screen.getByText(/Billed input/i)).toBeTruthy()
-    expect(screen.getByText(/Compaction at/i)).toBeTruthy()
-    expect(screen.getByText(/Content budget/i)).toBeTruthy()
-    expect(screen.getByText(/Step 3 · 128k window/i)).toBeTruthy()
-    expect(screen.getByText(/Buffer is reserved, not counted in usage/i)).toBeTruthy()
-    expect(screen.queryByText(/Consumed/i)).toBeNull()
+    expect(screen.getByRole('dialog', { name: /context details/i })).toBeTruthy()
+    expect(screen.getByText(/^Context$/)).toBeTruthy()
+    expect(screen.getByText(/used of/)).toBeTruthy()
+    expect(screen.getAllByText(/45k/).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText(/90k/).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/^Breakdown$/)).toBeTruthy()
+    expect(screen.getByText(/^This run$/)).toBeTruthy()
+    expect(screen.getByText(/^Completed steps$/)).toBeTruthy()
+    expect(screen.getByText(/Auto-compact at 63k/i)).toBeTruthy()
+    expect(screen.getByText(/Current step 3/)).toBeTruthy()
+    expect(screen.queryByText(/^Telemetry$/i)).toBeNull()
+    expect(screen.queryByText(/^Layers$/i)).toBeNull()
   })
 
-  it('shows cache write when creation tokens are present without a hit', () => {
+  it('shows cache write in run stats when creation tokens are present', () => {
     render(
       <ContextMeter
         usage={{
@@ -101,13 +74,12 @@ describe('ContextMeter', () => {
         }}
       />
     )
-    fireEvent.click(screen.getByRole('button', { name: /context window/i }))
-    expect(screen.getByText(/^Prompt cache$/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /context/i }))
     expect(screen.getByText(/^Cache write$/)).toBeTruthy()
     expect(screen.getByText(/^8k$/)).toBeTruthy()
   })
 
-  it('hides Telemetry when estimate matches provider input', () => {
+  it('notes estimated source in the panel subtitle', () => {
     render(
       <ContextMeter
         usage={{
@@ -119,56 +91,98 @@ describe('ContextMeter', () => {
         }}
       />
     )
-    fireEvent.click(screen.getByRole('button', { name: /context window/i }))
-    expect(screen.queryByText(/^Telemetry$/i)).toBeNull()
-    expect(screen.getByText(/^Estimated$/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /context/i }))
+    expect(screen.getByText(/estimated/i)).toBeTruthy()
   })
 
-  it('shows Telemetry delta when estimate and provider differ', () => {
-    render(<ContextMeter usage={baseUsage} />)
-    fireEvent.click(screen.getByRole('button', { name: /context window/i }))
-    expect(screen.getByText(/^Telemetry$/i)).toBeTruthy()
-    expect(screen.getByText(/^Delta$/i)).toBeTruthy()
-    expect(screen.getByText('+1k')).toBeTruthy()
-  })
-
-  it('shows task-boundary tip when billed input or steps cross thresholds', () => {
+  it('shows task-boundary tip without warning chrome on the trigger', () => {
     render(
       <ContextMeter
         usage={{
           ...baseUsage,
+          used: 70_451,
+          contentWindow: 850_000,
+          window: 1_000_000,
           stepUsage: {
             ...baseUsage.stepUsage,
-            steps: 40,
-            billedInputTokens: 1_200_000
+            steps: 49,
+            inputTokens: 70_451,
+            billedInputTokens: 2_313_786,
+            cachedInputTokens: 69_632,
+            billedCachedInputTokens: 2_183_936
           }
         }}
       />
     )
-    const trigger = screen.getByRole('button', { name: /context window/i })
-    expect(trigger.className).toMatch(/text-warning/)
-    expect(trigger.className).toMatch(/bg-warning/)
+    const trigger = screen.getByRole('button', { name: /context/i })
+    expect(trigger.className).not.toMatch(/bg-warning/)
+    expect(trigger.getAttribute('aria-label')).toMatch(/Long-run tip available/i)
+    expect(trigger.textContent).toMatch(/70k/)
     fireEvent.click(trigger)
     expect(screen.getByText(/Long run — \/clear/i)).toBeTruthy()
   })
 
-  it('tones the trigger when context is past the compaction line', () => {
+  it('surfaces overage when used exceeds the content budget', () => {
     render(
       <ContextMeter
         usage={{
           ...baseUsage,
-          used: 70000,
+          used: 909_000,
+          contentWindow: 850_000,
+          window: 1_000_000,
           stepUsage: {
             ...baseUsage.stepUsage,
-            steps: 1,
-            billedInputTokens: 1000
+            cachedInputTokens: 0,
+            cacheCreationInputTokens: 0
           }
         }}
       />
     )
-    const trigger = screen.getByRole('button', { name: /context window/i })
-    expect(trigger.className).toMatch(/text-warning/)
-    expect(trigger.className).toMatch(/bg-warning/)
+    const trigger = screen.getByRole('button', { name: /context/i })
+    expect(trigger.className).toMatch(/text-danger|bg-danger/)
+    expect(trigger.getAttribute('aria-label')).toMatch(/107%/)
+    fireEvent.click(trigger)
+    expect(screen.getByText(/over budget/i)).toBeTruthy()
+  })
+
+  it('shows content-budget headroom aligned with used of budget', () => {
+    render(
+      <ContextMeter
+        usage={{
+          ...baseUsage,
+          used: 10_000,
+          inputTokens: 10_000,
+          window: 1_000_000,
+          contentWindow: 850_000,
+          compactionTrigger: 170_000,
+          layers: { system: 2400, history: 4300, tools: 3500, buffer: 840_000 },
+          stepUsage: {
+            ...baseUsage.stepUsage,
+            steps: 3,
+            inputTokens: 10_000,
+            billedInputTokens: 27_000,
+            peakInputTokens: 10_000
+          }
+        }}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /context/i }))
+    expect(screen.getByText(/used of/)).toBeTruthy()
+    expect(screen.getAllByText(/10k/).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getAllByText(/850k/).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/840k headroom/i)).toBeTruthy()
+    expect(screen.queryByText(/990k headroom/i)).toBeNull()
+  })
+
+  it('renders compact action when handler is provided', () => {
+    render(
+      <ContextMeter
+        usage={baseUsage}
+        onCompact={async () => ({ ok: true, message: 'Done' })}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /context/i }))
+    expect(screen.getByRole('button', { name: /compact history/i })).toBeTruthy()
   })
 })
 
@@ -185,7 +199,11 @@ describe('cacheHitPct', () => {
         cacheCreationInputTokens: 100,
         reasoningTokens: 0,
         steps: 1,
-        stepsWithCacheReport: 1
+        stepsWithCacheReport: 1,
+        billedCost: 0,
+        billedCostSaved: 0,
+        stepsWithCostReport: 0,
+        generationMs: 0
       })
     ).toBeNull()
   })
@@ -202,7 +220,11 @@ describe('cacheHitPct', () => {
         cacheCreationInputTokens: 0,
         reasoningTokens: 0,
         steps: 1,
-        stepsWithCacheReport: 1
+        stepsWithCacheReport: 1,
+        billedCost: 0,
+        billedCostSaved: 0,
+        stepsWithCostReport: 0,
+        generationMs: 0
       })
     ).toBe(44)
   })

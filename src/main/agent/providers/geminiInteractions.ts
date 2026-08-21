@@ -1,16 +1,18 @@
 import type { ChatMessage } from '../../../shared/ipc'
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
+import { wireToolCallArguments } from '../toolArgWire'
 import {
   normalizeEffortForGeminiInteractions,
-  trailingToolMessages,
+  statefulContinuationMessages,
   type ProviderReasoningState
 } from '../../../shared/reasoning'
 import type { ProviderChatRequest, StopReason, StreamChunk, ToolCall, TokenUsage } from './types'
+import { billedCostFromUsage } from './usageFields'
 import { normalizeStopReason } from './stopReason'
 import { iterateSseJson } from './sse'
-import { logProviderFailure } from './log'
-import { fetchWithRetry } from './fetchWithRetry'
+import { logProviderFailure, providerFetchFailureChunk } from './log'
+import { CHAT_FETCH_MAX_ATTEMPTS, fetchWithRetry } from './fetchWithRetry'
 import { formatProviderHttpError } from './httpErrors'
 import { parseDataUrl } from './normalize'
 import { resolveSystemZones, volatileSessionMessage } from './systemZones'
@@ -60,7 +62,7 @@ export function toInteractionsInput(
   continuing: boolean,
   opts?: { systemStable?: string; systemVolatile?: string }
 ): string | Array<Record<string, unknown>> {
-  const source = continuing ? trailingToolMessages(messages) : messages
+  const source = continuing ? statefulContinuationMessages(messages) : messages
   const zones = resolveSystemZones({
     system,
     systemStable: opts?.systemStable,
@@ -127,7 +129,7 @@ export function toInteractionsInput(
       for (const tc of m.toolCalls ?? []) {
         let args: unknown = {}
         try {
-          args = JSON.parse(tc.arguments || '{}')
+          args = JSON.parse(wireToolCallArguments(tc.name, tc.arguments || '{}'))
         } catch {
           args = { raw: tc.arguments }
         }
@@ -209,26 +211,29 @@ export async function* streamGeminiInteractions(
   const url = 'https://generativelanguage.googleapis.com/v1beta/interactions'
   let res: Response
   try {
-    res = await fetchWithRetry(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': req.apiKey
+    res = await fetchWithRetry(
+      url,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': req.apiKey
+        },
+        signal: req.signal,
+        body: JSON.stringify(body)
       },
-      signal: req.signal,
-      body: JSON.stringify(body)
-    })
+      { maxAttempts: CHAT_FETCH_MAX_ATTEMPTS }
+    )
   } catch (err) {
     if (req.signal.aborted) throw err
-    logProviderFailure('gemini', 'network', {})
-    yield { type: 'error', error: formatError(err) }
+    yield providerFetchFailureChunk('gemini', err)
     return
   }
 
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     logProviderFailure('gemini', 'http', { status: res.status })
-    yield { type: 'error', error: formatProviderHttpError(res.status, text, 'gemini') }
+    yield { type: 'error', error: formatProviderHttpError(res.status, text, 'gemini'), errorCode: 'PROVIDER_HTTP' }
     return
   }
 
@@ -299,16 +304,18 @@ export async function* streamGeminiInteractions(
                     : typeof usage.cachedInputTokens === 'number'
                       ? usage.cachedInputTokens
                       : undefined
-        lastUsage = {
-          inputTokens:
-            typeof usage.total_input_tokens === 'number' ? usage.total_input_tokens : undefined,
-          outputTokens:
+          lastUsage = {
+            inputTokens:
+              typeof usage.total_input_tokens === 'number' ? usage.total_input_tokens : undefined,
+            inputTokensIncludesCache: true,
+            outputTokens:
             typeof usage.total_output_tokens === 'number' ? usage.total_output_tokens : undefined,
           totalTokens:
             typeof usage.total_tokens === 'number' ? usage.total_tokens : undefined,
           cachedInputTokens,
           reasoningTokens:
-            typeof usage.total_thought_tokens === 'number' ? usage.total_thought_tokens : undefined
+            typeof usage.total_thought_tokens === 'number' ? usage.total_thought_tokens : undefined,
+          ...billedCostFromUsage(usage)
         }
       }
     }
@@ -329,7 +336,6 @@ export async function* streamGeminiInteractions(
     type: 'done',
     usage: lastUsage,
     stopReason,
-    malformedChunks: drops.dropped || undefined,
     reasoningState
   }
 }

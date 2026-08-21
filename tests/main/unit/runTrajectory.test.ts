@@ -82,6 +82,28 @@ describe('runTrajectory', () => {
         }
       },
       {
+        at: '2026-07-30T00:00:03.500Z',
+        event: { type: 'compaction_started', runId: 'run-1', mode: 'auto' }
+      },
+      {
+        at: '2026-07-30T00:00:03.600Z',
+        event: {
+          type: 'compaction_verifying',
+          runId: 'run-1',
+          summary: 'Folded prior turns'
+        }
+      },
+      {
+        at: '2026-07-30T00:00:03.800Z',
+        event: {
+          type: 'compaction',
+          runId: 'run-1',
+          summary: 'Folded prior turns',
+          kind: 'summary',
+          verified: true
+        }
+      },
+      {
         at: '2026-07-30T00:00:04.000Z',
         event: { type: 'status', runId: 'run-1', status: 'done' }
       }
@@ -90,6 +112,9 @@ describe('runTrajectory', () => {
     expect(rows.some((r) => r.kind === 'tool' && r.tool === 'read' && r.ok === true)).toBe(true)
     expect(rows.some((r) => r.kind === 'step_usage' && r.inputTokens === 10)).toBe(true)
     expect(rows.some((r) => r.kind === 'context_usage' && r.overflow === false)).toBe(true)
+    expect(rows.some((r) => r.kind === 'compaction_started' && r.mode === 'auto')).toBe(true)
+    expect(rows.some((r) => r.kind === 'compaction_verifying')).toBe(true)
+    expect(rows.some((r) => r.kind === 'compaction' && r.summary?.includes('Folded'))).toBe(true)
     expect(rows.some((r) => r.kind === 'status' && r.status === 'done')).toBe(true)
   })
 
@@ -99,7 +124,6 @@ describe('runTrajectory', () => {
       minimalReceipt({
         unreadEditPaths: ['a.ts'],
         failureClusters: [{ key: 'edit: boom', count: 2 }],
-        consecutiveToolFailureSteps: 3,
         compactionCount: 2
       })
     )

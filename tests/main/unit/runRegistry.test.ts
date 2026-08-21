@@ -19,10 +19,17 @@ import {
   peekFollowUps,
   setLateFollowUpDropped,
   takeLateFollowUpDropped,
+  setLateWriteCheckpoint,
+  takeLateWriteCheckpoint,
   setStreamInterrupt,
+  streamSignalFor,
   chatCancelResult,
   tryBeginRunClosing,
-  cancelRun
+  cancelRun,
+  cancelAndWaitActiveRuns,
+  tryRegisterRunAbort,
+  getRejectedRunStarts,
+  resetRejectedRunStartsForTests
 } from '@main/agent/runRegistry'
 
 describe('runRegistry listActiveRuns', () => {
@@ -299,6 +306,56 @@ describe('runRegistry cancel clears pending gates', () => {
 
     resetAgentQuestionForTests()
   })
+
+  it('Send now dismisses ask_question so promoted follow-ups can steer', async () => {
+    resetActiveRunsForTests()
+    const {
+      registerQuestionSender,
+      askQuestionThroughRenderer,
+      listPendingAgentQuestions,
+      resetAgentQuestionForTests
+    } = await import('@main/agent/agentQuestion')
+    resetAgentQuestionForTests()
+
+    const runId = 'promote-dismisses-question'
+    const handle = registerRunAbort(runId, '/ws')
+    const soft = new AbortController()
+    setStreamInterrupt(runId, soft)
+    registerQuestionSender(runId, () => {})
+
+    const pending = askQuestionThroughRenderer(
+      {
+        requestId: 'q-promote',
+        runId,
+        toolCallId: 'tq1',
+        questions: [{ id: 'q1', prompt: 'OK?', type: 'single', options: ['yes', 'no'] }]
+      },
+      handle.controller.signal,
+      handle.invokeId
+    )
+    await Promise.resolve()
+    expect(listPendingAgentQuestions(runId)).toHaveLength(1)
+
+    expect(enqueueFollowUp(runId, { role: 'user', content: 'steer now' }).ok).toBe(true)
+    const queued = peekFollowUps(runId)[0]!
+    expect(promoteFollowUp(runId, queued.id).ok).toBe(true)
+    expect(soft.signal.aborted).toBe(true)
+    expect(streamSignalFor(runId, handle.controller.signal).aborted).toBe(true)
+    expect(handle.controller.signal.aborted).toBe(false)
+    expect(listPendingAgentQuestions(runId)).toHaveLength(0)
+    await expect(pending).resolves.toEqual([])
+    resetAgentQuestionForTests()
+  })
+
+  it('rejects enqueue after markRunTurnComplete so follow-ups are not ack-then-dropped', () => {
+    resetActiveRunsForTests()
+    const runId = 'enqueue-after-turn-complete'
+    const handle = registerRunAbort(runId, '/ws')
+    markRunTurnComplete(runId, handle.invokeId)
+    const queued = enqueueFollowUp(runId, { role: 'user', content: 'still queueable' })
+    expect(queued).toEqual({ ok: false, error: 'Run is finishing' })
+    expect(peekFollowUps(runId)).toHaveLength(0)
+  })
 })
 
 describe('runRegistry late follow-up dropped', () => {
@@ -314,5 +371,78 @@ describe('runRegistry late follow-up dropped', () => {
     setLateFollowUpDropped(runId, event)
     expect(takeLateFollowUpDropped(runId)).toEqual(event)
     expect(takeLateFollowUpDropped(runId)).toBeUndefined()
+  })
+
+  it('keeps late buffers across clearRunAbort so IPC takeLate* can drain them', () => {
+    resetActiveRunsForTests()
+    const runId = 'late-survive-clear'
+    const handle = registerRunAbort(runId, '/ws')
+    const dropped = {
+      type: 'follow_up_dropped' as const,
+      runId,
+      ids: ['fu-1'],
+      reason: 'run_ended' as const
+    }
+    const checkpoint = {
+      type: 'writes_checkpoint' as const,
+      runId,
+      checkpointId: 'cp1',
+      files: [] as { path: string; action: 'created' | 'modified' | 'deleted'; undoable: boolean }[]
+    }
+    setLateFollowUpDropped(runId, dropped)
+    setLateWriteCheckpoint(runId, checkpoint)
+    clearRunAbort(runId, handle.invokeId)
+    expect(takeLateFollowUpDropped(runId)).toEqual(dropped)
+    expect(takeLateWriteCheckpoint(runId)).toEqual(checkpoint)
+  })
+})
+
+describe('runRegistry capacity', () => {
+  it('counts rejected overlapping tryRegisterRunAbort calls', () => {
+    resetActiveRunsForTests()
+    resetRejectedRunStartsForTests()
+    const runId = 'overlap-run'
+    const first = tryRegisterRunAbort(runId, '/ws')
+    expect(first.ok).toBe(true)
+    expect(getRejectedRunStarts()).toBe(0)
+
+    const second = tryRegisterRunAbort(runId, '/ws')
+    expect(second.ok).toBe(false)
+    expect(getRejectedRunStarts()).toBe(1)
+
+    if (first.ok) clearRunAbort(runId, first.invokeId)
+  })
+
+  it('allows many concurrent run registrations', () => {
+    resetActiveRunsForTests()
+    for (let i = 0; i < 12; i++) {
+      const res = tryRegisterRunAbort(`run-${i}`, '/ws')
+      expect(res.ok).toBe(true)
+    }
+    const again = tryRegisterRunAbort('run-13', '/ws')
+    expect(again.ok).toBe(true)
+  })
+})
+
+describe('cancelAndWaitActiveRuns', () => {
+  it('aborts live runs and reports timeout when the slot stays registered', async () => {
+    resetActiveRunsForTests()
+    const runId = 'stuck-quit'
+    registerRunAbort(runId, '/ws')
+    const result = await cancelAndWaitActiveRuns(50)
+    expect(result.cancelled).toBe(1)
+    expect(result.timedOut).toEqual([runId])
+    expect(isActive(runId)).toBe(true)
+  })
+
+  it('returns after clearRunAbort without timing out', async () => {
+    resetActiveRunsForTests()
+    const runId = 'finishing-quit'
+    const handle = registerRunAbort(runId, '/ws')
+    const waiting = cancelAndWaitActiveRuns(2_000)
+    setTimeout(() => clearRunAbort(runId, handle.invokeId), 20)
+    const result = await waiting
+    expect(result.timedOut).toEqual([])
+    expect(isActive(runId)).toBe(false)
   })
 })

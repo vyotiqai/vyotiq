@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@shared/ipc'
-import { inferToolStatus, messagesToUiItems, applyEventTimestamps, applyPersistedLiveTools, finalizeHydratedTranscript, isMeaningfulThinking, shouldRenderThinking, duplicatesReasoning, mergeThinkingContent, stripToolShapedAssistantText, stripToolShapedAssistantTextForStream, stripIncompleteToolPrefix, isToolShapedTextLeak, scrubStreamingAssistantToolLeak } from '@shared/transcript'
+import { inferToolStatus, messagesToUiItems, applyEventTimestamps, applyCompactionItems, insertCompactionItem, applyPersistedLiveTools, finalizeHydratedTranscript, isMeaningfulThinking, shouldRenderThinking, duplicatesReasoning, mergeThinkingContent, applyThinkingSnapshot, stripToolShapedAssistantText, stripToolShapedAssistantTextForStream, stripIncompleteToolPrefix, isToolShapedTextLeak, scrubStreamingAssistantToolLeak, type UiItem } from '@shared/transcript'
 
 describe('messagesToUiItems', () => {
   it('rebuilds user, assistant, and tool rows in order', () => {
@@ -35,6 +35,16 @@ describe('messagesToUiItems', () => {
     expect(items).toHaveLength(1)
     if (items[0].kind === 'message') {
       expect(items[0].thinking).toBe('planned approach')
+    }
+  })
+
+  it('copies persisted user send timestamps onto UI items', () => {
+    const items = messagesToUiItems([
+      { role: 'user', content: 'hello', at: '2026-07-24T12:00:00.000Z' }
+    ])
+    expect(items).toHaveLength(1)
+    if (items[0]?.kind === 'message') {
+      expect(items[0].at).toBe('2026-07-24T12:00:00.000Z')
     }
   })
 
@@ -227,6 +237,7 @@ describe('messagesToUiItems', () => {
     expect(items[4]).toMatchObject({ content: 'Exploring sources.' })
     expect(items[5]).toMatchObject({ id: 'c3', tool: { status: 'done' } })
   })
+
 })
 
 describe('transcript display helpers', () => {
@@ -303,6 +314,14 @@ describe('transcript display helpers', () => {
       `${repeated}\n\nSecond pass.`
     ])
     expect(merged).toBe(`First pass.\n\n${repeated}\n\nSecond pass.`)
+  })
+
+  it('replaces streamed thinking with a provider snapshot', () => {
+    expect(applyThinkingSnapshot('AB', 'ABC')).toBe('ABC')
+    expect(applyThinkingSnapshot('ABC', 'ABC')).toBe('ABC')
+    expect(applyThinkingSnapshot('already streamed', '')).toBe('already streamed')
+    expect(applyThinkingSnapshot('already streamed', undefined)).toBe('already streamed')
+    expect(applyThinkingSnapshot(undefined, 'only snapshot')).toBe('only snapshot')
   })
 })
 
@@ -451,8 +470,9 @@ describe('inferToolStatus', () => {
     expect(inferToolStatus('Cancelled')).toBe('fail')
     expect(inferToolStatus('Interrupted')).toBe('fail')
     expect(inferToolStatus('Stopped')).toBe('fail')
+    expect(inferToolStatus('Not completed')).toBe('fail')
+    expect(inferToolStatus('Connection lost')).toBe('fail')
     expect(inferToolStatus('Failed to parse tool arguments')).toBe('fail')
-    expect(inferToolStatus('invalid args for read')).toBe('fail')
     expect(inferToolStatus('exit_code: 0')).toBe('done')
   })
 
@@ -661,7 +681,7 @@ describe('applyEventTimestamps', () => {
     if (assistant?.kind === 'message') expect(assistant.at).toBe('2026-07-24T12:00:05.000Z')
   })
 
-  it('aligns follow-up user timestamps with the last assistant_message of the prior turn', () => {
+  it('aligns follow-up user timestamps with the next invoke running status', () => {
     const items = messagesToUiItems([
       { role: 'user', content: 'first' },
       {
@@ -685,13 +705,149 @@ describe('applyEventTimestamps', () => {
       {
         at: '2026-07-24T12:00:04.000Z',
         event: { type: 'assistant_message', runId: 'r1', content: 'done' }
+      },
+      {
+        at: '2026-07-24T12:00:05.000Z',
+        event: { type: 'status', runId: 'r1', status: 'done' }
+      },
+      {
+        at: '2026-07-24T17:00:05.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' }
+      }
+    ])
+    const users = enriched.filter((i) => i.kind === 'message' && i.role === 'user')
+    expect(users[0]?.kind).toBe('message')
+    expect(users[1]?.kind).toBe('message')
+    if (users[0]?.kind === 'message') expect(users[0].at).toBe('2026-07-24T12:00:00.000Z')
+    if (users[1]?.kind === 'message') expect(users[1].at).toBe('2026-07-24T17:00:05.000Z')
+  })
+
+  it('does not count idle time between turns as follow-up work', () => {
+    const items = messagesToUiItems([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'done' },
+      { role: 'user', content: 'second' },
+      { role: 'assistant', content: 'ok' }
+    ])
+    const enriched = applyEventTimestamps(items, [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' }
+      },
+      {
+        at: '2026-07-24T12:00:05.000Z',
+        event: { type: 'assistant_message', runId: 'r1', content: 'done' }
+      },
+      {
+        at: '2026-07-24T12:00:06.000Z',
+        event: { type: 'status', runId: 'r1', status: 'done' }
+      },
+      {
+        at: '2026-07-24T17:00:06.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' }
+      },
+      {
+        at: '2026-07-24T17:05:55.000Z',
+        event: { type: 'assistant_message', runId: 'r1', content: 'ok' }
+      }
+    ])
+    const users = enriched.filter((i) => i.kind === 'message' && i.role === 'user')
+    const assistants = enriched.filter((i) => i.kind === 'message' && i.role === 'assistant')
+    expect(users[1]?.kind).toBe('message')
+    expect(assistants[1]?.kind).toBe('message')
+    if (users[1]?.kind === 'message' && assistants[1]?.kind === 'message') {
+      expect(users[1].at).toBe('2026-07-24T17:00:06.000Z')
+      expect(assistants[1].at).toBe('2026-07-24T17:05:55.000Z')
+      expect(
+        new Date(assistants[1].at!).getTime() - new Date(users[1].at!).getTime()
+      ).toBe(5 * 60_000 + 49_000)
+    }
+  })
+
+  it('uses follow_up_applied time for mid-run follow-up user timestamps', () => {
+    const items = messagesToUiItems([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'working' },
+      { role: 'user', content: 'also this' }
+    ])
+    const enriched = applyEventTimestamps(items, [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' }
+      },
+      {
+        at: '2026-07-24T12:00:04.000Z',
+        event: { type: 'assistant_message', runId: 'r1', content: 'working' }
+      },
+      {
+        at: '2026-07-24T12:00:10.000Z',
+        event: {
+          type: 'follow_up_applied',
+          runId: 'r1',
+          ids: ['fu-1'],
+          messages: [{ role: 'user', content: 'also this' }]
+        }
       }
     ])
     const users = enriched.filter((i) => i.kind === 'message' && i.role === 'user')
     expect(users[1]?.kind).toBe('message')
     if (users[1]?.kind === 'message') {
-      expect(users[1].at).toBe('2026-07-24T12:00:04.000Z')
+      expect(users[1].at).toBe('2026-07-24T12:00:10.000Z')
     }
+  })
+
+  it('ignores resume running after cancel when assigning follow-up user timestamps', () => {
+    const items = messagesToUiItems([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'partial' },
+      { role: 'user', content: 'second' }
+    ])
+    const enriched = applyEventTimestamps(items, [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' }
+      },
+      {
+        at: '2026-07-24T12:00:03.000Z',
+        event: { type: 'assistant_message', runId: 'r1', content: 'partial' }
+      },
+      {
+        at: '2026-07-24T12:00:04.000Z',
+        event: { type: 'status', runId: 'r1', status: 'cancelled' }
+      },
+      {
+        at: '2026-07-24T12:00:05.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' }
+      },
+      {
+        at: '2026-07-24T12:00:20.000Z',
+        event: { type: 'status', runId: 'r1', status: 'done' }
+      },
+      {
+        at: '2026-07-24T13:00:00.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' }
+      }
+    ])
+    const users = enriched.filter((i) => i.kind === 'message' && i.role === 'user')
+    expect(users[0]?.kind).toBe('message')
+    expect(users[1]?.kind).toBe('message')
+    if (users[0]?.kind === 'message') expect(users[0].at).toBe('2026-07-24T12:00:00.000Z')
+    if (users[1]?.kind === 'message') expect(users[1].at).toBe('2026-07-24T13:00:00.000Z')
+  })
+
+  it('keeps a persisted user send timestamp instead of reconstructing it', () => {
+    const items = messagesToUiItems([
+      { role: 'user', content: 'hello', at: '2026-07-24T11:59:00.000Z' }
+    ])
+    const enriched = applyEventTimestamps(items, [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' }
+      }
+    ])
+    const user = enriched.find((i) => i.kind === 'message' && i.role === 'user')
+    expect(user?.kind).toBe('message')
+    if (user?.kind === 'message') expect(user.at).toBe('2026-07-24T11:59:00.000Z')
   })
 
   it('uses assistant_message events for multi-step assistant timestamps', () => {
@@ -949,6 +1105,60 @@ describe('applyPersistedLiveTools', () => {
       tool: { name: 'grep', status: 'running' }
     })
   })
+
+  it('drops provisional chrome when assistant_message omits rejected tool_calls', () => {
+    const items = messagesToUiItems([{ role: 'user', content: 'go' }])
+    const events = [
+      {
+        at: '2026-07-28T12:00:00.000Z',
+        event: {
+          type: 'tool_call_delta' as const,
+          runId: 'r1',
+          toolCallId: 'orphan-edit',
+          name: 'edit',
+          argumentsDelta: '{"path":"a.ts"'
+        }
+      },
+      {
+        at: '2026-07-28T12:00:01.000Z',
+        event: {
+          type: 'assistant_message' as const,
+          runId: 'r1',
+          content: 'retrying edit args'
+        }
+      }
+    ]
+    expect(applyPersistedLiveTools(items, events).some((item) => item.kind === 'tool')).toBe(false)
+  })
+
+  it('drops live chrome after tool_result even when messages lag', () => {
+    const items = messagesToUiItems([{ role: 'user', content: 'go' }])
+    const events = [
+      {
+        at: '2026-07-28T12:00:00.000Z',
+        event: {
+          type: 'tool_start' as const,
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          summary: 'a.ts'
+        }
+      },
+      {
+        at: '2026-07-28T12:00:01.000Z',
+        event: {
+          type: 'tool_result' as const,
+          runId: 'r1',
+          toolCallId: 'c1',
+          name: 'read',
+          summary: 'a.ts',
+          ok: true,
+          content: 'ok'
+        }
+      }
+    ]
+    expect(applyPersistedLiveTools(items, events).some((item) => item.kind === 'tool')).toBe(false)
+  })
 })
 
 describe('finalizeHydratedTranscript', () => {
@@ -1015,6 +1225,102 @@ describe('finalizeHydratedTranscript', () => {
     }
   })
 
+  it('demotes in-progress todo items to pending when the run completed or errored', () => {
+    const content = '0/2 complete\n[~] Ship\n[ ] Docs'
+    for (const status of ['done', 'error'] as const) {
+      const events = [
+        {
+          at: '2026-07-24T12:00:03.000Z',
+          event: { type: 'status', runId: 'r1', status }
+        }
+      ]
+      const items = messagesToUiItems([
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'todo1', name: 'todo_write', arguments: '{}' }]
+        },
+        {
+          role: 'tool',
+          toolCallId: 'todo1',
+          toolName: 'todo_write',
+          content
+        }
+      ])
+      const finalized = finalizeHydratedTranscript(items, events)
+      const tool = finalized.find((item) => item.kind === 'tool')
+      expect(tool?.kind).toBe('tool')
+      if (tool?.kind === 'tool') {
+        expect(tool.tool.content).toContain('[ ] Ship')
+        expect(tool.tool.content).not.toContain('[~]')
+        expect(tool.tool.content).not.toContain('[-] Ship')
+      }
+    }
+  })
+
+  it('drops never-started running tools when the run completed normally', () => {
+    const events = [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' as const }
+      },
+      {
+        at: '2026-07-24T12:00:01.000Z',
+        event: {
+          type: 'tool_call_delta' as const,
+          runId: 'r1',
+          toolCallId: 'orphan',
+          name: 'edit',
+          argumentsDelta: '{"path":"a.ts"}'
+        }
+      },
+      {
+        at: '2026-07-24T12:00:03.000Z',
+        event: { type: 'status', runId: 'r1', status: 'done' as const }
+      }
+    ]
+    const items = applyEventTimestamps(
+      applyPersistedLiveTools(messagesToUiItems([{ role: 'user', content: 'go' }]), events),
+      events
+    )
+    const finalized = finalizeHydratedTranscript(items, events)
+    expect(finalized.some((item) => item.kind === 'tool')).toBe(false)
+  })
+
+  it('marks started-but-unsettled tools not completed when the run finished', () => {
+    const events = [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' as const }
+      },
+      {
+        at: '2026-07-24T12:00:01.000Z',
+        event: { type: 'tool_start', runId: 'r1', toolCallId: 'c1', name: 'read' }
+      },
+      {
+        at: '2026-07-24T12:00:03.000Z',
+        event: { type: 'status', runId: 'r1', status: 'done' as const }
+      }
+    ]
+    const items = applyEventTimestamps(
+      messagesToUiItems([
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+        }
+      ]),
+      events
+    )
+    const finalized = finalizeHydratedTranscript(items, events)
+    const tool = finalized.find((item) => item.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') {
+      expect(tool.tool.status).toBe('fail')
+      expect(tool.tool.content).toBe('Not completed')
+    }
+  })
+
   it('leaves running tools alone while the run is still active', () => {
     const events = [
       {
@@ -1035,7 +1341,32 @@ describe('finalizeHydratedTranscript', () => {
     if (tool?.kind === 'tool') expect(tool.tool.status).toBe('running')
   })
 
-
+  it('treats stale running status as cancelled when idle hydrate asks', () => {
+    const events = [
+      {
+        at: '2026-07-24T12:00:00.000Z',
+        event: { type: 'status', runId: 'r1', status: 'running' as const }
+      },
+      {
+        at: '2026-07-24T12:00:01.000Z',
+        event: { type: 'tool_start', runId: 'r1', toolCallId: 'c1', name: 'read' }
+      }
+    ]
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+      }
+    ])
+    const finalized = finalizeHydratedTranscript(items, events, { treatRunningAs: 'cancelled' })
+    const tool = finalized.find((item) => item.kind === 'tool')
+    expect(tool?.kind).toBe('tool')
+    if (tool?.kind === 'tool') {
+      expect(tool.tool.status).toBe('fail')
+      expect(tool.tool.content).toBe('Cancelled')
+    }
+  })
 })
 
 describe('messagesToUiItems tool ok', () => {
@@ -1093,6 +1424,114 @@ describe('messagesToUiItems tool ok', () => {
       expect(tools[1].tool.name).toBe('terminal')
       expect(tools[1].tool.status).toBe('fail')
     }
+  })
+})
+
+describe('applyCompactionItems', () => {
+  it('weaves persisted summaries into the transcript by timestamp', () => {
+    const items = messagesToUiItems([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'ok' },
+      { role: 'user', content: 'second' }
+    ])
+    const stamped = items.map((item, index) => ({
+      ...item,
+      at: `2026-08-12T00:00:0${index}.000Z`
+    }))
+    const next = applyCompactionItems(stamped, [
+      {
+        at: '2026-08-12T00:00:01.500Z',
+        event: {
+          type: 'compaction',
+          runId: 'r1',
+          summary: 'First turn covered the setup.',
+          kind: 'summary',
+          verified: true,
+          verifyCoverage: 1
+        }
+      }
+    ])
+    expect(next.map((item) => item.kind)).toEqual([
+      'message',
+      'message',
+      'compaction',
+      'message'
+    ])
+    const compact = next[2]
+    expect(compact?.kind === 'compaction' ? compact.summary : null).toBe(
+      'First turn covered the setup.'
+    )
+    expect(compact?.kind === 'compaction' ? compact.verifyStatus : null).toBe('verified')
+  })
+
+  it('weaves a failed verification card from compaction_verify_failed', () => {
+    const items = messagesToUiItems([{ role: 'user', content: 'first' }]).map((item) => ({
+      ...item,
+      at: '2026-08-12T00:00:00.000Z'
+    }))
+    const next = applyCompactionItems(items, [
+      {
+        at: '2026-08-12T00:00:01.000Z',
+        event: {
+          type: 'compaction_verify_failed',
+          runId: 'r1',
+          summary: 'Bad fold',
+          failures: ['Invented path: src/fake.ts']
+        }
+      }
+    ])
+    const compact = next.find((item) => item.kind === 'compaction')
+    expect(compact?.kind === 'compaction' ? compact.verifyStatus : null).toBe('failed')
+    expect(compact?.kind === 'compaction' ? compact.verifyFailures : null).toEqual([
+      'Invented path: src/fake.ts'
+    ])
+  })
+
+  it('inserts a live summary by timestamp without duplicating', () => {
+    const items = messagesToUiItems([
+      { role: 'user', content: 'first' },
+      { role: 'assistant', content: 'ok' },
+      { role: 'user', content: 'second' }
+    ]).map((item, index) => ({
+      ...item,
+      at: `2026-08-12T00:00:0${index}.000Z`
+    }))
+    const extra = {
+      kind: 'compaction' as const,
+      id: 'compaction:live',
+      summary: 'First turn covered the setup.',
+      at: '2026-08-12T00:00:01.500Z'
+    }
+    const next = insertCompactionItem(items, extra)
+    expect(next.map((item) => item.kind)).toEqual([
+      'message',
+      'message',
+      'compaction',
+      'message'
+    ])
+    expect(insertCompactionItem(next, extra).filter((item) => item.kind === 'compaction')).toHaveLength(
+      1
+    )
+  })
+
+  it('does not treat a failed compact card as the same as a later verified fold', () => {
+    const failed = {
+      kind: 'compaction' as const,
+      id: 'compaction:0:Same text',
+      summary: 'Same text',
+      at: '2026-08-12T00:00:01.000Z',
+      verifyStatus: 'failed' as const,
+      verifyFailures: ['Missing decision: Use JWT']
+    }
+    const verified = {
+      kind: 'compaction' as const,
+      id: 'compaction:1:Same text',
+      summary: 'Same text',
+      at: '2026-08-12T00:00:01.000Z',
+      verifyStatus: 'verified' as const
+    }
+    const next = insertCompactionItem([failed], verified)
+    expect(next.filter((item) => item.kind === 'compaction')).toHaveLength(2)
   })
 })
 

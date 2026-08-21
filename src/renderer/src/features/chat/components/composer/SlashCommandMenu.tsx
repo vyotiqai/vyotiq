@@ -59,7 +59,8 @@ export function SlashCommandMenu({
     panelRef,
     placement: 'up',
     align: 'start',
-    disabled: !open
+    disabled: !open,
+    trapFocus: true
   })
 
   const sections = useMemo(() => buildSlashMenuSections(commands), [commands])
@@ -104,6 +105,7 @@ export function SlashCommandMenu({
       id={listId}
       aria-label="Slash commands"
       aria-activedescendant={activeDescendant}
+      tabIndex={0}
     >
       <div className="sidebar-scroll min-h-0 flex-1 overflow-y-auto p-1">
         {loading && commands.length === 0 ? (

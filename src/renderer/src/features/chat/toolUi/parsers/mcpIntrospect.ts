@@ -4,6 +4,7 @@ import { parseArgsRecord } from '@shared/toolSummary'
 export type McpListToolRow = {
   name: string
   readOnly: boolean | null
+  omitted: boolean
   description: string
 }
 
@@ -29,7 +30,11 @@ export type McpIntrospectParsed = {
 }
 
 function parseListToolLine(line: string): McpListToolRow | null {
-  const m = line.match(/^-\s+(\S+)((?:\s+readOnlyHint=(?:true|false))?)(?::\s*(.*))?$/)
+  const m = line
+    .trim()
+    .match(
+      /^-\s+(\S+)((?:\s+readOnlyHint=(?:true|false))?)((?:\s+\[omitted from this step catalog\])?)(?::\s*(.*))?$/
+    )
   if (!m) return null
   const hint = m[2]?.trim()
   let readOnly: boolean | null = null
@@ -38,8 +43,18 @@ function parseListToolLine(line: string): McpListToolRow | null {
   return {
     name: m[1]!,
     readOnly,
-    description: (m[3] ?? '').trim()
+    omitted: Boolean(m[3]?.trim()),
+    description: (m[4] ?? '').trim()
   }
+}
+
+/** Newline rows, or a single collapsed line of `- mcp__…` bullets. */
+function listToolCandidateLines(content: string): string[] {
+  const trimmed = content.trim()
+  if (!trimmed) return []
+  if (/\r?\n/.test(trimmed)) return trimmed.split(/\r?\n/)
+  if (trimmed.includes(' - mcp__')) return trimmed.split(/(?= - mcp__)/)
+  return [trimmed]
 }
 
 function parseBracketEntry(line: string): McpListEntryRow | null {
@@ -107,8 +122,7 @@ export function parseMcpIntrospectData(tool: UiToolRow): McpIntrospectParsed {
   switch (tool.name) {
     case 'mcp_list_tools': {
       if (/^No MCP tools/i.test(content)) return { ...empty, message: content }
-      const tools = content
-        .split(/\r?\n/)
+      const tools = listToolCandidateLines(content)
         .map((line) => parseListToolLine(line.trim()))
         .filter((row): row is McpListToolRow => row !== null)
       return {

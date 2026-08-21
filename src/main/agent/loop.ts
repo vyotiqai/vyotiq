@@ -14,19 +14,21 @@ import {
   resolveProviderChatBaseUrl,
   seedModelsFor
 } from '../../shared/providers'
-import { formatError, isAbortError } from '../../shared/errors'
+import { formatError, isAbortError, isRetryableTurnFailure } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { workspaceIdFromPath } from '../../shared/workspaceId'
 import {
   MAX_STREAM_ATTEMPTS,
   isRetriableStreamFailure,
-  shouldRetryProviderStreamError,
+  runWithStreamRetryGen,
+  shouldRetryStreamErrorChunk,
   shouldRetryThrownStreamError,
   sleepStreamRetryBackoff,
   streamRetryBackoffMs
 } from './streamRetry'
 import { isRetriableProviderMessage } from './providers/fetchWithRetry'
-import { isNetworkFailureCode, iterateNetworkWait } from './networkMonitor'
+import { circuitKeyProvider, isCircuitOpenError } from './circuitBreaker'
+import { isNetworkFailureCode, iterateNetworkWait, resolveOfflineWaitMs } from './networkMonitor'
 import { isStreamIdleTimeoutError } from './providers/sse'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { resolveServiceTier } from '../../shared/domain/modelSelection'
@@ -36,41 +38,49 @@ import { persistAlwaysAllow } from './toolApprovalStore'
 import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
 import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
-import { preflightChatProviderAuth, preflightImageProviderWarning } from './providers/preflight'
+import { preflightChatProviderAuth } from './providers/preflight'
 import {
   assembleContext,
-  allocateBudget,
   buildSessionEnvSection,
-  compactionTriggerTokens,
   contentWindow,
   contextWindowFor,
-  estimateTextTokensAsync,
-  preserveRecentMessagesAsync,
   applyFoldedMessagesWatermark,
-  toolsBudgetTokens,
-  trimToolsToBudget,
+  buildStepToolCatalog,
   toolCatalogFingerprint,
+  omittedOptionalBuiltinNames,
+  loopHintForDeferredBuiltins,
+  loopHintForDeferredMcpTools,
+  toolsBudgetTokens,
   type CompactionRecord
 } from './context'
-import { CONTEXT_TRIM_WATERMARK_SUMMARY, isTrimWatermarkCompaction } from './context/types'
+import { autoCompactLlmEvents } from './compactRun'
+import {
+  DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO,
+  proactiveCompactThresholdTokens
+} from '../../shared/domain/contextBudget'
 import { executeStepToolCalls } from './executeStepTools'
+import { mergeOpenAiCompatToolArgDelta } from './toolArgWire'
 import { loadHarness } from './harness'
 import {
   combineLoopHints,
+  loopHintForCompactionFailure,
+  loopHintForCompactionVerifyFailed,
+  loopHintForConsecutiveToolFailures,
   loopHintForEvictedMcpTools,
+  loopHintAfterCompaction,
+  loopHintForIdenticalStepStreak,
   loopHintForMcpNotInCatalogFailFast,
   loopHintForOmittedMcpTools,
   loopStopDecision,
   MCP_NOT_IN_CATALOG_FAIL_FAST_THRESHOLD,
-  maxParallelReadToolsForFailureStreak,
   nextIdenticalStepStreak,
-  runNoticeForOmittedMcpTools,
+  runNoticeForContextAboveSoftTrigger,
   seedKnownPathsFromMessages,
   seedMutationPathsFromMessages,
   stepToolCallsFingerprint,
+  summarizeRecentToolFailure,
   type LoopStop
 } from './loopPolicy'
-import { MAX_PARALLEL_READ_TOOLS } from './tools/classify'
 import { disposeTerminalSessionsForInvoke } from './tools/terminalSessions'
 import { getProvider } from './providers'
 import { resolveModelInfo } from './modelResolve'
@@ -98,14 +108,20 @@ import {
   setLateFollowUpDropped,
   takePendingMode
 } from './runRegistry'
+import { syncFollowUpsToDisk } from './followUpStore'
+import { clearLoopCheckpoint, loadLoopCheckpoint, saveLoopCheckpoint } from './loopCheckpoint'
+import { LOOP_CHECKPOINT_VERSION } from '../../shared/ipc/schemas/agent'
 import {
   appendEvent,
   appendMessage,
+  ensureUserMessageAt,
   createRun,
   loadCompaction,
   loadEventsAsync,
   loadMessages,
+  loadWorkingMessagesForFold,
   loadStatus,
+  runExists,
   loadToolCatalogSticky,
   readContract,
   readContractAsync,
@@ -121,7 +137,8 @@ import {
   takeEventAppendFailureNotice,
   takeMessageAppendFailureNotice,
   flushStatusWrites,
-  loadMessagesAsync
+  loadMessagesAsync,
+  patchLatestTodoWriteMessage
 } from './state'
 import { writeRunReceiptBestEffort } from './runReceipt'
 import { writeTrajectoryArtifactsBestEffort } from './runTrajectory'
@@ -137,13 +154,15 @@ import {
   classifyTokenCostHotspot,
   countKeptToolResultChars,
   evaluateTokenCostWarnings,
+  LARGE_STEP_INPUT_THRESHOLD,
+  pushRecentLargeCacheHit,
   stepCacheHitRate,
-  topToolsByCallCount,
-  userFacingTokenCostHint
+  topToolsByCallCount
 } from '../../shared/utils/tokenCost'
-import { finalizeTodosOnRunEnd } from './tools/todo'
+import { finalizeTodosOnRunEnd, formatTodosContextSection, readTodos } from './tools/todo'
 import { toolResultEventForIpc, toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { AGENT_TOOLS } from './types'
+import { canonicalizeAgentToolName } from './schemas/tools'
 import {
   getMcpServerStatus,
   isGitMcpNotARepoError,
@@ -156,10 +175,18 @@ import { resolveEffectiveMcpServers, resolveMcpServersForSessionMap, mcpSessionM
 import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills'
 import { beginWriteCheckpoint, finalizeWriteCheckpoint } from './checkpoints'
 import { isMcpToolPermitted } from '../../shared/utils/mcpToolPolicy'
-import { filterToolDefsForMode, modeSectionMarkdown } from './tools/modePolicy'
+import {
+  filterToolDefsForMode,
+  filterToolDefsForCodeIndex,
+  isBuiltinAllowedInMode,
+  modeSectionMarkdown
+} from './tools/modePolicy'
+import { AGENT_ONLY_BUILTIN } from './tools/classify'
 import { dedupeToolCalls, ensureToolCallIds } from './dedupeToolCalls'
 import { existsSync, writeFileSync } from 'fs'
+import { resolveRunDir } from '../storage/paths'
 import { join } from 'path'
+import { isSafeInstanceWorktreePath } from '../git/instanceWorktree'
 
 export { cancelRun, clearRunAbort, registerRunAbort, resetActiveRunsForTests }
 
@@ -171,13 +198,33 @@ function lastUserMessageIndex(messages: ChatMessage[]): number | undefined {
   return undefined
 }
 
+function loopHintWhenContextStillLarge(
+  estimatedTokens: number,
+  proactiveThreshold: number
+): string | undefined {
+  return estimatedTokens >= proactiveThreshold
+    ? runNoticeForContextAboveSoftTrigger()
+    : undefined
+}
+
+/**
+ * Share of the content window history must regrow before proactive auto-compaction
+ * is worth retrying. Guards against re-folding an unchanged tail every step.
+ */
+const AUTO_COMPACT_MIN_REGROWTH_RATIO = 0.1
+
+const CONTEXT_OVERFLOW_VERIFY_FAILED =
+  'Context still exceeds the model window. Compaction produced a summary that failed verification and was not applied. Start a new chat or compact manually.'
+
 const INCOMPLETE_MESSAGES: Record<Exclude<IncompleteReason, never>, string> = {
   truncated: 'The model hit its output token limit before finishing this turn.',
   empty_response: 'The model returned an empty response.',
   filtered: 'The provider stopped the response because of a content filter.',
   context_overflow:
     'Context still exceeds the model window after compaction. Start a new chat or compact manually.',
-  network_interrupted: 'Connection lost. Retry when back online.'
+  network_interrupted: 'Connection lost. Retry when back online.',
+  circuit_open: 'Temporarily paused after repeated failures. Retry shortly.',
+  provider_error: 'The provider returned an error. Retrying with the error in context…'
 }
 
 /** True when two messages are the same role + normalized text (resume dedupe). */
@@ -244,7 +291,10 @@ async function* yieldStreamRetryWait(
   errorCode: string
 ): AsyncGenerator<AgentEvent, void, unknown> {
   try {
-    for await (const retryInMs of iterateNetworkWait({ signal })) {
+    for await (const retryInMs of iterateNetworkWait({
+      signal,
+      maxWaitMs: resolveOfflineWaitMs(getSettings())
+    })) {
       const waitEv: AgentEvent = {
         type: 'network_wait',
         runId,
@@ -292,7 +342,8 @@ async function* yieldNetworkInterruptedTerminal(
   errorMessage: string,
   errorCode: string,
   flushWriteCheckpoint: () => Generator<AgentEvent, void, unknown>,
-  writeStatus: (patch: { status: 'error'; error: string }) => void
+  writeStatus: (patch: { status: 'error'; error: string }) => void,
+  incompleteReason: Extract<IncompleteReason, 'network_interrupted' | 'circuit_open'> = 'network_interrupted'
 ): AsyncGenerator<AgentEvent, void, unknown> {
   if (!runDir) return
   yield* flushPartialAssistant(
@@ -311,25 +362,22 @@ async function* yieldNetworkInterruptedTerminal(
     type: 'incomplete',
     runId,
     invokeId,
-    reason: 'network_interrupted',
+    reason: incompleteReason,
     step,
-    message: INCOMPLETE_MESSAGES.network_interrupted
+    message: INCOMPLETE_MESSAGES[incompleteReason]
   }
   appendEvent(runDir, incompleteEv)
   yield incompleteEv
-  yield* dropPendingFollowUps(runId, runDir, 'network_interrupted')
-  yield { type: 'error', runId, invokeId, message: errorMessage, code: errorCode }
-  yield* flushWriteCheckpoint()
-  yield { type: 'status', runId, invokeId, status: 'error' }
-  writeStatus({ status: 'error', error: errorMessage })
-  appendEvent(runDir, {
-    type: 'error',
+  yield* dropPendingFollowUps(runId, runDir, incompleteReason)
+  yield* emitTerminalRunError({
     runId,
     invokeId,
+    runDir,
     message: errorMessage,
-    code: errorCode
+    code: errorCode,
+    flushWriteCheckpoint,
+    writeStatus
   })
-  appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
 }
 
 export function createRunId(): string {
@@ -355,16 +403,18 @@ function* applyDrainedFollowUps(
 ): Generator<AgentEvent> {
   const entry = mode === 'next' ? takeNextFollowUp(runId) : takeNextReadyFollowUp(runId)
   if (!entry) return
-  messages.push(entry.message)
-  appendMessage(runDir, entry.message)
+  const message = ensureUserMessageAt(entry.message)
+  messages.push(message)
+  appendMessage(runDir, message)
   const ev: AgentEvent = {
     type: 'follow_up_applied',
     runId,
     ids: [entry.id],
-    messages: [entry.message]
+    messages: [message]
   }
   appendEvent(runDir, ev)
   yield ev
+  syncFollowUpsToDisk(runDir, runId)
 }
 
 /**
@@ -405,6 +455,7 @@ function* dropPendingFollowUps(
   }
   const ids = pending.map((entry) => entry.id)
   clearFollowUps(runId)
+  if (runDir) syncFollowUpsToDisk(runDir, runId)
   const dropped: AgentEvent = {
     type: 'follow_up_dropped',
     runId,
@@ -466,18 +517,83 @@ function* emitEventAppendFailureNotice(
 }
 
 /**
+ * Shared terminal-error close path so every failure site flushes the write
+ * checkpoint in the same order (error → checkpoint → status).
+ * Pass `emitErrorEvent: false` when the caller already yielded the error event
+ * (e.g. append-failure notices).
+ */
+function* emitTerminalRunError(opts: {
+  runId: string
+  invokeId: number
+  runDir: string | null | undefined
+  message: string
+  code?: string
+  emitErrorEvent?: boolean
+  dropFollowUpsReason?: string
+  /** When true, skip flushWriteCheckpoint (caller already flushed). */
+  skipCheckpoint?: boolean
+  flushWriteCheckpoint: () => Generator<AgentEvent, void, unknown>
+  writeStatus: (patch: { status: 'error'; error: string }) => void
+}): Generator<AgentEvent, void, unknown> {
+  const { runId, invokeId, runDir, message, code, flushWriteCheckpoint, writeStatus } = opts
+  const emitError = opts.emitErrorEvent !== false && code != null
+  if (opts.dropFollowUpsReason) {
+    yield* dropPendingFollowUps(runId, runDir, opts.dropFollowUpsReason)
+  }
+  if (emitError) {
+    yield { type: 'error', runId, invokeId, message, code }
+  }
+  if (!opts.skipCheckpoint) {
+    yield* flushWriteCheckpoint()
+  }
+  yield { type: 'status', runId, invokeId, status: 'error' }
+  writeStatus({ status: 'error', error: message })
+  if (runDir) {
+    if (emitError) {
+      appendEvent(runDir, { type: 'error', runId, invokeId, message, code })
+    }
+    appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+  }
+}
+
+/**
  * Normalize streamed + completed tool calls (finished step or interrupted flush).
  */
+function bestMergedToolArguments(a: string, b: string): string {
+  const ab = mergeOpenAiCompatToolArgDelta(a, b).arguments
+  const ba = mergeOpenAiCompatToolArgDelta(b, a).arguments
+  return ab.length >= ba.length ? ab : ba
+}
+
 function resolveStepToolCalls(
   completed: ToolCall[],
   streamed: Map<string, ToolCall>,
   step: number
 ): ToolCall[] {
-  const base =
-    completed.length > 0
-      ? completed
-      : [...streamed.values()].filter((call) => call.name && call.name !== 'tool')
-  return ensureToolCallIds(dedupeToolCalls(base), { step, prefix: 'call' })
+  const streamedList = [...streamed.values()].filter((call) => call.name && call.name !== 'tool')
+  const streamedById = new Map(streamedList.map((call) => [call.id, call]))
+
+  let base: ToolCall[]
+  if (completed.length > 0) {
+    const completedIds = new Set<string>()
+    base = completed.map((tc) => {
+      completedIds.add(tc.id)
+      const fromStream = streamedById.get(tc.id)
+      if (!fromStream?.arguments) return tc
+      const args = bestMergedToolArguments(fromStream.arguments, tc.arguments || '')
+      return { ...tc, arguments: args }
+    })
+    for (const sc of streamedList) {
+      if (!completedIds.has(sc.id)) base.push(sc)
+    }
+  } else {
+    base = streamedList
+  }
+
+  return ensureToolCallIds(dedupeToolCalls(base), { step, prefix: 'call' }).map((call) => {
+    const name = canonicalizeAgentToolName(call.name)
+    return name === call.name ? call : { ...call, name }
+  })
 }
 
 function accumulateStreamedToolDelta(
@@ -487,7 +603,9 @@ function accumulateStreamedToolDelta(
 ): void {
   const existing = streamed.get(toolCallId) ?? { id: toolCallId, name: '', arguments: '' }
   if (delta.name) existing.name += delta.name
-  if (delta.arguments) existing.arguments += delta.arguments
+  if (delta.arguments) {
+    existing.arguments = mergeOpenAiCompatToolArgDelta(existing.arguments, delta.arguments).arguments
+  }
   streamed.set(toolCallId, existing)
 }
 
@@ -576,6 +694,8 @@ export async function* runAgent(input: {
   const { controller, invokeId } = registerRunAbort(runId, workspace)
 
   // Entire body in try/finally so early returns (missing key, etc.) always clear the abort map.
+  // Storage / session paths stay on `workspace`. File tools may use an instance worktree.
+  let toolWorkspace = workspace
   let runDir: string | null = null
   let checkpointFlushed = false
   let runExitedNormally = false
@@ -594,20 +714,31 @@ export async function* runAgent(input: {
     try {
       await flushEventAppends(runDir)
       await flushStatusWrites(runDir)
-    } catch {
-      // Best-effort — final receipt still runs in finally.
+    } catch (err) {
+      // Do not clear pending append notices here — step-boundary
+      // emitEventAppendFailureNotice still needs to surface them. Log so interim
+      // receipt flushes are not silent.
+      logger.warn('Interim step artifact flush failed', {
+        scope: 'agent',
+        code: 'PERSIST',
+        correlationId: runId,
+        err
+      })
     }
   }
   const persistInterimReceipt = async (force = false): Promise<void> => {
     if (!runDir || !isCurrentInvoke(runId, invokeId)) return
     await flushStepArtifacts()
     if (!force && step - lastReceiptPersistedStep < RECEIPT_PERSIST_EVERY_STEPS) return
+    // Interim receipts use the in-memory working set + a bounded event tail to
+    // avoid re-parsing the full messages.jsonl every few steps. Final receipt in
+    // `finally` still loads durable disk state.
     const events = await loadEventsAsync(runDir, runId)
     writeRunReceiptBestEffort({
       runDir,
       runId,
       loadStatus,
-      loadMessages: () => loadMessages(workspace, runId),
+      loadMessages: () => messages,
       loadEvents: () => events,
       readContract
     })
@@ -617,6 +748,7 @@ export async function* runAgent(input: {
     if (!runDir || !isCurrentInvoke(runId, invokeId)) return
     if (patch.status === 'done' || patch.status === 'error' || patch.status === 'cancelled') {
       finalizeTodosOnRunEnd(runDir, patch.status)
+      void patchLatestTodoWriteMessage(runDir, patch.status)
     }
     updateStatus(runDir, patch)
   }
@@ -638,7 +770,7 @@ export async function* runAgent(input: {
     }
     if (opts?.reopen) {
       checkpointFlushed = false
-      beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
+      beginWriteCheckpoint(runDir, toolWorkspace, lastUserMessageIndex(messages))
     }
   }
   try {
@@ -654,9 +786,21 @@ export async function* runAgent(input: {
     const outsidePaths = lastUser ? findAbsolutePathsInText(displayText) : []
     const outsidePathHint = outsideWorkspacePathGuidance(outsidePaths)
     let initialStep = 0
+    let resumedLoopCheckpoint: ReturnType<typeof loadLoopCheckpoint> = null
+
+    let wasInterruptedResume = false
 
     if (input.resume) {
+      const preResumeDir = resolveRunDir(workspace, runId)
+      if (existsSync(preResumeDir)) {
+        wasInterruptedResume = loadStatus(preResumeDir)?.resumable === true
+      }
       runDir = await resumeRun(workspace, runId)
+      if (wasInterruptedResume) {
+        resumedLoopCheckpoint = loadLoopCheckpoint(runDir)
+      } else {
+        clearLoopCheckpoint(runDir)
+      }
       const persisted = loadStatus(runDir)
       initialStep = persisted?.step ?? 0
       // Prefer chatStart mode when the UI sent one; otherwise restore last run mode.
@@ -665,8 +809,10 @@ export async function* runAgent(input: {
       // Always merge from durable disk history on resume so a stale client
       // payload cannot silently rewrite messages.jsonl.
       if (input.newMessages?.length) {
-        const toAppend = dedupeNewMessagesAgainstDisk(diskMessages, input.newMessages)
-        messages = [...diskMessages, ...toAppend.map((m) => ({ ...m }))]
+        const toAppend = dedupeNewMessagesAgainstDisk(diskMessages, input.newMessages).map((m) =>
+          ensureUserMessageAt(m)
+        )
+        messages = [...diskMessages, ...toAppend]
       } else {
         messages = diskMessages.map((m) => ({ ...m }))
       }
@@ -675,10 +821,40 @@ export async function* runAgent(input: {
       // undercount vs the full events.jsonl series (OTel: accumulate per invocation).
       costTotals = stepUsageTotalsFromPersistedEvents(await loadEventsAsync(runDir, runId))
     } else {
-      messages = (input.messages ?? []).map((m) => ({ ...m }))
-      runDir = createRun(workspace, runId, goal, agentMode)
+      messages = (input.messages ?? []).map((m) => ensureUserMessageAt({ ...m }))
+      if (runExists(workspace, runId)) {
+        // Inline instances (and other internal starters) may create the run dir
+        // before runAgent — do not recreate status or wipe transcript files.
+        runDir = resolveRunDir(workspace, runId)
+        const persisted = loadStatus(runDir)
+        agentMode = input.mode ?? persisted?.mode ?? agentMode
+      } else {
+        runDir = createRun(workspace, runId, goal, agentMode)
+      }
       for (const m of messages) appendMessage(runDir, m)
       await flushMessageAppends(runDir)
+    }
+
+    const persistedForTools = loadStatus(runDir)
+    const isInlineInstance = persistedForTools?.inlineInstance === true
+    if (isInlineInstance && persistedForTools?.worktreePath) {
+      const wt = persistedForTools.worktreePath
+      if (!isSafeInstanceWorktreePath(workspace, wt) || !existsSync(wt)) {
+        const missing =
+          'Instance worktree is missing or unsafe — refusing to fall back to the parent workspace. Re-spawn the instance.'
+        writeStatus({
+          status: 'error',
+          mode: agentMode,
+          invokeId,
+          error: missing
+        })
+        yield { type: 'error', runId, message: missing }
+        yield { type: 'status', runId, status: 'error', invokeId }
+        return
+      }
+      toolWorkspace = wt
+    } else {
+      toolWorkspace = workspace
     }
 
     // Fresh invoke — do not inherit a prior LOOP_SAFETY failure streak.
@@ -686,10 +862,9 @@ export async function* runAgent(input: {
       status: 'running',
       mode: agentMode,
       invokeId,
-      error: undefined,
-      consecutiveToolFailureSteps: 0
+      error: undefined
     })
-    beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
+    beginWriteCheckpoint(runDir, toolWorkspace, lastUserMessageIndex(messages))
 
     if (agentMode === 'plan') {
       const planPath = join(runDir, 'plan.md')
@@ -712,13 +887,12 @@ export async function* runAgent(input: {
       if (compaction && compaction.foldedMessages !== foldedMessages) {
         const clamped = { ...compaction, foldedMessages }
         if (runDir && !saveCompaction(runDir, clamped)) {
-          logger.warn('Resume watermark clamp not persisted; keeping prior disk record', {
+          logger.warn('Resume watermark clamp not persisted; in-memory watermark updated', {
             scope: 'agent',
             correlationId: runId
           })
-        } else {
-          compaction = clamped
         }
+        compaction = clamped
       }
     } else {
       // Empty transcript + stale watermark: zero both counter and in-memory record
@@ -727,13 +901,12 @@ export async function* runAgent(input: {
       if (compaction && (compaction.foldedMessages ?? 0) > 0) {
         const cleared = { ...compaction, foldedMessages: 0 }
         if (runDir && !saveCompaction(runDir, cleared)) {
-          logger.warn('Stale resume watermark clear not persisted', {
+          logger.warn('Stale resume watermark clear not persisted; in-memory watermark updated', {
             scope: 'agent',
             correlationId: runId
           })
-        } else {
-          compaction = cleared
         }
+        compaction = cleared
       }
     }
 
@@ -749,6 +922,18 @@ export async function* runAgent(input: {
 
     yield { type: 'status', runId, invokeId, status: 'running' }
     appendEvent(runDir, { type: 'status', runId, invokeId, status: 'running' })
+    if (wasInterruptedResume) {
+      const terminalLossEv: AgentEvent = {
+        type: 'token_cost_hint',
+        runId,
+        invokeId,
+        kind: 'long_run_task_boundary',
+        message:
+          'Note: background terminal sessions from before the interruption are no longer available.'
+      }
+      appendEvent(runDir, terminalLossEv)
+      yield terminalLossEv
+    }
     // Flush so interim receipt sees invokeId (status patches are coalesced).
     await flushStatusWrites(runDir)
     const startEvents = await loadEventsAsync(runDir, runId)
@@ -787,32 +972,46 @@ export async function* runAgent(input: {
           correlationId: runId,
           provider: providerId
         })
-        yield { type: 'error', runId, invokeId, message: preflight.message, code: preflight.code }
-        yield* flushWriteCheckpoint()
-        yield { type: 'status', runId, invokeId, status: 'error' }
-        writeStatus({ status: 'error', error: preflight.message })
-        appendEvent(runDir, {
-          type: 'error',
+        yield* emitTerminalRunError({
           runId,
           invokeId,
+          runDir,
           message: preflight.message,
-          code: preflight.code
+          code: preflight.code,
+          flushWriteCheckpoint,
+          writeStatus
         })
-        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
         return
-      }
-      const imageWarn = preflightImageProviderWarning(settings)
-      if (imageWarn) {
-        logger.warn(imageWarn, {
-          scope: 'agent',
-          code: 'PROVIDER_AUTH',
-          correlationId: runId
-        })
       }
     }
 
     step = initialStep
     let lastUsage: TokenUsage | undefined
+    // Interrupted resume restores budget fields even when invokeId differs — each
+    // chatStart allocates a new invokeId while the prior slot unwinds. Follow-up
+    // resume after done clears the checkpoint instead (see agentLoopResume tests).
+    let truncationContinues = resumedLoopCheckpoint?.truncationContinues ?? 0
+    let overflowRetryUsed = resumedLoopCheckpoint?.overflowRetryUsed ?? false
+    const persistLoopCheckpoint = (): void => {
+      if (!runDir || !isCurrentInvoke(runId, invokeId)) return
+      try {
+        saveLoopCheckpoint(runDir, {
+          version: LOOP_CHECKPOINT_VERSION,
+          step,
+          invokeId,
+          updatedAt: new Date().toISOString(),
+          truncationContinues,
+          overflowRetryUsed
+        })
+      } catch (err) {
+        logger.warn('Loop checkpoint persist failed', {
+          scope: 'agent',
+          code: 'PERSIST',
+          correlationId: runId,
+          err
+        })
+      }
+    }
 
     const approvalSettings = settings.toolApproval ?? DEFAULT_SETTINGS.toolApproval
     // Off is the default, and building a gate then would park nothing — skip it
@@ -825,6 +1024,7 @@ export async function* runAgent(input: {
             invokeId,
             mode: approvalSettings.mode,
             workspaceAllowlist: approvalSettings.allowlist,
+            autonomousMode: settings.autonomousMode === true,
             // Soft follow-up interrupt must cancel parked approvals, not only hard cancel.
             signal: streamSignalFor(runId, controller.signal),
             persistAlways: (toolName) => persistAlwaysAllow(workspace, toolName)
@@ -844,28 +1044,24 @@ export async function* runAgent(input: {
       }
       const summaryChanged =
         compaction?.summary !== record.summary || compaction?.createdAt !== record.createdAt
-      const foldedGrew =
-        (record.foldedMessages ?? 0) > (compaction?.foldedMessages ?? 0)
       if (!saveCompaction(runDir, record)) {
-        logger.warn('Compaction not persisted; keeping prior in-memory record', {
-          scope: 'agent',
-          correlationId: runId
-        })
-        return { saved: false, event: null }
-      }
-      compaction = record
-      // Trim watermarks still notify the UI when history was folded.
-      if (isTrimWatermarkCompaction(record)) {
-        if (!foldedGrew && !summaryChanged) return { saved: true, event: null }
-        const ev: AgentEvent = {
-          type: 'compaction',
-          runId,
-          summary: 'Context trimmed',
-          tokenEstimate: record.tokenEstimate,
-          kind: 'trim'
+        const onDisk = loadCompaction(runDir)
+        if (
+          onDisk &&
+          onDisk.summary === record.summary &&
+          onDisk.createdAt === record.createdAt &&
+          (onDisk.foldedMessages ?? 0) === (record.foldedMessages ?? 0)
+        ) {
+          compaction = onDisk
+        } else {
+          logger.warn('Compaction not persisted; keeping prior in-memory record', {
+            scope: 'agent',
+            correlationId: runId
+          })
+          return { saved: false, event: null }
         }
-        appendEvent(runDir, ev)
-        return { saved: true, event: ev }
+      } else {
+        compaction = record
       }
       if (!summaryChanged) {
         return { saved: true, event: null }
@@ -875,7 +1071,12 @@ export async function* runAgent(input: {
         runId,
         summary: record.summary,
         tokenEstimate: record.tokenEstimate,
-        kind: 'summary'
+        kind: 'summary',
+        ...(record.verified != null ? { verified: record.verified } : {}),
+        ...(record.verifyCoverage != null ? { verifyCoverage: record.verifyCoverage } : {}),
+        ...(record.verifyFailures && record.verifyFailures.length > 0
+          ? { verifyFailures: record.verifyFailures }
+          : {})
       }
       appendEvent(runDir, ev)
       return { saved: true, event: ev }
@@ -903,9 +1104,12 @@ export async function* runAgent(input: {
     // provider/model workspace override toggle is off.
     const marketplaceOverrides = override?.marketplaceOverrides
 
-    const enabledSkills = loadEnabledSkills(marketplaceOverrides)
-    const skillsSection = buildSkillsSection(enabledSkills)
-    const pluginRulesSection = loadPluginRules(marketplaceOverrides)
+    let skillsSection = buildSkillsSection(loadEnabledSkills(marketplaceOverrides, workspace))
+    let pluginRulesSection = loadPluginRules(marketplaceOverrides)
+    const refreshSkillPromptSections = (): void => {
+      skillsSection = buildSkillsSection(loadEnabledSkills(marketplaceOverrides, workspace))
+      pluginRulesSection = loadPluginRules(marketplaceOverrides)
+    }
 
     let runEnabledMcpIds = new Set<string>()
     let mcpToolPolicies = new Map<
@@ -915,6 +1119,8 @@ export async function* runAgent(input: {
     let toolDefs: { name: string; description: string; parameters: Record<string, unknown> }[] = []
     let toolsJsonEstimate = 0
     let omittedMcpHint: string | undefined
+    let deferredBuiltinsHint: string | undefined
+    let deferredMcpHint: string | undefined
     let evictedMcpHint: string | undefined
     let lastMcpRefreshFp = ''
     let lastMcpCatalogFp = ''
@@ -925,26 +1131,37 @@ export async function* runAgent(input: {
     let mcpFailureRetried = false
     /** MCP tool names in the current step's provider catalog (post budget trim). */
     let stepMcpToolNames = new Set<string>()
-    /** Agent-requested MCP tools to prefer in trimToolsToBudget on later steps. */
+    /** Agent-requested MCP tools to prefer in buildStepToolCatalog on later steps. */
     const runPinnedMcpToolNames = new Set<string>()
-    /** Last step each MCP tool was pinned or invoked (idle TTL / LRU). */
+    /** Last step each MCP tool was pinned or invoked (pin tracking). */
     const mcpLastUsedByName = new Map<string, number>()
     /** Per-tool not-in-catalog rejection counts (fail-fast after repeats). */
     const mcpNotInCatalogCounts = new Map<string, number>()
     /** Kept tool names from the last budget pass — sticky for prompt-cache stability. */
-    let runStickyToolNames: Set<string> | null = null
+    const runStickyToolNames = new Set<string>()
     let lastToolCatalogFingerprint = ''
+    const toolsBudgetState: {
+      overflow: {
+        estimate: number
+        budget: number
+        omittedMcpNames: string[]
+      } | null
+    } = { overflow: null }
     const stickyDisk = loadToolCatalogSticky(runDir)
     if (stickyDisk && stickyDisk.keptNames.length > 0) {
-      runStickyToolNames = new Set(stickyDisk.keptNames)
+      for (const name of stickyDisk.keptNames) {
+        if (isInlineInstance && AGENT_ONLY_BUILTIN.has(name)) continue
+        runStickyToolNames.add(name)
+      }
       lastToolCatalogFingerprint = stickyDisk.fingerprint
       const seedStep = Math.max(initialStep, 1)
       const restoredLastUsed = stickyDisk.mcpLastUsedByName
       for (const name of stickyDisk.keptNames) {
+        if (isInlineInstance && AGENT_ONLY_BUILTIN.has(name)) continue
         if (name.startsWith('mcp__')) {
           runPinnedMcpToolNames.add(name)
           const stamped = restoredLastUsed?.[name]
-          // Prefer persisted last-used so idle TTL survives resume; fall back to
+          // Prefer persisted last-used on resume; fall back to
           // current step when older catalogs omit stamps (avoid instant eviction).
           mcpLastUsedByName.set(
             name,
@@ -1021,7 +1238,8 @@ export async function* runAgent(input: {
       )
       const pinnedKey = [...runPinnedMcpToolNames].sort().join(',')
       const catalogStep = Math.max(step, 1)
-      const catalogFp = `${refreshFp}::${agentMode}::${settings.autoModeSwitch ? 1 : 0}::${modelInfo.supportsTools === false ? 0 : 1}::${pinnedKey}::${catalogStep}`
+      const liveCodeIndexEnabled = getSettings().codeIndex?.enabled !== false
+      const catalogFp = `${refreshFp}::${agentMode}::${settings.autoModeSwitch ? 1 : 0}::${modelInfo.supportsTools === false ? 0 : 1}::${pinnedKey}::${catalogStep}::ci${liveCodeIndexEnabled ? 1 : 0}`
       if (configUnchanged && catalogFp === lastMcpCatalogFp && lastMcpCatalogFp !== '') {
         // Fingerprint + mode + pins + tools support + step unchanged — reuse prior trimmed defs.
         return
@@ -1036,25 +1254,46 @@ export async function* runAgent(input: {
       })
       const allToolDefs =
         modelInfo.supportsTools !== false
-          ? filterToolDefsForMode(agentMode, [...AGENT_TOOLS, ...mcpToolDefs], {
-              autoModeSwitch: settings.autoModeSwitch
-            })
+          ? filterToolDefsForCodeIndex(
+              filterToolDefsForMode(
+                agentMode,
+                [...AGENT_TOOLS, ...mcpToolDefs],
+                {
+                autoModeSwitch: settings.autoModeSwitch,
+                inlineInstance: isInlineInstance
+              }),
+              liveCodeIndexEnabled
+            )
           : []
-      const toolBudget = toolsBudgetTokens(modelInfo)
-      const trimmedTools = trimToolsToBudget(allToolDefs, toolBudget, {
+      const toolBudget = toolsBudgetTokens(modelInfo, providerId)
+      const catalogResult = buildStepToolCatalog(allToolDefs, toolBudget, {
         pinnedMcpNames: runPinnedMcpToolNames,
         deferUnpinnedMcp: true,
-        currentStep: catalogStep,
+        catalogStep,
         mcpLastUsedByName,
-        ...(runStickyToolNames ? { stickyKeptNames: runStickyToolNames } : {})
+        ...(runStickyToolNames.size > 0 ? { stickyKeptNames: runStickyToolNames } : {})
       })
+      toolsBudgetState.overflow = null
+      const trimmedTools = catalogResult.ok
+        ? catalogResult
+        : {
+            ok: true as const,
+            tools: allToolDefs,
+            estimate: 0,
+            omittedMcp: 0,
+            omittedMcpNames: [] as string[],
+            budgetOmittedMcpNames: [] as string[],
+            policyDeferredMcpNames: [] as string[],
+            evictedMcpNames: [] as string[],
+            fingerprint: toolCatalogFingerprint(allToolDefs)
+          }
       if (trimmedTools.evictedMcpNames.length > 0) {
         for (const name of trimmedTools.evictedMcpNames) {
           runPinnedMcpToolNames.delete(name)
           mcpLastUsedByName.delete(name)
         }
         evictedMcpHint = loopHintForEvictedMcpTools(trimmedTools.evictedMcpNames)
-        logger.info('Evicted idle/excess pinned MCP from sticky catalog', {
+        logger.info('Unloaded pinned MCP from catalog', {
           scope: 'agent',
           code: 'TOKEN_COST',
           runId,
@@ -1066,13 +1305,30 @@ export async function* runAgent(input: {
       } else {
         evictedMcpHint = undefined
       }
+      // Budget-omitted pins cannot stay pinned — otherwise request_mcp_tools
+      // reports alreadyPinned while the catalog still omits them.
+      if (trimmedTools.budgetOmittedMcpNames.length > 0) {
+        for (const name of trimmedTools.budgetOmittedMcpNames) {
+          runPinnedMcpToolNames.delete(name)
+          mcpLastUsedByName.delete(name)
+        }
+      }
       toolDefs = trimmedTools.tools.map((t) => ({
         name: t.name,
         description: t.description,
         parameters: t.parameters as Record<string, unknown>
       }))
       toolsJsonEstimate = trimmedTools.estimate
-      runStickyToolNames = new Set(trimmedTools.tools.map((t) => t.name))
+      // Keep the same Set instance so request_mcp_tools can pin deferred builtins into it.
+      const nextSticky = new Set(trimmedTools.tools.map((t) => t.name))
+      for (const name of runStickyToolNames) {
+        if (!nextSticky.has(name) && !name.startsWith('mcp__')) {
+          // Preserve deferred builtin pins that have not been admitted yet (next step).
+          nextSticky.add(name)
+        }
+      }
+      runStickyToolNames.clear()
+      for (const name of nextSticky) runStickyToolNames.add(name)
       const catalogFinger = trimmedTools.fingerprint || toolCatalogFingerprint(trimmedTools.tools)
       if (catalogFinger !== lastToolCatalogFingerprint) {
         logger.info('Tool catalog fingerprint changed', {
@@ -1090,28 +1346,43 @@ export async function* runAgent(input: {
         lastToolCatalogFingerprint = catalogFinger
       }
       if (runDir) {
-        // Always persist kept names + last-used stamps (TTL must survive resume/crash).
+        // Always persist kept names + pending sticky pins + last-used stamps (TTL must survive resume/crash).
         saveToolCatalogSticky(
           runDir,
-          trimmedTools.tools.map((t) => t.name),
+          [...runStickyToolNames],
           catalogFinger,
           mcpLastUsedByName
         )
       }
-      omittedMcpHint = loopHintForOmittedMcpTools(trimmedTools.omittedMcpNames)
-      if (
-        runNoticeForOmittedMcpTools(trimmedTools.omittedMcp) &&
-        trimmedTools.omittedMcp > 0
-      ) {
-        const noticeKey = `${trimmedTools.omittedMcp}:${trimmedTools.omittedMcpNames.slice(0, 8).join(',')}`
+      omittedMcpHint = loopHintForOmittedMcpTools(trimmedTools.budgetOmittedMcpNames)
+      const keptNameSet = new Set(trimmedTools.tools.map((t) => t.name))
+      // A successful pin that admits the tool should clear fail-fast history.
+      for (const name of [...mcpNotInCatalogCounts.keys()]) {
+        if (keptNameSet.has(name)) mcpNotInCatalogCounts.delete(name)
+      }
+      const availableOptional = new Set(allToolDefs.map((t) => t.name))
+      // The hint's whole payload is "pin these with request_mcp_tools", which is
+      // Agent-only — advertising it elsewhere costs a step on a guaranteed denial.
+      const canPin = isBuiltinAllowedInMode(agentMode, 'request_mcp_tools', {
+        autoModeSwitch: settings.autoModeSwitch
+      })
+      deferredBuiltinsHint = canPin
+        ? loopHintForDeferredBuiltins(omittedOptionalBuiltinNames(keptNameSet, availableOptional))
+        : undefined
+      deferredMcpHint = canPin
+        ? loopHintForDeferredMcpTools(trimmedTools.policyDeferredMcpNames, mcpToolDefs)
+        : undefined
+      if (trimmedTools.budgetOmittedMcpNames.length > 0) {
+        const noticeKey = `budget:${trimmedTools.budgetOmittedMcpNames.length}:${trimmedTools.budgetOmittedMcpNames.slice(0, 8).join(',')}`
         if (noticeKey !== lastOmittedMcpNoticeKey) {
           lastOmittedMcpNoticeKey = noticeKey
           const ev: AgentEvent = {
             type: 'mcp_tools_omitted',
             runId,
             invokeId,
-            omittedCount: trimmedTools.omittedMcp,
-            omittedPreview: trimmedTools.omittedMcpNames.slice(0, 8).join(', ') || undefined
+            omittedCount: trimmedTools.budgetOmittedMcpNames.length,
+            omittedPreview: trimmedTools.budgetOmittedMcpNames.slice(0, 8).join(', ') || undefined,
+            reason: 'budget'
           }
           if (runDir) appendEvent(runDir, ev)
           pendingMcpOmittedEv = ev
@@ -1124,10 +1395,17 @@ export async function* runAgent(input: {
 
     await refreshMcpToolsForStep()
     yield* flushPendingMcpOmittedNotice()
-    let consecutiveToolFailureSteps = 0
+    let identicalStepLoopHint: string | undefined
+    let compactionLoopHint: string | undefined
     /** Last executed step's tool fingerprint + repeat streak (runaway-loop guard). */
     let lastStepFingerprint = ''
     let identicalStepStreak = 0
+    /** Steps in a row where every tool call failed (runaway-failure guard). */
+    let consecutiveToolFailureSteps = 0
+    let toolFailureLoopHint: string | undefined
+    /** Estimated tokens left by the last auto-compaction (re-compaction throttle). */
+    let postCompactEstimateFloor: number | null = null
+    let lastCompactVerifyFailed = false
     let loopSafetyEmitted = false
     const stopForLoopSafety = function* (stop: LoopStop): Generator<AgentEvent, void, unknown> {
       if (loopSafetyEmitted) return
@@ -1139,20 +1417,24 @@ export async function* runAgent(input: {
         reason: stop.reason,
         step
       })
-      yield* dropPendingFollowUps(runId, runDir, stop.reason)
-      yield* flushWriteCheckpoint()
-      yield { type: 'error', runId, invokeId, message: stop.message, code: 'LOOP_SAFETY' }
-      yield { type: 'status', runId, invokeId, status: 'error' }
-      writeStatus({ status: 'error', error: stop.message })
-      appendEvent(runDir!, { type: 'error', runId, invokeId, message: stop.message, code: 'LOOP_SAFETY' })
-      appendEvent(runDir!, { type: 'status', runId, invokeId, status: 'error' })
+      yield* emitTerminalRunError({
+        runId,
+        invokeId,
+        runDir,
+        message: stop.message,
+        code: 'LOOP_SAFETY',
+        dropFollowUpsReason: stop.reason,
+        flushWriteCheckpoint,
+        writeStatus
+      })
     }
     const knownPaths = seedKnownPathsFromMessages(messages)
     const mutationPaths = seedMutationPathsFromMessages(messages)
-    let overflowRetryUsed = false
-    let truncationContinues = 0
-    const MAX_TRUNCATION_CONTINUES = 2
-    let costWarnOnce = new Set<string>()
+    /** Empty-response auto-continues this invoke (unbounded, same class as truncation). */
+    let emptyResponseContinues = 0
+    const costWarnOnce = new Set<string>()
+    /** Rolling cache-hit samples from large steps (low_cache_hit_rate). */
+    const recentLargeCacheHits: number[] = []
     const thinkingEffortHigh =
       settings.thinkingEffort === 'high' ||
       settings.thinkingEffort === 'xhigh' ||
@@ -1172,6 +1454,14 @@ export async function* runAgent(input: {
         agentMode,
         writeStatus
       )
+      // Live autoModeSwitch at step boundary — next step picks up Settings toggles.
+      // Provider/model stay invoke-frozen; only switch_mode availability is live.
+      const liveAutoModeSwitch = getSettings().autoModeSwitch === true
+      const autoModeSwitchChanged = liveAutoModeSwitch !== Boolean(settings.autoModeSwitch)
+      if (autoModeSwitchChanged) {
+        settings.autoModeSwitch = liveAutoModeSwitch
+        lastMcpCatalogFp = ''
+      }
       try {
         await flushMessageAppends(runDir)
       } catch {
@@ -1183,23 +1473,35 @@ export async function* runAgent(input: {
         // Failure is recorded for emitEventAppendFailureNotice below.
       }
       if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
-        yield* flushWriteCheckpoint()
-        const message = 'Failed to persist a chat message'
-        yield { type: 'status', runId, invokeId, status: 'error' }
-        writeStatus({ status: 'error', error: message })
-        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+        yield* emitTerminalRunError({
+          runId,
+          invokeId,
+          runDir,
+          message: 'Failed to persist a chat message',
+          emitErrorEvent: false,
+          flushWriteCheckpoint,
+          writeStatus
+        })
         return
       }
       if (yield* emitEventAppendFailureNotice(runId, runDir, invokeId)) {
-        yield* flushWriteCheckpoint()
-        const message = 'Failed to persist a run event'
-        yield { type: 'status', runId, invokeId, status: 'error' }
-        writeStatus({ status: 'error', error: message })
-        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+        yield* emitTerminalRunError({
+          runId,
+          invokeId,
+          runDir,
+          message: 'Failed to persist a run event',
+          emitErrorEvent: false,
+          flushWriteCheckpoint,
+          writeStatus
+        })
         return
       }
       step++
-      const loopSafetyStop = loopStopDecision({ step, consecutiveToolFailureSteps, identicalStepStreak })
+      const loopSafetyStop = loopStopDecision({
+        step,
+        consecutiveToolFailureSteps,
+        identicalStepStreak
+      })
       if (loopSafetyStop) {
         yield* stopForLoopSafety(loopSafetyStop)
         return
@@ -1213,19 +1515,28 @@ export async function* runAgent(input: {
         const skillStub = stubPastSkillInvocationsInMessages(messages)
         if (skillStub.stubbedCount > 0) {
           messages = skillStub.messages
-          await syncMessagesAsync(runDir, messages)
+          const diskMessages = await loadMessagesAsync(workspace, runId)
+          const fullStub = stubPastSkillInvocationsInMessages(diskMessages)
+          if (fullStub.stubbedCount > 0) {
+            await syncMessagesAsync(runDir, fullStub.messages)
+          }
           logger.info('Stubbed past skill invocation bodies in durable history', {
             scope: 'agent',
             code: 'TOKEN_COST',
             runId,
-            stubbedCount: skillStub.stubbedCount
+            stubbedCount: fullStub.stubbedCount || skillStub.stubbedCount
           })
         }
       }
-      // Steps after the first of this invoke pick up MCP servers enabled/reconnected mid-run.
+      // Steps after the first of this invoke pick up skills/plugin rules installed
+      // or enabled mid-run, and MCP servers enabled/reconnected mid-run.
       // On resume (initialStep >= 1), skip the duplicate sync that would otherwise hit
-      // immediately after the pre-loop refreshMcpToolsForStep.
+      // immediately after the pre-loop refreshMcpToolsForStep — unless autoModeSwitch
+      // flipped and the catalog must rebuild switch_mode availability.
       if (step > initialStep + 1) {
+        refreshSkillPromptSections()
+      }
+      if (step > initialStep + 1 || autoModeSwitchChanged) {
         await refreshMcpToolsForStep()
         yield* flushPendingMcpOmittedNotice()
       }
@@ -1235,7 +1546,6 @@ export async function* runAgent(input: {
       let thinkingDoneEmitted = false
       let stepReasoningState: ProviderReasoningState | undefined
       let stepStopReason: StopReason | undefined
-      let stepMalformedChunks = 0
       const toolCalls: ToolCall[] = []
       const streamedToolCalls = new Map<string, ToolCall>()
       const streamedToolCallIndex = new Map<number, string>()
@@ -1264,127 +1574,356 @@ export async function* runAgent(input: {
         })
       }
 
+      const toolsBudgetOverflow = toolsBudgetState.overflow
+      if (toolsBudgetOverflow) {
+        logger.warn('Tools budget overflow ignored; using full catalog', {
+          scope: 'agent',
+          code: 'TOOLS_BUDGET_OVERFLOW',
+          correlationId: runId,
+          step,
+          estimate: toolsBudgetOverflow.estimate,
+          budget: toolsBudgetOverflow.budget
+        })
+        toolsBudgetState.overflow = null
+      }
+
       const priorSummary = compaction?.summary
       const contract = await readContractAsync(runDir)
       const plan = await readPlanAsync(runDir)
-      const assembled = await assembleContext({
+      const assembleLoopHint = combineLoopHints(
+        omittedMcpHint,
+        deferredMcpHint,
+        deferredBuiltinsHint,
+        evictedMcpHint,
+        mcpNotInCatalogFailFastHint(),
+        outsidePathHint,
+        compactionLoopHint,
+        toolFailureLoopHint,
+        identicalStepLoopHint
+      )
+      const assembleBase = {
         harness,
         messages,
-        workspacePath: workspace,
+        workspacePath: toolWorkspace,
         goal,
         contract,
         plan: plan || undefined,
-        sessionEnv: buildSessionEnvSection(agentMode, settings.terminalShell),
+        sessionEnv: buildSessionEnvSection(settings.terminalShell),
         model: modelInfo,
         toolsJsonEstimate,
         lastUsage,
         priorCompaction: compaction,
         keepRecentTurns: settings.keepRecentTurns,
-        compactionTriggerRatio: settings.compactionTriggerRatio,
         skillsSection,
         pluginRulesSection,
+        userRules: getSettings().userRules ?? [],
         modeSection:
-          modeSectionMarkdown(agentMode, { autoModeSwitch: settings.autoModeSwitch }) ?? undefined,
-        loopHint: combineLoopHints(
-          omittedMcpHint,
-          evictedMcpHint,
-          mcpNotInCatalogFailFastHint(),
-          outsidePathHint
-        ),
+          modeSectionMarkdown(agentMode, {
+            autoModeSwitch: settings.autoModeSwitch,
+            inlineInstance: isInlineInstance
+          }) ?? undefined,
+        loopHint: assembleLoopHint,
+        taskList: formatTodosContextSection(readTodos(runDir)),
         providerId,
         provider,
         apiKey,
         baseUrl,
         signal: controller.signal
-      })
-      const droppedThisStep = assembled.contextShrunk
-        ? Math.max(0, messages.length - assembled.messages.length)
-        : 0
-      const nextFolded = foldedMessages + droppedThisStep
-      let compactionWithWatermark: CompactionRecord | null = null
-      if (assembled.compaction) {
-        compactionWithWatermark = {
-          ...assembled.compaction,
-          foldedMessages: nextFolded
-        }
-      } else if (assembled.contextShrunk && droppedThisStep > 0) {
-        // Emergency trim (or fold without a new summary) still needs a durable
-        // watermark so resume does not reload the full transcript.
-        if (compaction) {
-          compactionWithWatermark = { ...compaction, foldedMessages: nextFolded }
-        } else {
-          compactionWithWatermark = {
-            summary: CONTEXT_TRIM_WATERMARK_SUMMARY,
-            createdAt: new Date().toISOString(),
-            tokenEstimate: assembled.estimatedTokens,
-            foldedMessages: nextFolded
-          }
-        }
-      } else if (assembled.contextShrunk && droppedThisStep === 0) {
-        // In-message stubs (tool trim / thinking drop) keep message count but
-        // still need a durable watermark so the working set is adopted.
-        if (compaction) {
-          compactionWithWatermark = {
-            ...compaction,
-            foldedMessages: foldedMessages,
-            wireTrimApplied: true
-          }
-        } else {
-          compactionWithWatermark = {
-            summary: CONTEXT_TRIM_WATERMARK_SUMMARY,
-            createdAt: new Date().toISOString(),
-            tokenEstimate: assembled.estimatedTokens,
-            foldedMessages: foldedMessages,
-            wireTrimApplied: true
-          }
-        }
-      }
-      const { saved: watermarkSaved, event: compactionEv } = emitCompaction(compactionWithWatermark)
-      // compactionCountThisRun tracks LLM summary compactions only — emergency
-      // trim watermarks shrink messages without emitting a compaction event.
-      if (compactionEv) {
-        if (compactionEv.type === 'compaction' && compactionEv.kind !== 'trim') {
-          compactionCountThisRun++
-        }
-        yield compactionEv
-      }
-      // Working-set / foldedMessages advance only after a successful watermark save
-      // (or when there was nothing to persist).
-      if (assembled.contextShrunk && watermarkSaved) {
-        // Adopt the reduced set as the working history. Without this the loop keeps
-        // handing the full transcript back to assembleContext, which re-summarizes
-        // the same prefix on every remaining step.
-        foldedMessages += droppedThisStep
-        messages = assembled.messages
-      }
-      if ((assembled.contextShrunk && watermarkSaved) || compaction?.summary !== priorSummary) {
-        lastUsage = { inputTokens: assembled.estimatedTokens }
-      }
-      if (assembled.contextShrunk && !watermarkSaved) {
-        // The trim was not adopted and its watermark is not durable — streaming the
-        // shrunk assembly would diverge from what a resume reloads from disk.
-        yield* flushWriteCheckpoint()
-        const message = 'Failed to persist context compaction'
-        yield { type: 'status', runId, invokeId, status: 'error' }
-        writeStatus({ status: 'error', error: message })
-        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
-        return
       }
 
-      const contextWindow = contextWindowFor(modelInfo)
-      const effectiveContentWindow = contentWindow(modelInfo)
-      const compactionTrigger = compactionTriggerTokens(
-        modelInfo,
-        settings.compactionTriggerRatio
+      let assembled = await assembleContext(assembleBase)
+
+      const effectiveContentWindow = contentWindow(modelInfo, providerId)
+      const compactThresholdRatio =
+        settings.autoCompactThresholdRatio ?? DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO
+      const proactiveThreshold = proactiveCompactThresholdTokens(
+        effectiveContentWindow,
+        compactThresholdRatio
       )
-      // Prefer prior-step provider input tokens for the meter when context did not shrink.
-      // After compaction/trim, lastUsage was reset to the estimate above.
+      // Proactive re-compaction is wasted work until history regrows: the same
+      // summarizer and keepRecentTurns would fold the same tail again, so a tail
+      // that alone exceeds the threshold would otherwise pay a summarizer call
+      // (up to 10 minutes) on every remaining step. Overflow still forces a fold.
+      // A verify_failed attempt is the same: retrying the identical prefix every
+      // step cannot succeed until the model sees more (or different) history.
+      const regrowthNeeded = Math.max(
+        1,
+        Math.round(effectiveContentWindow * AUTO_COMPACT_MIN_REGROWTH_RATIO)
+      )
+      const proactiveSuppressed =
+        postCompactEstimateFloor !== null &&
+        assembled.estimatedTokens < postCompactEstimateFloor + regrowthNeeded
+      const needsAutoCompact =
+        assembled.overflow ||
+        (assembled.estimatedTokens >= proactiveThreshold && !proactiveSuppressed)
+
+      const reloadCompactionWatermark = (): void => {
+        if (!runDir) return
+        const next = loadCompaction(runDir)
+        if (!next) return
+        compaction = next
+        foldedMessages = next.foldedMessages ?? 0
+        const applied = loadWorkingMessagesForFold(workspace, runId, foldedMessages)
+        messages.length = 0
+        messages.push(...applied.messages)
+        foldedMessages = applied.foldedMessages
+      }
+
+      if (needsAutoCompact) {
+        logger.info('Auto LLM compaction starting', {
+          scope: 'agent',
+          code: 'COMPACTION',
+          correlationId: runId,
+          step,
+          estimatedTokens: assembled.estimatedTokens,
+          proactiveThreshold,
+          overflow: assembled.overflow
+        })
+        const autoOutcome = yield* autoCompactLlmEvents({
+          workspacePath: workspace,
+          runId,
+          runDir,
+          settings,
+          signal: controller.signal,
+          triggerReason: assembled.overflow ? 'overflow' : 'proactive',
+          estimatedTokens: assembled.estimatedTokens,
+          systemStable: assembled.systemStable,
+          toolDefs,
+          ...(invokeId != null ? { invokeId } : {})
+        })
+        if (!autoOutcome.ok && autoOutcome.reason === 'aborted') break
+        if (!autoOutcome.ok && autoOutcome.reason === 'failed') {
+          yield* emitTerminalRunError({
+            runId,
+            invokeId,
+            runDir,
+            message: autoOutcome.message || 'Compaction failed',
+            code: 'COMPACTION',
+            flushWriteCheckpoint,
+            writeStatus
+          })
+          return
+        }
+        if (!autoOutcome.ok) {
+          // Nothing foldable, or the summary failed verification and was discarded.
+          // Continue with a hint instead of failing the run.
+          const verifyFailed = autoOutcome.reason === 'verify_failed'
+          lastCompactVerifyFailed = verifyFailed
+          logger.info(
+            verifyFailed
+              ? 'Auto compaction discarded; summary failed verification'
+              : 'Auto compaction skipped; nothing foldable yet',
+            {
+              scope: 'agent',
+              code: verifyFailed ? 'COMPACTION_VERIFY' : 'COMPACTION',
+              correlationId: runId,
+              step,
+              reason: autoOutcome.message
+            }
+          )
+          compactionLoopHint = verifyFailed
+            ? loopHintForCompactionVerifyFailed()
+            : loopHintForCompactionFailure()
+          // Same-size history would otherwise re-pay a summarizer call every step.
+          // Overflow still bypasses this floor. Retry after ~10% token growth.
+          postCompactEstimateFloor = assembled.estimatedTokens
+        } else {
+          const nextCompaction = loadCompaction(runDir)
+          if (!nextCompaction) {
+            yield* emitTerminalRunError({
+              runId,
+              invokeId,
+              runDir,
+              message: 'Compaction succeeded but compaction.json is missing',
+              code: 'COMPACTION',
+              flushWriteCheckpoint,
+              writeStatus
+            })
+            return
+          }
+          // emitCompaction adopts the record itself — assigning `compaction` first
+          // would make its dedupe guard compare the record against itself and drop
+          // the event, so auto-compaction would never reach the UI or the receipt.
+          const { saved: autoSaved, event: autoCompactionEv } = emitCompaction(nextCompaction)
+          compactionLoopHint = loopHintAfterCompaction(nextCompaction.retainedDecisions)
+          compactionCountThisRun++
+          if (autoCompactionEv) yield autoCompactionEv
+          if (!autoSaved) {
+            yield* emitTerminalRunError({
+              runId,
+              invokeId,
+              runDir,
+              message: 'Failed to persist context compaction',
+              code: 'COMPACTION',
+              flushWriteCheckpoint,
+              writeStatus
+            })
+            return
+          }
+          reloadCompactionWatermark()
+          lastCompactVerifyFailed = false
+          const postCompactEstimate = autoOutcome.result.estimatedTokens
+          postCompactEstimateFloor = postCompactEstimate ?? null
+          assembled = await assembleContext({
+            ...assembleBase,
+            messages,
+            priorCompaction: compaction,
+            loopHint: combineLoopHints(
+              omittedMcpHint,
+              deferredMcpHint,
+              deferredBuiltinsHint,
+              evictedMcpHint,
+              mcpNotInCatalogFailFastHint(),
+              outsidePathHint,
+              compactionLoopHint,
+              loopHintWhenContextStillLarge(postCompactEstimate ?? 0, proactiveThreshold),
+              toolFailureLoopHint,
+              identicalStepLoopHint
+            )
+          })
+          lastUsage = { inputTokens: assembled.estimatedTokens }
+        }
+      }
+
+      if (assembled.overflow) {
+        if (!overflowRetryUsed) {
+          overflowRetryUsed = true
+          logger.warn('Context overflow after auto compact — retrying with same keep-recent', {
+            scope: 'agent',
+            code: 'CONTEXT_OVERFLOW_RETRY',
+            correlationId: runId,
+            step,
+            estimatedTokens: assembled.estimatedTokens,
+            contentWindow: effectiveContentWindow
+          })
+          const retryOutcome = yield* autoCompactLlmEvents({
+            workspacePath: workspace,
+            runId,
+            runDir,
+            settings,
+            signal: controller.signal,
+            triggerReason: 'overflow',
+            estimatedTokens: assembled.estimatedTokens,
+            systemStable: assembled.systemStable,
+            toolDefs,
+            ...(invokeId != null ? { invokeId } : {})
+          })
+          if (!retryOutcome.ok && retryOutcome.reason === 'aborted') break
+          if (!retryOutcome.ok && retryOutcome.reason === 'failed') {
+            yield* emitTerminalRunError({
+              runId,
+              invokeId,
+              runDir,
+              message: retryOutcome.message || 'Compaction failed after overflow retry',
+              code: 'COMPACTION',
+              flushWriteCheckpoint,
+              writeStatus
+            })
+            return
+          }
+          if (!retryOutcome.ok && retryOutcome.reason === 'verify_failed') {
+            lastCompactVerifyFailed = true
+          }
+          // `nothing_to_compact` here means the kept tail alone overflows the
+          // window; fall through to the context_overflow report below.
+          if (retryOutcome.ok) {
+            const retryCompaction = loadCompaction(runDir)
+            if (!retryCompaction) {
+              yield* emitTerminalRunError({
+                runId,
+                invokeId,
+                runDir,
+                message: 'Compaction retry succeeded but compaction.json is missing',
+                code: 'COMPACTION',
+                flushWriteCheckpoint,
+                writeStatus
+              })
+              return
+            }
+            const { saved: retrySaved, event: retryEv } = emitCompaction(retryCompaction)
+            compactionLoopHint = loopHintAfterCompaction(retryCompaction.retainedDecisions)
+            compactionCountThisRun++
+            if (retryEv) yield retryEv
+            if (!retrySaved) {
+              yield* emitTerminalRunError({
+                runId,
+                invokeId,
+                runDir,
+                message: 'Failed to persist context compaction',
+                code: 'COMPACTION',
+                flushWriteCheckpoint,
+                writeStatus
+              })
+              return
+            }
+            reloadCompactionWatermark()
+            lastCompactVerifyFailed = false
+            const retryPostCompactEstimate = retryOutcome.result.estimatedTokens
+            postCompactEstimateFloor = retryPostCompactEstimate ?? null
+            assembled = await assembleContext({
+              ...assembleBase,
+              messages,
+              priorCompaction: compaction,
+              loopHint: combineLoopHints(
+                omittedMcpHint,
+                deferredMcpHint,
+                deferredBuiltinsHint,
+                evictedMcpHint,
+                mcpNotInCatalogFailFastHint(),
+                outsidePathHint,
+                compactionLoopHint,
+                loopHintWhenContextStillLarge(retryPostCompactEstimate ?? 0, proactiveThreshold),
+                toolFailureLoopHint,
+                identicalStepLoopHint
+              )
+            })
+            lastUsage = { inputTokens: assembled.estimatedTokens }
+          }
+        }
+        if (assembled.overflow) {
+          const overflowMessage = lastCompactVerifyFailed
+            ? CONTEXT_OVERFLOW_VERIFY_FAILED
+            : INCOMPLETE_MESSAGES.context_overflow
+          const overflowEv: AgentEvent = {
+            type: 'incomplete',
+            runId,
+            invokeId,
+            reason: 'context_overflow',
+            step,
+            message: overflowMessage
+          }
+          logger.warn('Stopping run: context still exceeds model window after LLM compaction', {
+            scope: 'agent',
+            code: 'CONTEXT_OVERFLOW',
+            correlationId: runId,
+            step,
+            estimatedTokens: assembled.estimatedTokens,
+            contentWindow: effectiveContentWindow
+          })
+          appendEvent(runDir, overflowEv)
+          yield overflowEv
+          yield* flushWriteCheckpoint()
+          const closeOverflow = tryBeginRunClosing(runId, invokeId)
+          if (closeOverflow === 'has_followups') {
+            yield* dropPendingFollowUps(runId, runDir, overflowMessage)
+            tryBeginRunClosing(runId, invokeId)
+          }
+          yield { type: 'status', runId, invokeId, status: 'error' }
+          writeStatus({
+            status: 'error',
+            error: overflowMessage
+          })
+          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+          return
+        }
+      }
+
+      const contextWindow = contextWindowFor(modelInfo, providerId)
+      const compactionTrigger = proactiveThreshold
       const priorProviderInput =
         lastUsage?.inputTokens && lastUsage.inputTokens > 0 ? lastUsage.inputTokens : undefined
       const usingProviderMeter =
-        priorProviderInput != null &&
-        !assembled.contextShrunk &&
-        compaction?.summary === priorSummary
+        priorProviderInput != null && compaction?.summary === priorSummary
       const contextUsageEv: AgentEvent = {
         type: 'context_usage',
         runId,
@@ -1396,222 +1935,82 @@ export async function* runAgent(input: {
         compactionTrigger,
         source: usingProviderMeter ? 'provider' : 'estimate',
         ...(assembled.overflow ? { overflow: true } : {}),
-        // Provider totals are not layer-aligned — omit estimate splits.
-        ...(usingProviderMeter ? {} : { layers: assembled.layers })
+        layers: assembled.layers
       }
       appendEvent(runDir, contextUsageEv)
       yield contextUsageEv
 
-      if (assembled.overflow) {
-        if (!overflowRetryUsed) {
-          overflowRetryUsed = true
-          logger.warn('Context overflow — retrying once with aggressive keep-recent', {
-            scope: 'agent',
-            code: 'CONTEXT_OVERFLOW_RETRY',
-            correlationId: runId,
-            step,
-            estimatedTokens: assembled.estimatedTokens,
-            contentWindow: effectiveContentWindow
-          })
-          const retry = await assembleContext({
-            harness,
-            messages,
-            workspacePath: workspace,
-            goal,
-            contract,
-            plan: plan || undefined,
-            sessionEnv: buildSessionEnvSection(agentMode, settings.terminalShell),
-            model: modelInfo,
-            toolsJsonEstimate,
-            lastUsage,
-            priorCompaction: compaction,
-            keepRecentTurns: 2,
-            compactionTriggerRatio: Math.min(settings.compactionTriggerRatio, 0.5),
-            skillsSection,
-            pluginRulesSection,
-            modeSection:
-              modeSectionMarkdown(agentMode, { autoModeSwitch: settings.autoModeSwitch }) ??
-              undefined,
-            loopHint: combineLoopHints(
-          omittedMcpHint,
-          evictedMcpHint,
-          mcpNotInCatalogFailFastHint(),
-          outsidePathHint
-        ),
-            providerId,
-            provider,
-            apiKey,
-            baseUrl,
-            signal: controller.signal
-          })
-          let retrySaved = false
-          if (retry.contextShrunk) {
-            const retryDropped = Math.max(0, messages.length - retry.messages.length)
-            const nextFolded = foldedMessages + retryDropped
-            let retryWatermark: CompactionRecord | null = null
-            if (retry.compaction) {
-              retryWatermark = { ...retry.compaction, foldedMessages: nextFolded }
-            } else if (retryDropped > 0) {
-              // Trim-only / failed-compaction path still needs a durable watermark.
-              if (compaction) {
-                retryWatermark = { ...compaction, foldedMessages: nextFolded }
-              } else {
-                retryWatermark = {
-                  summary: CONTEXT_TRIM_WATERMARK_SUMMARY,
-                  createdAt: new Date().toISOString(),
-                  tokenEstimate: retry.estimatedTokens,
-                  foldedMessages: nextFolded
-                }
-              }
-            }
-            const { saved, event: retryEv } = emitCompaction(retryWatermark)
-            retrySaved = saved
-            if (retryEv) yield retryEv
-            if (retrySaved) {
-              foldedMessages = nextFolded
-              messages = retry.messages
-              lastUsage = { inputTokens: retry.estimatedTokens }
-            }
-          }
-          if (!retry.overflow) {
-            // Adopt the retried assembly only when its trim watermark is durable (or the
-            // retry did not shrink) — otherwise the stream would diverge from disk history.
-            if (retrySaved || !retry.contextShrunk) {
-              // Continue the step with the retried assembly by mutating local state
-              // used below — replace estimated tokens / layers via a second usage event.
-              const retryUsageEv: AgentEvent = {
-                type: 'context_usage',
-                runId,
-                step,
-                estimatedTokens: retry.estimatedTokens,
-                inputTokens: retry.estimatedTokens,
-                contextWindow,
-                contentWindow: effectiveContentWindow,
-                compactionTrigger,
-                source: 'estimate',
-                layers: retry.layers
-              }
-              appendEvent(runDir, retryUsageEv)
-              yield retryUsageEv
-              // Fall through to stream using retry.system / messages / tools path.
-              // assembleContext return is used via `assembled` below — rebind by continuing
-              // with Object.assign onto a let binding. Use system from retry.
-              Object.assign(assembled, retry)
-            } else {
-              // Same fail-closed rule as the normal trim path above: do not stream
-              // with an unadopted shrink or the original oversize context.
-              yield* flushWriteCheckpoint()
-              const message = 'Failed to persist context compaction'
-              yield { type: 'status', runId, invokeId, status: 'error' }
-              writeStatus({ status: 'error', error: message })
-              appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
-              return
-            }
-          } else {
-            const overflowEv: AgentEvent = {
-              type: 'incomplete',
-              runId,
-              invokeId,
-              reason: 'context_overflow',
-              step,
-              message: INCOMPLETE_MESSAGES.context_overflow
-            }
-            logger.warn('Stopping run: context still exceeds model window after overflow retry', {
-              scope: 'agent',
-              code: 'CONTEXT_OVERFLOW',
-              correlationId: runId,
-              step,
-              estimatedTokens: retry.estimatedTokens,
-              contentWindow: effectiveContentWindow
-            })
-            appendEvent(runDir, overflowEv)
-            yield overflowEv
-            yield* flushWriteCheckpoint()
-            const closeOverflow = tryBeginRunClosing(runId, invokeId)
-            if (closeOverflow === 'has_followups') {
-              checkpointFlushed = false
-              beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
-              yield* applyDrainedFollowUps(runId, runDir, messages, 'next')
-              continue
-            }
-            yield { type: 'status', runId, invokeId, status: 'error' }
-            writeStatus({
-              status: 'error',
-              error: INCOMPLETE_MESSAGES.context_overflow
-            })
-            appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
-            return
-          }
-        } else {
-          const overflowEv: AgentEvent = {
-            type: 'incomplete',
-            runId,
-            invokeId,
-            reason: 'context_overflow',
-            step,
-            message: INCOMPLETE_MESSAGES.context_overflow
-          }
-          logger.warn('Stopping run: context still exceeds model window after compaction', {
-            scope: 'agent',
-            code: 'CONTEXT_OVERFLOW',
-            correlationId: runId,
-            step,
-            estimatedTokens: assembled.estimatedTokens,
-            contentWindow: effectiveContentWindow
-          })
-          appendEvent(runDir, overflowEv)
-          yield overflowEv
-          yield* flushWriteCheckpoint()
-          const closeOverflow2 = tryBeginRunClosing(runId, invokeId)
-          if (closeOverflow2 === 'has_followups') {
-            checkpointFlushed = false
-            beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
-            yield* applyDrainedFollowUps(runId, runDir, messages, 'next')
-            continue
-          }
-          yield { type: 'status', runId, invokeId, status: 'error' }
-          writeStatus({
-            status: 'error',
-            error: INCOMPLETE_MESSAGES.context_overflow
-          })
-          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
-          return
-        }
-      }
-
-      let streamAttempt = 0
       let streamFinished = false
       let streamSteered = false
       let streamGotDone = false
       let lastStreamFailureMessage = ''
       let lastStreamFailureCode = 'PROVIDER_STREAM'
+      // Const capture so nested generators keep `string` (outer `runDir` is `string | null`).
+      const streamRunDir = runDir
+      if (!streamRunDir) {
+        const message = 'Run directory missing'
+        yield* emitTerminalRunError({
+          runId,
+          invokeId,
+          runDir,
+          message,
+          code: 'INTERNAL',
+          flushWriteCheckpoint,
+          writeStatus
+        })
+        return
+      }
 
-      while (!streamFinished && streamAttempt < MAX_STREAM_ATTEMPTS) {
-        streamAttempt++
-        // Any prior attempt may have streamed text, thinking, or tool deltas —
-        // tell the UI to drop all of it before the retry starts clean.
-        // Persist the reset so hydrate does not rebuild stale tool_call_delta chrome.
-        if (streamAttempt > 1) {
-          const resetEv: AgentEvent = { type: 'stream_reset', runId, step }
-          if (runDir) appendEvent(runDir, resetEv)
-          persistedLiveToolIds.clear()
-          yield resetEv
-        }
-        assistantText = ''
-        thinkingText = ''
-        thinkingDoneEmitted = false
-        stepReasoningState = undefined
-        stepStopReason = undefined
-        stepMalformedChunks = 0
-        toolCalls.length = 0
-        streamedToolCalls.clear()
-        streamedToolCallIndex.clear()
-        liveForwardedToolIds.clear()
-        streamSteered = false
-        streamGotDone = false
-
-        let retryStream = false
-        try {
+      const streamRetryResult = yield* runWithStreamRetryGen({
+        circuitKey: circuitKeyProvider(providerId, baseUrl),
+        onAttemptStart: function* (attempt) {
+          // Any prior attempt may have streamed text, thinking, or tool deltas —
+          // tell the UI to drop all of it before the retry starts clean.
+          // Persist the reset so hydrate does not rebuild stale tool_call_delta chrome.
+          if (attempt > 1) {
+            const resetEv: AgentEvent = { type: 'stream_reset', runId, step }
+            appendEvent(streamRunDir, resetEv)
+            persistedLiveToolIds.clear()
+            yield resetEv
+          }
+          assistantText = ''
+          thinkingText = ''
+          thinkingDoneEmitted = false
+          stepReasoningState = undefined
+          stepStopReason = undefined
+          toolCalls.length = 0
+          streamedToolCalls.clear()
+          streamedToolCallIndex.clear()
+          liveForwardedToolIds.clear()
+          streamSteered = false
+          streamGotDone = false
+        },
+        waitBeforeRetry: async function* (attempt) {
+          yield* yieldStreamRetryWait(
+            runId,
+            invokeId,
+            step,
+            attempt,
+            streamSignalFor(runId, controller.signal),
+            streamRunDir,
+            'PROVIDER_STREAM'
+          )
+        },
+        onRetriableFailure: (err, attempt) => {
+          logger.warn('Provider stream disconnected (retrying)', {
+            scope: 'agent',
+            code: 'PROVIDER_STREAM',
+            correlationId: runId,
+            provider: providerId,
+            step,
+            attempt,
+            err
+          })
+        },
+        runAttempt: async function* (attempt) {
+          const runDir = streamRunDir
+          const streamStartedAt = Date.now()
+          try {
           for await (const chunk of provider.streamChat({
           model: settings.model,
           messages: assembled.messages,
@@ -1624,7 +2023,6 @@ export async function* runAgent(input: {
           baseUrl,
           maxOutputTokens: requestMaxOutputTokens(providerId, modelInfo),
           anthropicNative: assembled.anthropicNative,
-          strictTools: toolDefs.length > 0,
           toolChoice: toolDefs.length > 0 ? 'auto' : undefined,
           parallelToolCalls: toolDefs.length > 0 ? true : undefined,
           promptCacheKey: runId,
@@ -1658,7 +2056,7 @@ export async function* runAgent(input: {
               const thinkingDoneEv: AgentEvent = {
                 type: 'thinking_done',
                 runId,
-                text: thinkingText || chunk.text,
+                text: (thinkingText || chunk.text) ?? undefined,
                 step
               }
               appendEvent(runDir, thinkingDoneEv)
@@ -1694,7 +2092,7 @@ export async function* runAgent(input: {
               type: 'tool_call_delta',
               runId,
               toolCallId,
-              name: delta.name,
+              name: delta.name || undefined,
               argumentsDelta
             }
           } else if (chunk.type === 'tool_call' && chunk.toolCall) {
@@ -1703,39 +2101,35 @@ export async function* runAgent(input: {
               prefix: 'call'
             })
             const tc = ensured ?? chunk.toolCall
+            const prevArgs = streamedToolCalls.get(tc.id)?.arguments ?? ''
+            accumulateStreamedToolDelta(streamedToolCalls, tc.id, {
+              name: tc.name,
+              arguments: tc.arguments
+            })
             toolCalls.push(tc)
-            // Providers that only emit complete tool_call chunks (e.g. Gemini)
-            // never produce tool_call_delta; live-forward so the UI can show
-            // tool chrome before assistant_message. Args go out once per id so
-            // applyToolCallDelta does not concatenate the full JSON twice.
+            // Chrome-only tool_call_delta (name, empty args) marks the id live.
+            // A later complete tool_call must still forward the new suffix —
+            // otherwise the UI stays on "Receiving edit…" until assistant_message.
+            // Duplicate complete payloads yield an empty suffix (no double concat).
             const already = liveForwardedToolIds.has(tc.id)
             liveForwardedToolIds.add(tc.id)
-            const argumentsDelta = already ? '' : (tc.arguments ?? '')
+            const merged = mergeOpenAiCompatToolArgDelta(prevArgs, tc.arguments)
+            const argumentsDelta = already ? merged.yieldDelta : merged.arguments
             persistLiveToolChrome(tc.id, tc.name, argumentsDelta || tc.arguments || '')
             yield {
               type: 'tool_call_delta',
               runId,
               toolCallId: tc.id,
-              name: tc.name,
+              name: tc.name || undefined,
               argumentsDelta
             }
           } else if (chunk.type === 'done') {
             streamGotDone = true
             if (chunk.reasoningState) stepReasoningState = chunk.reasoningState
             if (chunk.stopReason) stepStopReason = chunk.stopReason
-            if (chunk.malformedChunks) {
-              stepMalformedChunks = chunk.malformedChunks
-              logger.warn('Provider stream dropped malformed frames', {
-                scope: 'agent',
-                code: 'PROVIDER_STREAM',
-                correlationId: runId,
-                provider: providerId,
-                step,
-                malformedChunks: chunk.malformedChunks
-              })
-            }
             if (chunk.usage) {
               lastUsage = chunk.usage
+              const generationMs = Math.max(0, Date.now() - streamStartedAt)
               const cacheFieldsPresent =
                 chunk.usage.cachedInputTokens != null ||
                 chunk.usage.cacheCreationInputTokens != null
@@ -1751,10 +2145,18 @@ export async function* runAgent(input: {
                 runId,
                 step,
                 inputTokens: chunk.usage.inputTokens,
+                ...(chunk.usage.inputTokensIncludesCache !== undefined
+                  ? { inputTokensIncludesCache: chunk.usage.inputTokensIncludesCache }
+                  : {}),
                 outputTokens: chunk.usage.outputTokens,
                 cachedInputTokens: chunk.usage.cachedInputTokens,
                 cacheCreationInputTokens: chunk.usage.cacheCreationInputTokens,
-                reasoningTokens: chunk.usage.reasoningTokens
+                reasoningTokens: chunk.usage.reasoningTokens,
+                generationMs,
+                ...(chunk.usage.billedCost != null ? { billedCost: chunk.usage.billedCost } : {}),
+                ...(chunk.usage.billedCostSaved != null
+                  ? { billedCostSaved: chunk.usage.billedCostSaved }
+                  : {})
               })
               if (stepPartial) {
                 if (cacheFieldsPresent && stepPartial.stepsWithCacheReport === 0) {
@@ -1767,10 +2169,18 @@ export async function* runAgent(input: {
                 runId,
                 step,
                 inputTokens: chunk.usage.inputTokens,
+                ...(chunk.usage.inputTokensIncludesCache !== undefined
+                  ? { inputTokensIncludesCache: chunk.usage.inputTokensIncludesCache }
+                  : {}),
                 outputTokens: chunk.usage.outputTokens,
                 cachedInputTokens: chunk.usage.cachedInputTokens,
                 cacheCreationInputTokens: chunk.usage.cacheCreationInputTokens,
                 reasoningTokens: chunk.usage.reasoningTokens,
+                generationMs,
+                ...(chunk.usage.billedCost != null ? { billedCost: chunk.usage.billedCost } : {}),
+                ...(chunk.usage.billedCostSaved != null
+                  ? { billedCostSaved: chunk.usage.billedCostSaved }
+                  : {}),
                 billedInputTokens: costTotals.billedInputTokens,
                 peakInputTokens: costTotals.peakInputTokens,
                 cacheReported: cacheFieldsPresent,
@@ -1788,6 +2198,10 @@ export async function* runAgent(input: {
                 chunk.usage.cachedInputTokens,
                 cacheFieldsPresent
               )
+              const inputTok = chunk.usage.inputTokens ?? 0
+              if (hitRate != null && inputTok >= LARGE_STEP_INPUT_THRESHOLD) {
+                pushRecentLargeCacheHit(recentLargeCacheHits, hitRate)
+              }
               logger.info('Token cost step', {
                 scope: 'agent',
                 correlationId: runId,
@@ -1817,7 +2231,8 @@ export async function* runAgent(input: {
                 compactedThisRun: compactionCountThisRun > 0,
                 cacheHitRate: hitRate,
                 stepsWithCacheReport: costTotals.stepsWithCacheReport,
-                largeInput: (chunk.usage.inputTokens ?? 0) >= 20_000,
+                largeInput: inputTok >= LARGE_STEP_INPUT_THRESHOLD,
+                recentLargeStepCacheHitRates: recentLargeCacheHits,
                 thinkingEnabled: Boolean(settings.thinkingEnabled),
                 thinkingEffortHigh,
                 step,
@@ -1839,18 +2254,6 @@ export async function* runAgent(input: {
                   kind: warn.kind,
                   step
                 })
-                const userMsg = userFacingTokenCostHint(warn.kind, step)
-                if (userMsg) {
-                  const hintEv: AgentEvent = {
-                    type: 'token_cost_hint',
-                    runId,
-                    invokeId,
-                    kind: warn.kind,
-                    message: userMsg
-                  }
-                  appendEvent(runDir, hintEv)
-                  yield hintEv
-                }
               }
               const providerContextEv: AgentEvent = {
                 type: 'context_usage',
@@ -1862,6 +2265,7 @@ export async function* runAgent(input: {
                 contentWindow: effectiveContentWindow,
                 compactionTrigger,
                 source: 'provider',
+                layers: assembled.layers,
                 ...(assembled.overflow ? { overflow: true } : {})
               }
               appendEvent(runDir, providerContextEv)
@@ -1882,51 +2286,16 @@ export async function* runAgent(input: {
                 })
               }
             }
-            if (chunk.compaction?.trim()) {
-              const summary = chunk.compaction.trim()
-              const keepRecent = settings.keepRecentTurns ?? DEFAULT_SETTINGS.keepRecentTurns
-              const historyBudget = allocateBudget(modelInfo).history
-              const beforeLen = messages.length
-              const kept = await preserveRecentMessagesAsync(
-                messages,
-                keepRecent,
-                historyBudget,
-                modelInfo
-              )
-              const dropped = Math.max(0, beforeLen - kept.length)
-              const nextFoldedAnthropic = foldedMessages + dropped
-              const record: CompactionRecord = {
-                summary,
-                createdAt: new Date().toISOString(),
-                tokenEstimate: await estimateTextTokensAsync(summary),
-                ...(nextFoldedAnthropic > 0
-                  ? { foldedMessages: nextFoldedAnthropic }
-                  : compaction?.foldedMessages != null
-                    ? { foldedMessages: compaction.foldedMessages }
-                    : {})
-              }
-              const { saved: anthropicSaved, event: anthropicCompactionEv } = emitCompaction(record)
-              if (anthropicCompactionEv) yield anthropicCompactionEv
-              if (anthropicSaved && dropped > 0) {
-                foldedMessages = nextFoldedAnthropic
-                messages = kept
-              }
-              // Server-side compaction means prior inputTokens no longer describe the wire payload.
-              if (anthropicSaved) {
-                lastUsage = {
-                  inputTokens: assembled.estimatedTokens
-                }
-              }
-            }
           } else if (chunk.type === 'error') {
             const message = chunk.error ?? 'Provider error'
             const errorCode =
               chunk.errorCode === 'PROVIDER_HTTP' ||
               chunk.errorCode === 'PROVIDER_NETWORK' ||
-              chunk.errorCode === 'PROVIDER_TIMEOUT'
+              chunk.errorCode === 'PROVIDER_TIMEOUT' ||
+              chunk.errorCode === 'CIRCUIT_OPEN'
                 ? chunk.errorCode
                 : 'PROVIDER_STREAM'
-            if (shouldRetryProviderStreamError(message, streamAttempt)) {
+            if (shouldRetryStreamErrorChunk(errorCode, message, attempt)) {
               lastStreamFailureMessage = message
               lastStreamFailureCode = errorCode
               logger.warn('Provider stream error (retrying)', {
@@ -1935,10 +2304,9 @@ export async function* runAgent(input: {
                 correlationId: runId,
                 provider: providerId,
                 step,
-                attempt: streamAttempt
+                attempt
               })
-              retryStream = true
-              break
+              return 'retry'
             }
             logger.error('Provider stream error', {
               scope: 'agent',
@@ -1948,7 +2316,10 @@ export async function* runAgent(input: {
               step,
               message: message.slice(0, 280)
             })
-            if (isNetworkFailureCode(errorCode)) {
+            if (
+              isRetryableTurnFailure({ errorCode }) ||
+              isNetworkFailureCode(errorCode)
+            ) {
               yield* yieldNetworkInterruptedTerminal(
                 runId,
                 invokeId,
@@ -1963,9 +2334,10 @@ export async function* runAgent(input: {
                 message,
                 errorCode,
                 flushWriteCheckpoint,
-                writeStatus
+                writeStatus,
+                errorCode === 'CIRCUIT_OPEN' ? 'circuit_open' : 'network_interrupted'
               )
-              return
+              return 'terminal'
             }
             yield* flushPartialAssistant(
               runId,
@@ -1979,20 +2351,17 @@ export async function* runAgent(input: {
               step,
               'interrupted'
             )
-            yield* dropPendingFollowUps(runId, runDir, errorCode)
-            yield { type: 'error', runId, invokeId, message, code: errorCode }
-            yield* flushWriteCheckpoint()
-            yield { type: 'status', runId, invokeId, status: 'error' }
-            writeStatus({ status: 'error', error: message })
-            appendEvent(runDir, {
-              type: 'error',
+            yield* emitTerminalRunError({
               runId,
               invokeId,
+              runDir,
               message,
-              code: errorCode
+              code: errorCode,
+              dropFollowUpsReason: errorCode,
+              flushWriteCheckpoint,
+              writeStatus
             })
-            appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
-            return
+            return 'terminal'
           }
         }
       } catch (err) {
@@ -2018,48 +2387,24 @@ export async function* runAgent(input: {
               step,
               'interrupted'
             )
-            yield { type: 'error', runId, invokeId, message, code: 'PROVIDER_TIMEOUT' }
-            yield* flushWriteCheckpoint()
-            yield { type: 'status', runId, invokeId, status: 'error' }
-            writeStatus({ status: 'error', error: message })
-            appendEvent(runDir, {
-              type: 'error',
+            yield* emitTerminalRunError({
               runId,
               invokeId,
-              message,
-              code: 'PROVIDER_TIMEOUT'
-            })
-            appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
-            return
-          }
-          if (shouldRetryThrownStreamError(err, streamAttempt)) {
-            lastStreamFailureMessage = err instanceof Error ? err.message : String(err)
-            lastStreamFailureCode = 'PROVIDER_STREAM'
-            logger.warn('Provider stream disconnected (retrying)', {
-              scope: 'agent',
-              code: 'PROVIDER_STREAM',
-              correlationId: runId,
-              provider: providerId,
-              step,
-              attempt: streamAttempt,
-              err
-            })
-            yield* yieldStreamRetryWait(
-              runId,
-              invokeId,
-              step,
-              streamAttempt,
-              streamSignalFor(runId, controller.signal),
               runDir,
-              'PROVIDER_STREAM'
-            )
-            continue
+              message,
+              code: 'PROVIDER_TIMEOUT',
+              flushWriteCheckpoint,
+              writeStatus
+            })
+            return 'terminal'
           }
-          // Exhausted retriable thrown failures → fall through to terminal handling below.
-          if (!isAbortError(err) && isRetriableStreamFailure(err)) {
+          if (
+            shouldRetryThrownStreamError(err, attempt) ||
+            (!isAbortError(err) && isRetriableStreamFailure(err))
+          ) {
             lastStreamFailureMessage = err instanceof Error ? err.message : String(err)
             lastStreamFailureCode = 'PROVIDER_STREAM'
-            break
+            throw err
           }
           // Providers rethrow AbortError from SSE readers — treat like an in-loop cancel.
           if (!isAbortError(err)) {
@@ -2086,22 +2431,21 @@ export async function* runAgent(input: {
           ) {
             streamSteered = true
           }
-          break
+          return 'complete'
         }
 
-        if (retryStream) {
-          yield* yieldStreamRetryWait(
-            runId,
-            invokeId,
-            step,
-            streamAttempt,
-            streamSignalFor(runId, controller.signal),
-            runDir,
-            'PROVIDER_STREAM'
-          )
-          continue
+          return 'complete'
         }
-        streamFinished = true
+      })
+
+      if (streamRetryResult.status === 'terminal') return
+      streamFinished = streamRetryResult.status === 'complete'
+      if (
+        streamRetryResult.status === 'exhausted' &&
+        isCircuitOpenError(streamRetryResult.err)
+      ) {
+        lastStreamFailureMessage = streamRetryResult.err.message
+        lastStreamFailureCode = 'CIRCUIT_OPEN'
       }
 
       // Soft-steer may end the provider generator cleanly (return after abort)
@@ -2127,6 +2471,7 @@ export async function* runAgent(input: {
           isNetworkFailureCode(errorCode) ||
           (lastStreamFailureMessage.trim().length > 0 &&
             isRetriableProviderMessage(lastStreamFailureMessage))
+        const circuitOpen = errorCode === 'CIRCUIT_OPEN'
         logger.error(message, {
           scope: 'agent',
           code: errorCode,
@@ -2135,7 +2480,7 @@ export async function* runAgent(input: {
           step,
           networkRelated
         })
-        if (networkRelated) {
+        if (networkRelated || circuitOpen) {
           yield* yieldNetworkInterruptedTerminal(
             runId,
             invokeId,
@@ -2150,7 +2495,8 @@ export async function* runAgent(input: {
             message,
             errorCode,
             flushWriteCheckpoint,
-            writeStatus
+            writeStatus,
+            circuitOpen ? 'circuit_open' : 'network_interrupted'
           )
           return
         }
@@ -2166,19 +2512,16 @@ export async function* runAgent(input: {
           step,
           'interrupted'
         )
-        yield* dropPendingFollowUps(runId, runDir, errorCode)
-        yield { type: 'error', runId, invokeId, message, code: errorCode }
-        yield* flushWriteCheckpoint()
-        yield { type: 'status', runId, invokeId, status: 'error' }
-        writeStatus({ status: 'error', error: message })
-        appendEvent(runDir, {
-          type: 'error',
+        yield* emitTerminalRunError({
           runId,
           invokeId,
+          runDir,
           message,
-          code: errorCode
+          code: errorCode,
+          dropFollowUpsReason: errorCode,
+          flushWriteCheckpoint,
+          writeStatus
         })
-        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
         return
       }
 
@@ -2200,7 +2543,8 @@ export async function* runAgent(input: {
       }
 
       // Mid-stream steer: keep the turn alive, flush partial output, then inject.
-      // Do not bump identicalStepStreak here — partial tool calls never executed.
+      // Do not bump identicalStepStreak or LOOP_SAFETY here — partial tool calls
+      // never executed; prefer applying the follow-up over dropping it.
       if (streamSteered) {
         yield* flushPartialAssistant(
           runId,
@@ -2214,26 +2558,6 @@ export async function* runAgent(input: {
           step,
           'interrupted'
         )
-        const steeredCalls = resolveStepToolCalls(toolCalls, streamedToolCalls, step)
-        if (steeredCalls.length > 0) {
-          const stepFingerprint = stepToolCallsFingerprint(steeredCalls)
-          const nextStreak = nextIdenticalStepStreak(
-            lastStepFingerprint,
-            identicalStepStreak,
-            stepFingerprint
-          )
-          const steerStop = loopStopDecision({
-            step,
-            consecutiveToolFailureSteps,
-            identicalStepStreak: nextStreak
-          })
-          if (steerStop) {
-            identicalStepStreak = nextStreak
-            lastStepFingerprint = stepFingerprint
-            yield* stopForLoopSafety(steerStop)
-            return
-          }
-        }
         yield* applyDrainedFollowUps(runId, runDir, messages)
         continue
       }
@@ -2241,6 +2565,8 @@ export async function* runAgent(input: {
       const uniqueToolCalls = resolveStepToolCalls(toolCalls, streamedToolCalls, step)
 
       if (uniqueToolCalls.length > 0) {
+        ensureToolCallIds(uniqueToolCalls, { prefix: 'call_guard' })
+
         const stepFingerprint = stepToolCallsFingerprint(uniqueToolCalls)
         identicalStepStreak = nextIdenticalStepStreak(
           lastStepFingerprint,
@@ -2248,7 +2574,8 @@ export async function* runAgent(input: {
           stepFingerprint
         )
         lastStepFingerprint = stepFingerprint
-        const repeatStop = loopStopDecision({ step, consecutiveToolFailureSteps, identicalStepStreak })
+        identicalStepLoopHint = loopHintForIdenticalStepStreak(identicalStepStreak)
+        const repeatStop = loopStopDecision({ step, identicalStepStreak })
         if (repeatStop) {
           yield* flushPartialAssistant(
             runId,
@@ -2268,6 +2595,7 @@ export async function* runAgent(input: {
       } else {
         identicalStepStreak = 0
         lastStepFingerprint = ''
+        identicalStepLoopHint = undefined
       }
 
       if (uniqueToolCalls.length === 0) {
@@ -2291,6 +2619,13 @@ export async function* runAgent(input: {
         }
         messages.push(assistant)
         appendMessage(runDir, assistant)
+        if (stepReasoningState && thinkingText) {
+          const last = messages[messages.length - 1]
+          if (last?.role === 'assistant' && last.thinking) {
+            const { thinking: _drop, ...rest } = last
+            messages[messages.length - 1] = rest as ChatMessage
+          }
+        }
         const assistantMsgEv: AgentEvent = {
           type: 'assistant_message',
           runId,
@@ -2301,11 +2636,7 @@ export async function* runAgent(input: {
         yield assistantMsgEv
 
         const incomplete = classifyIncompleteTurn(stepStopReason, scrubbedAssistantText, thinkingText)
-        if (
-          incomplete === 'truncated' &&
-          truncationContinues < MAX_TRUNCATION_CONTINUES &&
-          !controller.signal.aborted
-        ) {
+        if (incomplete === 'truncated' && !controller.signal.aborted) {
           truncationContinues += 1
           logger.info('Auto-continuing after truncation', {
             scope: 'agent',
@@ -2319,7 +2650,7 @@ export async function* runAgent(input: {
             invokeId,
             reason: 'truncated',
             step,
-            message: `Output was truncated; continuing automatically (${truncationContinues}/${MAX_TRUNCATION_CONTINUES})…`
+            message: 'Output was truncated; continuing automatically…'
           }
           appendEvent(runDir, continueEv)
           yield continueEv
@@ -2329,6 +2660,44 @@ export async function* runAgent(input: {
           }
           messages.push(continueUser)
           appendMessage(runDir, continueUser)
+          continue
+        }
+
+        if (incomplete === 'empty_response' && !controller.signal.aborted) {
+          emptyResponseContinues += 1
+          logger.info('Auto-continuing after empty response', {
+            scope: 'agent',
+            correlationId: runId,
+            step,
+            emptyResponseContinues
+          })
+          const continueEv: AgentEvent = {
+            type: 'incomplete',
+            runId,
+            invokeId,
+            reason: 'empty_response',
+            step,
+            message: 'Model returned an empty response; retrying…'
+          }
+          appendEvent(runDir, continueEv)
+          yield continueEv
+          // Drop empty assistant from in-memory history and rewrite disk so
+          // resume/hydrate does not see a blank turn the working list no longer has.
+          const last = messages[messages.length - 1]
+          if (
+            last?.role === 'assistant' &&
+            !contentToText(last.content).trim() &&
+            !last.toolCalls?.length &&
+            !(last.thinking ?? '').trim()
+          ) {
+            messages.pop()
+          }
+          const continueUser: ChatMessage = {
+            role: 'user',
+            content: 'Your previous response was empty. Reply with your answer or tool calls.'
+          }
+          messages.push(continueUser)
+          await syncMessagesAsync(runDir, messages)
           continue
         }
 
@@ -2347,19 +2716,19 @@ export async function* runAgent(input: {
             invokeId,
             reason: incomplete,
             step,
-            message:
-              stepMalformedChunks > 0
-                ? `${INCOMPLETE_MESSAGES[incomplete]} ${stepMalformedChunks} stream frame(s) could not be parsed and were dropped.`
-                : INCOMPLETE_MESSAGES[incomplete]
+            message: INCOMPLETE_MESSAGES[incomplete]
           }
-          logger.warn(`Turn ended incomplete: ${incomplete}`, {
-            scope: 'agent',
-            code: 'AGENT_INCOMPLETE',
-            correlationId: runId,
-            provider: providerId,
-            step,
-            stopReason: stepStopReason ?? 'unset'
-          })
+          logger.warn(
+            `Turn ended incomplete: ${incomplete} (textLen=${assistantText.length}; thinkLen=${thinkingText.length})`,
+            {
+              scope: 'agent',
+              code: 'AGENT_INCOMPLETE',
+              correlationId: runId,
+              provider: providerId,
+              step,
+              stopReason: stepStopReason ?? 'unset'
+            }
+          )
           appendEvent(runDir, incompleteEv)
           yield incompleteEv
         }
@@ -2370,7 +2739,7 @@ export async function* runAgent(input: {
         const closeTurn = tryBeginRunClosing(runId, invokeId)
         if (closeTurn === 'has_followups') {
           checkpointFlushed = false
-          beginWriteCheckpoint(runDir, workspace, lastUserMessageIndex(messages))
+          beginWriteCheckpoint(runDir, toolWorkspace, lastUserMessageIndex(messages))
           yield* applyDrainedFollowUps(runId, runDir, messages, 'next')
           continue
         }
@@ -2387,15 +2756,21 @@ export async function* runAgent(input: {
             correlationId: runId,
             err: persistErr
           })
-          yield* dropPendingFollowUps(runId, runDir, 'PERSIST')
-          yield { type: 'error', runId, invokeId, message, code: 'PERSIST' }
-          yield { type: 'status', runId, invokeId, status: 'error' }
-          writeStatus({ status: 'error', error: message })
-          appendEvent(runDir, { type: 'error', runId, invokeId, message, code: 'PERSIST' })
-          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+          yield* emitTerminalRunError({
+            runId,
+            invokeId,
+            runDir,
+            message,
+            code: 'PERSIST',
+            dropFollowUpsReason: 'PERSIST',
+            skipCheckpoint: true,
+            flushWriteCheckpoint,
+            writeStatus
+          })
           return
         }
         runExitedNormally = true
+        clearLoopCheckpoint(runDir)
         yield { type: 'status', runId, invokeId, status: 'done' }
         writeStatus({ status: 'done', error: undefined })
         appendEvent(runDir, { type: 'status', runId, invokeId, status: 'done' })
@@ -2417,15 +2792,26 @@ export async function* runAgent(input: {
       }
       messages.push(assistantWithTools)
       appendMessage(runDir, assistantWithTools)
+      // Disk keeps thinking for hydrate; drop the duplicate string from the working
+      // set when reasoningState already carries the provider wire payload.
+      if (stepReasoningState && thinkingText) {
+        const last = messages[messages.length - 1]
+        if (last?.role === 'assistant' && last.thinking) {
+          const { thinking: _drop, ...rest } = last
+          messages[messages.length - 1] = rest as ChatMessage
+        }
+      }
       await flushMessageAppends(runDir)
       if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
-        yield* flushWriteCheckpoint()
-        yield { type: 'status', runId, invokeId, status: 'error' }
-        writeStatus({
-          status: 'error',
-          error: 'Failed to persist assistant message before tool execution'
+        yield* emitTerminalRunError({
+          runId,
+          invokeId,
+          runDir,
+          message: 'Failed to persist assistant message before tool execution',
+          emitErrorEvent: false,
+          flushWriteCheckpoint,
+          writeStatus
         })
-        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
         return
       }
       try {
@@ -2434,13 +2820,15 @@ export async function* runAgent(input: {
         // Failure is recorded for emitEventAppendFailureNotice below.
       }
       if (yield* emitEventAppendFailureNotice(runId, runDir, invokeId)) {
-        yield* flushWriteCheckpoint()
-        yield { type: 'status', runId, invokeId, status: 'error' }
-        writeStatus({
-          status: 'error',
-          error: 'Failed to persist run event before tool execution'
+        yield* emitTerminalRunError({
+          runId,
+          invokeId,
+          runDir,
+          message: 'Failed to persist run event before tool execution',
+          emitErrorEvent: false,
+          flushWriteCheckpoint,
+          writeStatus
         })
-        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
         return
       }
       if (thinkingText && !thinkingDoneEmitted) {
@@ -2471,21 +2859,20 @@ export async function* runAgent(input: {
       const liveToolResultsEmitted = new Set<string>()
       let wakeLiveEvents: (() => void) | null = null
 
+      // Execute tool calls as streamed from the provider.
       const callsToExecute = uniqueToolCalls
 
       const toolCtx = {
         runId,
         runDir: runDir!,
-        workspace,
+        workspace: toolWorkspace,
+        sessionWorkspace: workspace,
+        inlineInstance: isInlineInstance,
         signal: streamSignalFor(runId, controller.signal),
         runSignal: controller.signal,
         invokeId,
         knownPaths,
         mutationPaths,
-        maxParallelReadTools: maxParallelReadToolsForFailureStreak(
-          consecutiveToolFailureSteps,
-          MAX_PARALLEL_READ_TOOLS
-        ),
         appendMessage: async (msg: ChatMessage) => {
           await appendMessage(runDir!, msg)
           // Surface persist failures before the next tool mutates the workspace.
@@ -2502,18 +2889,19 @@ export async function* runAgent(input: {
         autoModeSwitch: settings.autoModeSwitch,
         terminalShell: settings.terminalShell,
         diagnosticsCommand: settings.diagnosticsCommand,
-        imageToolSettings: settings,
+        invokeSettings: settings,
         runEnabledMcpIds,
         mcpToolPolicies,
         stepMcpToolNames,
         runPinnedMcpToolNames,
+        runStickyToolNames,
         mcpLastUsedByName,
         currentStep: step,
         invalidateMcpToolCatalogCache,
         mcpNotInCatalogCounts,
         emitLiveEvent: (ev: AgentEvent) => {
           liveEvents.push(ev)
-          if (ev.type === 'tool_progress' || ev.type === 'mode_changed') {
+          if (ev.type === 'tool_progress' || ev.type === 'mode_changed' || ev.type === 'agent_instance_update') {
             appendEvent(runDir!, ev)
           }
           if (ev.type === 'tool_result') {
@@ -2576,19 +2964,27 @@ export async function* runAgent(input: {
           // Failure is recorded for emitEventAppendFailureNotice below.
         }
         if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
-          yield* flushWriteCheckpoint()
-          const message = 'Failed to persist a chat message'
-          yield { type: 'status', runId, invokeId, status: 'error' }
-          writeStatus({ status: 'error', error: message })
-          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+          yield* emitTerminalRunError({
+            runId,
+            invokeId,
+            runDir,
+            message: 'Failed to persist a chat message',
+            emitErrorEvent: false,
+            flushWriteCheckpoint,
+            writeStatus
+          })
           return
         }
         if (yield* emitEventAppendFailureNotice(runId, runDir, invokeId)) {
-          yield* flushWriteCheckpoint()
-          const message = 'Failed to persist a run event'
-          yield { type: 'status', runId, invokeId, status: 'error' }
-          writeStatus({ status: 'error', error: message })
-          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+          yield* emitTerminalRunError({
+            runId,
+            invokeId,
+            runDir,
+            message: 'Failed to persist a run event',
+            emitErrorEvent: false,
+            flushWriteCheckpoint,
+            writeStatus
+          })
           return
         }
         throw err
@@ -2604,21 +3000,31 @@ export async function* runAgent(input: {
       }
 
       if (uniqueToolCalls.length > 0) {
-        if (toolOutcome.stepToolsOk) {
+        // Soft-steer / Send now aborts tools as ok:false — that is not a real
+        // identical-step streak or failure streak. Skip LOOP_SAFETY so follow-ups apply.
+        if (toolsSteered) {
+          identicalStepStreak = 0
+          lastStepFingerprint = ''
+          identicalStepLoopHint = undefined
           consecutiveToolFailureSteps = 0
-          writeStatus({ consecutiveToolFailureSteps: 0 })
+          toolFailureLoopHint = undefined
         } else {
-          consecutiveToolFailureSteps++
-          writeStatus({ consecutiveToolFailureSteps })
-        }
-        const failureStop = loopStopDecision({
-          step,
-          consecutiveToolFailureSteps,
-          identicalStepStreak
-        })
-        if (failureStop) {
-          yield* stopForLoopSafety(failureStop)
-          return
+          consecutiveToolFailureSteps = toolOutcome.stepToolsOk
+            ? 0
+            : consecutiveToolFailureSteps + 1
+          toolFailureLoopHint = loopHintForConsecutiveToolFailures(
+            consecutiveToolFailureSteps,
+            summarizeRecentToolFailure(toolOutcome.messages)
+          )
+          const failureStop = loopStopDecision({
+            step,
+            consecutiveToolFailureSteps,
+            identicalStepStreak
+          })
+          if (failureStop) {
+            yield* stopForLoopSafety(failureStop)
+            return
+          }
         }
       }
 
@@ -2638,25 +3044,34 @@ export async function* runAgent(input: {
           // Failure is recorded for emitEventAppendFailureNotice below.
         }
         if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
-          yield* flushWriteCheckpoint()
-          const message = 'Failed to persist a chat message'
-          yield { type: 'status', runId, invokeId, status: 'error' }
-          writeStatus({ status: 'error', error: message })
-          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+          yield* emitTerminalRunError({
+            runId,
+            invokeId,
+            runDir,
+            message: 'Failed to persist a chat message',
+            emitErrorEvent: false,
+            flushWriteCheckpoint,
+            writeStatus
+          })
           return
         }
         if (yield* emitEventAppendFailureNotice(runId, runDir, invokeId)) {
-          yield* flushWriteCheckpoint()
-          const message = 'Failed to persist a run event'
-          yield { type: 'status', runId, invokeId, status: 'error' }
-          writeStatus({ status: 'error', error: message })
-          appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
+          yield* emitTerminalRunError({
+            runId,
+            invokeId,
+            runDir,
+            message: 'Failed to persist a run event',
+            emitErrorEvent: false,
+            flushWriteCheckpoint,
+            writeStatus
+          })
           return
         }
         continue
       }
 
       await persistInterimReceipt()
+      persistLoopCheckpoint()
 
       if (controller.signal.aborted) break
       } finally {
@@ -2692,15 +3107,16 @@ export async function* runAgent(input: {
         err
       })
       markRunTurnComplete(runId, invokeId)
-      yield* dropPendingFollowUps(runId, runDir, 'agent_loop')
-      yield { type: 'error', runId, invokeId, message, code: 'AGENT_LOOP' }
-      yield* flushWriteCheckpoint()
-      yield { type: 'status', runId, invokeId, status: 'error' }
-      if (runDir) {
-        writeStatus({ status: 'error', error: message })
-        appendEvent(runDir, { type: 'error', runId, invokeId, message, code: 'AGENT_LOOP' })
-        appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
-      }
+      yield* emitTerminalRunError({
+        runId,
+        invokeId,
+        runDir,
+        message,
+        code: 'AGENT_LOOP',
+        dropFollowUpsReason: 'agent_loop',
+        flushWriteCheckpoint,
+        writeStatus
+      })
     }
   } finally {
     // Close the turn for follow-ups as soon as the run ends so a queued message
@@ -2817,6 +3233,7 @@ export async function* runAgent(input: {
         }
         const ids = pending.map((entry) => entry.id)
         clearFollowUps(runId)
+        if (runDir) syncFollowUpsToDisk(runDir, runId)
         const dropped: AgentEvent = {
           type: 'follow_up_dropped',
           runId,

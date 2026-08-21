@@ -1,28 +1,33 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
-import kill from 'tree-kill'
 import {
   commandOnPath,
   formatTerminalSessionOutput,
+  killProcessTree,
+  killProcessTreeAndWait,
   resolveTerminalShell,
   sanitizedTerminalEnv,
   stripPowerShellPatternNoise,
   terminalSpawnSpec,
-  unsupportedUnixOnWindowsMessage,
-  type ResolvedTerminalShell,
-  TERMINAL_MAX_OUTPUT
+  type ResolvedTerminalShell
 } from './terminal'
 import { compileUserRegex } from './safeUserRegex'
-import { workspacePathsEqual } from '../../../shared/workspacePath'
+import { workspacePathIsInside, workspacePathsEqual } from '../../../shared/workspacePath'
 import type { TerminalShell } from '../../../shared/ipc'
+import { lowerProcessPriority } from '../processPriority'
 
 export type TerminalSessionStatus = 'running' | 'done' | 'timeout' | 'pattern_matched' | 'aborted'
+
+/** Resource-safety limit: max concurrent background terminal sessions per run invoke. */
+export const MAX_BACKGROUND_TERMINALS_PER_INVOKE = 8
 
 type TerminalSession = {
   id: string
   runId: string
   invokeId: number
   workspaceRoot: string
+  /** Directory the child actually spawned in — reported to the model as `cwd:`. */
+  cwd: string
   command: string
   shell: ResolvedTerminalShell
   child: ChildProcess
@@ -35,21 +40,17 @@ type TerminalSession = {
   patternMatched?: boolean
   createdAt: number
   onOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
+  /** Resolvers waiting for close / pattern / status change (event-driven poll). */
+  waiters: Set<() => void>
 }
 
 const sessions = new Map<string, TerminalSession>()
-const MAX_OUTPUT = TERMINAL_MAX_OUTPUT
-/** Cap concurrent background sessions per invoke — kill oldest when exceeded. */
-const MAX_BACKGROUND_SESSIONS_PER_INVOKE = 8
 
-function appendCapped(
-  prev: string,
-  chunk: string
-): { next: string; emitted: string } {
-  if (prev.length >= MAX_OUTPUT) return { next: prev, emitted: '' }
-  const room = MAX_OUTPUT - prev.length
-  const emitted = chunk.length > room ? chunk.slice(0, room) : chunk
-  return { next: prev + emitted, emitted }
+function notifySessionWaiters(session: TerminalSession): void {
+  if (session.waiters.size === 0) return
+  const waiters = [...session.waiters]
+  session.waiters.clear()
+  for (const wake of waiters) wake()
 }
 
 function patternHaystack(session: TerminalSession): string {
@@ -66,17 +67,6 @@ function matchesPattern(session: TerminalSession): boolean {
   return matched
 }
 
-function enforceBackgroundSessionCap(runId: string, invokeId: number): void {
-  const owned = [...sessions.values()]
-    .filter((s) => s.runId === runId && s.invokeId === invokeId)
-    .sort((a, b) => a.createdAt - b.createdAt)
-  while (owned.length >= MAX_BACKGROUND_SESSIONS_PER_INVOKE) {
-    const oldest = owned.shift()
-    if (!oldest) break
-    disposeTerminalSession(oldest.id)
-  }
-}
-
 function assertSessionOwnership(
   session: TerminalSession | undefined,
   sessionId: string,
@@ -84,7 +74,9 @@ function assertSessionOwnership(
   invokeId: number
 ): asserts session is TerminalSession {
   if (!session) {
-    throw new Error(`Unknown terminal session_id: ${sessionId}`)
+    throw new Error(
+      `Unknown terminal session_id: ${sessionId}. Background shells do not survive app restart — start a new command.`
+    )
   }
   if (session.runId !== runId || session.invokeId !== invokeId) {
     throw new Error(`Terminal session does not belong to run: ${sessionId}`)
@@ -109,12 +101,11 @@ export function disposeTerminalSession(id: string): void {
   const session = sessions.get(id)
   if (!session) return
   if (session.running && session.child.pid) {
-    try {
-      kill(session.child.pid)
-    } catch {
-      // ignore
-    }
+    killProcessTree(session.child.pid, 'dispose')
   }
+  session.running = false
+  if (session.status === 'running') session.status = 'aborted'
+  notifySessionWaiters(session)
   sessions.delete(id)
 }
 
@@ -129,6 +120,11 @@ export function countTerminalSessionsForInvoke(runId: string, invokeId: number):
     if (session.runId === runId && session.invokeId === invokeId) count++
   }
   return count
+}
+
+/** @internal Test helper — total live background sessions. */
+export function countTerminalSessionsGlobalForTests(): number {
+  return sessions.size
 }
 
 export function disposeTerminalSessionsForInvoke(runId: string, invokeId: number): number {
@@ -151,13 +147,34 @@ export function disposeTerminalSessionsForWorkspace(workspacePath: string): numb
   return disposed
 }
 
+/** Kill sessions whose cwd or workspace root sits under `root` (instance worktree teardown). */
+export async function disposeTerminalSessionsUnderPath(root: string): Promise<number> {
+  const trimmed = root.trim()
+  if (!trimmed) return 0
+  const pids: number[] = []
+  let disposed = 0
+  for (const session of [...sessions.values()]) {
+    if (
+      !workspacePathIsInside(trimmed, session.cwd) &&
+      !workspacePathIsInside(trimmed, session.workspaceRoot)
+    ) {
+      continue
+    }
+    if (session.running && session.child.pid) pids.push(session.child.pid)
+    disposeTerminalSession(session.id)
+    disposed++
+  }
+  await Promise.all(pids.map((pid) => killProcessTreeAndWait(pid, 'worktree-teardown')))
+  return disposed
+}
+
 export function disposeAllTerminalSessions(): void {
   for (const id of [...sessions.keys()]) disposeTerminalSession(id)
 }
 
 function formatSession(session: TerminalSession): string {
   return formatTerminalSessionOutput({
-    workspaceRoot: session.workspaceRoot,
+    cwd: session.cwd,
     command: session.command,
     shell: session.shell,
     stdout: session.stdout,
@@ -165,6 +182,37 @@ function formatSession(session: TerminalSession): string {
     exitCode: session.exitCode,
     sessionId: session.id,
     status: session.status
+  })
+}
+
+/**
+ * Wait until the session stops running, matches pattern, aborts, or deadline.
+ * Wakes immediately on close/pattern via session waiters (no 100ms busy-poll).
+ */
+function waitForSessionEvent(
+  session: TerminalSession,
+  signal: AbortSignal,
+  deadline: number
+): Promise<void> {
+  if (!session.running || session.status !== 'running' || signal.aborted) {
+    return Promise.resolve()
+  }
+  const remaining = deadline - Date.now()
+  if (remaining <= 0) return Promise.resolve()
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      session.waiters.delete(finish)
+      signal.removeEventListener('abort', finish)
+      clearTimeout(timer)
+      resolve()
+    }
+    session.waiters.add(finish)
+    signal.addEventListener('abort', finish, { once: true })
+    const timer = setTimeout(finish, remaining)
   })
 }
 
@@ -189,16 +237,11 @@ export async function startBackgroundTerminal(
   const command = opts.command.trim()
   if (!command) throw new Error('command is required to start a terminal session')
 
+  const cwd = opts.cwd ?? opts.workspaceRoot
   const resolved = resolveTerminalShell(opts.shell ?? 'auto')
-  if (resolved === 'cmd') {
-    const unixHint = unsupportedUnixOnWindowsMessage(command)
-    if (unixHint) {
-      return `cwd: ${opts.workspaceRoot}\nshell: cmd\n\n${unixHint}`
-    }
-  }
   if (resolved === 'bash' && !commandOnPath('bash')) {
     return [
-      `cwd: ${opts.workspaceRoot}`,
+      `cwd: ${cwd}`,
       'shell: bash',
       '',
       'bash was not found on PATH.',
@@ -207,10 +250,24 @@ export async function startBackgroundTerminal(
   }
   if (resolved === 'powershell' && !commandOnPath('pwsh') && !commandOnPath('powershell')) {
     return [
-      `cwd: ${opts.workspaceRoot}`,
+      `cwd: ${cwd}`,
       'shell: powershell',
       '',
       'PowerShell was not found on PATH.',
+      'exit_code: 1'
+    ].join('\n')
+  }
+
+  let invokeCount = 0
+  for (const s of sessions.values()) {
+    if (s.runId === opts.runId && s.invokeId === opts.invokeId) invokeCount++
+  }
+  if (invokeCount >= MAX_BACKGROUND_TERMINALS_PER_INVOKE) {
+    return [
+      `cwd: ${cwd}`,
+      `shell: ${resolved}`,
+      '',
+      `Too many concurrent background terminal sessions for this invoke (limit ${MAX_BACKGROUND_TERMINALS_PER_INVOKE}). Wait for existing sessions to finish or dispose them.`,
       'exit_code: 1'
     ].join('\n')
   }
@@ -228,18 +285,19 @@ export async function startBackgroundTerminal(
     }
   }
 
-  const cwd = opts.cwd ?? opts.workspaceRoot
   const child = spawn(spec.bin, spec.args, {
     cwd,
     env: sanitizedTerminalEnv(),
     windowsHide: true
   })
+  if (child.pid) lowerProcessPriority(child.pid)
 
   const session: TerminalSession = {
     id,
     runId: opts.runId,
     invokeId: opts.invokeId,
     workspaceRoot: opts.workspaceRoot,
+    cwd,
     command,
     shell: resolved,
     child,
@@ -251,39 +309,43 @@ export async function startBackgroundTerminal(
     pattern,
     patternMatched: false,
     createdAt: Date.now(),
-    onOutput: opts.onOutput
+    onOutput: opts.onOutput,
+    waiters: new Set()
   }
-  enforceBackgroundSessionCap(opts.runId, opts.invokeId)
   sessions.set(id, session)
 
   const onAbort = (): void => {
-    if (session.running && child.pid) kill(child.pid)
+    if (session.running && child.pid) killProcessTree(child.pid, 'session-abort')
     session.running = false
     session.status = 'aborted'
+    notifySessionWaiters(session)
   }
   if (opts.signal.aborted) onAbort()
   else opts.signal.addEventListener('abort', onAbort, { once: true })
 
   child.stdout?.on('data', (buf: Buffer) => {
-    const { next, emitted } = appendCapped(session.stdout, buf.toString('utf8'))
-    session.stdout = next
-    if (emitted) session.onOutput?.({ text: emitted, stream: 'stdout' })
+    const text = buf.toString('utf8')
+    session.stdout += text
+    if (text) session.onOutput?.({ text, stream: 'stdout' })
     if (session.pattern && !session.patternMatched && matchesPattern(session) && session.running) {
       session.status = 'pattern_matched'
+      notifySessionWaiters(session)
     }
   })
   child.stderr?.on('data', (buf: Buffer) => {
-    const { next, emitted } = appendCapped(session.stderr, buf.toString('utf8'))
-    session.stderr = next
-    if (emitted) session.onOutput?.({ text: emitted, stream: 'stderr' })
+    const text = buf.toString('utf8')
+    session.stderr += text
+    if (text) session.onOutput?.({ text, stream: 'stderr' })
     if (session.pattern && !session.patternMatched && matchesPattern(session) && session.running) {
       session.status = 'pattern_matched'
+      notifySessionWaiters(session)
     }
   })
   child.on('error', () => {
     session.running = false
     session.status = 'done'
     session.exitCode = 1
+    notifySessionWaiters(session)
   })
   child.on('close', (code) => {
     session.running = false
@@ -292,6 +354,7 @@ export async function startBackgroundTerminal(
       session.status = matchesPattern(session) ? 'pattern_matched' : 'done'
     }
     opts.signal.removeEventListener('abort', onAbort)
+    notifySessionWaiters(session)
   })
 
   return await pollTerminalSession({
@@ -341,23 +404,21 @@ export async function pollTerminalSession(opts: PollTerminalSessionOpts): Promis
       const hardCancel = !opts.runSignal || opts.runSignal.aborted
       if (hardCancel) {
         if (session.running && session.child.pid) {
-          try {
-            kill(session.child.pid)
-          } catch {
-            // ignore — process may already be gone
-          }
+          killProcessTree(session.child.pid, 'poll-hard-cancel')
         }
         session.running = false
         session.status = 'aborted'
+        notifySessionWaiters(session)
       }
       break
     }
     if (!session.running) break
     if (matchesPattern(session)) {
       session.status = 'pattern_matched'
+      notifySessionWaiters(session)
       break
     }
-    await new Promise((r) => setTimeout(r, 100))
+    await waitForSessionEvent(session, opts.signal, deadline)
   }
 
   if (session.running && opts.blockUntilMs > 0 && session.status === 'running') {

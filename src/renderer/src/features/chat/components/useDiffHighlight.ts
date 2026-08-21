@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   highlightToLines,
   languageFromPath,
@@ -55,18 +55,34 @@ async function tokensForSide(
  * Returns an empty map while the grammar loads and for files we have no grammar
  * for, so a caller can always render something.
  */
-export function useDiffHighlight(lines: DiffLine[], path: string): DiffTokens {
+export function useDiffHighlight(
+  lines: DiffLine[],
+  path: string,
+  unstable = false
+): DiffTokens {
   const [tokens, setTokens] = useState<DiffTokens>(EMPTY)
   const theme = useDocumentTheme()
   const language = languageFromPath(path)
+  const fingerprint = useMemo(
+    () => lines.map((line) => `${line.kind}\0${line.lineNumber ?? ''}\0${line.text}`).join('\n'),
+    [lines]
+  )
+  const linesRef = useRef(lines)
+  linesRef.current = lines
 
   useEffect(() => {
-    if (!language || lines.length === 0) {
+    // Growing diffs: highlighting every delta is thrown away by the next one
+    // (same reason fenced markdown skips Shiki while `unstable`).
+    if (unstable || !language || linesRef.current.length === 0) {
       setTokens(EMPTY)
       return undefined
     }
 
-    const source = lines.length > HIGHLIGHT_MAX_LINES ? lines.slice(0, HIGHLIGHT_MAX_LINES) : lines
+    const sourceLines = linesRef.current
+    const source =
+      sourceLines.length > HIGHLIGHT_MAX_LINES
+        ? sourceLines.slice(0, HIGHLIGHT_MAX_LINES)
+        : sourceLines
 
     let cancelled = false
     void Promise.all([
@@ -81,7 +97,7 @@ export function useDiffHighlight(lines: DiffLine[], path: string): DiffTokens {
     return () => {
       cancelled = true
     }
-  }, [lines, language, theme])
+  }, [fingerprint, language, theme, unstable])
 
   return tokens
 }
