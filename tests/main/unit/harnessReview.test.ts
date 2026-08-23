@@ -73,7 +73,8 @@ describe('harnessReview', () => {
     expect(summary.bullets.some((b) => /Recurring failure/.test(b))).toBe(true)
     expect(summary.evidenceBuckets.some((b) => b.component === 'loop_notices')).toBe(true)
     expect(summary.evidenceBuckets.some((b) => b.component === 'tool_policy')).toBe(true)
-    expect(summary.evidenceBuckets.some((b) => b.component === 'system_prompt')).toBe(true)
+    expect(summary.evidenceBuckets.some((b) => b.component === 'system_prompt')).toBe(false)
+    expect(summary.suggestions.join('\n')).toMatch(/runtime owners/i)
     expect(summary.suggestions.every((s) => !/Prefer file-backed|recovery hint|memory_write/i.test(s))).toBe(
       true
     )
@@ -162,7 +163,7 @@ describe('harnessReview', () => {
 
 
 
-  it('uses rewriteBody when provided and marks LLM-assisted', async () => {
+  it('does not route non-harness evidence through the LLM rewriter', async () => {
     const sessions = workspaceSessionsRoot(workspace)
     const runDir = join(sessions, 'run-b')
     mkdirSync(runDir, { recursive: true })
@@ -180,11 +181,17 @@ describe('harnessReview', () => {
     mkdirSync(join(workspace, 'resources', 'harness'), { recursive: true })
     writeFileSync(join(workspace, 'resources', 'harness', 'default.md'), '# Agent V\nold\n', 'utf8')
 
+    let rewriteCalls = 0
     const result = await runHarnessReview(workspace, {
-      rewriteBody: async () => ({ body: '# Agent V\n\nrewritten-by-llm\n', usedLlm: true })
+      rewriteBody: async () => {
+        rewriteCalls++
+        return { body: '# Agent V\n\nrewritten-by-llm\n', usedLlm: true }
+      }
     })
     const body = readFileSync(result.proposalPath, 'utf8')
-    expect(body).toMatch(/LLM-assisted proposal/)
-    expect(body).toMatch(/rewritten-by-llm/)
+    expect(rewriteCalls).toBe(0)
+    expect(body).not.toMatch(/LLM-assisted proposal/)
+    expect(body).not.toMatch(/rewritten-by-llm/)
+    expect(body).toMatch(/No harness-owned weakness found/i)
   })
 })

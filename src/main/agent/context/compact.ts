@@ -8,9 +8,11 @@ import {
 } from '../providers/fetchWithRetry'
 import type { LlmProvider, ProviderChatRequest, ToolDefinition } from '../providers/types'
 import {
+  compactionSystemPrompt,
   parseCompactionJson,
   toCompactionJsonSchema,
-  type CompactionData
+  type CompactionData,
+  type CompactionOutputFormat
 } from '../schemas/compaction'
 import { collectStructuredResponse } from '../schemas/structured'
 import { circuitKeyProvider, isCircuitOpenError } from '../circuitBreaker'
@@ -80,26 +82,12 @@ export function applyTriggerFold(
   return ensureSubstantialFold(working, kept)
 }
 
-const COMPACTION_PROMPT = `Summarize this coding-agent session for future context. Be concise and factual. Do not invent files or decisions.`
-
-const COMPACTION_FREEFORM_PROMPT = `Summarize this coding-agent session for future context. Use exactly these sections:
-
-## Session Intent
-## Files Touched
-## Key Decisions
-## Constraints
-## Open Bugs/Blockers
-## Next Steps
-
-Be concise and factual. Do not invent files or decisions.`
-
 const COMPACTION_NEXT_STEPS_GUIDANCE =
   'In Next Steps and Open Bugs/Blockers, name concrete files, todos, or commands the next turn should reopen — do not assume they remain in the verbatim window.'
 
-/** Parent-step prefix so auto-compact can share the live stream cache. */
+/** Legacy parent-step shape retained at the caller boundary; its agent instructions are not inherited. */
 export type CompactForkPrefix = {
   systemStable: string
-  /** Exact tool defs from the parent step, same order. */
   toolDefs: ToolDefinition[]
 }
 
@@ -119,8 +107,11 @@ function isRequiredFactsFocus(focus: string): boolean {
 }
 
 /** Build system prompt for summarizer; optional operator focus is preserved (capped unless required facts). */
-export function buildCompactionSystemPrompt(base: string, focus?: string): string {
-  let prompt = `${base}\n\n${COMPACTION_NEXT_STEPS_GUIDANCE}`
+export function buildCompactionSystemPrompt(
+  format: CompactionOutputFormat,
+  focus?: string
+): string {
+  let prompt = `${compactionSystemPrompt(format)}\n\n${COMPACTION_NEXT_STEPS_GUIDANCE}`
   const trimmed = focus?.trim()
   if (trimmed) {
     const body = isRequiredFactsFocus(trimmed) ? trimmed : trimmed.slice(0, FOCUS_MAX_CHARS)
@@ -136,9 +127,9 @@ function capRollingSummary(text: string, maxChars: number): string {
   return firstNewline > 0 ? `…${tail.slice(firstNewline)}` : `… ${tail}`
 }
 
-/** Compact instruction as a trailing user message — must not rewrite systemStable. */
-function buildCompactForkUserMessage(focus?: string, priorSummary?: string): string {
-  let body = buildCompactionSystemPrompt(COMPACTION_FREEFORM_PROMPT, focus)
+/** Data supplied to the dedicated summarizer after the history messages. */
+function buildCompactForkUserMessage(priorSummary?: string): string {
+  let body = 'Summarize the preceding session history now.'
   const prior = priorSummary?.trim()
   if (prior) {
     body = `Previous session summary (already folded; stay consistent, do not drop its files or decisions):\n${prior}\n\n---\n\n${body}`
@@ -214,19 +205,18 @@ async function streamFreeformSummary(input: {
       tools: [],
       toolChoice: 'none',
       thinking: { enabled: false },
-      system: buildCompactionSystemPrompt(COMPACTION_FREEFORM_PROMPT, input.focus),
+      system: buildCompactionSystemPrompt('markdown', input.focus),
       messages: [{ role: 'user', content: input.historyText }]
     }
   })
 }
 
-async function streamCacheSafeForkSummary(input: {
+async function streamMessageSummary(input: {
   provider: LlmProvider
   model: string
   apiKey?: string | null
   baseUrl?: string
   signal: AbortSignal
-  forkPrefix: CompactForkPrefix
   messages: ChatMessage[]
   focus?: string
   priorSummary?: string
@@ -241,14 +231,13 @@ async function streamCacheSafeForkSummary(input: {
       apiKey: input.apiKey,
       baseUrl: input.baseUrl,
       signal: input.signal,
-      tools: input.forkPrefix.toolDefs,
+      tools: [],
       toolChoice: 'none',
       thinking: { enabled: false },
-      system: input.forkPrefix.systemStable,
-      systemStable: input.forkPrefix.systemStable,
+      system: buildCompactionSystemPrompt('markdown', input.focus),
       messages: [
         ...input.messages,
-        { role: 'user', content: buildCompactForkUserMessage(input.focus, input.priorSummary) }
+        { role: 'user', content: buildCompactForkUserMessage(input.priorSummary) }
       ],
       ...(input.promptCacheKey ? { promptCacheKey: input.promptCacheKey } : {}),
       ...(input.modelInfo ? { modelInfo: input.modelInfo } : {})
@@ -300,7 +289,7 @@ async function summarizeHistoryChunk(input: {
 }): Promise<string> {
   let summary = ''
   const useStructured = input.supportsStructuredOutput !== false
-  const system = buildCompactionSystemPrompt(COMPACTION_PROMPT, input.focus)
+  const system = buildCompactionSystemPrompt('json', input.focus)
 
   if (useStructured) {
     try {
@@ -382,8 +371,8 @@ export async function compactMessages(input: {
   /** Optional operator focus directive for what to preserve. */
   focus?: string
   /**
-   * Parent-step cache prefix. When set, the primary path is a freeform fork
-   * (same systemStable + toolDefs + real messages + trailing compact prompt).
+   * Parent-step message shape signal. Agent harness and tools are deliberately
+   * excluded; compaction always runs under its dedicated summarizer instructions.
    */
   forkPrefix?: CompactForkPrefix
   promptCacheKey?: string
@@ -411,13 +400,12 @@ export async function compactMessages(input: {
   }
 
   if (input.forkPrefix && input.messages.length > 0) {
-    const forked = await streamCacheSafeForkSummary({
+    const forked = await streamMessageSummary({
       provider: input.provider,
       model: input.model,
       apiKey: input.apiKey,
       baseUrl: input.baseUrl,
       signal: input.signal,
-      forkPrefix: input.forkPrefix,
       messages: input.messages,
       focus: input.focus,
       priorSummary: prior || undefined,
@@ -426,7 +414,7 @@ export async function compactMessages(input: {
     })
     if (input.signal.aborted) return null
     if (forked) return mergeForkSummary(forked)
-    logger.warn('Cache-safe compact fork produced no summary; falling back to structured tools=[] path', {
+    logger.warn('Message-shape compaction produced no summary; falling back to structured tools=[] path', {
       scope: 'agent',
       code: 'COMPACTION'
     })

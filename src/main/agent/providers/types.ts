@@ -83,9 +83,10 @@ export interface ProviderChatRequest {
   /**
    * Stable/volatile system split for prompt caching.
    * - Anthropic: stable gets `cache_control`; volatile is unmarked in system blocks.
-   * - OpenAI-compat / Gemini / DeepSeek: stable is the leading system/developer
-   *   instruction; volatile is appended *after* history so the clock/snapshot do
-   *   not bust the cacheable tools+system+history prefix.
+   * - OpenAI-compatible chat / DeepSeek: stable is the leading system instruction;
+   *   volatile is appended after history.
+   * - OpenAI Responses / Gemini Interactions: stable seeds stateful transport;
+   *   volatile is resent on every continuation step.
    * When set, preferred over a single combined `system` string.
    */
   systemStable?: string

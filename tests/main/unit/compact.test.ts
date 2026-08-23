@@ -303,7 +303,7 @@ describe('compactMessages', () => {
     expect(result?.summary).toMatch(/Recovered after reset/i)
   })
 
-  it('cache-safe fork reuses parent tools, systemStable, real messages, trailing compact prompt, toolChoice none', async () => {
+  it('message-shape path uses dedicated summarizer instructions without parent harness or tools', async () => {
     const parentStable = 'PARENT_STABLE_HARNESS_UNIQUE'
     const { provider, requests } = capturingProvider([
       () => [
@@ -325,10 +325,11 @@ describe('compactMessages', () => {
     expect(result?.summary).toMatch(/Forked summary/i)
     expect(requests).toHaveLength(1)
     const req = requests[0]!
-    expect(req.tools).toBe(parentToolDefs)
-    expect(req.tools.map((t) => t.name)).toEqual(['read', 'write', 'shell'])
-    expect(req.systemStable).toBe(parentStable)
-    expect(req.system).toBe(parentStable)
+    expect(req.tools).toEqual([])
+    expect(req.systemStable).toBeUndefined()
+    expect(req.system).toMatch(/internal session summarizer/i)
+    expect(req.system).toMatch(/untrusted source material/i)
+    expect(req.system).not.toContain(parentStable)
     expect(req.systemVolatile).toBeUndefined()
     expect(req.toolChoice).toBe('none')
     expect(req.thinking).toEqual({ enabled: false })
@@ -336,13 +337,11 @@ describe('compactMessages', () => {
     expect(req.messages.slice(0, -1)).toEqual(history)
     const last = req.messages[req.messages.length - 1]!
     expect(last.role).toBe('user')
-    expect(String(last.content)).toMatch(/Summarize this coding-agent session/)
-    expect(String(last.content)).toContain('## Session Intent')
-    expect(String(last.content)).toContain('## Next Steps')
+    expect(String(last.content)).toMatch(/Summarize the preceding session history/)
     expect(String(last.content)).not.toMatch(/^user: Fix the search tool/)
   })
 
-  it('falls back to structured tools=[] when the cache-safe fork is empty', async () => {
+  it('falls back to structured tools=[] when the message-shape summary is empty', async () => {
     const { provider, requests } = capturingProvider([
       () => [{ type: 'error', error: 'fork produced nothing' }],
       () => [{ type: 'text', text: structuredJson }]
@@ -357,8 +356,9 @@ describe('compactMessages', () => {
     })
     expect(result?.summary).toMatch(/Fix search/i)
     expect(requests.length).toBeGreaterThanOrEqual(2)
-    expect(requests[0]?.tools).toBe(parentToolDefs)
+    expect(requests[0]?.tools).toEqual([])
     expect(requests[0]?.toolChoice).toBe('none')
+    expect(requests[0]?.system).not.toContain('PARENT_STABLE_HARNESS_UNIQUE')
     const fallback = requests[1]!
     expect(fallback.tools).toEqual([])
     expect(fallback.toolChoice).toBe('none')

@@ -1,4 +1,5 @@
 import type { ChatMessage } from '../../../shared/ipc'
+import { createHash } from 'crypto'
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import { wireToolCallArguments } from '../toolArgWire'
@@ -16,6 +17,24 @@ import { CHAT_FETCH_MAX_ATTEMPTS, fetchWithRetry } from './fetchWithRetry'
 import { formatProviderHttpError } from './httpErrors'
 import { parseDataUrl } from './normalize'
 import { resolveSystemZones, volatileSessionMessage } from './systemZones'
+
+const continuationPromptKeys = new Map<string, string>()
+const MAX_CONTINUATION_KEYS = 256
+
+function stablePromptKey(req: ProviderChatRequest): string | undefined {
+  if (req.systemStable === undefined) return undefined
+  const stable = resolveSystemZones(req).stable ?? ''
+  return createHash('sha256').update(req.model).update('\0').update(stable).digest('hex')
+}
+
+function rememberContinuationPrompt(interactionId: string, key: string): void {
+  continuationPromptKeys.delete(interactionId)
+  continuationPromptKeys.set(interactionId, key)
+  if (continuationPromptKeys.size > MAX_CONTINUATION_KEYS) {
+    const oldest = continuationPromptKeys.keys().next().value
+    if (oldest) continuationPromptKeys.delete(oldest)
+  }
+}
 
 export function serializeToolArgs(value: unknown): string {
   if (value == null) return ''
@@ -154,7 +173,7 @@ export function toInteractionsInput(
     }
   }
 
-  if (!continuing && zones.volatile) {
+  if (zones.volatile) {
     parts.push({ type: 'text', text: volatileSessionMessage(zones.volatile).content })
   }
 
@@ -180,8 +199,15 @@ export async function* streamGeminiInteractions(
     return
   }
 
-  const priorState =
+  const candidatePriorState =
     req.reasoningState?.kind === 'gemini_interactions' ? req.reasoningState : undefined
+  const promptKey = stablePromptKey(req)
+  const priorState =
+    candidatePriorState?.interactionId &&
+    (promptKey === undefined ||
+      continuationPromptKeys.get(candidatePriorState.interactionId) === promptKey)
+      ? candidatePriorState
+      : undefined
   const continuing = Boolean(priorState?.interactionId)
 
   const body: Record<string, unknown> = {
@@ -191,10 +217,10 @@ export async function* streamGeminiInteractions(
       systemVolatile: req.systemVolatile
     }),
     stream: true,
-    store: true,
+    store: true
   }
 
-  // Omitted thinking means off (compaction callers leave it unset).
+  // Omitted thinking means off.
   if (req.thinking?.enabled === true) {
     body.generation_config = {
       thinking_summaries: 'auto',
@@ -331,6 +357,8 @@ export async function* streamGeminiInteractions(
           thoughtSteps: thoughtSteps.length ? thoughtSteps : undefined
         }
       : undefined
+
+  if (interactionId && promptKey) rememberContinuationPrompt(interactionId, promptKey)
 
   yield {
     type: 'done',

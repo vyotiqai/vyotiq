@@ -299,6 +299,80 @@ describe('openai responses stream', () => {
     expect(capturedBody?.input).toEqual([{ role: 'user', content: 'now summarize it' }])
   })
 
+  it('refreshes volatile context on continuation and resets when stable prompt changes', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    let call = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+        const id = ['resp_stable_seed', 'resp_stable_next', 'resp_stable_reset'][call++]!
+        return sseBody([
+          `data: {"type":"response.completed","response":{"id":"${id}"}}\n\n`
+        ])
+      })
+    )
+
+    await collect(
+      streamOpenAiResponses(
+        baseReq({
+          model: 'gpt-5',
+          systemStable: 'stable-v1',
+          systemVolatile: 'clock=step-1'
+        })
+      )
+    )
+    const continuedMessages = [
+      { role: 'user' as const, content: 'hi' },
+      {
+        role: 'assistant' as const,
+        content: 'working',
+        reasoningState: {
+          kind: 'openai_responses' as const,
+          responseId: 'resp_stable_seed',
+          outputItems: []
+        }
+      },
+      { role: 'user' as const, content: 'continue' }
+    ]
+    await collect(
+      streamOpenAiResponses(
+        baseReq({
+          model: 'gpt-5',
+          messages: continuedMessages,
+          systemStable: 'stable-v1',
+          systemVolatile: 'clock=step-2',
+          reasoningState: {
+            kind: 'openai_responses',
+            responseId: 'resp_stable_seed',
+            outputItems: []
+          }
+        })
+      )
+    )
+    await collect(
+      streamOpenAiResponses(
+        baseReq({
+          model: 'gpt-5',
+          messages: continuedMessages,
+          systemStable: 'stable-v2',
+          systemVolatile: 'clock=step-3',
+          reasoningState: {
+            kind: 'openai_responses',
+            responseId: 'resp_stable_next',
+            outputItems: []
+          }
+        })
+      )
+    )
+
+    expect(bodies[1]?.previous_response_id).toBe('resp_stable_seed')
+    expect(JSON.stringify(bodies[1]?.input)).toContain('clock=step-2')
+    expect(bodies[2]?.previous_response_id).toBeUndefined()
+    expect(JSON.stringify(bodies[2]?.input)).toContain('stable-v2')
+    expect(JSON.stringify(bodies[2]?.input)).toContain('clock=step-3')
+  })
+
   it('emits thinking_done before answer text when reasoning precedes content', async () => {
     vi.stubGlobal(
       'fetch',
@@ -1143,6 +1217,77 @@ describe('gemini interactions stream', () => {
 
     expect(capturedBody?.previous_interaction_id).toBe('int_prev')
     expect(capturedBody?.input).toBe('what next?')
+  })
+
+  it('refreshes volatile context on continuation and resets when stable prompt changes', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    let call = 0
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>)
+        const id = ['int_stable_seed', 'int_stable_next', 'int_stable_reset'][call++]!
+        return sseBody([
+          `data: {"event_type":"interaction.completed","interaction":{"id":"${id}","finish_reason":"stop"}}\n\n`
+        ])
+      })
+    )
+
+    await collect(
+      streamGeminiInteractions(
+        baseReq({
+          model: 'gemini-3-pro',
+          systemStable: 'stable-v1',
+          systemVolatile: 'clock=step-1'
+        })
+      )
+    )
+    const continuedMessages = [
+      { role: 'user' as const, content: 'hi' },
+      {
+        role: 'assistant' as const,
+        content: 'working',
+        reasoningState: {
+          kind: 'gemini_interactions' as const,
+          interactionId: 'int_stable_seed'
+        }
+      },
+      { role: 'user' as const, content: 'continue' }
+    ]
+    await collect(
+      streamGeminiInteractions(
+        baseReq({
+          model: 'gemini-3-pro',
+          messages: continuedMessages,
+          systemStable: 'stable-v1',
+          systemVolatile: 'clock=step-2',
+          reasoningState: {
+            kind: 'gemini_interactions',
+            interactionId: 'int_stable_seed'
+          }
+        })
+      )
+    )
+    await collect(
+      streamGeminiInteractions(
+        baseReq({
+          model: 'gemini-3-pro',
+          messages: continuedMessages,
+          systemStable: 'stable-v2',
+          systemVolatile: 'clock=step-3',
+          reasoningState: {
+            kind: 'gemini_interactions',
+            interactionId: 'int_stable_next'
+          }
+        })
+      )
+    )
+
+    expect(bodies[1]?.previous_interaction_id).toBe('int_stable_seed')
+    expect(JSON.stringify(bodies[1]?.input)).toContain('clock=step-2')
+    expect(bodies[2]?.previous_interaction_id).toBeUndefined()
+    expect(JSON.stringify(bodies[2]?.input)).toContain('stable-v2')
+    expect(JSON.stringify(bodies[2]?.input)).toContain('clock=step-3')
   })
 })
 

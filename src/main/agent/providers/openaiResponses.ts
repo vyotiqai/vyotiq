@@ -1,4 +1,5 @@
 import type { ChatMessage, MessageContent } from '../../../shared/ipc'
+import { createHash } from 'crypto'
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
 import {
@@ -24,6 +25,24 @@ import {
 import { mergeOpenAiCompatToolArgDelta, wireToolCallArguments } from '../toolArgWire'
 
 export { supportsExplicitPromptCache } from './systemZones'
+
+const continuationPromptKeys = new Map<string, string>()
+const MAX_CONTINUATION_KEYS = 256
+
+function stablePromptKey(req: ProviderChatRequest): string | undefined {
+  if (req.systemStable === undefined) return undefined
+  const stable = resolveSystemZones(req).stable ?? ''
+  return createHash('sha256').update(req.model).update('\0').update(stable).digest('hex')
+}
+
+function rememberContinuationPrompt(responseId: string, key: string): void {
+  continuationPromptKeys.delete(responseId)
+  continuationPromptKeys.set(responseId, key)
+  if (continuationPromptKeys.size > MAX_CONTINUATION_KEYS) {
+    const oldest = continuationPromptKeys.keys().next().value
+    if (oldest) continuationPromptKeys.delete(oldest)
+  }
+}
 
 /** Exported for tests — parse Responses usage including cache write tokens. */
 export function parseOpenAiResponsesUsage(raw: unknown): TokenUsage | undefined {
@@ -143,20 +162,24 @@ export function toResponsesInput(
     systemVolatile?: string
   }
 ): Array<Record<string, unknown>> {
+  const zones = resolveSystemZones({
+    system,
+    systemStable: opts?.systemStable,
+    systemVolatile: opts?.systemVolatile
+  })
   // Stateful continuation: server retains prior turn via previous_response_id.
   // Tool-only suffixes stay tool outputs; a newer user turn is the suffix after
   // the last reasoning assistant — not an empty trailing-tool list.
   if (priorState?.kind === 'openai_responses' && priorState.responseId) {
     const out: Array<Record<string, unknown>> = []
     appendResponsesMessageItems(out, statefulContinuationMessages(messages))
+    if (zones.volatile) {
+      const vol = volatileSessionMessage(zones.volatile)
+      out.push({ role: 'user', content: vol.content })
+    }
     return out
   }
 
-  const zones = resolveSystemZones({
-    system,
-    systemStable: opts?.systemStable,
-    systemVolatile: opts?.systemVolatile
-  })
   const out: Array<Record<string, unknown>> = []
   if (zones.stable) {
     if (opts?.explicitPromptCache) {
@@ -243,10 +266,17 @@ export async function* streamOpenAiResponses(
     return
   }
 
-  const priorState =
+  const candidatePriorState =
     req.reasoningState?.kind === 'openai_responses' ? req.reasoningState : undefined
-  // Omitted thinking means off (compaction callers leave it unset) —
-  // match the OpenAI-compat body builder instead of silently paying reasoning tokens.
+  const promptKey = stablePromptKey(req)
+  const priorState =
+    candidatePriorState?.responseId &&
+    (promptKey === undefined ||
+      continuationPromptKeys.get(candidatePriorState.responseId) === promptKey)
+      ? candidatePriorState
+      : undefined
+  // Omitted thinking means off; match the OpenAI-compat body builder instead
+  // of silently paying reasoning tokens.
   const thinkingOn = req.thinking?.enabled === true
   const thinkingOff = req.thinking?.enabled === false
   const supportsThinking = req.modelInfo?.supportsThinking !== false
@@ -482,6 +512,8 @@ export async function* streamOpenAiResponses(
     if (yieldedToolCalls.has(callId) || !call.name) continue
     yield { type: 'tool_call', toolCall: call }
   }
+
+  if (responseId && promptKey) rememberContinuationPrompt(responseId, promptKey)
 
   yield {
     type: 'done',

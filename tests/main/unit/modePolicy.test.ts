@@ -50,18 +50,12 @@ describe('modePolicy', () => {
     ).toBe(false)
   })
 
-  it('root Agent mode section tells the model how to spawn and merge', () => {
+  it('root Agent mode delegates instance details to tool schemas', () => {
     const section = modeSectionMarkdown('agent')
-    expect(section).toMatch(/spawn_agent_instance/)
-    expect(section).toMatch(/merge_agent_instance/)
-    expect(section).toMatch(/only user message/)
-    expect(section).toMatch(/no parent transcript/)
-    expect(section).toMatch(/dependent sub-tasks/)
-    expect(section).toMatch(/path_scope/)
-    expect(section).toMatch(/Spawn each independent workstream, then `await_agent_instance` those `run_id`s together/)
-    expect(section).not.toMatch(/when partitions are clear/)
-    expect(section).not.toMatch(/Batch independent/)
-    expect(section).not.toMatch(/different files only/)
+    expect(section).toMatch(/Root-only agent-instance tools/)
+    expect(section).toMatch(/catalog schemas/)
+    expect(section).not.toMatch(/spawn_agent_instance/)
+    expect(section).not.toMatch(/path_scope/)
   })
 
   it('inline instance Agent mode section omits spawn/merge instructions', () => {
@@ -122,6 +116,8 @@ describe('modePolicy', () => {
   it('Ask mode denies diagnostics and terminal; Plan allows diagnostics', () => {
     expect(isBuiltinAllowedInMode('ask', 'diagnostics')).toBe(false)
     expect(isBuiltinAllowedInMode('plan', 'diagnostics')).toBe(true)
+    expect(isBuiltinAllowedInMode('plan', 'create_plan')).toBe(true)
+    expect(isBuiltinAllowedInMode('ask', 'create_plan')).toBe(false)
     expect(assertToolAllowedInMode('ask', 'diagnostics', {}).ok).toBe(false)
     expect(assertToolAllowedInMode('plan', 'diagnostics', {}).ok).toBe(true)
     expect(isBuiltinAllowedInMode('ask', 'terminal')).toBe(false)
@@ -149,11 +145,9 @@ describe('modePolicy', () => {
     expect(modeSectionMarkdown('agent')).toContain('Agent mode')
     expect(modeSectionMarkdown('ask')).toContain('Ask mode')
     expect(modeSectionMarkdown('plan')).toContain('Plan mode')
-    expect(modeSectionMarkdown('plan')).not.toMatch(/keep todos via/i)
-    // Shell-vs-workspace-tools lives in harness Tool policy; Keep/Discard is UI, not the mode overlay.
-    expect(modeSectionMarkdown('agent')).toMatch(/Tool policy/)
-    expect(modeSectionMarkdown('agent')).not.toMatch(/not shell/i)
-    expect(modeSectionMarkdown('agent')).not.toMatch(/Keep\/Discard/i)
+    expect(modeSectionMarkdown('agent')).toMatch(/tools in this turn’s catalog/)
+    expect(modeSectionMarkdown('agent')).not.toMatch(/Tool policy/)
+    expect(modeSectionMarkdown('plan')).not.toMatch(/Keep\/Discard/i)
   })
 
   it('modeSectionMarkdown has no proactive switch_mode calls when autoModeSwitch is off', () => {
@@ -163,19 +157,21 @@ describe('modePolicy', () => {
     expect(modeSectionMarkdown('agent')).not.toMatch(/call `switch_mode`/i)
     expect(modeSectionMarkdown('ask')).not.toMatch(/call `switch_mode`/i)
     expect(modeSectionMarkdown('plan')).not.toMatch(/call `switch_mode`/i)
-    expect(modeSectionMarkdown('ask')).toMatch(/suggest switching to Agent mode/)
+    expect(modeSectionMarkdown('ask')).toMatch(/must switch to Agent mode/)
     expect(modeSectionMarkdown('plan')).toMatch(/switching to Agent mode/)
+    expect(modeSectionMarkdown('plan')).not.toMatch(/End with a clear plan/)
+    expect(modeSectionMarkdown('plan')).toMatch(/create_plan/)
   })
 
   it('modeSectionMarkdown includes proactive switch_mode rules when autoModeSwitch is on', () => {
     const opts = { autoModeSwitch: true }
     expect(modeSectionMarkdown('agent', opts)).toMatch(/Automatic mode switching is ON/)
-    expect(modeSectionMarkdown('agent', opts)).toMatch(/switch_mode.*ask/i)
-    expect(modeSectionMarkdown('agent', opts)).toMatch(/switch_mode.*plan/i)
-    expect(modeSectionMarkdown('ask', opts)).toMatch(/switch_mode.*plan/)
-    expect(modeSectionMarkdown('ask', opts)).toMatch(/switch_mode.*agent/)
-    expect(modeSectionMarkdown('plan', opts)).toMatch(/switch_mode.*agent/)
-    expect(modeSectionMarkdown('plan', opts)).toMatch(/switch_mode.*ask/)
+    expect(modeSectionMarkdown('agent', opts)).toMatch(/switch_mode[\s\S]*`ask`/)
+    expect(modeSectionMarkdown('agent', opts)).toMatch(/switch_mode[\s\S]*`plan`/)
+    expect(modeSectionMarkdown('ask', opts)).toMatch(/switch_mode[\s\S]*`plan`/)
+    expect(modeSectionMarkdown('ask', opts)).toMatch(/switch_mode[\s\S]*`agent`/)
+    expect(modeSectionMarkdown('plan', opts)).toMatch(/switch_mode[\s\S]*`agent`/)
+    expect(modeSectionMarkdown('plan', opts)).toMatch(/switch_mode[\s\S]*`ask`/)
     expect(modeSectionMarkdown('plan', opts)).not.toMatch(/suggest switching to Agent mode/)
   })
 
@@ -213,16 +209,16 @@ describe('modePolicy', () => {
   it('Ask forbids diagnostics and terminal; Plan allows diagnostics', () => {
     const ask = modeSectionMarkdown('ask')!
     const plan = modeSectionMarkdown('plan')!
-    expect(ask).toMatch(/Do not edit files|Only avoid mutating/)
+    expect(ask).toMatch(/Do not edit or delete files/)
     expect(ask).toMatch(/`diagnostics`/)
-    expect(ask).toMatch(/`terminal`/)
-    expect(plan).toMatch(/`todo_write` is available/)
-    expect(plan).toMatch(/`diagnostics` runs the configured workspace diagnostics/)
-    expect(plan).toMatch(/process exec/)
+    expect(ask).toMatch(/run commands/)
+    expect(plan).toMatch(/`create_plan`/)
+    expect(plan).toMatch(/`diagnostics` may run the configured check command/)
     expect(plan).toMatch(/`terminal`/)
-    expect(plan).toMatch(/Success criteria/)
-    expect(plan).toMatch(/Ordered steps/)
-    expect(plan).toMatch(/Copy Success criteria into `contract\.md` ## Done when/)
+    expect(plan).toMatch(/goal/)
+    expect(plan).toMatch(/success criteria/)
+    expect(plan).toMatch(/ordered steps/)
+    expect(plan).toMatch(/verification/)
   })
 
   it('omits codebase_search when indexing is disabled', () => {

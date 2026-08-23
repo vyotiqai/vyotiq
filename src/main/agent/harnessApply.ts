@@ -22,7 +22,7 @@ export const RECEIPT_NOTES_HEADING = '## Receipt review notes'
 
 /** Apply mutates only this relative path; evaluator / gate changes are PR-only. */
 export const HARNESS_APPLY_SURFACE_NOTE =
-  '`/harness-apply` writes only `resources/harness/default.md`. Changing evaluator code, `HARNESS_EVAL_TESTS`, held-out fixtures (`harnessHeldOutEval.ts`), or gate unit tests requires a normal PR — not harness-apply.'
+  '`/harness-apply` writes only the canonical plain-text `resources/harness/default.md`. Changing evaluator code, `HARNESS_EVAL_TESTS`, held-out fixtures (`harnessHeldOutEval.ts`), or gate unit tests requires a normal PR — not harness-apply.'
 
 /**
  * Fixed vitest subset used as the harness-apply gate.
@@ -283,8 +283,8 @@ export const harnessValidate = {
 }
 
 /**
- * Apply a proposal to resources/harness/default.md after explicit confirm.
- * Mutates only that file. Runs harness evaluators; reverts from backup on failure.
+ * Apply a proposal to canonical resources/harness/default.md after explicit confirm.
+ * Mutates only that plain-text file. Runs harness evaluators; reverts from backup on failure.
  * Evaluator / gate-test changes are PR-only (see HARNESS_APPLY_SURFACE_NOTE).
  */
 export async function applyHarnessProposal(

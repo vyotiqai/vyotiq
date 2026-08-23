@@ -52,7 +52,14 @@ export const ASK_SAFE_BUILTIN = new Set([
 ])
 
 /** Plan mode also allows todos + plan-artifact edits + diagnostics. */
-const PLAN_EXTRA_BUILTIN = new Set(['todo_write', 'edit', 'str_replace', 'multi_edit', 'diagnostics'])
+const PLAN_EXTRA_BUILTIN = new Set([
+  'todo_write',
+  'create_plan',
+  'edit',
+  'str_replace',
+  'multi_edit',
+  'diagnostics'
+])
 
 /** Filenames Plan mode may write inside the run directory. */
 export const PLAN_ARTIFACT_NAMES = new Set(['contract.md', 'plan.md'])
@@ -84,21 +91,21 @@ function autoModeSwitchEnabled(opts?: ModePolicyOptions): boolean {
 function autoModeSwitchBanner(mode: AgentInteractionMode, auto: boolean): string[] {
   if (!auto) {
     return [
-      'Automatic mode switching is OFF. `switch_mode` is unavailable — only the user changes Ask / Plan / Agent (composer picker or slash).'
+      'Automatic mode switching is OFF. `switch_mode` is unavailable; only the user can change modes.'
     ]
   }
   switch (mode) {
     case 'agent':
       return [
-        'Automatic mode switching is ON. Call `switch_mode` to `ask` for pure Q&A with no edits, or to `plan` for a fresh multi-step plan before more edits. Do not wait for the user to change mode in the composer.'
+        'Automatic mode switching is ON. Use `switch_mode` when the task changes to read-only Q&A (`ask`) or planning (`plan`).'
       ]
     case 'ask':
       return [
-        'Automatic mode switching is ON. Call `switch_mode` to `plan` before writing plan artifacts, or to `agent` before editing. Do not wait for the user to change mode in the composer.'
+        'Automatic mode switching is ON. Use `switch_mode` before planning (`plan`) or making changes (`agent`).'
       ]
     case 'plan':
       return [
-        'Automatic mode switching is ON. Call `switch_mode` to `agent` before editing product code, or to `ask` for Q&A with no plan. Do not wait for the user to change mode in the composer.'
+        'Automatic mode switching is ON. Use `switch_mode` before implementation (`agent`) or read-only Q&A (`ask`).'
       ]
     default: {
       const _exhaustive: never = mode
@@ -117,13 +124,13 @@ export function modeSectionMarkdown(
       return wrapPromptSection(
         'mode',
         [
-          'Agent mode. Edit files, run `terminal`, write memory, and use the catalog (subject to approval). Prefer non-destructive commands. Workspace tool-vs-shell rules live in Tool policy.',
+          'Agent mode. You may use the tools in this turn’s catalog, subject to their schemas and approval requirements.',
           ...autoModeSwitchBanner(mode, auto),
-          'Follow the run contract; if an approved plan is present, implement it unless the user redirects. Use `ask_question` for ambiguous product decisions.',
+          'Follow the run contract and any approved plan unless the user redirects. Ask before making a product decision that materially changes the result.',
           ...(opts?.inlineInstance
             ? []
             : [
-                "`spawn_agent_instance` `goal` is the child's only user message (no parent transcript or plan.md). Write it as that workstream's complete prompt: outcome, dependent sub-tasks, done-when, and path constraints. Spawn each independent workstream, then `await_agent_instance` those `run_id`s together. Dependent work stays in one `goal` (children cannot nest). Git worktrees isolate writes; without a worktree, `path_scope` is required. `pull_agent_instance` for outline or tail. Pin `merge_agent_instance` for a done worktree branch (parent clean, one at a time). Shared `path_scope` instances already wrote in the parent tree — do not merge them."
+                'Root-only agent-instance tools may be available; use their catalog schemas for orchestration and isolation rules.'
               ])
         ].join('\n')
       )
@@ -131,25 +138,25 @@ export function modeSectionMarkdown(
       return wrapPromptSection(
         'mode',
         [
-          'Ask mode. Use read-only built-in tools. MCP server tools are not available (server-reported readOnlyHint is untrusted); you may still list MCP catalogs, but not read resources or fetch prompts.',
-          'Only avoid mutating tools. Do not edit files, delete paths, run the `terminal` tool, run `diagnostics`, or write memory.',
+          'Ask mode. Answer and investigate with the read-only tools in this turn’s catalog.',
+          'Do not edit or delete files, run commands with `terminal` or `diagnostics`, write memory, or invoke MCP server tools. MCP catalog listing remains available.',
           ...autoModeSwitchBanner(mode, auto),
           ...(auto
             ? []
-            : ['If the user needs changes, explain what you would do and suggest switching to Agent mode.'])
+            : ['If changes are required, explain that the user must switch to Agent mode.'])
         ].join('\n')
       )
     case 'plan':
       return wrapPromptSection(
         'mode',
         [
-          'Plan mode. Explore with read-only built-in tools. MCP server tools, resources, and prompts are not available — readOnlyHint is untrusted as a security gate; catalog listing is still allowed. Update `plan.md` and `contract.md` incrementally (run plan artifacts — not product source). Prefer updating the injected plan rather than re-deriving it.',
-          'Fill `plan.md` with Goal (desired result), Success criteria (how we know it worked), Scope (included and excluded), Open questions (needs a user decision), Approach (direction and why), Ordered steps (small phases), Verification (how finished work will be checked), and Risks or trade-offs. Copy Success criteria into `contract.md` ## Done when. Use `ask_question` for blocking Open questions.',
-          '`todo_write` is available. `diagnostics` runs the configured workspace diagnostics command (process exec — not read-only; subject to tool approval). Do not edit application code, delete files, or run the `terminal` tool.',
+          'Plan mode. Inspect the workspace with read-only tools before drafting. Plans must name paths and symbols verified in this run.',
+          'Use `ask_question` for blocking choices, then publish the complete plan with `create_plan`. Include goal, success criteria, scope, approach, ordered steps, verification, and risks.',
+          'Only plan.md and contract.md may be edited. Do not change product files, delete files, run `terminal`, write memory, or invoke MCP server tools. `diagnostics` may run the configured check command subject to approval.',
           ...autoModeSwitchBanner(mode, auto),
           ...(auto
             ? []
-            : ['End with a clear plan the user can approve by switching to Agent mode.'])
+            : ['After the plan is ready, the user can approve implementation by switching to Agent mode.'])
         ].join('\n')
       )
     default: {

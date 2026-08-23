@@ -135,9 +135,14 @@ type StreamChatReq = {
   toolChoice?: 'auto' | 'none' | 'required'
 }
 
-/** Primary auto-compact path: parent tool defs + toolChoice none (not flattened tools: []). */
+/** Auto-compaction is an isolated internal job, not a normal agent continuation. */
 function isParentCompactFork(req: StreamChatReq): boolean {
-  return req.toolChoice === 'none' && Array.isArray(req.tools) && req.tools.length > 0
+  return (
+    req.toolChoice === 'none' &&
+    Array.isArray(req.tools) &&
+    req.tools.length === 0 &&
+    /internal session summarizer/i.test(String(req.system ?? ''))
+  )
 }
 
 describe('runAgent stop-reason classification', () => {

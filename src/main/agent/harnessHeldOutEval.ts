@@ -71,7 +71,7 @@ function baseReceipt(overrides: Partial<RunReceipt> & Pick<RunReceipt, 'runId'>)
 export const HELD_OUT_CASES: readonly HeldOutCase[] = [
   {
     id: 'unread-edit-work-style',
-    description: 'Unread-before-edit paths map to loop_notices + work_style prediction',
+    description: 'Unread-before-edit paths map to loop notices, not durable harness policy',
     receipts: [
       baseReceipt({
         runId: 'held-out-unread',
@@ -81,14 +81,14 @@ export const HELD_OUT_CASES: readonly HeldOutCase[] = [
       })
     ],
     expect: {
-      buckets: ['loop_notices', 'system_prompt'],
-      absentBuckets: ['tool_policy', 'memory'],
+      buckets: ['loop_notices'],
+      absentBuckets: ['system_prompt', 'tool_policy', 'memory'],
       predictionTargets: ['work_style']
     }
   },
   {
     id: 'tool-failure-policy',
-    description: 'Failure clusters + streak map to tool_policy',
+    description: 'Tool failure clusters map to tool policy, not durable harness policy',
     receipts: [
       baseReceipt({
         runId: 'held-out-fail',
@@ -102,14 +102,14 @@ export const HELD_OUT_CASES: readonly HeldOutCase[] = [
       })
     ],
     expect: {
-      buckets: ['tool_policy', 'system_prompt'],
-      absentBuckets: ['loop_notices', 'memory'],
+      buckets: ['tool_policy'],
+      absentBuckets: ['system_prompt', 'loop_notices', 'memory'],
       predictionTargets: ['tool_policy']
     }
   },
   {
     id: 'compaction-memory',
-    description: 'Compaction-heavy run maps to memory bucket + prediction',
+    description: 'Compaction and memory-tool failures map to their runtime owners',
     receipts: [
       baseReceipt({
         runId: 'held-out-memory',
@@ -124,8 +124,8 @@ export const HELD_OUT_CASES: readonly HeldOutCase[] = [
       })
     ],
     expect: {
-      buckets: ['memory', 'tool_policy', 'system_prompt'],
-      absentBuckets: ['loop_notices'],
+      buckets: ['memory', 'tool_policy'],
+      absentBuckets: ['system_prompt', 'loop_notices'],
       predictionTargets: ['memory', 'tool_policy']
     }
   },

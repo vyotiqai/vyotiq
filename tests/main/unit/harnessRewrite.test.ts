@@ -12,9 +12,13 @@ const summary: WeaknessSummary = {
 
 describe('harnessRewrite', () => {
   it('returns usedLlm body from stream text', async () => {
+    let system = ''
+    let user = ''
     const provider: LlmProvider = {
       id: 'ollama',
-      async *streamChat(): AsyncGenerator<StreamChunk> {
+      async *streamChat(req): AsyncGenerator<StreamChunk> {
+        system = req.system ?? ''
+        user = String(req.messages[0]?.content ?? '')
         yield { type: 'text', text: '# Agent V\n\n## Work style\n\nread first\n' }
         yield { type: 'done', stopReason: 'end_turn' }
       }
@@ -27,6 +31,10 @@ describe('harnessRewrite', () => {
     })
     expect(result.usedLlm).toBe(true)
     expect(result.body).toMatch(/read first/)
+    expect(system).toMatch(/one owner per instruction/i)
+    expect(system).toMatch(/only system_prompt evidence/i)
+    expect(system).toMatch(/do not add tool names, arguments, mode capabilities/i)
+    expect(user).toMatch(/Only the system_prompt bucket is owned by this harness/i)
   })
 
   it('strips markdown fences and falls back on empty', async () => {

@@ -2,13 +2,15 @@ import type { LlmProvider } from './providers/types'
 import { logger } from '../../shared/logger'
 import type { WeaknessSummary } from './harnessReview'
 
-const REWRITE_SYSTEM = `You rewrite Agent V's system harness (resources/harness/default.md).
+const REWRITE_SYSTEM = `You propose narrow edits to Agent V's durable system harness.
 
 Rules:
 - Output ONLY the full rewritten harness body (no fences, no preamble).
-- Preserve the XML section tags (<role>, <capabilities>, <tool_policy>, <constraints>, <work_style>, <memory>, <compaction>, <output_format>, <patterns>, <reference_points>, <scope_boundaries>, <aliases>, <examples>). Do not convert them back to markdown ## headers.
-- Keep the harness small and behavior-centric. Do not restate runtime-enforced limits (concurrency, serial execution, approval gates, auto-compact thresholds, safety-stop counts).
-- Address the receipt weaknesses / evidence buckets in Work style, Tool policy, or similar sections.
+- Preserve the current document structure and unrelated policy.
+- Keep one owner per instruction. The harness owns only durable, provider-independent behavior.
+- Do not add tool names, arguments, mode capabilities, loop notices, runtime limits, provider transport, compaction mechanics, or memory implementation details; those belong to their runtime owners.
+- Only system_prompt evidence can justify a harness edit. Other evidence buckets are routing context, not harness requirements.
+- If there is no system_prompt evidence, return the current harness unchanged.
 - Do not remove human-gated apply / vitest gate language if present.
 - Do not instruct disabling HARNESS_EVAL_TESTS, vitest, or harness-apply validation.
 - Prefer narrow edits over rewriting unrelated sections.`
@@ -41,11 +43,13 @@ export async function rewriteHarnessProposalBody(input: {
     '',
     ...(bucketLines.length ? bucketLines : ['- (none)']),
     '',
+    'Only the system_prompt bucket is owned by this harness. Do not encode other buckets here.',
+    '',
     '## Suggested focus',
     '',
     ...input.summary.suggestions,
     '',
-    'Rewrite the full harness markdown now.'
+    'Return the full proposed harness body now.'
   ].join('\n')
 
   try {

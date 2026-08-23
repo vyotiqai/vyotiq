@@ -246,14 +246,6 @@ export function summarizeWeaknesses(
     )
   }
 
-  if (bucketMap.size > 0) {
-    pushBucket(
-      bucketMap,
-      'system_prompt',
-      'Map bucket evidence into a narrow `default.md` edit; keep the harness surface small.'
-    )
-  }
-
   const evidenceBuckets: EvidenceBucketEvidence[] = HARNESS_EVIDENCE_BUCKETS.filter((c) =>
     bucketMap.has(c)
   ).map((component) => ({
@@ -262,12 +254,14 @@ export function summarizeWeaknesses(
   }))
 
   const suggestions: string[] = []
-  for (const bucket of evidenceBuckets) {
+  for (const bucket of evidenceBuckets.filter((item) => item.component === 'system_prompt')) {
     const first = bucket.evidence[0]
     if (first) suggestions.push(`- ${bucket.component}: ${first}`)
   }
   if (suggestions.length === 0) {
-    suggestions.push('- No harness edit suggested from this sample; keep the surface small.')
+    suggestions.push(
+      '- No harness-owned weakness found; route tool, loop, and memory signals to their runtime owners.'
+    )
   }
 
   return {
@@ -431,7 +425,10 @@ export async function runHarnessReview(
 
   let proposedBody: string | undefined
   let llmAssisted = false
-  if (opts?.rewriteBody && workspaceHasEditableHarness(workspacePath)) {
+  const hasHarnessOwnedEvidence = summary.evidenceBuckets.some(
+    (bucket) => bucket.component === 'system_prompt'
+  )
+  if (opts?.rewriteBody && hasHarnessOwnedEvidence && workspaceHasEditableHarness(workspacePath)) {
     try {
       const current = readFileSync(workspaceHarnessPath(workspacePath), 'utf8')
       const rewritten = await opts.rewriteBody({ currentHarness: current, summary })
