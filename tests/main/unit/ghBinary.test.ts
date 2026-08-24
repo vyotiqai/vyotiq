@@ -97,8 +97,9 @@ describe('ghBinary', () => {
     Object.defineProperty(process, 'platform', { value: 'win32' })
 
     const wingetGh = join('C:\\Users\\me\\AppData\\Local', 'Microsoft', 'WinGet', 'Links', 'gh.exe')
+    const asWinPath = (value: string): string => value.replace(/\//g, '\\').toLowerCase()
     vi.mocked(existsSync).mockImplementation((target) => {
-      return String(target).replace(/\//g, '\\').toLowerCase() === wingetGh.toLowerCase()
+      return asWinPath(String(target)) === asWinPath(wingetGh)
     })
 
     try {

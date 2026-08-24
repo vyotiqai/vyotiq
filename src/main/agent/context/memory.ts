@@ -16,9 +16,9 @@ function workspaceRealRoot(workspacePath: string): string {
 
 /** Memory root must resolve inside the workspace (blocks junction/symlink escape). */
 function assertMemoryRootInsideWorkspace(workspacePath: string): string {
-  const rootResolved = resolve(memoryRoot(workspacePath))
   const wsReal = workspaceRealRoot(workspacePath)
-  const realRoot = existsSync(rootResolved) ? realpathSync(rootResolved) : rootResolved
+  const planned = join(wsReal, '.vyotiq', 'memory')
+  const realRoot = existsSync(planned) ? realpathSync(planned) : planned
   if (!isInsideRoot(realRoot, wsReal)) {
     throw new Error('Memory directory escapes workspace')
   }

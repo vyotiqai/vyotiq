@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   type Dirent
@@ -169,6 +170,14 @@ export class InvokeWriteCheckpoint {
     this.anchorUserMessageIndex = anchorUserMessageIndex
   }
 
+  private realWorkspaceRoot(): string {
+    return existsSync(this.workspaceRoot) ? realpathSync(this.workspaceRoot) : this.workspaceRoot
+  }
+
+  private relPathFromResolved(resolved: string): string {
+    return normalizeRelPath(relative(this.realWorkspaceRoot(), resolved))
+  }
+
   private checkpointDir(): string {
     return join(this.runDir, 'checkpoints', this.id)
   }
@@ -184,7 +193,7 @@ export class InvokeWriteCheckpoint {
   ): void {
     if (this.finalized) return
     const resolved = resolveInsideWorkspace(this.workspaceRoot, pathArg)
-    const rel = normalizeRelPath(relative(this.workspaceRoot, resolved))
+    const rel = this.relPathFromResolved(resolved)
     if (!rel || rel.startsWith('..')) return
     // Recursive dir deletes are recorded as bare directory names (no extension).
     // Plausible-file checks reject those; still allow the checkpoint entry.
@@ -241,7 +250,7 @@ export class InvokeWriteCheckpoint {
             return
           }
           fileCount++
-          const childRel = normalizeRelPath(relative(this.workspaceRoot, abs))
+          const childRel = this.relPathFromResolved(abs)
           if (!childRel || childRel.startsWith('..')) continue
           const dest = blobPathFor(this.checkpointDir(), childRel)
           try {
@@ -283,7 +292,7 @@ export class InvokeWriteCheckpoint {
   ): void {
     if (this.finalized) return
     const resolved = resolveInsideWorkspace(this.workspaceRoot, pathArg)
-    const rel = normalizeRelPath(relative(this.workspaceRoot, resolved))
+    const rel = this.relPathFromResolved(resolved)
     if (!rel || rel.startsWith('..')) return
     if (!isPlausibleWorkspaceFilePath(rel)) return
     if (this.files.has(rel)) return

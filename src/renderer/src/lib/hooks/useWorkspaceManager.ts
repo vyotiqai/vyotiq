@@ -648,20 +648,21 @@ export function useWorkspaceManager(options?: {
     const timerId = window.setTimeout(() => {
       persistTimersRef.current.delete(path)
       const ctx = snapshot ?? contextsRef.current[path]
-      if (!ctx || !window.vyotiq?.updateWorkspaceUiState) return
+      if (!ctx) return
+      const update = window.vyotiq?.updateWorkspaceUiState
+      if (!update) return
       const gen = (uiWriteGenerationRef.current.get(path) ?? 0) + 1
       uiWriteGenerationRef.current.set(path, gen)
-      void window.vyotiq
-        .updateWorkspaceUiState(path, { ...uiStateFromContext(ctx), writeGeneration: gen })
-        .then((res) => {
-          if (!res.ok) {
-            logger.warn('updateWorkspaceUiState failed', {
-              scope: 'workspaces',
-              path,
-              err: toLogErr(res.error)
-            })
-          }
+      void Promise.resolve(
+        update(path, { ...uiStateFromContext(ctx), writeGeneration: gen })
+      ).then((res) => {
+        if (!res || res.ok) return
+        logger.warn('updateWorkspaceUiState failed', {
+          scope: 'workspaces',
+          path,
+          err: toLogErr(res.error)
         })
+      })
     }, UI_PERSIST_DEBOUNCE_MS)
     persistTimersRef.current.set(path, timerId)
   }, [])
