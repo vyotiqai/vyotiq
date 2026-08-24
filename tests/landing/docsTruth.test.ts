@@ -416,8 +416,8 @@ describe('landing docs architecture and truth', () => {
     const header = readFileSync(join(LANDING_SOURCE, 'components', 'SiteHeader.astro'), 'utf8')
     const footer = readFileSync(join(LANDING_SOURCE, 'components', 'SiteFooter.astro'), 'utf8')
     const hero = readFileSync(join(LANDING_SOURCE, 'components', 'Hero.astro'), 'utf8')
-    const chatHero = readFileSync(
-      join(REPO, 'src', 'renderer', 'src', 'features', 'chat', 'components', 'ChatHeroStage.tsx'),
+    const startWork = readFileSync(
+      join(REPO, 'src', 'renderer', 'src', 'features', 'chat', 'components', 'ChatStartWork.tsx'),
       'utf8'
     )
     const emptyChat = readFileSync(
@@ -463,8 +463,7 @@ describe('landing docs architecture and truth', () => {
     expect(footer).toContain('<span>{SITE_PRODUCT}</span>')
     expect(hero).toContain('<p class="home-eyebrow">{SITE_PRODUCT}</p>')
 
-    expect(chatHero).not.toContain('VyotiqLockup')
-    expect(chatHero).not.toContain('data-hero-brand')
+    expect(startWork).not.toContain('VyotiqLockup')
     expect(emptyChat).not.toContain('VyotiqLockup')
     expect(emptyChat).not.toContain('data-empty-brand')
     expect(about).toContain('<VyotiqLockup markSize={36} />')
@@ -512,7 +511,7 @@ describe('landing docs architecture and truth', () => {
       docsIndex,
       pkg,
       about,
-      chatHero,
+      startWork,
       emptyChat
     ]) {
       expect(text).not.toMatch(/\bopen[- ]source\b/i)
@@ -635,6 +634,20 @@ describe('landing docs architecture and truth', () => {
     const titles = Object.values(SECTION_LABELS).map((section) => section.title)
     expect(titles).toHaveLength(10)
     for (const title of titles) expect(settings, `missing ${title}`).toContain(`## ${title}`)
+  })
+
+  it('renders structured markdown instead of Word-flattened text blocks', () => {
+    for (const file of files) {
+      const body = readDoc(file)
+        .replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, '')
+        .replace(/```[\s\S]*?```/g, '')
+      expect(body, file).not.toMatch(/^\s*---\s*$/m)
+      expect(body.match(/^`[^`\n]*\s[^`\n]*`$/gm) ?? [], file).toEqual([])
+    }
+    const landingReadme = readFileSync(join(REPO, 'landing', 'README.md'), 'utf8')
+    expect(landingReadme.replace(/^# .*\n/, '')).not.toMatch(/^\s*---\s*$/m)
+    expect(readDoc('agent/modes.md')).toContain('| Need | Mode | Boundary |')
+    expect(readDoc('reference/settings.md')).toMatch(/^- Active model —/m)
   })
 
   it('preserves dictation engines and attachment limits from product constants', () => {

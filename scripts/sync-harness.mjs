@@ -209,7 +209,9 @@ export const REQUIRED_HARNESS_SECTION_TAGS = [
 
 export function validateHarnessMarkdown(text) {
   const errors = []
-  if (!text.startsWith('# Agent V\n')) errors.push('must start with "# Agent V"')
+  const normalized = String(text).replace(/^\uFEFF/, '').replace(/\r\n/g, '\n')
+  if (!normalized.startsWith('# Agent V\n')) errors.push('must start with "# Agent V"')
+  text = normalized
   if (/^##\s+/m.test(text)) errors.push('must use section tags, not level-two headings')
   if (text.includes('<workspace_harness>') || text.includes('</workspace_harness>')) {
     errors.push('must not wrap the canonical spine as a workspace appendix')

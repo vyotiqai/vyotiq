@@ -50,6 +50,11 @@ export function workspaceSparseGrepRoot(workspacePath: string): string {
   return join(workspaceMetaDir(workspaceId(canonical)), 'sparsegrep')
 }
 
+function isDirectChildDir(parent: string, child: string): boolean {
+  const rel = relative(parent, child)
+  return Boolean(rel) && !rel.startsWith('..') && !isAbsolute(rel) && rel === basename(rel)
+}
+
 /**
  * A run id is attacker-controllable over IPC and ends up in `rmSync`/`writeFileSync`,
  * so the resolved directory must stay a direct child of the sessions root.
@@ -57,8 +62,7 @@ export function workspaceSparseGrepRoot(workspacePath: string): string {
 export function resolveRunDir(workspacePath: string, runId: string): string {
   const root = workspaceSessionsRoot(workspacePath)
   const dir = resolve(root, runId)
-  const rel = relative(root, dir)
-  if (!rel || rel.startsWith('..') || isAbsolute(rel) || rel !== basename(rel)) {
+  if (!isDirectChildDir(root, dir)) {
     throw new Error(`Invalid run id: ${runId}`)
   }
   if (existsSync(dir)) {
@@ -69,9 +73,9 @@ export function resolveRunDir(workspacePath: string, runId: string): string {
     if (!st.isDirectory()) {
       throw new Error(`Run dir is not a directory: ${runId}`)
     }
+    const realRoot = existsSync(root) ? realpathSync(root) : root
     const real = realpathSync(dir)
-    const realRel = relative(root, real)
-    if (!realRel || realRel.startsWith('..') || isAbsolute(realRel) || realRel !== basename(realRel)) {
+    if (!isDirectChildDir(realRoot, real)) {
       throw new Error(`Invalid run id: ${runId}`)
     }
   }

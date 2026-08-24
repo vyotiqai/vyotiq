@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -171,5 +171,15 @@ describe('harness', () => {
     expect(existsSync(join(legacyDir, 'harness'))).toBe(false)
     expect(existsSync(join(legacyDir, 'memory', 'index.md'))).toBe(true)
     expect(loadHarness()).toBe('# System harness\n')
+  })
+
+  it('accepts CRLF and BOM on the canonical harness validator', async () => {
+    const { validateHarnessMarkdown } = await import('../../../scripts/sync-harness.mjs')
+    const lf = readFileSync(join(process.cwd(), 'resources', 'harness', 'default.md'), 'utf8').replace(
+      /\r\n/g,
+      '\n'
+    )
+    expect(validateHarnessMarkdown(lf)).toEqual([])
+    expect(validateHarnessMarkdown(`\uFEFF${lf.replace(/\n/g, '\r\n')}`)).toEqual([])
   })
 })

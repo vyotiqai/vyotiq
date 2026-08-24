@@ -13,12 +13,20 @@ import {
 import { IPC } from '@shared/ipc/channels'
 
 vi.mock('@main/settings/settings', () => ({
-  getSettings: () => ({ terminalShell: 'cmd' })
+  getSettings: () => ({
+    terminalShell: process.platform === 'win32' ? 'cmd' : 'bash'
+  })
 }))
 
 vi.mock('@main/agent/tools/terminal', () => ({
-  resolveTerminalShell: () => 'cmd',
-  sanitizedTerminalEnv: () => ({ PATH: process.env.PATH ?? '/usr/bin' })
+  resolveTerminalShell: () => (process.platform === 'win32' ? 'cmd' : 'bash'),
+  sanitizedTerminalEnv: () => ({
+    PATH: process.env.PATH ?? '/usr/bin',
+    HOME: process.env.HOME,
+    TERM: 'xterm'
+  }),
+  commandOnPath: () => false,
+  killProcessTreeAndWait: async () => undefined
 }))
 
 vi.mock('@main/app/window', () => ({

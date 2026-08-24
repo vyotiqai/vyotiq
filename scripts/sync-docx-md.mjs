@@ -192,7 +192,11 @@ function wrapLandingInline(text) {
     'mistral',
     'custom'
   ])
-  let next = text
+  let next = String(text ?? '').replace(/[\u00a0\u200b]/g, ' ').replace(/\s+/g, ' ').trim()
+  next = next.replaceAll(
+    'https://github.com/vyotiqai/vyotiq/releases/latest',
+    'https://github.com/vyotiqai/vyotiq-agent-v/releases/latest'
+  )
   next = next.replace(/\b(pnpm pack:(?:win|mac|linux))\b/g, '`$1`')
   next = next.replace(/\bqwen2\.5\b/g, '`qwen2.5`')
   next = next.replace(/\b(OpenAI|OpenRouter|Local)\b/g, '**$1**')
@@ -211,12 +215,14 @@ function wrapLandingInline(text) {
   }
   if (
     next === 'Skill' ||
-    next.includes('_') ||
     /^(read|edit|search|glob|grep|delete|lsp|terminal|diagnostics)$/.test(next)
   ) {
     return `\`${next}\``
   }
-  return next
+  return next.replace(
+    /(?<!`)\b([A-Za-z][A-Za-z0-9]*(?:_[A-Za-z0-9]+)+)\b(?!`)/g,
+    '`$1`'
+  )
 }
 
 function looksLikeShellCommand(text) {
@@ -227,11 +233,15 @@ function looksLikeLabeledItem(text) {
   return /^.+ — \S/u.test(text) || /^[^:\n]{1,48}:\s+\S/.test(text)
 }
 
-function markdownTable(rows) {
+function markdownTable(rows, wrapInline) {
   if (!rows.length) return ''
   const width = Math.max(...rows.map((row) => row.length), 0)
   const normalized = rows.map((row) => {
-    const cells = row.map((cell) => cell.replace(/\|/g, '\\|').replace(/\s+/g, ' ').trim())
+    const cells = row.map((cell) => {
+      const cleaned = String(cell ?? '').replace(/[\u00a0\u200b]/g, ' ').replace(/\s+/g, ' ').trim()
+      const text = wrapInline ? wrapInline(cleaned) : cleaned
+      return String(text).replace(/\|/g, '\\|')
+    })
     while (cells.length < width) cells.push('')
     return cells
   })
@@ -264,6 +274,7 @@ function blocksToMarkdown(blocks, wrapInline) {
   const out = []
   let listItems = []
   let labeledItems = []
+  let yamlLines = null
 
   const flushLabeled = () => {
     if (labeledItems.length >= 2) {
@@ -281,15 +292,38 @@ function blocksToMarkdown(blocks, wrapInline) {
     }
   }
 
+  const flushYaml = () => {
+    if (!yamlLines) return
+    if (yamlLines.length) {
+      out.push(['```yaml', '---', ...yamlLines, '---', '```'].join('\n'))
+    }
+    yamlLines = null
+  }
+
   const flushAll = () => {
     flushList()
     flushLabeled()
+    flushYaml()
   }
 
   for (const block of blocks) {
+    if (yamlLines) {
+      if (block.type === 'table' || headingLevel(block.style) > 0) {
+        flushYaml()
+      } else {
+        const yamlText = block.text?.trim() ?? ''
+        if (yamlText === '---') {
+          flushYaml()
+          continue
+        }
+        if (!yamlText) continue
+        yamlLines.push(yamlText)
+        continue
+      }
+    }
     if (block.type === 'table') {
       flushAll()
-      const table = markdownTable(block.rows)
+      const table = markdownTable(block.rows, wrapInline)
       if (table) out.push(table)
       continue
     }
@@ -300,9 +334,10 @@ function blocksToMarkdown(blocks, wrapInline) {
       out.push(`${'#'.repeat(Math.min(level, 6))} ${text}`)
       continue
     }
-    if (block.border && !text) {
-      flushAll()
-      out.push('---')
+    if (text === '---') {
+      flushList()
+      flushLabeled()
+      yamlLines = []
       continue
     }
     if (!text) continue

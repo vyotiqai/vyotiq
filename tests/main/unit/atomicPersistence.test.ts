@@ -56,6 +56,9 @@ describe('atomic run persistence', () => {
     const sessions = workspaceSessionsRoot(workspace)
 
     expect(resolveRunDir(workspace, 'good-run')).toBe(join(sessions, 'good-run'))
+    const existing = resolveRunDir(workspace, 'existing-run')
+    mkdirSync(existing, { recursive: true })
+    expect(resolveRunDir(workspace, 'existing-run')).toBe(existing)
     for (const runId of ['..', join('..', '..', '..'), '../sibling', userData]) {
       expect(() => resolveRunDir(workspace, runId)).toThrow(/run id/i)
     }

@@ -651,4 +651,33 @@ export function mutateMe(y: number): number {
       neuralStore.close()
     }
   })
+
+  it('commits embed-pending chunks that have no vectors yet', () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-embed-pending-blob-'))
+    const store = CodeIndexStore.open(dir, 384)
+    try {
+      store.replaceFileChunks(
+        'src/pending.ts',
+        'hash',
+        Date.now(),
+        [
+          {
+            startLine: 1,
+            endLine: 1,
+            kind: 'block',
+            name: 'pending.ts',
+            chunkHash: 'pending-hash',
+            embedding: new Float32Array(0),
+            ftsText: 'pendingSearchHit'
+          }
+        ],
+        16,
+        true
+      )
+      expect(store.getFileStamp('src/pending.ts')?.embedPending).toBe(true)
+      expect(store.listFilePaths()).toContain('src/pending.ts')
+    } finally {
+      store.close()
+    }
+  })
 })

@@ -55,6 +55,7 @@ vi.mock('@main/storage/atomicWrite', () => ({
 }))
 
 import { existsSync, readFileSync } from 'fs'
+import { join } from 'path'
 import { spawnSync } from 'child_process'
 import { commandOnPath } from '@main/agent/tools/terminal'
 import { atomicWriteJson } from '@main/storage/atomicWrite'
@@ -95,7 +96,7 @@ describe('ghBinary', () => {
     process.env.LOCALAPPDATA = 'C:\\Users\\me\\AppData\\Local'
     Object.defineProperty(process, 'platform', { value: 'win32' })
 
-    const wingetGh = 'C:\\Users\\me\\AppData\\Local\\Microsoft\\WinGet\\Links\\gh.exe'
+    const wingetGh = join('C:\\Users\\me\\AppData\\Local', 'Microsoft', 'WinGet', 'Links', 'gh.exe')
     vi.mocked(existsSync).mockImplementation((target) => {
       return String(target).replace(/\//g, '\\').toLowerCase() === wingetGh.toLowerCase()
     })

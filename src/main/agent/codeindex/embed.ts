@@ -230,6 +230,10 @@ export function createOllamaEmbedder(opts: OllamaEmbedOptions = {}): Embedder {
 }
 
 export function embeddingToBuffer(vec: Float32Array): Buffer {
+  if (vec.byteLength === 0) {
+    // node:sqlite can bind a zero-length Buffer as NULL, which fails BLOB NOT NULL.
+    return Buffer.from([0])
+  }
   return Buffer.from(vec.buffer, vec.byteOffset, vec.byteLength)
 }
 

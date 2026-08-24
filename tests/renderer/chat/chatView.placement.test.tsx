@@ -264,8 +264,11 @@ describe('ChatView composer placement', () => {
     })
 
     expect(workspaceEditorRecoveryLoad).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('tab', { name: /README\.md/i })).toBeTruthy()
+    vi.useRealTimers()
+    fireEvent.click(screen.getByRole('button', { name: /Show files panel/i }))
+    expect(await screen.findByRole('tab', { name: /README\.md/i })).toBeTruthy()
     expect(workspaceFileList).toHaveBeenCalledTimes(1)
+    expect(workspaceEditorRecoveryLoad).toHaveBeenCalledTimes(1)
   })
 
   it('opens the terminal panel with Ctrl+`', () => {
