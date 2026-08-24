@@ -488,7 +488,7 @@ describe('landing docs architecture and truth', () => {
     for (const label of ['**MCPs**', '**Skills**', '**Rules**', '**Packages**']) {
       expect(marketplace).toContain(label)
     }
-    expect(install).toContain('https://github.com/vyotiqai/vyotiq/releases/latest')
+    expect(install).toContain('https://github.com/vyotiqai/vyotiq-agent-v/releases/latest')
     expect(install).toContain('`pnpm pack:win`')
     expect(install).toContain('`pnpm pack:mac`')
     expect(install).toContain('`pnpm pack:linux`')

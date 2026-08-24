@@ -87,4 +87,4 @@ npmRebuild: false
 publish:
   provider: github
   owner: vyotiqai
-  repo: vyotiq
+  repo: vyotiq-agent-v

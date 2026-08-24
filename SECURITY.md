@@ -16,7 +16,7 @@ Security fixes are provided for the latest release on the `main` branch and the 
 
 Use one of these channels:
 
-1. **GitHub private vulnerability reporting** — [Report a vulnerability](https://github.com/vyotiqai/vyotiq/security/advisories/new) on this repository (preferred).
+1. **GitHub private vulnerability reporting** — [Report a vulnerability](https://github.com/vyotiqai/vyotiq-agent-v/security/advisories/new) on this repository (preferred).
 2. **Email** — security@vyotiq.com (if private reporting is unavailable).
 
 Include:
@@ -37,4 +37,4 @@ We aim to acknowledge reports within **3 business days** and will coordinate dis
 
 ## Security updates
 
-Subscribe to [GitHub Releases](https://github.com/vyotiqai/vyotiq/releases) for patched builds.
+Subscribe to [GitHub Releases](https://github.com/vyotiqai/vyotiq-agent-v/releases) for patched builds.
