@@ -90,3 +90,13 @@ venv/
 # Windows Explorer duplicate copies — after docx un-ignores so they win
 * (1).*
 *(1).*
+
+# Not published with the product (must stay after docx un-ignores)
+.cursor/
+.devin/
+.vyotiq/rules/
+docs/
+landing/
+scripts/
+.cursorrules
+AGENTS.md
