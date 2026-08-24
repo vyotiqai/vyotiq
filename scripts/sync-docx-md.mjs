@@ -197,13 +197,54 @@ function wrapLandingInline(text) {
     'https://github.com/vyotiqai/vyotiq/releases/latest',
     'https://github.com/vyotiqai/vyotiq-agent-v/releases/latest'
   )
+  next = next.replace(/\bhttps?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/[^\s]*)?/gi, '`$&`')
   next = next.replace(/\b(pnpm pack:(?:win|mac|linux))\b/g, '`$1`')
   next = next.replace(/\bqwen2\.5\b/g, '`qwen2.5`')
-  next = next.replace(/\b(OpenAI|OpenRouter|Local)\b/g, '**$1**')
+  next = next.replace(/\bOpenAI-compatible\b/g, '\0OPENAI_COMPAT\0')
+  next = next.replace(/\bOpenAI\b/g, '**OpenAI**')
+  next = next.replace(/\bOpenRouter\b/g, '**OpenRouter**')
+  next = next.replace(/\0OPENAI_COMPAT\0/g, 'OpenAI-compatible')
   next = next.replace(/Qwen3-ASR \(local server\)/g, '**Qwen3-ASR (local server)**')
   next = next.replace(/\b(MCPs|Skills|Rules|Packages)\b/g, '**$1**')
   next = next.replace(/\b(Mutating tools|All tools|Not now)\b/g, '**$1**')
   next = next.replace(/\b(Ask for edits and commands|Ask for every tool|Active provider)\b/g, '**$1**')
+  next = next.replace(/\bLocal rotating logs\b/g, '\0LOCAL_LOGS\0')
+  next = next.replace(/\bLocal Ollama\b/g, '\0LOCAL_OLLAMA\0')
+  next = next.replace(/\bLocal command\b/g, '\0LOCAL_CMD\0')
+  next = next.replace(/\bLocal\b/g, '**Local**')
+  next = next.replace(/\0LOCAL_LOGS\0/g, 'Local rotating logs')
+  next = next.replace(/\0LOCAL_OLLAMA\0/g, 'Local Ollama')
+  next = next.replace(/\0LOCAL_CMD\0/g, 'Local command')
+  for (const phrase of [
+    'Open a workspace to start chatting',
+    'Add workspace',
+    'Refresh models',
+    'Tool approval',
+    'Active menu'
+  ]) {
+    next = next.replaceAll(phrase, `\`${phrase}\``)
+  }
+  for (const [phrase, href] of [
+    ['Settings → Providers', '/docs/customize/providers'],
+    ['Settings → General', '/docs/reference/settings'],
+    ['Settings → Tools', '/docs/reference/settings#tools'],
+    ['Settings → Voice', '/docs/tools/voice-dictation'],
+    ['Run, network, and recovery issues', '/docs/troubleshooting/runs-network-recovery']
+  ]) {
+    next = next.replaceAll(phrase, `[${phrase}](${href})`)
+  }
+  next = next.replace(/\bSee Providers\b/g, 'See [Providers](/docs/customize/providers)')
+  next = next.replace(/\bOpen Changes\b/g, 'Open [Changes](/docs/tools/changes-git)')
+  next = next.replace(/\bmode picker\b/g, '[mode picker](/docs/agent/modes)')
+  next = next.replace(/\bKeep accepts\b/g, '`Keep` accepts')
+  next = next.replace(/\bDiscard restores\b/g, '`Discard` restores')
+  next = next.replace(/\buse Continue only\b/g, 'use `Continue` only')
+  next = next.replace(/\bshows Continue unless\b/g, 'shows `Continue` unless')
+  next = next.replace(/\bIf Continue repeats\b/g, 'If `Continue` repeats')
+  next = next.replace(/\bPress Enter\b/g, 'Press `Enter`')
+  next = next.replace(/\bStop or Esc\b/g, '**Stop** or `Esc`')
+  next = next.replace(/\bnetwork_interrupted\b/g, 'Connection lost')
+  next = next.replace(/\bcircuit_open\b/g, 'Temporarily paused')
   if (providerIds.has(next)) return `\`${next}\``
   next = next.replace(
     /(?<!`)\b(openai|anthropic|gemini|ollama|deepseek|groq|openrouter|xai|mistral)\b(?!`)/g,
@@ -230,7 +271,45 @@ function looksLikeShellCommand(text) {
 }
 
 function looksLikeLabeledItem(text) {
+  if (/^See\s/i.test(text)) return false
+  if (/^Read-only\b/i.test(text)) return false
+  if (/^Version,/i.test(text)) return false
   return /^.+ — \S/u.test(text) || /^[^:\n]{1,48}:\s+\S/.test(text)
+}
+
+function splitLabeledItem(text) {
+  const em = String(text).match(/^(.+?) — (.+)$/u)
+  if (em) return [em[1].trim(), em[2].trim()]
+  const colon = String(text).match(/^([^:\n]{1,48}):\s+(.+)$/u)
+  if (colon) return [colon[1].trim(), colon[2].trim()]
+  return null
+}
+
+const SETTINGS_TABLE_SKIP = new Set(['Providers', 'Indexing', 'Tools', 'Shortcuts', 'About'])
+
+function formatSettingsReference(markdown) {
+  const parts = markdown.split(/\n(?=## )/)
+  const intro = parts[0] ?? ''
+  const sections = parts.slice(1).map((section) => {
+    const lines = section.split('\n')
+    const title = lines[0]?.replace(/^## /, '') ?? ''
+    const rest = lines.slice(1).join('\n').trim()
+    if (!title || SETTINGS_TABLE_SKIP.has(title)) return section
+
+    const bullets = [...rest.matchAll(/^- (.+)$/gm)].map((match) => match[1] ?? '')
+    if (bullets.length < 2) return section
+
+    const rows = bullets.map((bullet) => splitLabeledItem(bullet)).filter(Boolean)
+    if (rows.length < 2) return section
+
+    const table = [
+      '| Control | Options and notes |',
+      '| --- | --- |',
+      ...rows.map(([control, notes]) => `| ${control} | ${notes} |`)
+    ].join('\n')
+    return `## ${title}\n\n${table}\n`
+  })
+  return [intro, ...sections].join('\n')
 }
 
 function markdownTable(rows, wrapInline) {
@@ -275,10 +354,39 @@ function blocksToMarkdown(blocks, wrapInline) {
   let listItems = []
   let labeledItems = []
   let yamlLines = null
+  let promptLines = []
+  let awaitingPrompt = false
+
+  const looksLikePromptLead = (value) => /prompt/i.test(value) && /:\s*$/.test(value)
+  const looksLikeDocsInstruction = (value) =>
+    /^(Press |Select |Open |The |Verify |If |For |Use |Set |Return |New settings|Workspaces |Stop |Until |Read the assistant)/i.test(
+      value
+    )
+
+  const flushPrompt = () => {
+    if (promptLines.length) {
+      out.push(`\`\`\`\n${promptLines.join(' ')}\n\`\`\``)
+      promptLines = []
+    }
+    awaitingPrompt = false
+  }
 
   const flushLabeled = () => {
     if (labeledItems.length >= 2) {
-      out.push(labeledItems.map((item) => `- ${item}`).join('\n'))
+      const rows = labeledItems
+        .map((item) => splitLabeledItem(item))
+        .filter((row) => row != null)
+      if (rows.length === labeledItems.length && rows.length >= 2) {
+        out.push(
+          [
+            '| Control | Options and notes |',
+            '| --- | --- |',
+            ...rows.map(([control, notes]) => `| ${control} | ${notes} |`)
+          ].join('\n')
+        )
+      } else {
+        out.push(labeledItems.map((item) => `- ${item}`).join('\n'))
+      }
     } else if (labeledItems.length === 1) {
       out.push(labeledItems[0])
     }
@@ -301,6 +409,7 @@ function blocksToMarkdown(blocks, wrapInline) {
   }
 
   const flushAll = () => {
+    flushPrompt()
     flushList()
     flushLabeled()
     flushYaml()
@@ -331,10 +440,12 @@ function blocksToMarkdown(blocks, wrapInline) {
     const level = headingLevel(block.style)
     if (level > 0) {
       flushAll()
-      out.push(`${'#'.repeat(Math.min(level, 6))} ${text}`)
+      const headingText = text.replace(/^\d+\.\s+/, '')
+      out.push(`${'#'.repeat(Math.min(level, 6))} ${headingText}`)
       continue
     }
     if (text === '---') {
+      flushPrompt()
       flushList()
       flushLabeled()
       yamlLines = []
@@ -343,6 +454,7 @@ function blocksToMarkdown(blocks, wrapInline) {
     if (!text) continue
 
     if (block.list) {
+      flushPrompt()
       flushLabeled()
       listItems.push({
         indent: block.list.indent || 0,
@@ -354,11 +466,26 @@ function blocksToMarkdown(blocks, wrapInline) {
 
     flushList()
     if (looksLikeShellCommand(text)) {
+      flushPrompt()
       flushLabeled()
       out.push(`\`\`\`bash\n${text}\n\`\`\``)
       continue
     }
+    if (awaitingPrompt) {
+      if (looksLikeDocsInstruction(text) && promptLines.length > 0) {
+        flushPrompt()
+      } else {
+        promptLines.push(text)
+        continue
+      }
+    }
     const wrapped = wrapInline(text)
+    if (looksLikePromptLead(text)) {
+      flushLabeled()
+      out.push(wrapped)
+      awaitingPrompt = true
+      continue
+    }
     if (looksLikeLabeledItem(text)) {
       labeledItems.push(wrapped)
       continue
@@ -394,9 +521,7 @@ function landingDocxToMarkdown(blocks) {
 
   const { values } = splitFlattenedYaml(first, LANDING_YAML_KEYS)
   index += 1
-  const sources = []
   const related = []
-  let lastVerified = values.lastVerified || ''
 
   while (index < blocks.length) {
     const block = blocks[index]
@@ -409,13 +534,10 @@ function landingDocxToMarkdown(blocks) {
     }
     const glued = text.match(/^(.*?)\s+lastVerified:\s+(\S+)\s+related:\s*$/)
     if (glued) {
-      if (glued[1]) sources.push(glued[1])
-      lastVerified = glued[2]
       index += 1
       continue
     }
     if (looksLikeSourcePath(text)) {
-      sources.push(text)
       index += 1
       continue
     }
@@ -434,10 +556,6 @@ function landingDocxToMarkdown(blocks) {
     `order: ${values.order ?? ''}`.trimEnd(),
     `type: ${values.type ?? ''}`.trimEnd(),
     `audience: ${values.audience ?? ''}`.trimEnd(),
-    `owner: ${values.owner ?? ''}`.trimEnd(),
-    `lastVerified: ${lastVerified || '1.0.0'}`.trimEnd(),
-    'sources:',
-    ...sources.map((item) => `  - ${item}`),
     'related:',
     ...related.map((item) => `  - ${item}`)
   ].join('\n')
@@ -464,6 +582,14 @@ function docxToText(docxPath) {
   }
   if (rel.startsWith('landing/src/content/')) {
     let markdown = landingDocxToMarkdown(docxBlocks(buf))
+    if (rel.endsWith('/settings.md.docx')) {
+      const split = markdown.split(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/m)
+      if (split.length > 1) {
+        const frontmatter = markdown.match(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/m)?.[0] ?? ''
+        const body = split.slice(1).join('')
+        markdown = `${frontmatter}${formatSettingsReference(body)}`
+      }
+    }
     if (rel.endsWith('/attachments.md.docx') && !markdown.includes('| Extracted file |')) {
       markdown = markdown.replace(
         '\n---\n\n',
