@@ -2,9 +2,11 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   rmSync,
-  statSync
+  statSync,
+  type Dirent
 } from 'fs'
 import { dirname, join, relative } from 'path'
 import { createHash, randomUUID } from 'crypto'
@@ -211,11 +213,57 @@ export class InvokeWriteCheckpoint {
     if (!exists) return
     const st = statSync(resolved)
     if (st.isDirectory()) {
-      this.files.set(rel, {
-        path: rel,
-        action: 'deleted',
-        undoable: false
-      })
+      // Snapshot the directory tree so the delete is undoable. Each file becomes
+      // its own 'deleted' checkpoint entry; restoring them recreates the original
+      // tree (v1 could not restore directories — now fixed).
+      const maxDirRestoreFiles = 20000
+      let fileCount = 0
+      let overflow = false
+      const snapshotTree = (absDir: string): void => {
+        if (overflow) return
+        let entries: Dirent[]
+        try {
+          entries = readdirSync(absDir, { withFileTypes: true })
+        } catch {
+          return
+        }
+        for (const entry of entries) {
+          const abs = join(absDir, entry.name)
+          if (entry.isDirectory()) {
+            // entry.isDirectory() is false for symlinks, so symlink dirs are not followed.
+            snapshotTree(abs)
+            if (overflow) return
+            continue
+          }
+          if (!entry.isFile()) continue // skip symlinks / sockets / devices
+          if (fileCount >= maxDirRestoreFiles) {
+            overflow = true
+            return
+          }
+          fileCount++
+          const childRel = normalizeRelPath(relative(this.workspaceRoot, abs))
+          if (!childRel || childRel.startsWith('..')) continue
+          const dest = blobPathFor(this.checkpointDir(), childRel)
+          try {
+            mkdirSync(dirname(dest), { recursive: true })
+            copyFileSync(abs, dest)
+          } catch {
+            continue
+          }
+          this.files.set(childRel, { path: childRel, action: 'deleted', undoable: true })
+        }
+      }
+      snapshotTree(resolved)
+      if (overflow) {
+        logger.warn('Directory delete too large to snapshot for undo; marked non-undoable', {
+          scope: 'agent',
+          path: rel
+        })
+        this.files.set(rel, { path: rel, action: 'deleted', undoable: false })
+      } else if (fileCount === 0) {
+        // Empty directory: nothing to restore, but keep the entry for UI parity.
+        this.files.set(rel, { path: rel, action: 'deleted', undoable: false })
+      }
       return
     }
     const dest = blobPathFor(this.checkpointDir(), rel)

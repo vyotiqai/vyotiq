@@ -93,7 +93,7 @@ export function Dialog({
       <dialog
         ref={dialogRef}
         className={cn(
-          'max-w-md rounded-2xl border border-border bg-surface p-0 text-fg shadow-xl backdrop:bg-overlay',
+          'max-w-md rounded-xl border border-border bg-surface p-0 text-fg shadow-menu backdrop:bg-overlay',
           className
         )}
         aria-modal="true"
@@ -112,7 +112,7 @@ export function Dialog({
   return createPortal(
     <div
       className={cn(
-        'fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade-in',
+        'fixed inset-0 z-drawer flex items-center justify-center p-4 animate-fade-in',
         overlayClassName
       )}
       role="presentation"

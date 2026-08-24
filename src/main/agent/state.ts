@@ -84,15 +84,22 @@ export { DEFAULT_PLAN_STUB }
 
 /** Approved/draft plan artifact; empty when missing or still the Plan-mode stub. */
 export async function readPlanAsync(runDir: string): Promise<string> {
+  const text = await readPlanRawAsync(runDir)
+  if (!text) return ''
+  const withoutStub = stripPlanStubChrome(text)
+  if (withoutStub.replace(/[_*.\s]/g, '').length < 20) return ''
+  return text
+}
+
+/**
+ * Full plan.md contents, stub included and never truncated — the Plan-mode
+ * prompt mirrors this verbatim so the model edits against the real file.
+ */
+export async function readPlanRawAsync(runDir: string): Promise<string> {
   const p = join(runDir, 'plan.md')
   if (!existsSync(p)) return ''
   try {
-    const text = (await readFile(p, 'utf8')).trim()
-    if (!text) return ''
-    const withoutStub = stripPlanStubChrome(text)
-    if (withoutStub.replace(/[_*.\s]/g, '').length < 20) return ''
-    if (text.length <= CONTRACT_CAP) return text
-    return text.slice(0, CONTRACT_CAP) + '\n…'
+    return (await readFile(p, 'utf8')).trim()
   } catch {
     return ''
   }

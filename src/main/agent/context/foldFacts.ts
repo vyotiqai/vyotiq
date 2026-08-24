@@ -17,6 +17,11 @@ export type FoldFacts = {
   todos: string[]
   /** Custom contract.md done-when bullets (boilerplate stubs omitted). */
   doneWhen: string[]
+  /**
+   * User-stated constraints from the folded prefix (do-not / never / must).
+   * Optional on older call sites; extractFoldFacts always fills it.
+   */
+  constraints?: string[]
   /** Distinctive contract.md goal, when present. */
   contractGoal?: string
 }
@@ -28,7 +33,7 @@ export type FoldFactsExtras = {
   todos?: readonly TodoItem[]
 }
 
-const WRITE_TOOLS = new Set(['edit', 'str_replace', 'multi_edit', 'delete'])
+const WRITE_TOOLS = new Set(['edit', 'str_replace', 'multi_edit', 'delete', 'edit_notebook'])
 const INSPECT_TOOLS = new Set([
   'read',
   'list_dir',
@@ -222,6 +227,36 @@ function todosFromMessages(messages: readonly ChatMessage[]): string[] {
   return openTodoTitles(parseSerializedTodoContent(last))
 }
 
+const CONSTRAINT_CUE =
+  /\b(do not|don't|never|must not|must never|mustn't|always|avoid|without|keep (?:diffs?|secrets?|this)|do not mention|never commit|must use)\b/i
+
+function clipFact(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 240)
+}
+
+/** Constraint-bearing sentences from user turns. Tool dumps and assistant prose are ignored. */
+export function extractUserConstraints(messages: readonly ChatMessage[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const msg of messages) {
+    if (msg.role !== 'user') continue
+    const text = contentToText(msg.content).trim()
+    if (!text) continue
+    const sentences = text.split(/(?<=[.!?])\s+/).map((part) => part.trim()).filter(Boolean)
+    for (const sentence of sentences) {
+      if (sentence.length < 12) continue
+      if (!CONSTRAINT_CUE.test(sentence)) continue
+      const clipped = clipFact(sentence)
+      const key = clipped.toLowerCase()
+      if (!clipped || seen.has(key)) continue
+      seen.add(key)
+      out.push(clipped)
+      if (out.length >= 32) return out
+    }
+  }
+  return out
+}
+
 /** Extract fold facts from the messages that will be summarized (not the keep-recent tail). */
 export function extractFoldFacts(
   messages: readonly ChatMessage[],
@@ -272,6 +307,7 @@ export function extractFoldFacts(
     decisions: extractAskQuestionDecisions(messages),
     todos,
     doneWhen,
+    constraints: extractUserConstraints(messages),
     ...(contractGoal ? { contractGoal } : {})
   }
 }

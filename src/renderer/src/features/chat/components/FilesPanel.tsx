@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -34,9 +35,11 @@ import {
   type ActionMenuItem
 } from '@renderer/lib/ui'
 import { usePersistedNumber } from '@renderer/lib/hooks/usePersistedNumber'
+import { setFocusedFile } from '@renderer/lib/focusedFile'
 import { handleTabListKeyDown } from '@renderer/lib/utils/tabListKeyboard'
 import { HexEditor } from './HexEditor'
 import { TextCodeEditor } from './TextCodeEditor'
+import { type InlineCompleteRequestFn } from './tabAutocomplete'
 import { DiffPreview } from './DiffPreview'
 import { useWorkspaceLsp } from '../hooks/useWorkspaceLsp'
 import { parseUnifiedDiff } from '../toolUi/parsers/edit'
@@ -92,6 +95,47 @@ function findVisibleTreeEntry(
   return undefined
 }
 
+function findTreeEntry(
+  directories: Record<string, DirectoryState>,
+  path: string
+): WorkspaceFileEntry | undefined {
+  const parent = parentPath(path)
+  const entries = directories[parent]?.entries ?? directories['']?.entries
+  return entries?.find((entry) => entry.path === path)
+}
+
+function lspOffset(text: string, line: number, character: number): number {
+  let remaining = line
+  let i = 0
+  while (remaining > 0 && i < text.length) {
+    if (text.charCodeAt(i) === 10) remaining -= 1
+    i += 1
+  }
+  return Math.min(text.length, i + Math.max(0, character))
+}
+
+function applyLspTextEdits(
+  text: string,
+  edits: Array<{
+    startLine: number
+    startCharacter: number
+    endLine: number
+    endCharacter: number
+    newText: string
+  }>
+): string {
+  const ordered = [...edits].sort(
+    (a, b) => b.startLine - a.startLine || b.startCharacter - a.startCharacter
+  )
+  let next = text
+  for (const edit of ordered) {
+    const start = lspOffset(next, edit.startLine, edit.startCharacter)
+    const end = lspOffset(next, edit.endLine, edit.endCharacter)
+    next = next.slice(0, start) + edit.newText + next.slice(Math.max(start, end))
+  }
+  return next
+}
+
 type FilesContextTarget =
   | { kind: 'tree'; path: string; entryKind: WorkspaceFileEntry['kind'] }
   | { kind: 'tab'; tabId: string }
@@ -130,8 +174,11 @@ const FILES_EXPLORER_WIDTH_MAX = 360
 const FILES_EXPLORER_WIDTH_DEFAULT = 260
 const TREE_INDENT_REM = 0.75
 const TREE_ROW_HEIGHT_PX = 28
-const TREE_ROW_SELECTED =
-  'bg-accent/10 text-fg ring-1 ring-inset ring-accent/20'
+const TREE_ROW_ACTIVE_FILE =
+  'bg-accent/15 text-fg ring-1 ring-inset ring-accent/35'
+const TREE_ROW_FOCUSED =
+  'bg-surface/60 text-fg ring-1 ring-inset ring-border/70'
+const FILTER_REVEAL_MAX_DIRS = 120
 const FILES_PANEL_ALERT =
   'flex shrink-0 items-center gap-2 border-b px-2.5 py-1.5 text-caption'
 const DOCK_TOOLBAR_BTN_PRESSED = 'border-accent/60 bg-accent/10 text-fg'
@@ -191,6 +238,67 @@ function fileName(path: string): string {
 function workspaceName(path: string): string {
   const normalized = path.replace(/[\\/]+$/, '')
   return normalized.split(/[\\/]/).pop() || normalized
+}
+
+function pathSegments(path: string): string[] {
+  return path.split('/').filter(Boolean)
+}
+
+function nestedWorkspaceHint(
+  workspacePath: string,
+  entries: WorkspaceFileEntry[]
+): string | null {
+  const name = workspaceName(workspacePath)
+  if (!entries.some((entry) => entry.kind === 'directory' && entry.name === name)) {
+    return null
+  }
+  return `Project files may be inside the nested "${name}" folder. Expand it or open that folder as the workspace root.`
+}
+
+function EditorBreadcrumb({ path }: { path: string }) {
+  const segments = pathSegments(path)
+  if (segments.length === 0) {
+    return <span className="truncate">Workspace root</span>
+  }
+  if (segments.length > 3) {
+    const middle = segments.slice(1, -1).join('/')
+    return (
+      <nav
+        aria-label="File path"
+        className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden"
+        title={path}
+      >
+        <span className="shrink-0 truncate">{segments[0]}</span>
+        <span className="shrink-0 text-muted/70">/</span>
+        <span className="shrink-0 text-muted/70" title={middle}>
+          …
+        </span>
+        <span className="shrink-0 text-muted/70">/</span>
+        <span className="min-w-0 truncate font-medium text-fg/90">{segments.at(-1)}</span>
+      </nav>
+    )
+  }
+  return (
+    <nav
+      aria-label="File path"
+      className="flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden"
+      title={path}
+    >
+      {segments.map((segment, index) => (
+        <Fragment key={`${segment}-${index}`}>
+          {index > 0 ? <span className="shrink-0 text-muted/70">/</span> : null}
+          <span
+            className={cn(
+              'truncate',
+              index === segments.length - 1 ? 'font-medium text-fg/90' : undefined
+            )}
+          >
+            {segment}
+          </span>
+        </Fragment>
+      ))}
+    </nav>
+  )
 }
 
 function absoluteWorkspacePath(workspacePath: string, path: string): string {
@@ -330,6 +438,7 @@ function isUnderPath(path: string, parent: string): boolean {
 export function FilesPanel({
   workspacePath,
   active,
+  tabAutocompleteEnabled = true,
   gitRevision = 0,
   onGitMutated,
   onFlushReady,
@@ -340,6 +449,7 @@ export function FilesPanel({
 }: {
   workspacePath: string | null
   active: boolean
+  tabAutocompleteEnabled?: boolean
   gitRevision?: number
   onGitMutated?: () => void
   onFlushReady?: (flush: (() => Promise<boolean>) | null) => void
@@ -367,6 +477,10 @@ export function FilesPanel({
   const panelRootRef = useRef<HTMLDivElement | null>(null)
   const treeScrollRef = useRef<HTMLDivElement | null>(null)
   const selectedPathRef = useRef<string | null>(null)
+  const pendingTreeScrollPathRef = useRef<string | null>(null)
+  const revealPathInTreeRef = useRef<(path: string) => Promise<void>>(async () => undefined)
+  const filterRevealTokenRef = useRef(0)
+  const treeFocusPathRef = useRef<string | null>(null)
   const contextReturnFocusRef = useRef<HTMLElement | null>(null)
   const editorActionsButtonRef = useRef<HTMLButtonElement | null>(null)
   const editorMenuReturnFocusRef = useRef<HTMLElement | null>(null)
@@ -380,6 +494,7 @@ export function FilesPanel({
   workspacePathRef.current = workspacePath
   recoveryDataRef.current = recoveryData
   const [treeFilter, setTreeFilter] = useState('')
+  const [treeFocusPath, setTreeFocusPath] = useState<string | null>(null)
   const [explorerWidthPx, setExplorerWidthPx] = usePersistedNumber(
     FILES_EXPLORER_WIDTH_KEY,
     FILES_EXPLORER_WIDTH_DEFAULT,
@@ -420,6 +535,7 @@ export function FilesPanel({
     formatOnSave
   } = session
   selectedPathRef.current = selectedPath
+  treeFocusPathRef.current = treeFocusPath
   const directoriesRef = useRef<Record<string, DirectoryState>>({})
   directoriesRef.current = directories
   const prevGitRevisionRef = useRef(gitRevision)
@@ -700,6 +816,7 @@ export function FilesPanel({
       recoverySessionTokenRef.current = null
       clearAutosaveTimers()
       setTreeFilter('')
+      setTreeFocusPath(null)
       setDirectories({})
       setContextMenu(null)
       setSaveStates({})
@@ -718,6 +835,7 @@ export function FilesPanel({
     setSaveStates({})
     saveStatesRef.current = {}
     setTreeFilter('')
+    setTreeFocusPath(null)
     setContextMenu(null)
     directoriesRef.current = {}
     setDirectories({})
@@ -848,6 +966,11 @@ export function FilesPanel({
           autoSave: result.data.snapshot.autoSave ?? true,
           formatOnSave: result.data.snapshot.formatOnSave ?? false
         })
+        const recoveredActivePath = recoveredTabs.find((tab) => tab.id === recoveredActiveId)?.path
+        if (recoveredActivePath) {
+          setTreeFocusPath(recoveredActivePath)
+          void revealPathInTreeRef.current(recoveredActivePath)
+        }
         for (const tab of recoveredTabs) {
           setTabSaveState(
             tab.id,
@@ -1002,6 +1125,24 @@ export function FilesPanel({
   ])
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? null
+  useEffect(() => {
+    setFocusedFile(activeTab?.path ?? null)
+    return () => setFocusedFile(null)
+  }, [activeTab?.path])
+
+  const [findInFilesOpen, setFindInFilesOpen] = useState(false)
+  const [findQuery, setFindQuery] = useState('')
+  const [findHits, setFindHits] = useState<Array<{ path: string; line: number; text: string }>>([])
+  const [findError, setFindError] = useState<string | null>(null)
+  const [findBusy, setFindBusy] = useState(false)
+
+  useEffect(() => {
+    const onFind = (): void => {
+      if (active) setFindInFilesOpen(true)
+    }
+    window.addEventListener('vyotiq:find-in-files', onFind)
+    return () => window.removeEventListener('vyotiq:find-in-files', onFind)
+  }, [active])
   const activeDirty = activeTab?.dirty ?? false
   const activeSaveState = activeTab
     ? saveStates[activeTab.id] ?? (activeTab.dirty ? 'pending' : 'saved')
@@ -1480,6 +1621,8 @@ export function FilesPanel({
       if (!operation || !window.vyotiq?.workspaceFileRead) return
       if (activeTab && activeTab.path !== path && !(await allowLeaveTab(activeTab.id))) return
       if (!isCurrentWorkspaceOperation(operation)) return
+      await revealPathInTreeRef.current(path)
+      setTreeFocusPath(path)
       setFailedOpenPath(null)
       const requestId = ++fileRequestRef.current
       const existing = sessionRef.current?.tabs.find((tab) => tab.path === path)
@@ -1569,10 +1712,8 @@ export function FilesPanel({
   const visibleEntries = useMemo(() => {
     const output: VisibleEntry[] = []
     const filter = treeFilter.trim().toLowerCase()
-    const visit = (path: string, level: number): void => {
-      const directory = directories[path]
-      if (!directory) return
-      const entries = [...directory.entries].sort((left, right) => {
+    const sortEntries = (entries: WorkspaceFileEntry[]): WorkspaceFileEntry[] =>
+      [...entries].sort((left, right) => {
         if (treeSort === 'kind' && left.kind !== right.kind) {
           return TREE_KIND_ORDER[left.kind] - TREE_KIND_ORDER[right.kind]
         }
@@ -1584,14 +1725,33 @@ export function FilesPanel({
           sensitivity: 'base'
         })
       })
-      for (const entry of entries) {
-        if (
-          !filter ||
-          entry.name.toLowerCase().includes(filter) ||
-          entry.path.toLowerCase().includes(filter)
-        ) {
-          output.push({ kind: 'entry', entry, level })
+
+    if (filter) {
+      const seen = new Set<string>()
+      for (const dirPath of Object.keys(directories).sort((left, right) => left.localeCompare(right))) {
+        const directory = directories[dirPath]
+        if (!directory?.entries.length) continue
+        const level = dirPath ? dirPath.split('/').filter(Boolean).length + 1 : 1
+        for (const entry of sortEntries(directory.entries)) {
+          if (
+            (entry.name.toLowerCase().includes(filter) ||
+              entry.path.toLowerCase().includes(filter)) &&
+            !seen.has(entry.path)
+          ) {
+            seen.add(entry.path)
+            output.push({ kind: 'entry', entry, level })
+          }
         }
+      }
+      return output
+    }
+
+    const visit = (path: string, level: number): void => {
+      const directory = directories[path]
+      if (!directory) return
+      const entries = sortEntries(directory.entries)
+      for (const entry of entries) {
+        output.push({ kind: 'entry', entry, level })
         if (isDirectoryEntry(entry) && expandedPaths.includes(entry.path)) {
           visit(entry.path, level + 1)
           const childDir = directories[entry.path]
@@ -1641,8 +1801,10 @@ export function FilesPanel({
           index,
           start: index * TREE_ROW_HEIGHT_PX
         }))
-  const selectedEntry = selectedPath
-    ? findVisibleTreeEntry(visibleEntries, selectedPath)
+  const treeHighlightPath = activeTab?.path ?? selectedPath
+  const treeKeyboardPath = treeFocusPath ?? treeHighlightPath
+  const selectedEntry = treeKeyboardPath
+    ? findVisibleTreeEntry(visibleEntries, treeKeyboardPath)
     : undefined
   const canMutateSelected =
     selectedEntry?.kind === 'file' || selectedEntry?.kind === 'directory'
@@ -1671,15 +1833,87 @@ export function FilesPanel({
       updateSession({ expandedPaths: nextExpanded, selectedPath: path })
       const loads = ['', ...parents].filter((parent) => !directoriesRef.current[parent])
       await Promise.all(loads.map((parent) => loadDirectory(parent)))
+      pendingTreeScrollPathRef.current = path
     },
     [expandedPaths, loadDirectory, updateSession]
   )
+  revealPathInTreeRef.current = revealPathInTree
+
+  useEffect(() => {
+    const path = pendingTreeScrollPathRef.current
+    if (!path) return
+    const index = visibleEntries.findIndex(
+      (item) => isVisibleTreeEntry(item) && item.entry.path === path
+    )
+    if (index < 0) return
+    pendingTreeScrollPathRef.current = null
+    treeVirtualizer.scrollToIndex(index, { align: 'auto' })
+    document.getElementById(treeElementId(path))?.focus({ preventScroll: true })
+  }, [treeVirtualizer, visibleEntries])
+
+  useEffect(() => {
+    const filter = treeFilter.trim().toLowerCase()
+    if (!filter || !workspacePath || !recoveryLoaded) return undefined
+    const token = ++filterRevealTokenRef.current
+    let cancelled = false
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const toExpand = new Set<string>([''])
+        const queue: string[] = ['']
+        let visited = 0
+        while (queue.length > 0 && !cancelled && token === filterRevealTokenRef.current) {
+          const dir = queue.shift()!
+          let state = directoriesRef.current[dir]
+          if (!state?.entries.length && !state?.loading) {
+            await loadDirectory(dir)
+          }
+          if (cancelled || token !== filterRevealTokenRef.current) return
+          state = directoriesRef.current[dir]
+          if (!state || state.error) continue
+          visited += 1
+          if (visited > FILTER_REVEAL_MAX_DIRS) break
+          for (const entry of state.entries) {
+            const matches =
+              entry.name.toLowerCase().includes(filter) ||
+              entry.path.toLowerCase().includes(filter)
+            if (matches) {
+              for (const parent of parentChain(entry.path)) {
+                toExpand.add(parent)
+              }
+              if (entry.kind === 'directory') {
+                toExpand.add(entry.path)
+              }
+            }
+            if (entry.kind === 'directory') {
+              queue.push(entry.path)
+            }
+          }
+        }
+        if (cancelled || token !== filterRevealTokenRef.current || toExpand.size <= 1) return
+        const current = sessionRef.current
+        if (!current) return
+        const pathsToLoad = [...toExpand].filter(
+          (path) => path && !directoriesRef.current[path]?.entries.length
+        )
+        await Promise.all(pathsToLoad.map((path) => loadDirectory(path)))
+        if (cancelled || token !== filterRevealTokenRef.current) return
+        updateSession({
+          expandedPaths: [...new Set([...current.expandedPaths, ...toExpand])]
+        })
+      })()
+    }, 300)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
+  }, [loadDirectory, recoveryLoaded, treeFilter, updateSession, workspacePath])
 
   const createEntry = useCallback(
     async (kind: 'file' | 'directory'): Promise<void> => {
       const operation = captureWorkspaceOperation()
       if (!operation || !window.vyotiq?.workspaceFileCreate) return
-      const currentSelectedPath = selectedPathRef.current
+      const currentSelectedPath =
+        treeFocusPathRef.current ?? selectedPathRef.current
       const selectedEntry = currentSelectedPath
         ? findVisibleTreeEntry(visibleEntries, currentSelectedPath)
         : undefined
@@ -2157,6 +2391,7 @@ export function FilesPanel({
         activeTabId: nextActive,
         selectedPath: nextTabs.find((tab) => tab.id === nextActive)?.path ?? null
       })
+      setTreeFocusPath(nextTabs.find((tab) => tab.id === nextActive)?.path ?? null)
     },
     [
       allowLeaveTab,
@@ -2174,7 +2409,11 @@ export function FilesPanel({
       if (activeTab && !(await allowLeaveTab(activeTab.id))) return
       if (!isCurrentWorkspaceOperation(operation)) return
       const next = sessionRef.current?.tabs.find((tab) => tab.id === id)
-      if (next) updateSession({ activeTabId: id, selectedPath: next.path })
+      if (next) {
+        await revealPathInTreeRef.current(next.path)
+        setTreeFocusPath(next.path)
+        updateSession({ activeTabId: id, selectedPath: next.path })
+      }
     },
     [
       activeTab,
@@ -2188,8 +2427,11 @@ export function FilesPanel({
 
   const selectContextPath = useCallback((path: string): void => {
     selectedPathRef.current = path
-    updateSession({ selectedPath: path })
-  }, [updateSession])
+    setTreeFocusPath(path)
+    if (!activeTab) {
+      updateSession({ selectedPath: path })
+    }
+  }, [activeTab, updateSession])
 
   const copyPath = useCallback((path: string): void => {
     if (!window.vyotiq?.writeClipboard?.(path)) {
@@ -2294,7 +2536,6 @@ export function FilesPanel({
     }
     void (async () => {
       try {
-        await revealPathInTree(openPath.path)
         await openFile(openPath.path)
         const tab = sessionRef.current?.tabs.find((item) => item.path === openPath.path)
         if (tab?.kind === 'text' && openPath.line != null) {
@@ -2319,7 +2560,6 @@ export function FilesPanel({
     onOpenPathHandled,
     openFile,
     openPath,
-    revealPathInTree,
     showDiffForPath,
     workspacePath
   ])
@@ -2689,6 +2929,126 @@ export function FilesPanel({
         onSelect: () => void showLspView()
       },
       {
+        id: 'editor-go-to-definition',
+        label: 'Go to Definition',
+        icon: 'chevronRight',
+        disabled: activeTab.kind !== 'text' || !window.vyotiq?.workspaceLspRequest,
+        disabledReason:
+          activeTab.kind !== 'text' ? textOnlyReason : 'Language-server requests are unavailable.',
+        onSelect: () => {
+          if (!workspacePath || activeTab.kind !== 'text') return
+          void window.vyotiq
+            .workspaceLspRequest({
+              workspacePath,
+              path: activeTab.path,
+              content: activeTab.content,
+              action: 'definition',
+              line: Math.max(0, (activeTextPosition?.line ?? 1) - 1),
+              character: Math.max(0, (activeTextPosition?.column ?? 1) - 1)
+            })
+            .then((res) => {
+              if (!res.ok) {
+                setError(`Go to Definition failed: ${res.error}`)
+                return
+              }
+              if (res.data.kind !== 'definition' || !res.data.path) {
+                setError('No definition found.')
+                return
+              }
+              const defPath = res.data.path
+              const defLine = res.data.line
+              void openFile(defPath).then(() => setScrollToLine(defLine + 1))
+            })
+        }
+      },
+      {
+        id: 'editor-rename',
+        label: 'Rename Symbol',
+        icon: 'edit',
+        disabled: activeTab.kind !== 'text' || !window.vyotiq?.workspaceLspRequest,
+        disabledReason:
+          activeTab.kind !== 'text' ? textOnlyReason : 'Language-server requests are unavailable.',
+        onSelect: () => {
+          if (!workspacePath || activeTab.kind !== 'text') return
+          void requestPrompt('Rename symbol').then(
+            (name) => {
+              if (!name?.trim()) return
+              void window.vyotiq
+                .workspaceLspRequest({
+                  workspacePath,
+                  path: activeTab.path,
+                  content: activeTab.content,
+                  action: 'rename',
+                  newName: name.trim(),
+                  line: Math.max(0, (activeTextPosition?.line ?? 1) - 1),
+                  character: Math.max(0, (activeTextPosition?.column ?? 1) - 1)
+                })
+                .then((res) => {
+                  if (!res.ok) {
+                    setError(`Rename failed: ${res.error}`)
+                    return
+                  }
+                  if (res.data.kind !== 'rename') {
+                    setError('Rename is unavailable for this symbol.')
+                    return
+                  }
+                  if (res.data.edits.length === 0) {
+                    setError('Rename returned no edits.')
+                    return
+                  }
+                  const byPath = new Map<string, typeof res.data.edits>()
+                  for (const edit of res.data.edits) {
+                    const list = byPath.get(edit.path) ?? []
+                    list.push(edit)
+                    byPath.set(edit.path, list)
+                  }
+                  void (async () => {
+                    try {
+                      for (const [path, pathEdits] of byPath) {
+                        const read = await window.vyotiq.workspaceFileRead({
+                          workspacePath,
+                          path
+                        })
+                        if (!read.ok) {
+                          setError(`Rename failed reading ${path}: ${read.error}`)
+                          return
+                        }
+                        if (read.data.kind !== 'text') {
+                          setError(`Rename skipped binary file ${path}.`)
+                          return
+                        }
+                        const next = applyLspTextEdits(read.data.content, pathEdits)
+                        const saved = await window.vyotiq.workspaceFileSave({
+                          workspacePath,
+                          path,
+                          kind: 'text',
+                          content: next,
+                          encoding: read.data.encoding,
+                          eol: read.data.eol,
+                          bom: read.data.bom,
+                          expectedVersion: read.data.version,
+                          replaceExisting: false
+                        })
+                        if (!saved.ok) {
+                          setError(`Rename failed writing ${path}: ${saved.error}`)
+                          return
+                        }
+                        const open = sessionRef.current?.tabs.find((tab) => tab.path === path)
+                        if (open && !open.dirty) void reloadTab(open.id)
+                      }
+                      setError(
+                        `Renamed in ${byPath.size} file${byPath.size === 1 ? '' : 's'}.`
+                      )
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : String(err))
+                    }
+                  })()
+                })
+            }
+          )
+        }
+      },
+      {
         id: 'editor-blame',
         label: 'Git Blame',
         icon: 'branch',
@@ -2735,20 +3095,26 @@ export function FilesPanel({
     ]
   }, [
     activeTab,
+    activeTextPosition,
     autoSave,
     copyPath,
     formatterStatus,
     formatOnSave,
     integrationBusy,
+    openFile,
+    reloadTab,
     reloadTabMenuItem,
+    requestPrompt,
     revealPath,
     saveTabMenuItem,
+    setError,
     showBlameView,
     showDiffView,
     showLineNumbers,
     showLspView,
     updateSession,
-    wordWrap
+    wordWrap,
+    workspacePath
   ])
 
   const workspaceActionItems = useMemo<ActionMenuItem[]>(() => {
@@ -2857,6 +3223,58 @@ export function FilesPanel({
     [activeTabId, mutateTab]
   )
 
+  const workspacePathCompleteRef = useRef(workspacePath)
+  workspacePathCompleteRef.current = workspacePath
+  const inlineCompleteFileRef = useRef(
+    activeTab?.kind === 'text' ? activeTab.path : ''
+  )
+  inlineCompleteFileRef.current = activeTab?.kind === 'text' ? activeTab.path : ''
+  const inlineAbortRef = useRef<(() => void) | null>(null)
+
+  const requestInlineComplete = useMemo((): InlineCompleteRequestFn => {
+    const fn = (async (prefix: string, suffix: string): Promise<string> => {
+      const api = window.vyotiq
+      const ws = workspacePathCompleteRef.current
+      const path = inlineCompleteFileRef.current
+      if (!api?.workspaceInlineComplete || !ws || !path) return ''
+      inlineAbortRef.current?.()
+      const requestId = crypto.randomUUID()
+      let active = true
+      inlineAbortRef.current = () => {
+        if (!active) return
+        active = false
+        void api.workspaceInlineCompleteAbort?.({ requestId })
+      }
+      try {
+        const result = await api.workspaceInlineComplete({
+          workspacePath: ws,
+          path,
+          prefix,
+          suffix,
+          requestId
+        })
+        if (!active) return ''
+        if (!result.ok) return ''
+        return result.data.text
+      } catch {
+        return ''
+      } finally {
+        if (active && inlineAbortRef.current) {
+          inlineAbortRef.current = null
+        }
+      }
+    }) as InlineCompleteRequestFn
+    fn.abort = () => {
+      inlineAbortRef.current?.()
+    }
+    return fn
+  }, [])
+
+  useEffect(() => {
+    if (tabAutocompleteEnabled && workspacePath) return
+    inlineAbortRef.current?.()
+  }, [tabAutocompleteEnabled, workspacePath])
+
   const updateHexMeta = useCallback(
     (meta: {
       cursor: number
@@ -2887,24 +3305,41 @@ export function FilesPanel({
     [activeTabId, mutateTab]
   )
 
+  const navigateTreeTo = useCallback(
+    (nextPath: string): void => {
+      setTreeFocusPath(nextPath)
+      if (!activeTab) {
+        updateSession({ selectedPath: nextPath })
+      }
+      document.getElementById(treeElementId(nextPath))?.focus({ preventScroll: true })
+    },
+    [activeTab, updateSession]
+  )
+
   const selectTreePath = useCallback(
     async (path: string): Promise<void> => {
-      const entry = findVisibleTreeEntry(visibleEntries, path)
+      let entry =
+        findVisibleTreeEntry(visibleEntries, path) ??
+        findTreeEntry(directoriesRef.current, path)
+      if (!entry) {
+        await revealPathInTreeRef.current(path)
+        entry = findTreeEntry(directoriesRef.current, path)
+      }
       if (!entry) return
       if (isDirectoryEntry(entry)) {
-        updateSession({ selectedPath: path })
         toggleDirectory(path)
+        navigateTreeTo(path)
       } else if (entry.kind === 'file') {
         await openFile(path)
       } else if (entry.kind === 'symlink') {
-        updateSession({ selectedPath: path })
+        navigateTreeTo(path)
         setError('Symlinks are displayed for transparency but are not opened or mutated here.')
       } else {
-        updateSession({ selectedPath: path })
+        navigateTreeTo(path)
         setError('This filesystem entry is not a regular file or directory.')
       }
     },
-    [openFile, toggleDirectory, updateSession, visibleEntries]
+    [navigateTreeTo, openFile, toggleDirectory, visibleEntries]
   )
   selectTreePathRef.current = selectTreePath
 
@@ -2924,8 +3359,7 @@ export function FilesPanel({
         const nextItem = visibleEntries[nextIndex]
         const next = nextItem && isVisibleTreeEntry(nextItem) ? nextItem.entry : undefined
         if (next) {
-          updateSession({ selectedPath: next.path })
-          document.getElementById(treeElementId(next.path))?.focus()
+          navigateTreeTo(next.path)
         }
         return
       }
@@ -2936,8 +3370,7 @@ export function FilesPanel({
         const next =
           edgeItem && isVisibleTreeEntry(edgeItem) ? edgeItem.entry : undefined
         if (next) {
-          updateSession({ selectedPath: next.path })
-          document.getElementById(treeElementId(next.path))?.focus()
+          navigateTreeTo(next.path)
         }
         return
       }
@@ -2948,8 +3381,7 @@ export function FilesPanel({
         } else {
           const firstChild = directories[path]?.entries[0]
           if (firstChild) {
-            updateSession({ selectedPath: firstChild.path })
-            document.getElementById(treeElementId(firstChild.path))?.focus()
+            navigateTreeTo(firstChild.path)
           }
         }
         return
@@ -2961,8 +3393,7 @@ export function FilesPanel({
         } else {
           const parent = parentPath(path)
           if (parent) {
-            updateSession({ selectedPath: parent })
-            document.getElementById(treeElementId(parent))?.focus()
+            navigateTreeTo(parent)
           }
         }
         return
@@ -2991,16 +3422,21 @@ export function FilesPanel({
             item.entry.name.toLowerCase().startsWith(typeaheadRef.current)
         )
         if (match && isVisibleTreeEntry(match)) {
-          updateSession({ selectedPath: match.entry.path })
-          document.getElementById(treeElementId(match.entry.path))?.focus()
+          navigateTreeTo(match.entry.path)
         }
       }
     },
-    [directories, expandedPaths, selectTreePath, toggleDirectory, updateSession, visibleEntries]
+    [directories, expandedPaths, navigateTreeTo, selectTreePath, toggleDirectory, visibleEntries]
   )
 
   const rootDirectory = directories['']
   const rootLoading = !rootDirectory || rootDirectory.loading
+  const nestedWorkspaceMessage = useMemo(() => {
+    if (!workspacePath || !rootDirectory || rootDirectory.loading || rootDirectory.error) {
+      return null
+    }
+    return nestedWorkspaceHint(workspacePath, rootDirectory.entries)
+  }, [rootDirectory, workspacePath])
   const narrowSurface = surfaceWidth > 0 && surfaceWidth < 680
   const explorerMaxWidth =
     narrowSurface || surfaceWidth <= 0
@@ -3027,6 +3463,73 @@ export function FilesPanel({
     >
       {promptDialog}
       {confirmDialog}
+      {findInFilesOpen ? (
+        <div className="flex shrink-0 flex-col gap-1.5 border-b border-border/40 bg-surface px-2 py-2">
+          <form
+            className="flex items-center gap-1.5"
+            onSubmit={(event) => {
+              event.preventDefault()
+              const q = findQuery.trim()
+              if (!q || !workspacePath || !window.vyotiq?.workspaceGrep) return
+              setFindBusy(true)
+              setFindError(null)
+              void window.vyotiq
+                .workspaceGrep({ workspacePath, query: q, maxResults: 80 })
+                .then((res) => {
+                  if (!res.ok) {
+                    setFindError(res.error)
+                    setFindHits([])
+                    return
+                  }
+                  setFindHits(res.data.hits)
+                })
+                .finally(() => setFindBusy(false))
+            }}
+          >
+            <input
+              autoFocus
+              className="h-7 min-w-0 flex-1 rounded-md border border-border bg-bg px-2 text-caption text-fg outline-none"
+              placeholder="Find in files"
+              value={findQuery}
+              onChange={(event) => setFindQuery(event.target.value)}
+            />
+            <button type="submit" className={DOCK_TOOLBAR_BTN} disabled={findBusy}>
+              {findBusy ? 'Searching…' : 'Search'}
+            </button>
+            <button
+              type="button"
+              className={DOCK_TOOLBAR_BTN}
+              onClick={() => {
+                setFindInFilesOpen(false)
+                setFindHits([])
+                setFindError(null)
+              }}
+            >
+              Close
+            </button>
+          </form>
+          {findError ? <p className="m-0 text-caption text-danger">{findError}</p> : null}
+          {findHits.length > 0 ? (
+            <ul className="m-0 max-h-40 list-none overflow-auto p-0">
+              {findHits.map((hit) => (
+                <li key={`${hit.path}:${hit.line}:${hit.text.slice(0, 24)}`}>
+                  <button
+                    type="button"
+                    className="flex w-full items-baseline gap-2 truncate rounded px-1 py-0.5 text-left text-caption hover:bg-surface-2"
+                    onClick={() => {
+                      void openFile(hit.path).then(() => setScrollToLine(hit.line))
+                    }}
+                  >
+                    <span className="truncate text-fg">{hit.path}</span>
+                    <span className="shrink-0 text-muted">{hit.line}</span>
+                    <span className="min-w-0 truncate text-muted">{hit.text.trim()}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
       <ContextMenu
         anchor={contextMenu?.anchor ?? null}
         items={contextMenuItems}
@@ -3113,6 +3616,15 @@ export function FilesPanel({
             </div>
             <div className="flex shrink-0 items-center gap-0.5">
               <IconButton
+                icon="search"
+                label="Find in files"
+                size="xs"
+                variant="bare"
+                className="text-muted"
+                disabled={busy}
+                onClick={() => setFindInFilesOpen(true)}
+              />
+              <IconButton
                 icon="plus"
                 label="Create file"
                 size="xs"
@@ -3179,6 +3691,15 @@ export function FilesPanel({
               ) : null}
             </div>
           </div>
+          {nestedWorkspaceMessage && !treeFilter.trim() ? (
+            <div
+              className={cn(FILES_PANEL_ALERT, 'border-border/30 bg-warning/10 text-warning')}
+              role="status"
+            >
+              <Icon name="info" size={14} className="shrink-0" />
+              <span className="min-w-0 flex-1">{nestedWorkspaceMessage}</span>
+            </div>
+          ) : null}
           <div className="flex min-w-0 shrink-0 items-center gap-1.5 border-b border-border/30 px-2 py-1">
             <SearchInput
               aria-label="Filter workspace files"
@@ -3241,7 +3762,7 @@ export function FilesPanel({
               </div>
             ) : null}
             {directories['']?.truncated ? (
-              <div className="px-2 py-1 text-[10px] text-warning">
+              <div className="px-2 py-1 text-2xs text-warning">
                 Workspace root capped at {directories[''].total.toLocaleString()} entries
               </div>
             ) : null}
@@ -3294,7 +3815,8 @@ export function FilesPanel({
 
                 const { entry, level } = visible
                 const open = expandedPaths.includes(entry.path)
-                const selected = selectedPath === entry.path
+                const highlighted = treeHighlightPath === entry.path
+                const focused = treeKeyboardPath === entry.path
                 const isDir = isDirectoryEntry(entry)
                 const directory = directories[entry.path]
                 return (
@@ -3307,8 +3829,8 @@ export function FilesPanel({
                     aria-setsize={visibleEntries.length}
                     aria-posinset={virtualEntry.index + 1}
                     aria-expanded={isDir ? open : undefined}
-                    aria-selected={selected}
-                    tabIndex={selected || (!selectedPath && level === 1) ? 0 : -1}
+                    aria-selected={highlighted || (!activeTab && focused)}
+                    tabIndex={focused ? 0 : -1}
                     className="absolute left-0 top-0 m-0 h-7 w-full list-none p-0"
                     style={{ transform: `translateY(${virtualEntry.start}px)` }}
                     onContextMenu={(event) => {
@@ -3340,7 +3862,11 @@ export function FilesPanel({
                       aria-haspopup="menu"
                       className={cn(
                         'flex h-full min-w-0 items-center gap-1 overflow-hidden rounded px-1.5 text-left text-xs outline-none hover:bg-surface/60 focus-visible:vy-focus-ring',
-                        selected ? TREE_ROW_SELECTED : 'text-fg/80'
+                        highlighted
+                          ? TREE_ROW_ACTIVE_FILE
+                          : focused
+                            ? TREE_ROW_FOCUSED
+                            : 'text-fg/80'
                       )}
                       style={treeIndentStyle(level)}
                       onClick={() => void selectTreePath(entry.path)}
@@ -3377,7 +3903,7 @@ export function FilesPanel({
                       <Icon
                         name={isDir ? (open ? 'folderOpen' : 'folder') : 'file'}
                         size={14}
-                        className={cn('shrink-0', selected ? 'text-fg' : 'text-muted')}
+                        className={cn('shrink-0', highlighted || focused ? 'text-fg' : 'text-muted')}
                       />
                       <span className="min-w-0 flex-1 truncate" title={entry.path}>
                         {entry.name}
@@ -3534,10 +4060,8 @@ export function FilesPanel({
                 openContextMenu(event, { kind: 'tab', tabId: activeTab.id })
               }
             >
-              <div className="sidebar-scroll-x flex min-w-0 shrink-0 items-center gap-1 overflow-x-auto border-b border-border/30 px-2 py-1 text-caption text-muted">
-                <span className="min-w-0 max-w-[40%] shrink-0 truncate" title={activeTab.path}>
-                  {parentPath(activeTab.path) || 'Workspace root'}
-                </span>
+              <div className="flex min-w-0 shrink-0 items-center gap-1 border-b border-border/30 px-2 py-1 text-caption text-muted">
+                <EditorBreadcrumb path={activeTab.path} />
                 {activeTextPosition ? (
                   <span className="shrink-0 tabular-nums text-muted">
                     Ln {activeTextPosition.line}, Col {activeTextPosition.column}
@@ -3676,7 +4200,7 @@ export function FilesPanel({
                     </button>
                   </div>
                   {blameResult?.kind === 'ok' ? (
-                    <div className="min-w-max font-mono text-[11px] leading-5">
+                    <div className="min-w-max font-mono text-caption leading-5">
                       {blameResult.lines.map((line) => (
                         <div key={line.line} className="flex min-w-0 border-b border-border/15">
                           <span className="w-20 shrink-0 truncate px-2 text-muted" title={line.author}>
@@ -3786,6 +4310,11 @@ export function FilesPanel({
                       : null
                   }
                   onLspHover={inlineLspEnabled ? inlineLsp.fetchHover : undefined}
+                  onInlineComplete={
+                    tabAutocompleteEnabled && workspacePath
+                      ? requestInlineComplete
+                      : undefined
+                  }
                   onScrollToLineHandled={() => setScrollToLine(null)}
                   onChange={(content) => {
                     const accepted = mutateTab(activeTab.id, (tab) => ({

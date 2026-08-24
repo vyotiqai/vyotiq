@@ -1,0 +1,92 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+.yarn/
+.pnp.*
+
+# Build, pack, and Vite/Electron outputs
+dist/
+dist-package/
+dist-package-*/
+out/
+release/
+landing/dist/
+dist-electron/
+.vite/
+*.tsbuildinfo
+electron.vite.config.*.mjs
+
+# Astro generated cache
+landing/.astro/
+
+# Tests, coverage, Playwright
+coverage/
+.nyc_output/
+htmlcov/
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Logs and temp
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.tmp
+*.temp
+.tmp/
+.eslintcache
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Secrets and local env (keep committed examples)
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Generated synced assets (scripts/sync-*.mjs on postinstall/dev/build)
+src/renderer/public/file-icons/
+resources/codeindex/wasm/
+
+# Markdown siblings generated from .md.docx (scripts/sync-docx-md.mjs)
+landing/src/content/docs/**/*.md
+landing/README.md
+resources/marketplace/**/*.md
+
+# Local agent / editor state (keep rules and skills)
+.vyotiq/memory/
+.cursor/hooks/state/
+.cursor/mcp.json
+.commandcode/
+
+# Python helpers
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.idea/
+.vs/
+*.iml
+
+# Docs are stored as Word binaries in these trees. Catch-all ignores
+# other .docx (including Windows "Copy (1)" collisions after the
+# un-ignores below).
+*.docx
+!docs/**/*.docx
+!resources/**/*.docx
+!.cursor/**/*.docx
+!.vyotiq/rules/**/*.docx
+!landing/**/*.docx
+!tests/**/*.docx
+
+# Windows Explorer duplicate copies — after docx un-ignores so they win
+* (1).*
+*(1).*

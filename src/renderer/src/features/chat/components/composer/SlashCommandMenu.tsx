@@ -18,10 +18,10 @@ import {
 
 const SLASH_MAX_PX = 380
 
-const stickyCategoryHeader = cn(composerDropdownSectionHeader, 'sticky top-0 z-[2] bg-card')
+const stickyCategoryHeader = cn(composerDropdownSectionHeader, 'sticky top-0 z-sticky bg-card')
 
 const stickyServerHeader =
-  'sticky top-6 z-[1] m-0 border-b border-border/60 bg-card px-2.5 py-1 text-caption font-medium text-secondary'
+  'sticky top-6 z-sticky m-0 border-b border-border/60 bg-card px-2.5 py-1 text-caption font-medium text-secondary'
 
 export function SlashCommandMenu({
   open,
@@ -91,7 +91,7 @@ export function SlashCommandMenu({
   return createPortal(
     <div
       ref={panelRef}
-      className="fixed z-dropdown flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-fade-in"
+      className="fixed z-dropdown flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-menu-in origin-bottom"
       style={{
         top: position.placement === 'up' ? undefined : position.top,
         bottom:

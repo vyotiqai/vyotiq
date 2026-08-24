@@ -17,6 +17,7 @@ import {
   stepUsageFromEvent,
   type StepUsageTotals
 } from '@shared/utils/runTelemetry'
+import { getFocusedFile } from '@renderer/lib/focusedFile'
 import {
   alignTurnUsageSlots,
   turnUsageFromPersistedEvents,
@@ -1230,6 +1231,12 @@ export function createChatStreamController(
   options: CreateChatStreamControllerOptions
 ): ChatStreamController {
   const { workspacePath, onRunIdAssigned, onTerminal, getAgentMode, onAgentModeChange } = options
+  let lastNotifiedAgentMode: AgentInteractionMode | null = null
+  const notifyAgentMode = (mode: AgentInteractionMode | null | undefined): void => {
+    if (!mode || mode === lastNotifiedAgentMode) return
+    lastNotifiedAgentMode = mode
+    onAgentModeChange?.(mode)
+  }
   const listeners = new Set<() => void>()
   const itemsListeners = new Set<() => void>()
   const metaListeners = new Set<() => void>()
@@ -1843,7 +1850,7 @@ export function createChatStreamController(
     contentRunId = id
     if (liveInvokeId != null) activeInvokeId = liveInvokeId
     const mode = modeFromPersisted(events)
-    if (mode) onAgentModeChange?.(mode)
+    if (mode) notifyAgentMode(mode)
     const hydratedPending = hydratePendingFollowUps(
       pendingFromMain,
       res.data.pendingFollowUps,
@@ -2209,7 +2216,7 @@ export function createChatStreamController(
       if (event.ok && event.name === 'switch_mode') {
         const mode = event.summary?.trim()
         if (mode === 'ask' || mode === 'plan' || mode === 'agent') {
-          onAgentModeChange?.(mode)
+          notifyAgentMode(mode)
         }
       }
       // ask_question UI is a separate item; clear it when the tool settles
@@ -2247,7 +2254,7 @@ export function createChatStreamController(
         agentInstances: mergeAgentInstanceUpdate(state.agentInstances, event)
       })
     } else if (event.type === 'mode_changed') {
-      onAgentModeChange?.(event.mode)
+      notifyAgentMode(event.mode)
     } else if (event.type === 'error') {
       lastRunErrorMessage = event.message
       lastRunErrorCode = event.code ?? null
@@ -2716,18 +2723,21 @@ export function createChatStreamController(
       patch({ pendingRun: true, running: true, runStartedAt: Date.now(), runId: null })
     }
     const mode = getAgentMode?.() ?? 'agent'
+    const focusedFile = getFocusedFile() ?? undefined
     const startPayload = continuingRunId
       ? {
           incremental: true as const,
           newMessages: [user],
           workspacePath,
           runId: continuingRunId,
-          mode
+          mode,
+          focusedFile
         }
       : {
           messages: nextMessages,
           workspacePath,
-          mode
+          mode,
+          focusedFile
         }
     let res = await window.vyotiq.chatStart(startPayload)
     for (let attempt = 2; attempt <= CHAT_START_MAX_ATTEMPTS && !res.ok; attempt++) {
@@ -2842,7 +2852,8 @@ export function createChatStreamController(
       workspacePath,
       runId: continuingRunId,
       messages: [],
-      mode
+      mode,
+      focusedFile: getFocusedFile() ?? undefined
     }
     let res = await window.vyotiq.chatStart(startPayload)
     for (let attempt = 2; attempt <= CHAT_START_MAX_ATTEMPTS && !res.ok; attempt++) {
@@ -3382,7 +3393,7 @@ export function createChatStreamController(
     awaitingRun = false
     pendingCancel = false
     const mode = modeFromPersisted(events)
-    if (mode) onAgentModeChange?.(mode)
+    if (mode) notifyAgentMode(mode)
     patch({
       ...hydrateFromDisk(kept, events, dismissedErrorMessage, {
         idle: true,
@@ -3534,7 +3545,7 @@ export function createChatStreamController(
     clearToolBodyCaches()
     startedToolCallIds.clear()
     const mode = modeFromPersisted(rows)
-    if (mode) onAgentModeChange?.(mode)
+    if (mode) notifyAgentMode(mode)
     const hydrated = hydrateFromDisk(kept, rows, dismissedErrorMessage, {
       idle: true,
       priorAgentInstances: state.agentInstances
@@ -3675,7 +3686,7 @@ export function createChatStreamController(
     }
     const kept = messagesForNextTurn(res.data.messages)
     const mode = modeFromPersisted(events)
-    if (mode) onAgentModeChange?.(mode)
+    if (mode) notifyAgentMode(mode)
     const refreshedPending = hydratePendingFollowUps(
       pendingFromMain,
       res.data.pendingFollowUps,

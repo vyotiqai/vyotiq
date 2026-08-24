@@ -113,6 +113,20 @@ describe('modePolicy', () => {
     )
   })
 
+  it('Ask and Plan allow lsp reads and deny lsp rename and edit_notebook', () => {
+    expect(isBuiltinAllowedInMode('ask', 'lsp')).toBe(true)
+    expect(isBuiltinAllowedInMode('plan', 'lsp')).toBe(true)
+    expect(assertToolAllowedInMode('ask', 'lsp', { path: 'a.ts', action: 'hover' }).ok).toBe(true)
+    expect(assertToolAllowedInMode('plan', 'lsp', { path: 'a.ts', action: 'diagnostics' }).ok).toBe(
+      true
+    )
+    expect(
+      assertToolAllowedInMode('ask', 'lsp', { path: 'a.ts', action: 'rename', new_name: 'y' }).ok
+    ).toBe(false)
+    expect(isBuiltinAllowedInMode('ask', 'edit_notebook')).toBe(false)
+    expect(isBuiltinAllowedInMode('plan', 'edit_notebook')).toBe(false)
+  })
+
   it('Ask mode denies diagnostics and terminal; Plan allows diagnostics', () => {
     expect(isBuiltinAllowedInMode('ask', 'diagnostics')).toBe(false)
     expect(isBuiltinAllowedInMode('plan', 'diagnostics')).toBe(true)

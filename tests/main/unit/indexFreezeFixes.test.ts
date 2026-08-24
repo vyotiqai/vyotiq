@@ -63,7 +63,7 @@ describe('sparsegrep RECONCILE_WALK_CAP', () => {
 
 describe('codeindex RECONCILE_WALK_CAP', () => {
   it('is finite and at least 2× scan cap', () => {
-    expect(INDEX_SCAN_CAP).toBe(8000)
+    expect(INDEX_SCAN_CAP).toBe(24000)
     expect(Number.isFinite(CODE_INDEX_RECONCILE_WALK_CAP)).toBe(true)
     expect(CODE_INDEX_RECONCILE_WALK_CAP).toBeGreaterThanOrEqual(INDEX_SCAN_CAP * 2)
   })
@@ -226,7 +226,7 @@ describe('index sync progress', () => {
       ]
       const first = await syncCodeIndex(root, store, embedder, { files })
       expect(first.indexed).toBe(2)
-      expect(INDEX_SCAN_CAP).toBe(8000)
+      expect(INDEX_SCAN_CAP).toBe(24000)
       const second = await syncCodeIndex(root, store, embedder, { files })
       expect(second.indexed).toBe(0)
       expect(second.skipped).toBe(2)

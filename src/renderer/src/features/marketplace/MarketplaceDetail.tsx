@@ -109,9 +109,9 @@ export function MarketplaceDetail({
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {comingSoon ? (
-              <Button variant="subtle" disabled>
+              <span className="rounded-full bg-black/5 px-2 py-0.5 text-caption text-muted dark:bg-white/10">
                 Coming soon
-              </Button>
+              </span>
             ) : isInstalled ? (
               <>
                 <Button variant="subtle" disabled className={activity.className}>
@@ -142,7 +142,7 @@ export function MarketplaceDetail({
 
       <div className="flex flex-col gap-4">
         {loadingContents ? (
-          <p className="m-0 text-xs text-muted">Loading package contents…</p>
+          <p className="m-0 text-xs text-muted" role="status">Loading package contents…</p>
         ) : contentsError && !contents ? (
           <p className="m-0 text-xs text-danger" role="alert">
             {contentsError}

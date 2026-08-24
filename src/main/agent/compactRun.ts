@@ -29,8 +29,14 @@ import {
   preserveRecentMessagesAsync,
   type CompactForkPrefix
 } from './context/compact'
-import { estimateMessagesTokensAsync } from './context/estimate'
+import { estimateMessagesTokensAsync, estimateTextTokensAsync } from './context/estimate'
 import { extractFoldFacts } from './context/foldFacts'
+import {
+  foldFactsToPinned,
+  mergeFoldFacts,
+  pinFoldFacts,
+  pinnedFactsToFoldFacts
+} from './context/pinFoldFacts'
 import {
   extractAskQuestionDecisions,
   mergeCompactionFocus
@@ -397,10 +403,13 @@ export async function* executeCompactEvents(
   opts?: ExecuteCompactOpts
 ): AsyncGenerator<AgentEvent, CompactRunResult> {
   const retainedDecisions = extractAskQuestionDecisions(plan.toSummarize)
-  const facts = extractFoldFacts(plan.toSummarize, {
-    contract: readContract(plan.runDir),
-    todos: readTodos(plan.runDir)
-  })
+  const facts = mergeFoldFacts(
+    pinnedFactsToFoldFacts(plan.existing?.pinnedFacts),
+    extractFoldFacts(plan.toSummarize, {
+      contract: readContract(plan.runDir),
+      todos: readTodos(plan.runDir)
+    })
+  )
   const foldedText = [
     plan.existing?.summary ?? '',
     ...plan.toSummarize.map((msg) => {
@@ -431,6 +440,14 @@ export async function* executeCompactEvents(
   }
 
   let record = await summarizeWithTimeoutRetry(plan, effectiveFocus, structured)
+  const pinnedSummary = pinFoldFacts(record.summary, facts)
+  if (pinnedSummary !== record.summary) {
+    record = {
+      ...record,
+      summary: pinnedSummary,
+      tokenEstimate: await estimateTextTokensAsync(pinnedSummary)
+    }
+  }
 
   const emitVerifying = function* (): Generator<AgentEvent, void> {
     const ev = stampCompactEvent(plan, opts?.invokeId, {
@@ -478,6 +495,14 @@ export async function* executeCompactEvents(
       throw new CompactionUnavailableError('The model returned no summary.')
     }
     record = retryRecord
+    const retryPinned = pinFoldFacts(record.summary, facts)
+    if (retryPinned !== record.summary) {
+      record = {
+        ...record,
+        summary: retryPinned,
+        tokenEstimate: await estimateTextTokensAsync(retryPinned)
+      }
+    }
     yield* emitVerifying()
     scored = verifyCompactionSummary(record.summary, facts, foldedText)
   }
@@ -517,6 +542,7 @@ export async function* executeCompactEvents(
     contentWindowAtCompact: cWin,
     verified: true,
     verifyCoverage: scored.coverage,
+    pinnedFacts: foldFactsToPinned(facts),
     ...(failureLines.length > 0 ? { verifyFailures: failureLines } : {}),
     ...(retainedDecisions.length > 0
       ? { retainedDecisions: retainedDecisions.slice(0, 8) }

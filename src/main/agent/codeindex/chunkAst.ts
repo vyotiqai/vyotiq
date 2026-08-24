@@ -5,7 +5,7 @@ import type { ChunkKind, CodeChunk } from './types'
 import { MAX_CHUNK_CHARS } from './types'
 import { appendModuleContextChunks, chunkSource as chunkSourceFallback, dropParentSpansCoveredByChildren } from './chunk'
 
-type GrammarId = 'typescript' | 'tsx' | 'javascript' | 'python'
+type GrammarId = 'typescript' | 'tsx' | 'javascript' | 'python' | 'go' | 'rust' | 'java' | 'csharp'
 
 const EXT_GRAMMAR: Record<string, GrammarId> = {
   '.ts': 'typescript',
@@ -14,14 +14,22 @@ const EXT_GRAMMAR: Record<string, GrammarId> = {
   '.jsx': 'javascript',
   '.mjs': 'javascript',
   '.cjs': 'javascript',
-  '.py': 'python'
+  '.py': 'python',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.java': 'java',
+  '.cs': 'csharp'
 }
 
 const GRAMMAR_FILE: Record<GrammarId, string> = {
   typescript: 'tree-sitter-typescript.wasm',
   tsx: 'tree-sitter-tsx.wasm',
   javascript: 'tree-sitter-javascript.wasm',
-  python: 'tree-sitter-python.wasm'
+  python: 'tree-sitter-python.wasm',
+  go: 'tree-sitter-go.wasm',
+  rust: 'tree-sitter-rust.wasm',
+  java: 'tree-sitter-java.wasm',
+  csharp: 'tree-sitter-c_sharp.wasm'
 }
 
 const TS_LIKE_TYPES = new Set([
@@ -33,6 +41,30 @@ const TS_LIKE_TYPES = new Set([
 ])
 
 const PY_TYPES = new Set(['function_definition', 'class_definition'])
+const GO_TYPES = new Set(['function_declaration', 'method_declaration', 'type_declaration'])
+const RUST_TYPES = new Set([
+  'function_item',
+  'impl_item',
+  'struct_item',
+  'enum_item',
+  'mod_item',
+  'trait_item'
+])
+const JAVA_TYPES = new Set([
+  'method_declaration',
+  'constructor_declaration',
+  'class_declaration',
+  'interface_declaration',
+  'enum_declaration'
+])
+const CSHARP_TYPES = new Set([
+  'method_declaration',
+  'constructor_declaration',
+  'class_declaration',
+  'interface_declaration',
+  'struct_declaration',
+  'record_declaration'
+])
 
 type TsTree = {
   rootNode: TsNode
@@ -358,7 +390,18 @@ type Span = {
 
 function collectSpans(root: TsNode, source: string, grammar: GrammarId): Span[] {
   const spans: Span[] = []
-  const interesting = grammar === 'python' ? PY_TYPES : TS_LIKE_TYPES
+  const interesting =
+    grammar === 'python'
+      ? PY_TYPES
+      : grammar === 'go'
+        ? GO_TYPES
+        : grammar === 'rust'
+          ? RUST_TYPES
+          : grammar === 'java'
+            ? JAVA_TYPES
+            : grammar === 'csharp'
+              ? CSHARP_TYPES
+              : TS_LIKE_TYPES
 
   const walk = (node: TsNode, classStack: string[], fnDepth: number): void => {
     // Module-level const/export arrows only. Nested closures stay inside the parent chunk.

@@ -30,6 +30,7 @@ export function usePersistedNumber(
       const resolved = clampRef.current(
         typeof next === 'function' ? next(valueRef.current) : next
       )
+      if (Object.is(valueRef.current, resolved)) return
       valueRef.current = resolved
       setValue(resolved)
       try {

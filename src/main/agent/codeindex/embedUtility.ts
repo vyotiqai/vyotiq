@@ -12,7 +12,7 @@
 import { applyOrtThreadEnvHints, buildOrtSessionOptions, resolveOrtIntraOpThreads } from './ortSessionOptions'
 import { embedBatchedOnnx, type OnnxTensorCtor, type OnnxTokenizer } from './onnxEmbed'
 import {
-  DENSEON_ONNX_MODEL_ID,
+  DEFAULT_EMBED_DIM,
   LIGHTON_DENSE_DIM,
   MDENSEON_MODEL_ID,
   type CodebaseSearchHit,
@@ -36,17 +36,14 @@ import { createCancelledIdSet } from './utilityCancel'
 import { withSqliteBusyRetry } from './sqliteBusyRetry'
 import type { IndexProgressUpdate } from './indexProgress'
 import type { CodeIndexSyncProgress } from '../../../shared/ipc/schemas/settings'
-import {
-  denseOnOnnxFiles,
-  downloadModelFiles,
-  mDenseOnOnnxFiles,
-  modelFilesPresent
-} from './modelDownload'
+import { downloadModelFiles, modelFilesPresent } from './modelDownload'
 import { codeIndexModelDir } from './modelPaths'
+import { NEURAL_ARTIFACTS, getNeuralArtifact } from './registry'
+import { loadGenericOnnxSession } from './onnxGeneric'
 
 type Role = 'query' | 'document'
 
-type EmbedderKind = 'session' | 'hash' | 'ollama'
+type EmbedderKind = 'session' | 'hash' | 'ollama' | 'llamacpp'
 
 type SparseLookupKind = 'regex' | 'substring'
 
@@ -206,6 +203,22 @@ function withEmbedLock<T>(fn: () => Promise<T>): Promise<T> {
 }
 
 async function loadSession(modelDir: string, modelId: string): Promise<LoadedSession> {
+  const artifact = getNeuralArtifact(modelId)
+  const dimensions = artifact?.dimensions ?? LIGHTON_DENSE_DIM
+  if (artifact?.loader === 'generic') {
+    const session = await loadGenericOnnxSession(modelDir, modelId, dimensions, {
+      context: 'utility'
+    })
+    return {
+      modelId: session.modelId,
+      dimensions: session.dimensions,
+      async embed(texts: string[], role: Role, signal?: AbortSignal): Promise<Float32Array[]> {
+        return withEmbedLock(() => session.embed(texts, role, signal))
+      },
+      dispose: () => session.dispose?.()
+    }
+  }
+
   const intra = resolveOrtIntraOpThreads(undefined, 'utility')
   applyOrtThreadEnvHints(intra)
   const transformers = await import('@huggingface/transformers')
@@ -226,7 +239,7 @@ async function loadSession(modelDir: string, modelId: string): Promise<LoadedSes
 
   return {
     modelId,
-    dimensions: LIGHTON_DENSE_DIM,
+    dimensions,
     async embed(texts: string[], role: Role, signal?: AbortSignal): Promise<Float32Array[]> {
       return withEmbedLock(async () =>
         embedBatchedOnnx({
@@ -235,7 +248,7 @@ async function loadSession(modelDir: string, modelId: string): Promise<LoadedSes
           texts,
           role,
           signal,
-          hiddenSize: LIGHTON_DENSE_DIM,
+          hiddenSize: dimensions,
           ...(Tensor ? { Tensor } : {})
         })
       )
@@ -265,21 +278,7 @@ function enqueueWrite(fn: () => Promise<void>): Promise<void> {
 
 async function ensureChildSession(signal?: AbortSignal): Promise<LoadedSession> {
   if (session) return session
-  const artifacts = [
-    {
-      artifactId: 'mDenseOn-onnx-int8',
-      modelId: MDENSEON_MODEL_ID,
-      files: mDenseOnOnnxFiles(),
-      allowAutoDownload: false as const
-    },
-    {
-      artifactId: 'DenseOn-onnx-int8',
-      modelId: DENSEON_ONNX_MODEL_ID,
-      files: denseOnOnnxFiles(),
-      allowAutoDownload: true as const
-    }
-  ]
-  for (const art of artifacts) {
+  for (const art of NEURAL_ARTIFACTS) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     const modelDir = codeIndexModelDir(art.artifactId)
     let present = modelFilesPresent(modelDir, art.files)
@@ -296,7 +295,7 @@ async function ensureChildSession(signal?: AbortSignal): Promise<LoadedSession> 
 function resolveSyncEmbedder(msg: UtilityRequest): Embedder {
   const kind = msg.embedderKind ?? 'session'
   if (kind === 'hash') {
-    return createLocalHashEmbedder(msg.dimensions ?? LIGHTON_DENSE_DIM, msg.modelId)
+    return createLocalHashEmbedder(msg.dimensions ?? DEFAULT_EMBED_DIM, msg.modelId)
   }
   if (kind === 'ollama') {
     return createOllamaEmbedder({

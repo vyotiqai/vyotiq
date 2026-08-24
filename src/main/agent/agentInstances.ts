@@ -21,6 +21,7 @@ import { createRunId } from './loop'
 import { RUN_RECEIPT_FILENAME } from './runReceipt'
 import {
   clearRunAbort,
+  cancelRun,
   getRunInvokeId,
   registerInlineChildRun,
   tryRegisterRunAbort,
@@ -40,6 +41,16 @@ const childWaiters = new Map<
 >()
 const runIpcSenders = new Map<string, WebContents>()
 const parentInstanceEmitters = new Map<string, (event: AgentEvent) => void>()
+
+/**
+ * Repeated hard tool denials (terminal/diagnostics/git_commit on a shared
+ * path_scope instance without a worktree) mean the instance structurally
+ * cannot reach its goal. After this many denials the instance is cancelled
+ * instead of burning steps in a retry loop it can never win.
+ */
+export const INLINE_INSTANCE_DENIED_TOOL_CANCEL_THRESHOLD = 2
+
+const deniedToolCounts = new Map<string, number>()
 
 export { formatAgentInstanceLabel }
 
@@ -98,6 +109,7 @@ export function registerChildInstance(
 export function unregisterChildInstance(childRunId: string): void {
   const parentRunId = childToParent.get(childRunId)
   childWorkspace.delete(childRunId)
+  deniedToolCounts.delete(childRunId)
   if (!parentRunId) return
   childToParent.delete(childRunId)
   unregisterInlineChildRun(childRunId)
@@ -179,11 +191,6 @@ export function notifyChildTerminal(
   )
 }
 
-/** Kept for callers that still import the former summary cap. */
-export const CHILD_SUMMARY_MAX_CHARS = Number.POSITIVE_INFINITY
-export const CHILD_WROTE_FILES_MAX = Number.POSITIVE_INFINITY
-export const OUTLINE_MAX_LINES = Number.POSITIVE_INFINITY
-
 export type PullAgentInstanceView = 'summary' | 'outline' | 'tail'
 
 function wroteFilesFromReceipt(runDir: string): string[] {
@@ -198,17 +205,9 @@ function wroteFilesFromReceipt(runDir: string): string[] {
   }
 }
 
-function truncateSummaryText(text: string, max: number): string {
-  if (text.length <= max) return text
-  return `${text.slice(0, Math.max(0, max - 14)).trimEnd()}\n…(truncated)`
-}
-
 function formatWroteFilesBlock(wroteFiles: string[]): string | null {
   if (wroteFiles.length === 0) return null
-  const shown = wroteFiles.slice(0, CHILD_WROTE_FILES_MAX)
-  const lines = shown.map((p) => `- ${p}`)
-  const omitted = wroteFiles.length - shown.length
-  if (omitted > 0) lines.push(`- …(+${omitted} more)`)
+  const lines = wroteFiles.map((p) => `- ${p}`)
   return `wroteFiles:\n${lines.join('\n')}`
 }
 
@@ -221,12 +220,12 @@ function formatChildSummary(
   const status = loadStatus(runDir)
   const parts: string[] = []
   if (status?.error) {
-    parts.push(truncateSummaryText(status.error, CHILD_SUMMARY_MAX_CHARS))
+    parts.push(status.error)
   } else {
     const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant')
     if (lastAssistant) {
       const text = contentDisplayText(lastAssistant.content).trim()
-      if (text) parts.push(truncateSummaryText(text, CHILD_SUMMARY_MAX_CHARS))
+      if (text) parts.push(text)
     }
   }
   const wroteBlock = formatWroteFilesBlock(wroteFilesFromReceipt(runDir))
@@ -365,7 +364,7 @@ export function waitForChildTerminal(
       cleanup()
       reject(
         new Error(
-          `Timed out waiting for ${formatAgentInstanceLabel(childRunId)}. Child is still running — cancel it, await again, or pull_agent_instance.`
+          `Timed out waiting for ${formatAgentInstanceLabel(childRunId)}. Child is still running — use cancel_agent_instance to stop it, await again with a longer timeout_ms, or pull_agent_instance.`
         )
       )
     }, timeoutMs)
@@ -407,6 +406,52 @@ export function waitForChildTerminal(
       pollTimer = setInterval(recheck, 500)
     }
   })
+}
+
+/**
+ * Record a hard tool denial for an inline instance. When the same instance
+ * crosses the threshold, cancel it so the loop stops instead of retrying a
+ * structurally-denied tool forever. Returns true when this call cancelled.
+ */
+export function noteInlineInstanceDeniedTool(childRunId: string | undefined): boolean {
+  if (!childRunId || !childToParent.has(childRunId)) return false
+  const count = (deniedToolCounts.get(childRunId) ?? 0) + 1
+  deniedToolCounts.set(childRunId, count)
+  if (count < INLINE_INSTANCE_DENIED_TOOL_CANCEL_THRESHOLD) return false
+  deniedToolCounts.delete(childRunId)
+  logger.warn('Inline instance auto-cancelled after repeated tool denials', {
+    scope: 'agent',
+    childRunId,
+    denials: count
+  })
+  cancelRun(childRunId)
+  return true
+}
+
+/** Parent-side cancel for an inline child (cancel_agent_instance tool). */
+export function cancelChildInstance(
+  workspacePath: string,
+  parentRunId: string,
+  childRunId: string
+): { ok: true; phase: 'cancelled' | 'already-terminal' } | { ok: false; error: string } {
+  const childStatus = loadStatus(resolveRunDir(workspacePath, childRunId))
+  if (!childStatus?.inlineInstance || childStatus.parentRunId !== parentRunId) {
+    return { ok: false, error: 'run_id is not an inline instance spawned by this parent run' }
+  }
+  const terminalPhase = terminalPhaseFromStatus(childStatus)
+  if (terminalPhase) {
+    return { ok: true, phase: 'already-terminal' }
+  }
+  if (!cancelRun(childRunId)) {
+    // Not registered in-memory (e.g. spawned before an app restart). The disk
+    // status is still non-terminal, but there is no live loop left to abort.
+    return {
+      ok: false,
+      error:
+        'Instance is not running in this app session (background instances do not survive restart).'
+    }
+  }
+  return { ok: true, phase: 'cancelled' }
 }
 
 export type SpawnAgentInstanceInput = {
@@ -651,4 +696,5 @@ export function resetAgentInstancesForTests(): void {
   childWaiters.clear()
   runIpcSenders.clear()
   parentInstanceEmitters.clear()
+  deniedToolCounts.clear()
 }

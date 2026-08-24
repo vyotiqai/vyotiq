@@ -683,3 +683,69 @@ export async function prEditTitle(
     throw new Error(message)
   }
 }
+
+export async function reviewPullRequest(
+  cwd: string,
+  event: 'approve' | 'request-changes' | 'comment',
+  body?: string,
+  number?: number
+): Promise<{ detail: string }> {
+  if (!(await ghAvailable())) {
+    throw new Error('GitHub CLI (gh) is not installed or not on PATH')
+  }
+  const args = ['pr', 'review']
+  if (number) args.push(prNumberArg(number))
+  if (event === 'approve') args.push('--approve')
+  else if (event === 'request-changes') args.push('--request-changes')
+  else args.push('--comment')
+  const text = body?.trim()
+  if (text) args.push('--body', text)
+  else if (event !== 'approve') args.push('--body', event === 'request-changes' ? 'Requested changes' : 'Comment')
+  await gh(args, cwd, TIMEOUT_MS)
+  return { detail: 'Review submitted' }
+}
+
+export async function listGithubIssues(
+  cwd: string
+): Promise<{ issues: Array<{ number: number; title: string; url: string; state: string }> }> {
+  if (!(await ghAvailable())) {
+    throw new Error('GitHub CLI (gh) is not installed or not on PATH')
+  }
+  const raw = await gh(
+    ['issue', 'list', '--json', 'number,title,url,state', '--limit', '30'],
+    cwd,
+    TIMEOUT_MS
+  )
+  const parsed = JSON.parse(raw) as Array<{
+    number?: number
+    title?: string
+    url?: string
+    state?: string
+  }>
+  return {
+    issues: parsed
+      .filter((row) => typeof row.number === 'number' && row.number > 0)
+      .map((row) => ({
+        number: row.number!,
+        title: row.title ?? '',
+        url: row.url ?? '',
+        state: row.state ?? ''
+      }))
+  }
+}
+
+export async function createGithubIssue(
+  cwd: string,
+  title: string,
+  body?: string
+): Promise<{ url: string; detail: string }> {
+  if (!(await ghAvailable())) {
+    throw new Error('GitHub CLI (gh) is not installed or not on PATH')
+  }
+  const trimmed = title.trim()
+  if (!trimmed) throw new Error('Title cannot be empty')
+  const args = ['issue', 'create', '--title', trimmed]
+  if (body?.trim()) args.push('--body', body.trim())
+  const output = (await gh(args, cwd, TIMEOUT_MS)).trim()
+  return { url: output, detail: 'Issue created' }
+}

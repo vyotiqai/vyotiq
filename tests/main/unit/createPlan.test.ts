@@ -1,0 +1,105 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+
+vi.mock('@main/app/window', () => ({
+  getMainWindow: () => null
+}))
+
+import { executeTool } from '@main/agent/tools'
+import { canonicalizeAgentToolName } from '@main/agent/schemas/tools'
+import { DEFAULT_PLAN_STUB } from '@shared/planStub'
+
+const SIMPLE_PLAN = [
+  '## Goal',
+  '',
+  'Publish a clear run plan through create_plan.',
+  '',
+  '## Steps',
+  '',
+  '1. Explore the workspace, then write plan.md.',
+  '',
+  '## Done when',
+  '',
+  'plan.md has a goal, steps, and a check for finished work.'
+].join('\n')
+
+describe('create_plan', () => {
+  let workspace: string
+  let runDir: string
+
+  afterEach(() => {
+    if (workspace && existsSync(workspace)) {
+      rmSync(workspace, { recursive: true, force: true })
+    }
+  })
+
+  function setup(): void {
+    workspace = mkdtempSync(join(tmpdir(), 'vyotiq-create-plan-'))
+    runDir = join(workspace, '.run')
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(
+      join(runDir, 'contract.md'),
+      '## Goal\n\noriginal\n\n## Done when\n\n- done\n',
+      'utf8'
+    )
+  }
+
+  it('canonicalizes write_plan and CreatePlan', () => {
+    expect(canonicalizeAgentToolName('write_plan')).toBe('create_plan')
+    expect(canonicalizeAgentToolName('CreatePlan')).toBe('create_plan')
+  })
+
+  it('writes plan.md and copies Done when into contract', async () => {
+    setup()
+    const result = await executeTool(
+      'create_plan',
+      JSON.stringify({
+        title: 'Ship the planner',
+        plan: SIMPLE_PLAN,
+        todos: [{ id: 'p1', content: 'Publish the plan tool', status: 'pending' }]
+      }),
+      workspace,
+      new AbortController().signal,
+      { runDir, agentMode: 'plan' }
+    )
+    expect(result.ok).toBe(true)
+    const plan = readFileSync(join(runDir, 'plan.md'), 'utf8')
+    expect(plan).toMatch(/^# Ship the planner/m)
+    expect(plan).toContain('## Steps')
+    const contract = readFileSync(join(runDir, 'contract.md'), 'utf8')
+    expect(contract).toMatch(/## Done when/)
+    expect(contract).toContain('check for finished work')
+    expect(readFileSync(join(runDir, 'todos.json'), 'utf8')).toContain('Publish the plan tool')
+  })
+
+  it('rejects the empty stub', async () => {
+    setup()
+    const result = await executeTool(
+      'create_plan',
+      JSON.stringify({ title: 'Ship the planner', plan: DEFAULT_PLAN_STUB }),
+      workspace,
+      new AbortController().signal,
+      { runDir, agentMode: 'plan' }
+    )
+    expect(result.ok).toBe(false)
+    expect(result.content).toMatch(/real plan|empty stub/i)
+  })
+
+  it('accepts the write_plan alias', async () => {
+    setup()
+    const result = await executeTool(
+      'write_plan',
+      JSON.stringify({
+        title: 'Ship the planner',
+        plan: SIMPLE_PLAN
+      }),
+      workspace,
+      new AbortController().signal,
+      { runDir, agentMode: 'plan' }
+    )
+    expect(result.ok).toBe(true)
+    expect(existsSync(join(runDir, 'plan.md'))).toBe(true)
+  })
+})

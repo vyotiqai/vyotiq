@@ -27,6 +27,7 @@ function applyToDocument(
   root.setAttribute('data-font-scale', appearance.fontScale)
   root.setAttribute('data-density', appearance.uiDensity)
   root.setAttribute('data-accent', appearance.accentPreset)
+  root.setAttribute('data-skin', appearance.skinId)
   writeAppearanceBootCache(resolveAppearanceBootCache(appearance, resolvedTheme === 'dark'))
 }
 
@@ -52,6 +53,10 @@ export function useAppearance(initial: AppearanceSettings) {
 
   useEffect(() => {
     apply(pickAppearanceSettings(appearanceRef.current), systemDarkRef.current)
+    document.documentElement.setAttribute(
+      'data-window-focused',
+      document.hasFocus() ? 'true' : 'false'
+    )
   }, [apply])
 
   useEffect(() => {
@@ -65,6 +70,7 @@ export function useAppearance(initial: AppearanceSettings) {
     mq.addEventListener('change', onMediaChange)
 
     let disposeIpc: (() => void) | undefined
+    let disposeFocusIpc: (() => void) | undefined
     if (window.vyotiq?.onSystemThemeChanged) {
       disposeIpc = window.vyotiq.onSystemThemeChanged((prefersDark) => {
         systemDarkRef.current = prefersDark
@@ -80,10 +86,16 @@ export function useAppearance(initial: AppearanceSettings) {
         }
       })
     }
+    if (window.vyotiq?.onWindowFocusChanged) {
+      disposeFocusIpc = window.vyotiq.onWindowFocusChanged((focused) => {
+        document.documentElement.setAttribute('data-window-focused', focused ? 'true' : 'false')
+      })
+    }
 
     return () => {
       mq.removeEventListener('change', onMediaChange)
       disposeIpc?.()
+      disposeFocusIpc?.()
     }
   }, [apply])
 
@@ -106,6 +118,8 @@ export function useAppearance(initial: AppearanceSettings) {
           prev.fontScale === next.fontScale &&
           prev.uiDensity === next.uiDensity &&
           prev.accentPreset === next.accentPreset &&
+          prev.skinId === next.skinId &&
+          prev.customCssPath === next.customCssPath &&
           prev.resolvedTheme === resolvedTheme
         ) {
           return prev
@@ -128,6 +142,8 @@ export function useAppearance(initial: AppearanceSettings) {
     fontScale: appearance.fontScale as FontScale,
     uiDensity: appearance.uiDensity as UiDensity,
     accentPreset: appearance.accentPreset as AccentPreset,
+    skinId: appearance.skinId,
+    customCssPath: appearance.customCssPath,
     setAppearance,
     toggleTheme,
     hydrate

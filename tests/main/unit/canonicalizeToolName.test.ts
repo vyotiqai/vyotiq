@@ -31,11 +31,17 @@ describe('canonicalizeAgentToolName', () => {
     expect(canonicalizeAgentToolName('read_file')).toBe('read')
     expect(canonicalizeAgentToolName('ls')).toBe('list_dir')
     expect(canonicalizeAgentToolName('Todo')).toBe('todo_write')
+    expect(canonicalizeAgentToolName('write_plan')).toBe('create_plan')
+    expect(canonicalizeAgentToolName('CreatePlan')).toBe('create_plan')
   })
 
-  it('does not remap ambiguous or leftover invented names', () => {
-    expect(canonicalizeAgentToolName('Task')).toBe('Task')
+  it('maps Task / subagent onto spawn_agent_instance and leaves Agent alone', () => {
+    expect(canonicalizeAgentToolName('Task')).toBe('spawn_agent_instance')
+    expect(canonicalizeAgentToolName('subagent')).toBe('spawn_agent_instance')
     expect(canonicalizeAgentToolName('Agent')).toBe('Agent')
+    expect(canonicalizeAgentToolName('EditNotebook')).toBe('edit_notebook')
+    expect(canonicalizeAgentToolName('notebookedit')).toBe('edit_notebook')
+    expect(canonicalizeAgentToolName('ReadLints')).toBe('lsp')
     expect(canonicalizeAgentToolName('write_file_check')).toBe('write_file_check')
     expect(canonicalizeAgentToolName('apply_patch')).toBe('apply_patch')
   })

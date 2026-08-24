@@ -138,12 +138,13 @@ export function buildFooterStats(opts: {
   const captionParts: string[] = []
   if (duration) captionParts.push(duration)
   if (cost != null) captionParts.push(formatBilledUsd(cost))
-  if (showTokens) captionParts.push(`${formatTokens(tokens)} tok`)
+  // Fresh (non-cached) input + output — not the run total; the tooltip breaks it down.
+  if (showTokens) captionParts.push(`${formatTokens(tokens)} tok (in+out)`)
   if (tokPerSec != null) {
     const rate = formatTokPerSec(tokPerSec)
     if (rate) captionParts.push(rate)
   }
-  if (cachePct != null) captionParts.push(`${cachePct}% cache`)
+  if (cachePct != null) captionParts.push(`${cachePct}% cache hit`)
   const caption = captionParts.join(' · ')
 
   const clock = clockLabel(opts.at)

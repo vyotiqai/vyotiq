@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom'
 import type { NotificationItem, NotificationMutateRequest } from '@shared/ipc'
 import { Icon } from '@renderer/lib/icons'
 import { useDropdownMenu } from '@renderer/lib/hooks/useDropdownMenu'
-import { Button, NavItem, cn } from '@renderer/lib/ui'
+import { SIDEBAR_ROW_HOVER } from '@renderer/lib/utils/layout'
+import { Button, IconButton, NavItem, cn } from '@renderer/lib/ui'
 
 function unreadLabel(count: number): string {
   if (count <= 0) return 'Notifications'
@@ -16,8 +17,8 @@ function UnreadBadge({ count, compact }: { count: number; compact?: boolean }): 
   return (
     <span
       className={cn(
-        'inline-flex min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[10px] font-medium leading-4 text-accent-fg',
-        compact ? 'absolute right-0.5 top-0.5 min-w-3.5 px-0.5 text-[9px] leading-3' : ''
+        'inline-flex min-w-4 items-center justify-center rounded-full bg-accent px-1 text-2xs font-medium leading-4 text-accent-fg',
+        compact ? 'absolute right-0.5 top-0.5 min-w-3.5 px-0.5 text-3xs leading-3' : ''
       )}
     >
       {text}
@@ -52,7 +53,7 @@ export function NotificationsInbox({
     triggerRef,
     panelRef,
     placement: 'up',
-    align: collapsed ? 'start' : 'start',
+    align: 'start',
     trapFocus: true,
     autoFocusFirst: true
   })
@@ -67,7 +68,7 @@ export function NotificationsInbox({
         role="dialog"
         aria-label="Notifications"
         tabIndex={-1}
-        className="app-region-no-drag fixed z-dropdown flex max-h-[min(28rem,70vh)] w-[min(20rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-md border border-border bg-card shadow-menu animate-fade-in"
+        className="app-region-no-drag fixed z-dropdown flex max-h-[min(28rem,70vh)] w-[min(20rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-md border border-border bg-card shadow-menu animate-menu-in origin-bottom"
         style={{
           top: position.placement === 'up' ? undefined : position.top,
           bottom:
@@ -111,7 +112,7 @@ export function NotificationsInbox({
                   type="button"
                   className={cn(
                     'flex min-w-0 flex-1 flex-col rounded-md px-2.5 py-1.5 text-left vy-transition',
-                    'hover:bg-surface active:bg-surface-2',
+                    SIDEBAR_ROW_HOVER,
                     item.read ? 'text-secondary' : 'text-fg'
                   )}
                   onClick={() => {
@@ -127,16 +128,16 @@ export function NotificationsInbox({
                     <span className="mt-0.5 line-clamp-2 text-xs text-muted">{item.body}</span>
                   ) : null}
                 </button>
-                <button
-                  type="button"
-                  className="mt-1 inline-grid size-7 shrink-0 place-items-center rounded-md text-muted hover:bg-surface hover:text-fg"
-                  aria-label={`Dismiss ${item.title}`}
+                <IconButton
+                  icon="close"
+                  label={`Dismiss ${item.title}`}
+                  variant="bare"
+                  size="sm"
+                  className="mt-1 shrink-0"
                   onClick={() => {
                     onDismiss({ id: item.id })
                   }}
-                >
-                  <Icon name="close" size={14} />
-                </button>
+                />
               </li>
             ))
           )}

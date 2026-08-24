@@ -66,7 +66,7 @@ export function ToastHost() {
   if (toasts.length === 0) return null
   return (
     <div
-      className="pointer-events-none fixed bottom-4 right-4 z-[100] flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2"
+      className="pointer-events-none fixed bottom-4 right-4 z-toast flex w-[min(22rem,calc(100vw-2rem))] flex-col gap-2"
       aria-label="Notifications"
     >
       {toasts.map((toast) => (
@@ -74,7 +74,7 @@ export function ToastHost() {
           key={toast.id}
           role={toast.kind === 'error' ? 'alert' : 'status'}
           className={cn(
-            'pointer-events-auto relative flex items-start gap-2 overflow-hidden rounded-md border px-3 py-2 text-xs shadow-lg',
+            'pointer-events-auto relative flex items-start gap-2 overflow-hidden rounded-md border px-3 py-2 text-xs shadow-menu',
             KIND_CLASSES[toast.kind],
             exiting.has(toast.id) ? 'animate-toast-out' : 'animate-toast-in'
           )}

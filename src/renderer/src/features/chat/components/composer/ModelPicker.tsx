@@ -136,13 +136,12 @@ function ModelRow({
         <button
           type="button"
           className={cn(
-            'absolute top-1/2 right-7 z-[1] inline-grid size-5 -translate-y-1/2 place-items-center rounded text-muted vy-transition',
+            'absolute top-1/2 right-7 z-sticky inline-grid size-5 -translate-y-1/2 place-items-center rounded text-muted vy-transition',
             favorite
               ? 'opacity-100 text-fg'
-              : 'opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100'
+              : 'opacity-0 pointer-events-none group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100'
           )}
           aria-label={favorite ? 'Remove from favorites' : 'Add to favorites'}
-          tabIndex={favorite ? 0 : -1}
           onMouseDown={(e) => e.preventDefault()}
           onClick={(e) => {
             e.stopPropagation()
@@ -399,7 +398,7 @@ export function ModelPicker({
             role="listbox"
             aria-label="Select model"
             tabIndex={0}
-            className="fixed z-dropdown flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-fade-in"
+            className="fixed z-dropdown flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-menu-in origin-bottom"
             style={{
               top: pos.placement === 'up' ? undefined : pos.top,
               bottom:
@@ -427,13 +426,17 @@ export function ModelPicker({
               </div>
               <button
                 type="button"
-                className="inline-grid size-7 shrink-0 place-items-center rounded-xl text-muted vy-transition hover:bg-surface hover:text-fg disabled:opacity-50"
+                className="inline-grid size-7 shrink-0 place-items-center rounded-md text-muted vy-transition hover:bg-surface hover:text-fg disabled:opacity-[var(--vy-disabled-opacity)]"
                 aria-label="Refresh model catalog"
                 disabled={catalogLoading}
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => onRefreshCatalog()}
               >
-                <span className={cn('text-sm', catalogLoading && 'animate-spin')}>↻</span>
+                <Icon
+                  name="refresh"
+                  size={14}
+                  className={cn('shrink-0', catalogLoading && 'animate-spin')}
+                />
               </button>
             </div>
 

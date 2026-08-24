@@ -60,7 +60,7 @@ function PtySessionView({
 
     const term = new Terminal({
       convertEol: true,
-      fontFamily: '"JetBrains Mono", ui-monospace, monospace',
+      fontFamily: readCssColor('--vy-font-mono', '"JetBrains Mono", ui-monospace, monospace'),
       fontSize: 12,
       theme: readTerminalTheme(),
       screenReaderMode: true
@@ -133,10 +133,14 @@ function PtySessionView({
 
     const themeObserver = new MutationObserver(() => {
       term.options.theme = readTerminalTheme()
+      term.options.fontFamily = readCssColor(
+        '--vy-font-mono',
+        '"JetBrains Mono", ui-monospace, monospace'
+      )
     })
     themeObserver.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ['data-theme']
+      attributeFilter: ['data-theme', 'data-skin']
     })
 
     applyFit()

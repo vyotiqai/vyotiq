@@ -13,7 +13,9 @@ const WORKSPACE_WRITE_BUILTINS = new Set([
   'str_replace',
   'multi_edit',
   'delete',
-  'terminal'
+  'terminal',
+  'edit_notebook',
+  'lsp'
 ])
 
 const INTENTIONALLY_EXCLUDED = new Set([
@@ -33,9 +35,9 @@ describe('checkpoint coverage registry', () => {
       if (INTENTIONALLY_EXCLUDED.has(name)) continue
       if (!WORKSPACE_WRITE_BUILTINS.has(name)) continue
 
-      if (name === 'terminal') {
-        expect(source).toMatch(/recordTerminalCommandPriors/)
-        expect(source).toMatch(/applyWatchDiffToCheckpoint/)
+      if (name === 'lsp') {
+        expect(source).toMatch(/recordPrior/)
+        expect(source).toMatch(/lsp:/)
         continue
       }
 

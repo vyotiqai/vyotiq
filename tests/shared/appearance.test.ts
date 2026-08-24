@@ -5,6 +5,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import {
   APPEARANCE_LOCAL_STORAGE_KEY,
   DEFAULT_FONT_SCALE,
+  DEFAULT_SKIN_ID,
   readAppearanceBootCache,
   resolveAppearanceBootCache,
   stepFontScale,
@@ -13,6 +14,15 @@ import {
 } from '@shared/appearance'
 import { resolveTheme } from '@shared/theme'
 
+const baseAppearance = {
+  theme: 'system' as const,
+  fontScale: 'default' as const,
+  uiDensity: 'default' as const,
+  accentPreset: 'neutral' as const,
+  skinId: DEFAULT_SKIN_ID,
+  customCssPath: ''
+}
+
 describe('appearance', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -20,6 +30,7 @@ describe('appearance', () => {
     document.documentElement.removeAttribute('data-font-scale')
     document.documentElement.removeAttribute('data-density')
     document.documentElement.removeAttribute('data-accent')
+    document.documentElement.removeAttribute('data-skin')
   })
 
   afterEach(() => {
@@ -27,15 +38,10 @@ describe('appearance', () => {
   })
 
   it('resolveAppearanceBootCache resolves system theme from OS preference flag', () => {
+    expect(resolveAppearanceBootCache(baseAppearance, true).resolvedTheme).toBe('dark')
     expect(
       resolveAppearanceBootCache(
-        { theme: 'system', fontScale: 'default', uiDensity: 'default', accentPreset: 'neutral' },
-        true
-      ).resolvedTheme
-    ).toBe('dark')
-    expect(
-      resolveAppearanceBootCache(
-        { theme: 'light', fontScale: 'default', uiDensity: 'default', accentPreset: 'blue' },
+        { ...baseAppearance, theme: 'light', accentPreset: 'blue' },
         true
       ).resolvedTheme
     ).toBe('light')
@@ -47,7 +53,8 @@ describe('appearance', () => {
       resolvedTheme: resolveTheme('dark', false),
       fontScale: 'large',
       uiDensity: 'compact',
-      accentPreset: 'violet'
+      accentPreset: 'violet',
+      skinId: 'proof'
     }
     writeAppearanceBootCache(cache)
     expect(localStorage.getItem(APPEARANCE_LOCAL_STORAGE_KEY)).toBeTruthy()
@@ -60,21 +67,39 @@ describe('appearance', () => {
       resolvedTheme: 'light' as const,
       fontScale: 'small' as const,
       uiDensity: 'comfortable' as const,
-      accentPreset: 'green' as const
+      accentPreset: 'green' as const,
+      skinId: 'native' as const
     }
     const root = document.documentElement
     root.setAttribute('data-theme', cache.resolvedTheme)
     root.setAttribute('data-font-scale', cache.fontScale)
     root.setAttribute('data-density', cache.uiDensity)
     root.setAttribute('data-accent', cache.accentPreset)
+    root.setAttribute('data-skin', cache.skinId)
     expect(root.getAttribute('data-theme')).toBe('light')
     expect(root.getAttribute('data-font-scale')).toBe('small')
     expect(root.getAttribute('data-density')).toBe('comfortable')
     expect(root.getAttribute('data-accent')).toBe('green')
+    expect(root.getAttribute('data-skin')).toBe('native')
   })
 
   it('readAppearanceBootCache rejects corrupt cache', () => {
     localStorage.setItem(APPEARANCE_LOCAL_STORAGE_KEY, '{"theme":"nope"}')
+    expect(readAppearanceBootCache()).toBeNull()
+  })
+
+  it('readAppearanceBootCache rejects invalid skinId', () => {
+    localStorage.setItem(
+      APPEARANCE_LOCAL_STORAGE_KEY,
+      JSON.stringify({
+        theme: 'dark',
+        resolvedTheme: 'dark',
+        fontScale: 'default',
+        uiDensity: 'default',
+        accentPreset: 'neutral',
+        skinId: 'neon'
+      })
+    )
     expect(readAppearanceBootCache()).toBeNull()
   })
 

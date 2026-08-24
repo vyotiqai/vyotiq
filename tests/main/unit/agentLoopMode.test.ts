@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import type { ProviderChatRequest, StreamChunk } from '@main/agent/providers/types'
 import { resolveRunDir } from '@main/storage/paths'
+import { createRun } from '@main/agent/state'
+import { minimalReadyPlanMarkdown } from '@shared/planQuality'
 import { DEFAULT_SETTINGS } from '@shared/ipc'
 
 const userData = join(tmpdir(), `vyotiq-mode-${process.pid}-${Date.now()}`)
@@ -111,7 +113,7 @@ vi.mock('@main/agent/tools', () => ({
 }))
 
 import { runAgent } from '@main/agent/loop'
-import { resetActiveRunsForTests } from '@main/agent/runRegistry'
+import { resetActiveRunsForTests, setPendingMode } from '@main/agent/runRegistry'
 
 describe('runAgent mode and API key', () => {
   let workspace: string
@@ -192,14 +194,88 @@ describe('runAgent mode and API key', () => {
     const planBody = readFileSync(planPath, 'utf8')
     expect(planBody).toContain('# Plan')
     expect(planBody).toContain('## Goal')
-    expect(planBody).toContain('## Success criteria')
-    expect(planBody).toContain('## Scope')
-    expect(planBody).toContain('## Open questions')
-    expect(planBody).toContain('## Approach')
-    expect(planBody).toContain('## Ordered steps')
-    expect(planBody).toContain('## Verification')
-    expect(planBody).toContain('## Risks or trade-offs')
+    expect(planBody).toContain('## Steps')
+    expect(planBody).toContain('## Done when')
     expect(existsSync(join(workspace, '.vyotiq'))).toBe(false)
+  })
+
+  it('seeds plan.md when the run switches into Plan mode mid-run', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield {
+          type: 'tool_call',
+          toolCall: { id: 'c1', name: 'read', arguments: '{"path":"a.ts"}' }
+        }
+        yield { type: 'done', stopReason: 'tool_calls' }
+        return
+      }
+      yield { type: 'text', text: 'done' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+    const runId = 'plan-seed-mid-run'
+    executeTool.mockImplementation(async () => {
+      setPendingMode(runId, 'plan')
+      return { ok: true, summary: 'file', content: 'ok' }
+    })
+
+    for await (const _ of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'work then plan' }],
+      workspacePath: workspace,
+      mode: 'agent'
+    })) {
+      // drain
+    }
+
+    const planPath = join(resolveRunDir(workspace, runId), 'plan.md')
+    expect(existsSync(planPath)).toBe(true)
+    expect(readFileSync(planPath, 'utf8')).toContain('# Plan')
+    expect(readFileSync(planPath, 'utf8')).toContain('## Steps')
+  })
+
+  it('nudges a text-only Plan step when plan.md is not ready', async () => {
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'Here is the full plan in chat.' }
+      yield { type: 'done', stopReason: 'end_turn' }
+    })
+
+    const runId = 'plan-chat-nudge'
+    for await (const _ of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'plan the work' }],
+      workspacePath: workspace,
+      mode: 'plan'
+    })) {
+      // drain
+    }
+
+    expect(streamChat.mock.calls.length).toBe(3)
+    const second = streamChat.mock.calls[1]![0] as ProviderChatRequest
+    expect(JSON.stringify(second.messages)).toMatch(/create_plan/)
+  })
+
+  it('finishes a text-only Plan step when plan.md is already ready', async () => {
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'Plan is ready for review.' }
+      yield { type: 'done', stopReason: 'end_turn' }
+    })
+
+    const runId = 'plan-ready-finish'
+    const runDir = createRun(workspace, runId, 'plan the work', 'plan')
+    writeFileSync(join(runDir, 'plan.md'), minimalReadyPlanMarkdown())
+
+    for await (const _ of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'plan the work' }],
+      workspacePath: workspace,
+      mode: 'plan'
+    })) {
+      // drain
+    }
+
+    expect(streamChat).toHaveBeenCalledTimes(1)
   })
 
   it('defaults to Agent mode when mode is omitted', async () => {

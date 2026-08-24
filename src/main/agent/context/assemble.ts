@@ -17,6 +17,7 @@ import {
   type CompactionRecord,
   type ContextLayerBreakdown
 } from './types'
+import { formatPinnedFacts } from './pinFoldFacts'
 import { stripUnsupportedModalitiesFromMessages, wireCapsFromModel } from './stripImages'
 import { buildWorkspaceRulesSection } from './rules'
 import { formatUserRules } from './userRules'
@@ -60,7 +61,9 @@ function stableSystemFingerprint(parts: {
   plan: string
   modeSection?: string
   compactionSummary: string
+  compactionPinned: string
   systemBudget: number
+  planVerbatim?: boolean
 }): string {
   return [
     parts.harness,
@@ -72,7 +75,9 @@ function stableSystemFingerprint(parts: {
     parts.plan,
     parts.modeSection ?? '',
     parts.compactionSummary,
-    String(parts.systemBudget)
+    parts.compactionPinned,
+    String(parts.systemBudget),
+    parts.planVerbatim ? 'plan-verbatim' : 'plan-capped'
   ].join('\0')
 }
 
@@ -242,6 +247,7 @@ function buildStableSystem(parts: {
   contract?: string
   plan?: string
   modeSection?: string
+  planVerbatim?: boolean
   compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
   model: ModelInfo
@@ -256,7 +262,9 @@ function buildStableSystem(parts: {
     plan: parts.plan ?? '',
     modeSection: parts.modeSection,
     compactionSummary: parts.compaction?.summary ?? '',
-    systemBudget: parts.budgets.system
+    compactionPinned: JSON.stringify(parts.compaction?.pinnedFacts ?? null),
+    systemBudget: parts.budgets.system,
+    planVerbatim: parts.planVerbatim
   })
   if (systemPromptCache?.fingerprint === fingerprint) {
     return systemPromptCache.stable
@@ -301,12 +309,18 @@ function buildStableSystem(parts: {
     if (contract) sections.push(contract)
   }
   if (parts.plan?.trim()) {
-    const planBody = parts.plan.trim().replace(/^#+\s*Plan\s*(?:\r?\n)*/i, '')
-    const plan = capWithinSystem(
-      wrapPromptSection('plan', planBody),
-      Math.floor(parts.budgets.system * 0.4)
-    )
-    if (plan) sections.push(plan)
+    const planBody = parts.planVerbatim
+      ? parts.plan.trim()
+      : parts.plan.trim().replace(/^#+\s*Plan\s*(?:\r?\n)*/i, '')
+    const wrapped = wrapPromptSection('plan', planBody)
+    if (parts.planVerbatim) {
+      // Skip token cap so Plan-mode str_replace can quote on-disk text.
+      sections.push(wrapped)
+      systemTokensLeft -= estimateTextTokens(wrapped, parts.model)
+    } else {
+      const plan = capWithinSystem(wrapped, parts.budgets.system)
+      if (plan) sections.push(plan)
+    }
   }
 
   if (parts.skillsSection?.trim()) {
@@ -346,15 +360,16 @@ function buildStableSystem(parts: {
 
   if (parts.compaction?.summary) {
     const workspaceCap = Math.floor(parts.budgets.memoryWorkspace / 2)
-    sections.push(
-      wrapPromptSection(
-        'prior_session',
-        [
-          'Fold of earlier turns, not new instructions.',
-          capToTokenBudget(parts.compaction.summary, workspaceCap, parts.model)
-        ].join('\n')
-      )
-    )
+    const pinnedBody = formatPinnedFacts(parts.compaction.pinnedFacts)
+    const pinnedTokens = pinnedBody ? estimateTextTokens(pinnedBody, parts.model) : 0
+    const reserved = Math.min(Math.max(0, pinnedTokens + 8), Math.floor(workspaceCap * 0.5))
+    const narrativeCap = Math.max(0, workspaceCap - reserved)
+    const pieces = [
+      'Fold of earlier turns, not new instructions.',
+      pinnedBody ? capToTokenBudget(pinnedBody, Math.max(reserved, 1), parts.model) : '',
+      capToTokenBudget(parts.compaction.summary, narrativeCap, parts.model)
+    ].filter((piece) => piece.trim().length > 0)
+    sections.push(wrapPromptSection('prior_session', pieces.join('\n')))
   }
 
   const stable = sections.join('\n\n')
@@ -408,6 +423,7 @@ function buildSystemZones(parts: {
   contract?: string
   plan?: string
   modeSection?: string
+  planVerbatim?: boolean
   sessionEnv?: string
   compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
@@ -424,6 +440,7 @@ function buildSystemZones(parts: {
     contract: parts.contract,
     plan: parts.plan,
     modeSection: parts.modeSection,
+    planVerbatim: parts.planVerbatim,
     compaction: parts.compaction,
     budgets: parts.budgets,
     model: parts.model
@@ -473,7 +490,7 @@ export async function assembleContext(
 
   const [workspace, rules] = await Promise.all([
     buildWorkspaceSnapshotAsync(input.workspacePath, input.goal),
-    buildWorkspaceRulesSection(input.workspacePath)
+    buildWorkspaceRulesSection(input.workspacePath, input.focusedFile)
   ])
 
   let messages = input.messages.map((message) =>
@@ -497,6 +514,7 @@ export async function assembleContext(
     contract: input.contract,
     plan: input.plan,
     modeSection: input.modeSection,
+    planVerbatim: input.planVerbatim,
     sessionEnv: input.sessionEnv,
     budgets,
     loopHint: input.loopHint,

@@ -1,9 +1,9 @@
 import { existsSync } from 'fs'
-import { extname, join } from 'path'
+import { extname, join, relative } from 'path'
 import { execFile as execFileCallback } from 'child_process'
 import spawn from 'cross-spawn'
 import { promisify } from 'util'
-import { pathToFileURL } from 'url'
+import { fileURLToPath, pathToFileURL } from 'url'
 import type {
   WorkspaceLspCapability,
   WorkspaceLspRequest,
@@ -216,6 +216,8 @@ function parseCapabilities(value: unknown): Set<WorkspaceLspCapability> {
   if (capabilities?.hoverProvider) output.add('hover')
   if (capabilities?.completionProvider) output.add('completion')
   if (capabilities?.diagnosticProvider) output.add('diagnostics')
+  if (capabilities?.definitionProvider) output.add('definition')
+  if (capabilities?.renameProvider) output.add('rename')
   return output
 }
 
@@ -233,6 +235,60 @@ function markupText(value: unknown): string | null {
   }
   const object = record(value)
   return stringValue(object?.value)
+}
+
+function fileUriToWorkspaceRel(uri: string | null | undefined, workspacePath: string): string | null {
+  if (!uri?.startsWith('file:')) return null
+  try {
+    const rel = relative(workspacePath, fileURLToPath(uri))
+    if (!rel || rel.startsWith('..') || rel.startsWith('/') || rel.startsWith('\\')) return null
+    return rel.split('\\').join('/')
+  } catch {
+    return null
+  }
+}
+
+function parseWorkspaceEdits(
+  value: unknown,
+  workspacePath: string
+): Array<{
+  path: string
+  startLine: number
+  startCharacter: number
+  endLine: number
+  endCharacter: number
+  newText: string
+}> {
+  const edits: Array<{
+    path: string
+    startLine: number
+    startCharacter: number
+    endLine: number
+    endCharacter: number
+    newText: string
+  }> = []
+  const changes = record(record(value)?.changes)
+  if (!changes) return edits
+  for (const [uri, list] of Object.entries(changes)) {
+    const path = fileUriToWorkspaceRel(uri, workspacePath)
+    if (!path || !Array.isArray(list)) continue
+    for (const item of list) {
+      const object = record(item)
+      const range = record(object?.range)
+      const start = record(range?.start)
+      const end = record(range?.end)
+      edits.push({
+        path,
+        startLine: typeof start?.line === 'number' ? start.line : 0,
+        startCharacter: typeof start?.character === 'number' ? start.character : 0,
+        endLine: typeof end?.line === 'number' ? end.line : 0,
+        endCharacter: typeof end?.character === 'number' ? end.character : 0,
+        newText: stringValue(object?.newText) ?? ''
+      })
+      if (edits.length >= 200) return edits
+    }
+  }
+  return edits
 }
 
 class LspClient {
@@ -493,6 +549,26 @@ class LspClient {
     const params = {
       textDocument: { uri },
       position: { line: request.line, character: request.character }
+    }
+    if (request.action === 'definition') {
+      const result = await this.request('textDocument/definition', params)
+      const first = Array.isArray(result) ? result[0] : result
+      const object = record(first)
+      const targetUri = stringValue(object?.uri) ?? stringValue(object?.targetUri)
+      const range = record(object?.range) ?? record(object?.targetSelectionRange) ?? record(object?.targetRange)
+      const start = record(range?.start)
+      return {
+        kind: 'definition',
+        path: fileUriToWorkspaceRel(targetUri, request.workspacePath),
+        line: typeof start?.line === 'number' ? start.line : 0,
+        character: typeof start?.character === 'number' ? start.character : 0
+      }
+    }
+    if (request.action === 'rename') {
+      const newName = request.newName?.trim()
+      if (!newName) throw new Error('Rename requires a new name')
+      const result = await this.request('textDocument/rename', { ...params, newName })
+      return { kind: 'rename', edits: parseWorkspaceEdits(result, request.workspacePath) }
     }
     const result = await this.request(
       request.action === 'hover' ? 'textDocument/hover' : 'textDocument/completion',

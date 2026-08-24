@@ -61,7 +61,9 @@ export const ModelInfoSchema = z.object({
   thinkingDefaultEffort: ThinkingEffortSchema.optional(),
   thinkingSupportsTokenBudget: z.boolean().optional(),
   thinkingMode: ThinkingModeSchema.optional(),
-  supportedServiceTiers: z.array(ServiceTierSchema).optional()
+  supportedServiceTiers: z.array(ServiceTierSchema).optional(),
+  /** True for bundled offline seed models whose IDs are illustrative placeholders. */
+  isPlaceholder: z.boolean().optional()
 })
 export type ModelInfo = z.infer<typeof ModelInfoSchema>
 

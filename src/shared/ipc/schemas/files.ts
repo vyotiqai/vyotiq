@@ -10,7 +10,7 @@ export const WORKSPACE_EDITOR_RECOVERY_MAX_BOOKMARKS = 256
 export const WORKSPACE_EDITOR_RECOVERY_MAX_EXPANDED_PATHS = 1_024
 export const WORKSPACE_EDITOR_RECOVERY_MAX_CONTENT_BYTES = 48 * 1024 * 1024
 
-const WorkspacePathSchema = z.string().min(1)
+export const WorkspacePathSchema = z.string().min(1)
 
 export const WorkspaceFileKindSchema = z.enum(['file', 'directory', 'symlink', 'other'])
 export type WorkspaceFileKind = z.infer<typeof WorkspaceFileKindSchema>
@@ -74,6 +74,19 @@ export const WorkspaceFileReadResultSchema = z.object({
   truncated: z.boolean()
 })
 export type WorkspaceFileReadResult = z.infer<typeof WorkspaceFileReadResultSchema>
+
+export const WorkspaceReadImageRequestSchema = z.object({
+  workspacePath: WorkspacePathSchema,
+  path: WorkspacePathSchema
+})
+export type WorkspaceReadImageRequest = z.infer<typeof WorkspaceReadImageRequestSchema>
+
+export const WorkspaceReadImageResultSchema = z.object({
+  mime: z.string().min(1),
+  /** `data:<mime>;base64,...` for direct use in an <img> src. */
+  dataUrl: z.string().min(1)
+})
+export type WorkspaceReadImageResult = z.infer<typeof WorkspaceReadImageResultSchema>
 
 export const WorkspaceFileSaveRequestSchema = z.object({
   workspacePath: WorkspacePathSchema,
@@ -189,7 +202,9 @@ export type WorkspaceFormatFileResult = z.infer<typeof WorkspaceFormatFileResult
 export const WorkspaceLspCapabilitySchema = z.enum([
   'hover',
   'completion',
-  'diagnostics'
+  'diagnostics',
+  'definition',
+  'rename'
 ])
 export type WorkspaceLspCapability = z.infer<typeof WorkspaceLspCapabilitySchema>
 
@@ -204,7 +219,7 @@ export const WorkspaceLspServerSchema = z.object({
   label: z.string().min(1).max(128),
   command: z.string().min(1).max(1_024),
   source: z.enum(['workspace', 'path']),
-  capabilities: z.array(WorkspaceLspCapabilitySchema).max(3)
+  capabilities: z.array(WorkspaceLspCapabilitySchema).max(5)
 })
 export type WorkspaceLspServer = z.infer<typeof WorkspaceLspServerSchema>
 
@@ -224,7 +239,8 @@ export const WorkspaceLspRequestSchema = z.object({
   workspacePath: WorkspacePathSchema,
   path: WorkspacePathSchema,
   content: z.string(),
-  action: z.enum(['hover', 'completion', 'diagnostics']),
+  action: z.enum(['hover', 'completion', 'diagnostics', 'definition', 'rename']),
+  newName: z.string().trim().min(1).max(256).optional(),
   line: z.number().int().nonnegative().max(1_000_000).default(0),
   character: z.number().int().nonnegative().max(1_000_000).default(0)
 })
@@ -256,6 +272,27 @@ export const WorkspaceLspResponseSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('diagnostics'),
     items: z.array(WorkspaceLspDiagnosticSchema).max(1_000)
+  }),
+  z.object({
+    kind: z.literal('definition'),
+    path: z.string().max(4_096).nullable(),
+    line: z.number().int().nonnegative(),
+    character: z.number().int().nonnegative()
+  }),
+  z.object({
+    kind: z.literal('rename'),
+    edits: z
+      .array(
+        z.object({
+          path: z.string().min(1).max(4_096),
+          startLine: z.number().int().nonnegative(),
+          startCharacter: z.number().int().nonnegative(),
+          endLine: z.number().int().nonnegative(),
+          endCharacter: z.number().int().nonnegative(),
+          newText: z.string()
+        })
+      )
+      .max(200)
   })
 ])
 export type WorkspaceLspResponse = z.infer<typeof WorkspaceLspResponseSchema>
@@ -398,3 +435,37 @@ export const WorkspaceEditorRecoveryClearRequestSchema = z.object({
 export type WorkspaceEditorRecoveryClearRequest = z.infer<
   typeof WorkspaceEditorRecoveryClearRequestSchema
 >
+
+export const INLINE_COMPLETE_PREFIX_MAX = 8_000
+export const INLINE_COMPLETE_SUFFIX_MAX = 4_000
+
+export const INLINE_COMPLETE_REQUEST_ID = z
+  .string()
+  .min(8)
+  .max(64)
+  .regex(/^[A-Za-z0-9_-]+$/)
+
+export const WorkspaceInlineCompleteRequestSchema = z.object({
+  workspacePath: WorkspacePathSchema,
+  path: z
+    .string()
+    .min(1)
+    .max(4_096)
+    .refine(isSafeWorkspaceRelPath, 'Path must stay inside the workspace'),
+  prefix: z.string().max(INLINE_COMPLETE_PREFIX_MAX),
+  suffix: z.string().max(INLINE_COMPLETE_SUFFIX_MAX),
+  requestId: INLINE_COMPLETE_REQUEST_ID.optional()
+})
+export type WorkspaceInlineCompleteRequest = z.infer<typeof WorkspaceInlineCompleteRequestSchema>
+
+export const WorkspaceInlineCompleteAbortRequestSchema = z.object({
+  requestId: INLINE_COMPLETE_REQUEST_ID
+})
+export type WorkspaceInlineCompleteAbortRequest = z.infer<
+  typeof WorkspaceInlineCompleteAbortRequestSchema
+>
+
+export const WorkspaceInlineCompleteResultSchema = z.object({
+  text: z.string().max(500)
+})
+export type WorkspaceInlineCompleteResult = z.infer<typeof WorkspaceInlineCompleteResultSchema>

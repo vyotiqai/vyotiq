@@ -1,5 +1,5 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { logProviderFailure } from '@main/agent/providers/log'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { logProviderFailure, resetSoftWarnCooldownsForTests } from '@main/agent/providers/log'
 import { ollamaProvider } from '@main/agent/providers/openai'
 
 vi.mock('@shared/logger', () => ({
@@ -43,6 +43,10 @@ describe('logProviderFailure', () => {
 })
 
 describe('ollama catalog when host is down', () => {
+  beforeEach(() => {
+    resetSoftWarnCooldownsForTests()
+  })
+
   afterEach(() => {
     vi.unstubAllGlobals()
     vi.mocked(logger.error).mockClear()

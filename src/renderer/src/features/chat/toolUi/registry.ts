@@ -553,6 +553,15 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
       icon: 'branch'
     })
   },
+  cancel_agent_instance: {
+    Body: AwaitAgentInstanceBody,
+    hasBody: (tool) => Boolean(tool.content?.trim()),
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'close'
+    })
+  },
   Skill: {
     Body: SkillBody,
     hasBody: contentHasBody,
@@ -590,6 +599,78 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
         icon: 'bot'
       }
     }
+  },
+  create_plan: {
+    Body: StatusMessageBody,
+    hasBody: statusMessageHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'listTodo'
+    })
+  },
+  git_apply: {
+    Body: StatusMessageBody,
+    hasBody: contentHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'branch'
+    })
+  },
+  run_tests: {
+    Body: DiagnosticsBody,
+    hasBody: diagnosticsHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'scanSearch'
+    })
+  },
+  github_pr_create: {
+    Body: StatusMessageBody,
+    hasBody: contentHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'branch'
+    })
+  },
+  github_pr_review: {
+    Body: StatusMessageBody,
+    hasBody: contentHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'branch'
+    })
+  },
+  github_issue: {
+    Body: StatusMessageBody,
+    hasBody: contentHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'branch'
+    })
+  },
+  edit_notebook: {
+    Body: StatusMessageBody,
+    hasBody: contentHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status, tool.content),
+      target: tool.summary,
+      icon: 'file'
+    })
+  },
+  lsp: {
+    Body: DiagnosticsBody,
+    hasBody: diagnosticsHasBody,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'scanSearch'
+    })
   }
 }
 

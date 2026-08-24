@@ -543,7 +543,7 @@ export function HexEditor({
       {validationError ? (
         <div
           role="alert"
-          className="flex shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-2 py-1 text-[10px] text-danger"
+          className="flex shrink-0 items-center gap-2 border-b border-danger/30 bg-danger/10 px-2 py-1 text-2xs text-danger"
         >
           <span className="min-w-0 flex-1">{validationError}</span>
           <button
@@ -578,13 +578,13 @@ export function HexEditor({
         <button type="button" className={DOCK_TOOLBAR_BTN} onClick={setTemplate}>
           Template
         </button>
-        <span className="ml-auto text-[10px] text-muted" aria-live="polite">
+        <span className="ml-auto text-2xs text-muted" aria-live="polite">
           {selectionLabel}
         </span>
       </div>
       <div
         ref={scrollRef}
-        className="min-h-0 min-w-0 flex-1 overflow-auto px-2 py-1 font-mono text-[11px]"
+        className="min-h-0 min-w-0 flex-1 overflow-auto px-2 py-1 font-mono text-caption"
         role="list"
         aria-label="Hex editor"
       >
@@ -609,7 +609,7 @@ export function HexEditor({
                     return (
                       <input
                         key={`hex-${index}`}
-                        className={`h-5 w-5 rounded border-0 bg-transparent p-0 text-center text-[10px] outline-none focus:ring-1 focus:ring-accent ${
+                        className={`h-5 w-5 rounded border-0 bg-transparent p-0 text-center text-2xs outline-none focus:ring-1 focus:ring-accent ${
                           active ? 'bg-accent/20 text-fg-strong' : 'text-fg'
                         }`}
                         aria-label={exists ? `Byte ${index}` : 'Empty byte'}
@@ -649,7 +649,7 @@ export function HexEditor({
                     return (
                       <input
                         key={`ascii-${index}`}
-                        className="h-5 w-3 rounded border-0 bg-transparent p-0 text-center text-[10px] text-muted outline-none focus:ring-1 focus:ring-accent"
+                        className="h-5 w-3 rounded border-0 bg-transparent p-0 text-center text-2xs text-muted outline-none focus:ring-1 focus:ring-accent"
                         aria-label={exists ? `ASCII byte ${index}` : 'Empty ASCII byte'}
                         disabled={!exists}
                         tabIndex={
@@ -678,7 +678,7 @@ export function HexEditor({
         </div>
       </div>
       {templateFields.length > 0 ? (
-        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/30 px-2 py-1 text-[10px] text-muted">
+        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border/30 px-2 py-1 text-2xs text-muted">
           <span className="font-medium text-fg">Template</span>
           {templateFields.map((field) => (
             <span key={`${field.name}:${field.offset}`}>
@@ -687,7 +687,7 @@ export function HexEditor({
           ))}
         </div>
       ) : null}
-      <div className="flex shrink-0 items-center gap-1 border-t border-border/30 px-2 py-1 text-[10px] text-muted">
+      <div className="flex shrink-0 items-center gap-1 border-t border-border/30 px-2 py-1 text-2xs text-muted">
         <span>{bytes.length.toLocaleString()} bytes</span>
         <span className="ml-auto">{activeBookmarks.length} bookmarks</span>
         {activeTemplate ? <span className="truncate">Template: {activeTemplate}</span> : null}

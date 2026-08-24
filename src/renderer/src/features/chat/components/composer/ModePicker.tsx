@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react'
+import { Tooltip } from '@renderer/lib/ui/Tooltip'
 import { cn } from '@renderer/lib/ui/cn'
 import type { AgentInteractionMode } from '@shared/ipc'
 import {
@@ -69,6 +70,17 @@ export function ModePicker({
     return () => window.removeEventListener('keydown', onKey)
   }, [locked, advance])
 
+  useEffect(() => {
+    if (locked) return undefined
+    const onCommand = (event: Event): void => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id
+      if (id !== 'cycleMode') return
+      advance(false)
+    }
+    window.addEventListener('vyotiq:command', onCommand)
+    return () => window.removeEventListener('vyotiq:command', onCommand)
+  }, [locked, advance])
+
   const current = MODES.find((m) => m.value === mode) ?? MODES[2]!
   const upcoming = MODES.find((m) => m.value === nextMode(mode, false))!
   const chord = shortcutLabel('cycleMode')
@@ -77,27 +89,36 @@ export function ModePicker({
     ? `${current.label} mode (locked while running)`
     : `${current.label} mode. Click for ${upcoming.label}.`
 
+  const tip = running ? ariaLabel : `${ariaLabel} Shift-click or ${chord} (Shift for previous).`
+  const button = (
+    <button
+      type="button"
+      disabled={locked}
+      aria-label={ariaLabel}
+      className={cn(chromePillButton, 'text-fg')}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={(e) => {
+        e.preventDefault()
+        if (locked) return
+        advance(e.shiftKey)
+      }}
+    >
+      <span className="leading-tight">{current.short}</span>
+    </button>
+  )
+
   return (
     <div ref={rootRef} className={cn('relative flex h-7 shrink-0 items-center', className)}>
-      <button
-        type="button"
-        disabled={locked}
-        aria-label={ariaLabel}
-        title={
-          running
-            ? ariaLabel
-            : `${ariaLabel} Shift-click or ${chord} (Shift for previous).`
-        }
-        className={cn(chromePillButton, 'text-fg')}
-        onMouseDown={(e) => e.preventDefault()}
-        onClick={(e) => {
-          e.preventDefault()
-          if (locked) return
-          advance(e.shiftKey)
-        }}
-      >
-        <span className="leading-tight">{current.short}</span>
-      </button>
+      {/* Disabled buttons ignore pointer events — wrap so hover still shows why. */}
+      {locked ? (
+        <Tooltip content={tip}>
+          <span className="inline-grid cursor-not-allowed" aria-disabled="true">
+            {button}
+          </span>
+        </Tooltip>
+      ) : (
+        <Tooltip content={tip}>{button}</Tooltip>
+      )}
     </div>
   )
 }

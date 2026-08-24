@@ -7,12 +7,15 @@ import {
 } from './embed'
 import {
   createMDenseOnEmbedder,
+  createNeuralOnnxEmbedder,
   clearEmbedderFailCache,
   isEmbedderFailCached,
   rememberEmbedderFail,
   mDenseOnWeightsOnDisk,
+  neuralWeightsOnDisk,
   type MDenseOnEnsureOptions
 } from './mdenseon'
+import { createLfm2LlamaCppEmbedder } from './lfm2LlamaCpp'
 import { CodeIndexStore, codeindexDbPath } from './store'
 import { syncCodeIndex, type SyncResult } from './sync'
 import type { WalkedFile } from '../tools/walk'
@@ -27,6 +30,8 @@ import type {
 import {
   DEFAULT_EMBED_DIM,
   DEFAULT_MODEL_ID,
+  LFM2_EMBEDDING_MODEL_ID,
+  LFM2_OLLAMA_MODEL,
   MDENSEON_MODEL_ID,
   isHashEmbedderModelId
 } from './types'
@@ -62,7 +67,9 @@ export {
 } from './embed'
 export {
   createMDenseOnEmbedder,
+  createNeuralOnnxEmbedder,
   ensureMDenseOnModel,
+  neuralWeightsOnDisk,
   clearMDenseOnSession,
   clearMDenseOnSessionForTests,
   clearEmbedderFailCache,
@@ -71,16 +78,23 @@ export {
   isEmbedderFailCached,
   mDenseOnWeightsOnDisk
 } from './mdenseon'
+export { NEURAL_ARTIFACTS, getNeuralArtifact } from './registry'
+export { loadGenericOnnxSession } from './onnxGeneric'
+export { createLfm2LlamaCppEmbedder, clearLfm2LlamaCppCache } from './lfm2LlamaCpp'
 export type { OnnxEmbedSession, MDenseOnEnsureOptions, MDenseOnEmbedderOptions } from './mdenseon'
 export {
   DEFAULT_EMBED_DIM,
   DEFAULT_MODEL_ID,
+  LFM2_EMBEDDING_MODEL_ID,
+  LFM2_EMBEDDING_DIM,
   MDENSEON_MODEL_ID,
   DENSEON_ONNX_MODEL_ID,
   LIGHTON_DENSE_DIM,
   CODE_INDEX_MAX_FILE_BYTES,
   isHashEmbedderModelId,
   isLightOnDenseModelId,
+  isNeuralDenseModelId,
+  neuralModelFamily,
   denseModelIdsCompatible,
   shouldPreserveIndexedEmbeddings
 } from './types'
@@ -98,7 +112,8 @@ export {
   downloadModelFiles,
   modelFilesPresent,
   denseOnOnnxFiles,
-  mDenseOnOnnxFiles
+  mDenseOnOnnxFiles,
+  lfm2OnnxFiles
 } from './modelDownload'
 export {
   canUseIndexSearchUtility,
@@ -147,6 +162,7 @@ function readCodeIndexSettings(): {
   autoDownload: boolean
   ollamaModel: string
   ollamaBaseUrl: string
+  lfm2OllamaModel: string
 } {
   const inVitest = process.env.VITEST === 'true' || process.env.VITEST === '1'
   try {
@@ -155,19 +171,21 @@ function readCodeIndexSettings(): {
     const ci = s.codeIndex
     return {
       enabled: ci?.enabled !== false,
-      embedder: ci?.embedder ?? 'mdenseon',
+      embedder: ci?.embedder ?? 'lfm2',
       // Unit tests must not hit Hugging Face.
       autoDownload: inVitest ? false : ci?.autoDownload !== false,
       ollamaModel: ci?.ollamaModel?.trim() || 'nomic-embed-text',
-      ollamaBaseUrl: s.ollamaBaseUrl || 'http://127.0.0.1:11434'
+      ollamaBaseUrl: s.ollamaBaseUrl || 'http://127.0.0.1:11434',
+      lfm2OllamaModel: ci?.lfm2OllamaModel?.trim() || LFM2_OLLAMA_MODEL
     }
   } catch {
     return {
       enabled: true,
-      embedder: 'mdenseon',
+      embedder: 'lfm2',
       autoDownload: inVitest ? false : true,
       ollamaModel: 'nomic-embed-text',
-      ollamaBaseUrl: 'http://127.0.0.1:11434'
+      ollamaBaseUrl: 'http://127.0.0.1:11434',
+      lfm2OllamaModel: LFM2_OLLAMA_MODEL
     }
   }
 }
@@ -205,6 +223,9 @@ async function resolveEmbedder(
 
   if (embedderId === 'ollama') {
     if (isEmbedderFailCached('ollama')) {
+      logger.warn('Ollama embedder unavailable — falling back to local-hash (lexical, non-semantic) embedder', {
+        scope: 'codeindex'
+      })
       setCodeIndexRuntimeStatus({
         phase: 'fallback_hash',
         embedder: 'hash',
@@ -251,8 +272,101 @@ async function resolveEmbedder(
     }
   }
 
+  // lfm2 — LiquidAI LFM2.5-Embedding-350M (2026, 1024-dim, 11 languages).
+  // Resolution order (all fully local): user-exported ONNX → Ollama/llama.cpp
+  // GGUF → semantic DenseOn fallback. A missing LFM2 never silently drops to the
+  // non-semantic hash embedder.
+  if (embedderId === 'lfm2') {
+    if (isEmbedderFailCached('lfm2')) {
+      const fb = await resolveEmbedder({ ...opts, embedderId: 'mdenseon' })
+      return { embedder: fb.embedder, usedFallback: true }
+    }
+    // 1) Local ONNX export (no external server required).
+    if (neuralWeightsOnDisk(LFM2_EMBEDDING_MODEL_ID)) {
+      setCodeIndexRuntimeStatus({
+        phase: 'ready',
+        embedder: 'lfm2',
+        modelId: LFM2_EMBEDDING_MODEL_ID,
+        message: 'Ready (local ONNX)',
+        error: null
+      })
+      return {
+        embedder: createNeuralOnnxEmbedder({
+          ...opts.mdenseon,
+          targetModelId: LFM2_EMBEDDING_MODEL_ID,
+          autoDownload: false,
+          signal: opts.mdenseon?.signal ?? opts.signal
+        }),
+        usedFallback: false
+      }
+    }
+    // 2) Bundled llama.cpp (node-llama-cpp) — pulls the GGUF straight from
+    //    Hugging Face, no Ollama server and no manual ONNX export required.
+    try {
+      const llmCpp = await createLfm2LlamaCppEmbedder({ signal: opts.signal })
+      clearEmbedderFailCache('lfm2')
+      setCodeIndexRuntimeStatus({
+        phase: 'ready',
+        embedder: 'lfm2',
+        modelId: llmCpp.modelId,
+        message: 'Ready (llama.cpp / GGUF)',
+        error: null
+      })
+      return { embedder: llmCpp, usedFallback: false }
+    } catch (err) {
+      if (isAbortError(err) || opts.signal?.aborted) {
+        throw err instanceof DOMException ? err : new DOMException('Aborted', 'AbortError')
+      }
+      logger.warn('LFM2 local ONNX absent and llama.cpp GGUF unavailable — trying Ollama', {
+        scope: 'codeindex',
+        error: String(err)
+      })
+    }
+    // 3) Ollama server GGUF (optional — only if a local Ollama is running).
+    try {
+      const ollama = createOllamaEmbedder({
+        ...opts.ollama,
+        model: settings.lfm2OllamaModel,
+        baseUrl: settings.ollamaBaseUrl
+      })
+      await ollama.embed(['probe'])
+      clearEmbedderFailCache('lfm2')
+      setCodeIndexRuntimeStatus({
+        phase: 'ready',
+        embedder: 'lfm2',
+        modelId: ollama.modelId,
+        message: 'Ready (Ollama GGUF)',
+        error: null
+      })
+      return { embedder: ollama, usedFallback: false }
+    } catch (err) {
+      if (isAbortError(err) || opts.signal?.aborted) {
+        throw err instanceof DOMException ? err : new DOMException('Aborted', 'AbortError')
+      }
+      logger.warn('LFM2 Ollama GGUF unavailable — falling back to DenseOn', {
+        scope: 'codeindex',
+        error: String(err)
+      })
+    }
+    // 4) Semantic fallback so the default never degrades to lexical hash.
+    const fb = await resolveEmbedder({ ...opts, embedderId: 'mdenseon' })
+    setCodeIndexRuntimeStatus({
+      phase: fb.usedFallback ? 'fallback_hash' : 'ready',
+      embedder: 'lfm2',
+      modelId: fb.embedder.modelId,
+      message: fb.usedFallback
+        ? 'LFM2 unavailable locally — using local hash'
+        : 'LFM2 unavailable locally — using LightOn DenseOn',
+      error: null
+    })
+    return { embedder: fb.embedder, usedFallback: true }
+  }
+
   // mdenseon (default) — settings/Vitest autoDownload wins over opts.mdenseon override
   if (isEmbedderFailCached('mdenseon')) {
+    logger.warn('LightOn DenseOn ONNX unavailable — falling back to local-hash (lexical, non-semantic) embedder', {
+      scope: 'codeindex'
+    })
     setCodeIndexRuntimeStatus({
       phase: 'fallback_hash',
       embedder: 'hash',
@@ -269,6 +383,9 @@ async function resolveEmbedder(
   const canInjectSession =
     opts.mdenseon?.createSession != null
   if (!canInjectSession && !autoDownload && !mDenseOnWeightsOnDisk()) {
+    logger.warn('No DenseOn weights on disk and autoDownload disabled — falling back to local-hash (lexical, non-semantic) embedder', {
+      scope: 'codeindex'
+    })
     setCodeIndexRuntimeStatus({
       phase: 'fallback_hash',
       embedder: 'hash',
@@ -369,11 +486,12 @@ export function closeCodeIndex(workspaceRoot?: string): void {
   }
 }
 
-function embedderKindFor(embedder: Embedder): 'session' | 'hash' | 'ollama' {
+function embedderKindFor(embedder: Embedder): 'session' | 'hash' | 'ollama' | 'llamacpp' {
   if (isHashEmbedderModelId(embedder.modelId)) {
     return 'hash'
   }
   if (embedder.modelId.startsWith('ollama:')) return 'ollama'
+  if (embedder.modelId.startsWith('llmcpp:')) return 'llamacpp'
   return 'session'
 }
 
@@ -409,7 +527,9 @@ async function runCodeIndexSync(
   files?: WalkedFile[],
   preserveNeural?: boolean
 ): Promise<SyncResult> {
-  if (canUseIndexSyncUtility()) {
+  // llama.cpp embedders run in-process (native binding); keep them out of the
+  // ONNX utility child, which only knows transformers.js / ORT graphs.
+  if (canUseIndexSyncUtility() && embedderKindFor(embedder) !== 'llamacpp') {
     closeCodeIndex(workspaceRoot)
     const client = getEmbedUtilityClient()
     const kind = embedderKindFor(embedder)
@@ -445,7 +565,7 @@ async function runCodeIndexSearch(
     ollama?: OllamaEmbedOptions
   }
 ): Promise<{ hits: CodebaseSearchHit[]; status: IndexStatus }> {
-  if (canUseIndexSearchUtility()) {
+  if (canUseIndexSearchUtility() && embedderKindFor(entry.embedder) !== 'llamacpp') {
     closeCodeIndex(workspaceRoot)
     const kind = embedderKindFor(entry.embedder)
     return await getEmbedUtilityClient().searchCode({

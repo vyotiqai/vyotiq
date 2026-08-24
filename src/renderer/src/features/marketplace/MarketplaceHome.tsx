@@ -5,7 +5,7 @@ import type {
   MarketplaceKind,
   McpServerStatus
 } from '@shared/ipc'
-import { Button, Input, cn } from '@renderer/lib/ui'
+import { Button, Input, cn, selectClass } from '@renderer/lib/ui'
 import { marketplaceOverrideKind } from '@shared/domain/marketplaceEnablement'
 import { PackageIcon } from './PackageIcon'
 import { MarketplaceFeedbackBanner } from './MarketplaceFeedbackBanner'
@@ -96,6 +96,7 @@ function PackageCard({
 
   return (
     <div
+      data-marketplace-card
       className={cn(
         'flex items-start gap-3 rounded-lg border border-border bg-surface px-3 py-3',
         selected && CARD_SELECTED
@@ -142,9 +143,9 @@ function PackageCard({
       </button>
       {showAdd ? (
         comingSoon ? (
-          <Button variant="subtle" disabled className="shrink-0 self-center">
+          <span className="shrink-0 self-center rounded-full bg-black/5 px-2 py-0.5 text-caption text-muted dark:bg-white/10">
             Coming soon
-          </Button>
+          </span>
         ) : installed ? (
           <Button
             variant="subtle"
@@ -332,7 +333,7 @@ export function MarketplaceHome({
           }}
         />
         <select
-          className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs text-fg"
+          className={selectClass}
           value={kindFilter}
           aria-label="Filter by kind"
           onChange={(e) => setKindFilter(e.target.value as MarketplaceKind | 'all')}

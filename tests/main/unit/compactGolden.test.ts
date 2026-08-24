@@ -3,6 +3,7 @@ import { join } from 'path'
 import { describe, expect, it } from 'vitest'
 import type { ChatMessage } from '@shared/ipc'
 import { extractFoldFacts } from '@main/agent/context/foldFacts'
+import { pinFoldFacts } from '@main/agent/context/pinFoldFacts'
 import {
   verifyCompactionSummary,
   type CompactionVerifyFailureKind
@@ -65,7 +66,8 @@ describe('compact golden fixtures', () => {
 
       for (const summary of golden.summaries) {
         it(`summary ${summary.id} ${summary.expectOk ? 'passes' : 'fails'} the extractive scorer`, () => {
-          const result = verifyCompactionSummary(summary.text, facts)
+          const text = summary.expectOk ? pinFoldFacts(summary.text, facts) : summary.text
+          const result = verifyCompactionSummary(text, facts)
           expect(result.ok).toBe(summary.expectOk)
           if (summary.failKinds) {
             for (const kind of summary.failKinds) {

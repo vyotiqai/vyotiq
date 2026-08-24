@@ -120,8 +120,7 @@ export const USER_PROMPT_TEXT =
   'text-sm leading-relaxed tracking-[var(--vy-tracking-body)] text-fg [overflow-wrap:anywhere]'
 
 /** User prompt block — thin border matching composer chrome. */
-export const USER_PROMPT_SURFACE =
-  `rounded-xl border border-border bg-bg px-2.5 py-2 ${USER_PROMPT_TEXT}`
+export const USER_PROMPT_SURFACE = `vy-chrome px-2.5 py-2 bg-[var(--vy-prompt-surface)] ${USER_PROMPT_TEXT}`
 
 /** Quiet activity row — no fill, no border. */
 export const ACTIVITY_ROW = 'text-xs tracking-[var(--vy-tracking)]'
@@ -138,7 +137,8 @@ export const DISCLOSURE_CHEVRON =
   'shrink-0 text-tertiary opacity-0 vy-transition group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100'
 
 /** Tool card chrome — bordered terminal / edit ToolCard surfaces. */
-export const TOOL_CARD_SURFACE = 'overflow-hidden rounded-lg border border-border'
+export const TOOL_CARD_SURFACE =
+  'overflow-hidden rounded-lg border border-border'
 export const TOOL_CARD_HEADER = 'px-3 py-2 text-xs'
 /** Body content owns its own padding so a diff can run edge to edge. */
 export const TOOL_CARD_BODY = 'overflow-hidden border-t border-border bg-surface'
@@ -191,8 +191,7 @@ export const TOOL_FAMILY_TODO = 'rounded-md'
 export const TOOL_FAMILY_DELETE = 'border-l-2 border-danger/50 pl-2'
 
 /** Subtle surface shared by the in-flow docked composer. */
-export const FLOATING_CHROME =
-  'rounded-xl border border-border bg-bg motion-reduce:animate-none'
+export const FLOATING_CHROME = 'vy-chrome bg-[var(--vy-chrome-surface)] motion-reduce:animate-none'
 
 /** Theme token `--vy-shadow-chrome` — soft in light, deeper in dark. */
 export const FLOATING_CHROME_SHADOW_BOTTOM =
@@ -243,7 +242,7 @@ export const SIDEBAR_CONTAINER = '@container/sidebar'
 export const TRANSCRIPT_CONTAINER = '@container/transcript'
 
 /** Sidebar shell — same surface as main column, no elevated chrome. */
-export const SIDEBAR_SURFACE = 'bg-bg'
+export const SIDEBAR_SURFACE = 'bg-transparent'
 
 /** Quiet micro copy — dense panels, git chrome, dock toolbars. */
 export const MICRO_LABEL =

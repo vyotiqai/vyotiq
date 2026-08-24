@@ -1,4 +1,5 @@
 import { readPathArg } from './argAccess'
+import { lspActionFromArgs } from './lsp'
 
 /** Workspace-local reads safe to run concurrently (no file mutation). */
 const PARALLEL_SAFE_BUILTIN = new Set([
@@ -14,7 +15,8 @@ const PARALLEL_SAFE_BUILTIN = new Set([
   'git_status',
   'git_diff',
   'mcp_list_tools',
-  'pull_agent_instance'
+  'pull_agent_instance',
+  'lsp'
 ])
 
 /** Single-file writes that may overlap when normalized paths are disjoint. */
@@ -38,8 +40,10 @@ const SERIAL_APPROVAL_EXEMPT_BUILTIN = new Set([
   'ask_question',
   'switch_mode',
   'todo_write',
+  'create_plan',
   'await_agent_instance',
-  'spawn_agent_instance'
+  'spawn_agent_instance',
+  'cancel_agent_instance'
 ])
 
 /** Agent-mode-only builtins (inline instance delegation). */
@@ -47,7 +51,8 @@ export const AGENT_ONLY_BUILTIN = new Set([
   'spawn_agent_instance',
   'await_agent_instance',
   'pull_agent_instance',
-  'merge_agent_instance'
+  'merge_agent_instance',
+  'cancel_agent_instance'
 ])
 
 export const MAX_PARALLEL_READ_TOOLS = 8
@@ -79,7 +84,11 @@ export function isParallelAwaitTool(name: string): boolean {
   return name === 'await_agent_instance'
 }
 
-export function stepToolBatchClass(name: string): StepToolBatchClass {
+export function stepToolBatchClass(
+  name: string,
+  args?: Record<string, unknown>
+): StepToolBatchClass {
+  if (name === 'lsp') return lspActionFromArgs(args) === 'rename' ? 'serial' : 'read'
   if (isParallelSafeTool(name)) return 'read'
   if (isParallelMutationTool(name)) return 'mutation'
   if (isParallelSpawnTool(name)) return 'spawn'
@@ -136,6 +145,7 @@ export function isParallelBatchClass(cls: StepToolBatchClass): boolean {
  * `browser_*` tools are serial-only and always gated (shared window + egress).
  * MCP builtins and MCP server tools always require approval in `mutating`/`all`.
  */
-export function isApprovalExemptTool(name: string): boolean {
+export function isApprovalExemptTool(name: string, args?: Record<string, unknown>): boolean {
+  if (name === 'lsp') return lspActionFromArgs(args) !== 'rename'
   return APPROVAL_EXEMPT_BUILTIN.has(name) || SERIAL_APPROVAL_EXEMPT_BUILTIN.has(name)
 }

@@ -45,7 +45,7 @@ describe('layout typography and spacing tokens', () => {
     expect(USER_PROMPT_SURFACE).toContain('text-sm')
     expect(USER_PROMPT_SURFACE).toContain('leading-relaxed')
     expect(USER_PROMPT_SURFACE).toContain('tracking-[var(--vy-tracking-body)]')
-    expect(USER_PROMPT_SURFACE).toContain('rounded-xl')
+    expect(USER_PROMPT_SURFACE).toContain('vy-chrome')
   })
 
   it('exports micro label tokens', () => {

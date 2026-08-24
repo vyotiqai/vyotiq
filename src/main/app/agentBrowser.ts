@@ -1,7 +1,7 @@
 import { WebContentsView, session, type WebContents } from 'electron'
 import { createHash } from 'crypto'
 import { mkdirSync, writeFileSync, existsSync } from 'fs'
-import { join } from 'path'
+import { join, basename } from 'path'
 import { IPC } from '../../shared/channels'
 import { workspacePathsEqual } from '../../shared/workspacePath'
 import { getMainWindow } from '@main/app/window'
@@ -21,6 +21,7 @@ import {
 } from './browserUrl'
 import { wrapBrowserPageContent } from './browserContentBoundary'
 import { getSettings } from '@main/settings/settings'
+import { assertBrowserActionAllowed, resolveBrowserUploadPath } from './browserActionPolicy'
 
 export {
   DEFAULT_NAV_TIMEOUT_MS,
@@ -38,6 +39,7 @@ export const MAX_BROWSER_TABS = Number.POSITIVE_INFINITY
 
 const PARTITION_PREFIX = 'persist:vyotiq-agent-browser'
 const downloadGuardedPartitions = new Set<string>()
+const partitionWorkspacePaths = new Map<string, string>()
 
 function partitionForWorkspace(workspacePath?: string): string {
   if (!workspacePath?.trim()) return PARTITION_PREFIX
@@ -45,11 +47,46 @@ function partitionForWorkspace(workspacePath?: string): string {
   return `${PARTITION_PREFIX}-${hash}`
 }
 
-function denyPartitionDownloads(ses: Electron.Session, partition: string): void {
+function denyPartitionDownloads(
+  ses: Electron.Session,
+  partition: string,
+  workspacePath?: string
+): void {
+  if (workspacePath?.trim()) partitionWorkspacePaths.set(partition, workspacePath.trim())
   if (downloadGuardedPartitions.has(partition)) return
   downloadGuardedPartitions.add(partition)
-  ses.on('will-download', (event) => {
-    event.preventDefault()
+  ses.on('will-download', (event, item) => {
+    const decision = assertBrowserActionAllowed('download')
+    const destRoot = partitionWorkspacePaths.get(partition)
+    if (!decision.allowed || !destRoot || item == null) {
+      event.preventDefault()
+      return
+    }
+    const total = item.getTotalBytes()
+    if (total > 100 * 1024 * 1024) {
+      event.preventDefault()
+      return
+    }
+    const raw = item.getFilename() || 'download'
+    const safe =
+      basename(raw)
+        .split('')
+        .map((ch) => {
+          const code = ch.charCodeAt(0)
+          if (code < 32 || '<>:"/\\|?*'.includes(ch)) return '_'
+          return ch
+        })
+        .join('')
+        .slice(0, 180) || 'download'
+    const dir = join(destRoot, '.vyotiq', 'downloads')
+    mkdirSync(dir, { recursive: true })
+    let dest = join(dir, safe)
+    let n = 1
+    while (existsSync(dest)) {
+      dest = join(dir, `${n}-${safe}`)
+      n += 1
+    }
+    item.setSavePath(dest)
   })
 }
 
@@ -527,7 +564,7 @@ function installDialogHooks(wc: WebContents): void {
 
 function createTab(workspacePath?: string, allowLocalHosts = true): BrowserTab {
   const ses = session.fromPartition(partitionForWorkspace(workspacePath))
-  denyPartitionDownloads(ses, partitionForWorkspace(workspacePath))
+  denyPartitionDownloads(ses, partitionForWorkspace(workspacePath), workspacePath)
   const id = nextTabId()
   const view = new WebContentsView({
     webPreferences: {
@@ -1458,6 +1495,32 @@ async function scrollPageUnlocked(
   return `Scrolled page by (${dx}, ${dy})`
 }
 
+async function setFileInputFiles(wc: WebContents, css: string, filePath: string): Promise<void> {
+  const dbg = wc.debugger
+  const attached = dbg.isAttached()
+  if (!attached) dbg.attach('1.3')
+  try {
+    await dbg.sendCommand('DOM.enable')
+    const { root } = (await dbg.sendCommand('DOM.getDocument', { depth: 0 })) as {
+      root: { nodeId: number }
+    }
+    const { nodeId } = (await dbg.sendCommand('DOM.querySelector', {
+      nodeId: root.nodeId,
+      selector: css
+    })) as { nodeId: number }
+    if (!nodeId) throw new Error(`File input not found: ${css}`)
+    await dbg.sendCommand('DOM.setFileInputFiles', { nodeId, files: [filePath] })
+  } finally {
+    if (!attached && dbg.isAttached()) {
+      try {
+        dbg.detach()
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
 /** Fill an input/textarea via the value setter (React-friendly) or type into contenteditable. */
 export async function fillSelector(
   selector: string,
@@ -1495,6 +1558,24 @@ async function fillSelectorUnlocked(
 
   const hit = await resolveSelector(tab, sel)
   throwIfAborted(opts.signal)
+
+  const inputKind = (await wc.executeJavaScript(
+    `(() => {
+      const el = document.querySelector(${JSON.stringify(hit.css)})
+      if (!el) return 'missing'
+      if (el.tagName === 'INPUT' && String(el.type).toLowerCase() === 'file') return 'file'
+      return 'other'
+    })()`,
+    true
+  )) as string
+  if (inputKind === 'file') {
+    const abs = resolveBrowserUploadPath(opts.workspacePath ?? tab.workspacePath, text)
+    await setFileInputFiles(wc, hit.css, abs)
+    await settleAfterAction(wc, opts.signal, { settleMs: opts.settleMs })
+    emitCurrent()
+    const label = hit.label ? ` "${hit.label}"` : ''
+    return `Set file input${label}: ${sel}`
+  }
 
   const result = (await wc.executeJavaScript(
     `(() => {

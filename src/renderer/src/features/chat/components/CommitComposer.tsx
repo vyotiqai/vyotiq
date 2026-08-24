@@ -89,7 +89,7 @@ export function CommitComposer({
           compact
             ? 'h-6 rounded-md px-2 text-caption text-fg hover:bg-surface-2'
             : cn(PILL, 'text-fg hover:bg-surface-2'),
-          'disabled:opacity-50'
+          'disabled:vy-disabled-state'
         )}
         disabled={busy || !message.trim()}
         onClick={() => onCommit(false)}
@@ -103,7 +103,7 @@ export function CommitComposer({
             compact
               ? 'h-6 rounded-md px-2 text-caption text-fg hover:bg-surface-2'
               : cn(PILL, 'text-fg hover:bg-surface-2'),
-            'disabled:opacity-50'
+            'disabled:vy-disabled-state'
           )}
           disabled={busy || !message.trim()}
           onClick={() => onCommit(true)}
@@ -118,7 +118,7 @@ export function CommitComposer({
             compact
               ? 'h-6 rounded-md px-2 text-caption text-fg hover:bg-surface-2'
               : cn(PILL, 'text-fg hover:bg-surface-2'),
-            'disabled:opacity-50'
+            'disabled:vy-disabled-state'
           )}
           disabled={busy || !message.trim()}
           onClick={onCreatePr}

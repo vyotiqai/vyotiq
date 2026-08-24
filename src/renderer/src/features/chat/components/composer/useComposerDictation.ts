@@ -7,7 +7,7 @@ import {
   type DictationWaveformStyle,
   type SecretProvider
 } from '@shared/ipc'
-import { DICTATION_LOCAL_CATALOG } from '@shared/dictation'
+import { DICTATION_LOCAL_CATALOG, isQwen3AsrModelId } from '@shared/dictation'
 import { isEditableShortcutTarget, matchShortcut } from '@renderer/lib/shortcuts'
 import { prefersReducedMotion } from '@renderer/lib/utils/motion'
 import {
@@ -154,6 +154,10 @@ export function formatDictationEngineHint(
       const entry = DICTATION_LOCAL_CATALOG.find((m) => m.id === localModelId)
       return entry ? `Local · ${entry.label}` : 'Local'
     }
+    case 'qwen3-asr': {
+      const entry = DICTATION_LOCAL_CATALOG.find((m) => m.id === localModelId)
+      return entry ? `Qwen3-ASR · ${entry.label}` : 'Qwen3-ASR'
+    }
     default: {
       const _exhaustive: never = engine
       return _exhaustive
@@ -172,6 +176,7 @@ function classifyErrorAction(
     case 'openrouter':
       return null
     case 'local':
+    case 'qwen3-asr':
       return 'voice'
     default: {
       const _exhaustive: never = engine
@@ -253,6 +258,16 @@ async function preflightDictation(
         return {
           ok: false,
           message: 'Install a local Whisper model',
+          settingsSection: 'voice'
+        }
+      }
+      return { ok: true, ctx }
+    }
+    case 'qwen3-asr': {
+      if (!isQwen3AsrModelId(ctx.localModelId)) {
+        return {
+          ok: false,
+          message: 'Select a Qwen3-ASR model in Settings → Voice',
           settingsSection: 'voice'
         }
       }
@@ -706,6 +721,18 @@ export function useComposerDictation(opts: {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [disabled, focusComposer, isShortcutTarget, shortcutActive, toggle])
+
+  useEffect(() => {
+    if (!shortcutActive || disabled) return
+    const onCommand = (event: Event): void => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id
+      if (id !== 'dictation') return
+      if (phaseRef.current === 'transcribing' || phaseRef.current === 'checking') return
+      toggle()
+    }
+    window.addEventListener('vyotiq:command', onCommand)
+    return () => window.removeEventListener('vyotiq:command', onCommand)
+  }, [disabled, shortcutActive, toggle])
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent): void => {

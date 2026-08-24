@@ -9,7 +9,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
         data-vy-text-entry
         className={cn(
           'max-h-40 min-h-[26px] w-full resize-none border-none bg-transparent py-1.5 text-sm leading-[1.4] outline-none placeholder:text-muted',
-          'disabled:vy-disabled-state focus-visible:outline-none',
+          'disabled:vy-disabled-state focus-visible:vy-focus-ring',
           className
         )}
         rows={1}

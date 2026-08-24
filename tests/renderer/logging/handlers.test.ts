@@ -64,4 +64,25 @@ describe('renderer error handlers', () => {
       expect.objectContaining({ scope: 'renderer', code: 'UNCAUGHT' })
     )
   })
+
+  it('tags React #185 rejections as REACT_185 and keeps componentStack', () => {
+    installRendererErrorHandlers()
+    const reason = Object.assign(
+      new Error(
+        'Minified React error #185; visit https://react.dev/errors/185 for the full message'
+      ),
+      { componentStack: '\n    at MessageList\n    at ChatView' }
+    )
+    const event = new Event('unhandledrejection') as PromiseRejectionEvent
+    Object.defineProperty(event, 'reason', { value: reason })
+    window.dispatchEvent(event)
+    expect(fatal).toHaveBeenCalledWith(
+      expect.stringMatching(/^React maximum update depth \(#185\):/),
+      expect.objectContaining({
+        scope: 'renderer',
+        code: 'REACT_185',
+        componentStack: expect.stringContaining('MessageList')
+      })
+    )
+  })
 })

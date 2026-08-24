@@ -202,10 +202,7 @@ async function listProviderModelsUncached(
         input,
         enrichCatalogModels(input.provider, seeds)
       ),
-      warning: catalogWarningMessage(
-        input.provider,
-        new Error(`${providerLabel(input.provider)} API key not set`)
-      )
+      warning: `${providerLabel(input.provider)} API key not set — showing illustrative placeholder model IDs. Save a key and refresh to load the live catalog.`
     }
   }
 
@@ -230,7 +227,7 @@ async function listProviderModelsUncached(
           { ...input, signal: timeout },
           enrichCatalogModels(input.provider, seeds)
         ),
-        warning: `${providerLabel(input.provider)} live catalog was empty; showing seed defaults (not installed models).`
+        warning: `${providerLabel(input.provider)} live catalog was empty; showing illustrative placeholder model IDs (not installed models).`
       }
     }
     const enriched = await applyOllamaSelectedShow(
@@ -257,7 +254,7 @@ async function listProviderModelsUncached(
         models: enrichCatalogModels(input.provider, seeds),
         warning: `Timed out after 10s reaching ${providerLabel(input.provider)}${
           input.baseUrl ? ` at ${normalizeHostForWarning(input.baseUrl)}` : ''
-        }. Showing seed defaults (not live models).`
+        }. Showing illustrative placeholder model IDs (not live models).`
       }
     }
     return {
@@ -265,7 +262,7 @@ async function listProviderModelsUncached(
         { ...input, signal: timeout },
         enrichCatalogModels(input.provider, seeds)
       ),
-      warning: catalogWarningMessage(input.provider, err)
+      warning: `${catalogWarningMessage(input.provider, err)} Showing illustrative placeholder model IDs (not the live catalog).`
     }
   }
 }

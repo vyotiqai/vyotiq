@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { VyotiqMark } from '@renderer/lib/brand'
-import { IconButton, cn } from '@renderer/lib/ui'
+import { IconButton, Tooltip, cn } from '@renderer/lib/ui'
 import { TITLE_BAR_HEIGHT, showsWindowControls } from '@renderer/lib/utils/layout'
 import { useIsDesktop } from '@renderer/lib/context/BreakpointProvider'
 import { useTitleBarAccessory } from '@renderer/lib/context/TitleBarAccessory'
@@ -46,7 +46,7 @@ export function TitleBar({
   return (
     <header
       className={cn(
-        'app-region-drag z-sticky flex shrink-0 items-stretch bg-bg',
+        'app-region-drag z-sticky flex shrink-0 items-stretch bg-transparent',
         occupied ? 'border-b-0' : 'border-b border-border/30',
         TITLE_BAR_HEIGHT,
         showControls ? 'pr-0' : 'pr-2'
@@ -94,33 +94,36 @@ export function TitleBar({
 
       {showControls ? (
         <div className="app-region-no-drag flex shrink-0 items-stretch" data-titlebar-controls>
-          <button
-            type="button"
-            className={winBtn}
-            aria-label="Minimize"
-            title="Minimize"
-            onClick={() => void window.vyotiq?.windowMinimize()}
-          >
-            <Icon name="minimize" size={16} />
-          </button>
-          <button
-            type="button"
-            className={winBtn}
-            aria-label={maximized ? 'Restore' : 'Maximize'}
-            title={maximized ? 'Restore' : 'Maximize'}
-            onClick={() => void window.vyotiq?.windowMaximize()}
-          >
-            <Icon name={maximized ? 'restore' : 'maximize'} size={16} />
-          </button>
-          <button
-            type="button"
-            className={cn(winBtn, 'hover:bg-window-close hover:text-white')}
-            aria-label="Close"
-            title="Close"
-            onClick={() => void window.vyotiq?.windowClose()}
-          >
-            <Icon name="close" size={16} />
-          </button>
+          <Tooltip content="Minimize">
+            <button
+              type="button"
+              className={winBtn}
+              aria-label="Minimize"
+              onClick={() => void window.vyotiq?.windowMinimize()}
+            >
+              <Icon name="minimize" size={16} />
+            </button>
+          </Tooltip>
+          <Tooltip content={maximized ? 'Restore' : 'Maximize'}>
+            <button
+              type="button"
+              className={winBtn}
+              aria-label={maximized ? 'Restore' : 'Maximize'}
+              onClick={() => void window.vyotiq?.windowMaximize()}
+            >
+              <Icon name={maximized ? 'restore' : 'maximize'} size={16} />
+            </button>
+          </Tooltip>
+          <Tooltip content="Close">
+            <button
+              type="button"
+              className={cn(winBtn, 'hover:bg-window-close hover:text-window-close-fg')}
+              aria-label="Close"
+              onClick={() => void window.vyotiq?.windowClose()}
+            >
+              <Icon name="close" size={16} />
+            </button>
+          </Tooltip>
         </div>
       ) : null}
     </header>

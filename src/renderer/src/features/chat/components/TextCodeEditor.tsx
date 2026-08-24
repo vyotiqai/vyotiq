@@ -21,6 +21,12 @@ import {
   mapLspDiagnosticsToCm,
   type LspDiagnosticItem
 } from '@shared/utils/lspDiagnostics'
+import {
+  tabAutocomplete,
+  SELECT_SYNC_EVENT,
+  clearTabGhost,
+  type InlineCompleteRequestFn
+} from './tabAutocomplete'
 
 function languageExtension(path: string): Extension {
   const lower = path.toLowerCase()
@@ -84,6 +90,25 @@ function hoverExtension(
   })
 }
 
+function wrapStyleTheme(enabled: boolean): Extension {
+  return EditorView.theme({
+    '.cm-scroller': {
+      overflowX: enabled ? 'hidden' : 'auto',
+      overflowY: 'auto'
+    },
+    '.cm-content': enabled
+      ? {
+          wordBreak: 'break-word'
+        }
+      : {},
+    '.cm-line': enabled
+      ? {
+          overflowWrap: 'anywhere'
+        }
+      : {}
+  })
+}
+
 export function TextCodeEditor({
   path,
   value,
@@ -95,6 +120,7 @@ export function TextCodeEditor({
   scrollToLine = null,
   lspDiagnostics = null,
   onLspHover,
+  onInlineComplete,
   onScrollToLineHandled,
   onChange,
   onMetaChange,
@@ -110,6 +136,7 @@ export function TextCodeEditor({
   scrollToLine?: number | null
   lspDiagnostics?: readonly LspDiagnosticItem[] | null
   onLspHover?: (line: number, character: number) => Promise<string | null>
+  onInlineComplete?: InlineCompleteRequestFn
   onScrollToLineHandled?: () => void
   onChange: (value: string) => boolean | void
   onMetaChange: (meta: { cursor: number; selections: WorkspaceEditorSelection[] }) => void
@@ -131,10 +158,13 @@ export function TextCodeEditor({
   const wordWrapRef = useRef(wordWrap)
   const lineNumbersCompartmentRef = useRef(new Compartment())
   const wrapCompartmentRef = useRef(new Compartment())
+  const wrapStyleCompartmentRef = useRef(new Compartment())
   const lintCompartmentRef = useRef(new Compartment())
   const hoverCompartmentRef = useRef(new Compartment())
+  const completeCompartmentRef = useRef(new Compartment())
   const lspDiagnosticsRef = useRef(lspDiagnostics)
   const onLspHoverRef = useRef(onLspHover)
+  const onInlineCompleteRef = useRef(onInlineComplete)
   initialValueRef.current = value
   initialCursorRef.current = cursor
   initialSelectionsRef.current = selections
@@ -147,6 +177,7 @@ export function TextCodeEditor({
   wordWrapRef.current = wordWrap
   lspDiagnosticsRef.current = lspDiagnostics
   onLspHoverRef.current = onLspHover
+  onInlineCompleteRef.current = onInlineComplete
 
   useEffect(() => {
     const host = hostRef.current
@@ -172,8 +203,12 @@ export function TextCodeEditor({
           lineNumbersRef.current ? lineNumbers() : []
         ),
         wrapCompartmentRef.current.of(wordWrapRef.current ? EditorView.lineWrapping : []),
+        wrapStyleCompartmentRef.current.of(wrapStyleTheme(wordWrapRef.current)),
         lintCompartmentRef.current.of([]),
         hoverCompartmentRef.current.of([]),
+        completeCompartmentRef.current.of(
+          tabAutocomplete(() => onInlineCompleteRef.current)
+        ),
         EditorView.theme({
           '&': {
             height: '100%',
@@ -181,7 +216,6 @@ export function TextCodeEditor({
             color: 'var(--vy-fg)'
           },
           '.cm-scroller': {
-            overflow: 'auto',
             fontFamily: 'var(--font-mono)',
             lineHeight: '1.6'
           },
@@ -216,15 +250,15 @@ export function TextCodeEditor({
           },
           '.cm-lintRange-error': {
             backgroundImage:
-              'url("data:image/svg+xml,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'6\' height=\'3\'><path d=\'m0 3 l2 -2 l1 0 l2 2\' fill=\'none\' stroke=\'%23ef4444\' stroke-width=\'1\'/></svg>")'
+              "url(\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='3'><path d='m0 3 l2 -2 l1 0 l2 2' fill='none' stroke='%23ef4444' stroke-width='1'/></svg>\")"
           },
           '.cm-lintRange-warning': {
             backgroundImage:
-              'url("data:image/svg+xml,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'6\' height=\'3\'><path d=\'m0 3 l2 -2 l1 0 l2 2\' fill=\'none\' stroke=\'%23f59e0b\' stroke-width=\'1\'/></svg>")'
+              "url(\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='3'><path d='m0 3 l2 -2 l1 0 l2 2' fill='none' stroke='%23f59e0b' stroke-width='1'/></svg>\")"
           },
           '.cm-lintRange-info': {
             backgroundImage:
-              'url("data:image/svg+xml,<svg xmlns=\'http://www.w3.org/2000/svg\' width=\'6\' height=\'3\'><path d=\'m0 3 l2 -2 l1 0 l2 2\' fill=\'none\' stroke=\'%236b7280\' stroke-width=\'1\'/></svg>")'
+              "url(\"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' width='6' height='3'><path d='m0 3 l2 -2 l1 0 l2 2' fill='none' stroke='%236b7280' stroke-width='1'/></svg>\")"
           },
           '.cm-lsp-hover-tooltip': {
             maxWidth: '28rem',
@@ -233,6 +267,17 @@ export function TextCodeEditor({
             backgroundColor: 'var(--vy-surface)',
             border: '1px solid color-mix(in srgb, var(--vy-border) 70%, transparent)',
             borderRadius: '0.375rem'
+          },
+          '.cm-tab-ghost': {
+            opacity: '0.46',
+            pointerEvents: 'none',
+            whiteSpace: 'pre',
+            color: 'inherit'
+          },
+          '.cm-tab-ghost-block': {
+            fontFamily: 'var(--font-mono)',
+            lineHeight: '1.6',
+            padding: '0 0.125rem'
           }
         }),
         EditorView.updateListener.of((update) => {
@@ -303,6 +348,12 @@ export function TextCodeEditor({
 
   useEffect(() => {
     const view = viewRef.current
+    if (!view || onInlineComplete) return
+    clearTabGhost(view)
+  }, [onInlineComplete])
+
+  useEffect(() => {
+    const view = viewRef.current
     if (!view) return
     view.dispatch({
       effects: lineNumbersCompartmentRef.current.reconfigure(
@@ -315,9 +366,10 @@ export function TextCodeEditor({
     const view = viewRef.current
     if (!view) return
     view.dispatch({
-      effects: wrapCompartmentRef.current.reconfigure(
-        wordWrap ? EditorView.lineWrapping : []
-      )
+      effects: [
+        wrapCompartmentRef.current.reconfigure(wordWrap ? EditorView.lineWrapping : []),
+        wrapStyleCompartmentRef.current.reconfigure(wrapStyleTheme(wordWrap))
+      ]
     })
   }, [wordWrap])
 
@@ -394,7 +446,10 @@ export function TextCodeEditor({
           range.to === nextSelection.ranges[index]?.to
       )
     if (sameRanges) return
-    view.dispatch({ selection: nextSelection })
+    view.dispatch({
+      selection: nextSelection,
+      annotations: Transaction.userEvent.of(SELECT_SYNC_EVENT)
+    })
   }, [cursor, selections])
 
   useEffect(() => {
@@ -427,8 +482,9 @@ export function TextCodeEditor({
       ref={hostRef}
       role="region"
       aria-label={`Editor for ${path}`}
-      className="min-h-0 min-w-0 flex-1 overflow-hidden"
+      className="min-h-0 min-w-0 w-full max-w-full flex-1 overflow-hidden"
       data-code-editor
+      data-word-wrap={wordWrap ? 'true' : 'false'}
     />
   )
 }

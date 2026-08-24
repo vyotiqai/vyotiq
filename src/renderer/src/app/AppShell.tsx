@@ -25,8 +25,9 @@ import {
 } from '@renderer/lib/utils/layout'
 import { PanelResizeHandle } from '@renderer/lib/ui'
 import { ErrorBoundary } from '@renderer/lib/ErrorBoundary'
-import { useAppShortcuts } from '@renderer/lib/shortcuts'
+import { focusComposerMessage, useAppShortcuts } from '@renderer/lib/shortcuts'
 import { TitleBar } from './TitleBar'
+import { CommandPalette } from '@renderer/features/commandPalette/CommandPalette'
 
 function AppShellInner({
   view,
@@ -92,6 +93,7 @@ function AppShellInner({
   loading?: boolean
 }) {
   const [drawerOpen, setDrawerOpen] = useState(false)
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [sidebarCollapsed, setSidebarCollapsed] = usePersistedBoolean(
     SIDEBAR_COLLAPSED_KEY,
     false
@@ -253,7 +255,9 @@ function AppShellInner({
     onStop: onChatStop,
     onCloseChat,
     drawerOpen,
-    hasSessionQuery
+    hasSessionQuery,
+    onOpenCommandPalette: () => setCommandPaletteOpen(true),
+    onFindInFiles: () => window.dispatchEvent(new Event('vyotiq:find-in-files'))
   })
 
   const sidebarProps = {
@@ -288,7 +292,7 @@ function AppShellInner({
   }
 
   return (
-    <div className="flex h-full overflow-hidden bg-bg text-fg">
+    <div className="flex h-full overflow-hidden bg-transparent text-fg" data-app-shell>
       <a href="#main-content" className="skip-link" tabIndex={0}>
         Skip to main content
       </a>
@@ -356,13 +360,29 @@ function AppShellInner({
         <main
           id="main-content"
           ref={mainRef}
-          className="flex min-h-0 min-w-0 flex-1 flex-col bg-bg outline-none"
+          className="flex min-h-0 min-w-0 flex-1 flex-col bg-transparent outline-none"
           tabIndex={-1}
           aria-busy={loading ? true : undefined}
         >
           {children}
         </main>
       </div>
+      <CommandPalette
+        open={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        onSelect={(id) => {
+          if (id === 'settings') onOpenSettings()
+          else if (id === 'newChat') onNewChat()
+          else if (id === 'sidebar') onToggleSidebar()
+          else if (id === 'search') focusSearch()
+          else if (id === 'findInFiles') window.dispatchEvent(new Event('vyotiq:find-in-files'))
+          else if (id === 'focusComposer') focusComposerMessage()
+          else if (id === 'stop') onChatStop?.()
+          else if (id === 'closeChat') onCloseChat?.()
+          else if (id === 'commandPalette') setCommandPaletteOpen(true)
+          else window.dispatchEvent(new CustomEvent('vyotiq:command', { detail: { id } }))
+        }}
+      />
     </div>
   )
 }

@@ -31,6 +31,8 @@ const api = {
   workspaceFormatFile: vi.fn(),
   workspaceLspStatus: vi.fn(),
   workspaceLspRequest: vi.fn(),
+  workspaceInlineComplete: vi.fn(async () => ({ ok: true as const, data: { text: '' } })),
+  workspaceInlineCompleteAbort: vi.fn(async () => ({ ok: true as const, data: true })),
   gitDiff: vi.fn(),
   gitBlame: vi.fn(),
   writeClipboard: vi.fn(() => true),
@@ -856,7 +858,7 @@ describe('FilesPanel', () => {
     const readme = await screen.findByText('README.md')
     fireEvent.click(readme)
     await waitFor(() => {
-      expect(readme.closest('button')?.className).toContain('ring-accent/20')
+      expect(readme.closest('button')?.className).toContain('ring-accent/35')
     })
   })
 

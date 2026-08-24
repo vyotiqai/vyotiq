@@ -99,7 +99,7 @@ export function SettingsSearch({
       {query.trim() && visibleMatches.length > 0 ? (
         <ul
           id={listId}
-          className="absolute z-30 m-0 mt-1 max-h-56 w-full list-none overflow-auto rounded-md border border-border bg-surface p-1 shadow-lg"
+          className="absolute z-dropdown m-0 mt-1 max-h-56 w-full list-none overflow-auto rounded-md border border-border bg-card p-1 shadow-menu animate-menu-in origin-top"
           role="listbox"
           aria-label="Settings search results"
           onKeyDown={onContainerKeyDown}
@@ -126,7 +126,7 @@ export function SettingsSearch({
       ) : null}
       {query.trim() && matches.length === 0 ? (
         <p
-          className="absolute z-30 m-0 mt-1 w-full rounded-md border border-border bg-surface px-2 py-1.5 text-xs text-muted shadow-lg"
+          className="absolute z-dropdown m-0 mt-1 w-full rounded-md border border-border bg-card px-2 py-1.5 text-xs text-muted shadow-menu"
           role="status"
         >
           No matching settings.

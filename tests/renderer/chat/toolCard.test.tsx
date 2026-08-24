@@ -233,7 +233,8 @@ describe('ToolCard expand', () => {
     expect(screen.queryByText('Streaming change…')).toBeNull()
     expect(screen.getByText('streamed line')).toBeTruthy()
     expect(screen.getByText('old')).toBeTruthy()
-    expect(screen.getByText('+1')).toBeTruthy()
+    // Header badge and the new diff gutter sign both read "+1" now.
+    expect(screen.getAllByText('+1').length).toBeGreaterThan(0)
     expect(screen.getByText('-1')).toBeTruthy()
 
     rerender(
@@ -248,7 +249,7 @@ describe('ToolCard expand', () => {
       />
     )
     expect(screen.getByText('second')).toBeTruthy()
-    expect(screen.getByText('+2')).toBeTruthy()
+    expect(screen.getAllByText('+2').length).toBeGreaterThan(0)
   })
 
   it('follows newest lines in the peek after a dumped patch has been revealed', () => {

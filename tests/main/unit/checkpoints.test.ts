@@ -105,18 +105,26 @@ describe('write checkpoints', () => {
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('hello\n')
   })
 
-  it('marks recursive directory deletes as non-undoable', () => {
+  it('snapshots recursive directory deletes so they are undoable', () => {
     mkdirSync(join(workspace, 'dir'), { recursive: true })
     writeFileSync(join(workspace, 'dir', 'x.txt'), 'x', 'utf8')
     const cp = beginWriteCheckpoint(runDir, workspace)
     cp.recordPrior('dir', 'delete', { recursiveDir: true })
     const meta = cp.finalize()
     discardWriteCheckpoint(runDir)
+    // The directory is snapshotted file-by-file; each child is individually undoable.
+    expect(meta!.files).toHaveLength(1)
     expect(meta!.files[0]).toMatchObject({
-      path: 'dir',
+      path: 'dir/x.txt',
       action: 'deleted',
-      undoable: false
+      undoable: true
     })
+
+    // Undo recreates the file (and thus the directory tree).
+    rmSync(join(workspace, 'dir'), { recursive: true, force: true })
+    const undone = undoWrites(runDir, workspace, meta!.id)
+    expect(undone.restored).toContain('dir/x.txt')
+    expect(readFileSync(join(workspace, 'dir', 'x.txt'), 'utf8')).toBe('x')
   })
 
   it('resolving undoable files also marks leftover non-undoable on disk', () => {
@@ -127,17 +135,18 @@ describe('write checkpoints', () => {
     cp.recordPrior('dir', 'delete', { recursiveDir: true })
     writeFileSync(join(workspace, 'a.txt'), 'changed\n', 'utf8')
     const meta = finalizeWriteCheckpoint(runDir)
-    expect(meta!.files).toHaveLength(2)
+    expect(meta!.files.map((f) => f.path).sort()).toEqual(['a.txt', 'dir/x.txt'])
 
     const result = resolveWrites(runDir, workspace, {
       checkpointId: meta!.id,
       action: 'keep',
-      paths: ['a.txt']
+      paths: ['a.txt', 'dir/x.txt']
     })
     expect(result.fullyResolved).toBe(true)
     const disk = getWriteCheckpointMeta(runDir, meta!.id)
     expect(disk?.resolved).toBe(true)
-    expect(disk?.files.find((f) => f.path === 'dir')?.resolved).toBe('kept')
+    expect(disk?.files.find((f) => f.path === 'a.txt')?.resolved).toBe('kept')
+    expect(disk?.files.find((f) => f.path === 'dir/x.txt')?.resolved).toBe('kept')
   })
 
   it('getWriteCheckpoint is empty without begin', () => {
@@ -387,5 +396,29 @@ describe('write checkpoints', () => {
     const persisted = getWriteCheckpointMeta(runDir, meta!.id)
     expect(persisted?.resolved).not.toBe(true)
     expect(persisted?.undone).not.toBe(true)
+  })
+
+  it('restores a nested directory tree on undo (recreating subdirs and files)', () => {
+    mkdirSync(join(workspace, 'tree', 'sub'), { recursive: true })
+    writeFileSync(join(workspace, 'tree', 'top.txt'), 't', 'utf8')
+    writeFileSync(join(workspace, 'tree', 'sub', 'nested.txt'), 'n', 'utf8')
+
+    const cp = beginWriteCheckpoint(runDir, workspace)
+    cp.recordPrior('tree', 'delete', { recursiveDir: true })
+    const meta = cp.finalize()
+    discardWriteCheckpoint(runDir)
+    // Two files snapshotted under their original relative paths.
+    expect(meta!.files.map((f) => f.path).sort()).toEqual([
+      'tree/sub/nested.txt',
+      'tree/top.txt'
+    ])
+    expect(meta!.files.every((f) => f.undoable)).toBe(true)
+
+    // Simulate the agent having removed the tree.
+    rmSync(join(workspace, 'tree'), { recursive: true, force: true })
+    const undone = undoWrites(runDir, workspace, meta!.id)
+    expect(undone.restored.sort()).toEqual(['tree/sub/nested.txt', 'tree/top.txt'])
+    expect(readFileSync(join(workspace, 'tree', 'top.txt'), 'utf8')).toBe('t')
+    expect(readFileSync(join(workspace, 'tree', 'sub', 'nested.txt'), 'utf8')).toBe('n')
   })
 })

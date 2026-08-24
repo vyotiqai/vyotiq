@@ -200,6 +200,74 @@
       "publisher": "Agent V",
       "category": "skills",
       "installable": true
+    },
+    {
+      "id": "devtools",
+      "name": "Devtools",
+      "version": "1.0.0",
+      "description": "Vyotiq starter plugin: a debug-checklist skill and workspace conventions rule.",
+      "kind": "plugin",
+      "bundledPath": "devtools",
+      "source": "bundled",
+      "publisher": "Agent V",
+      "verified": true,
+      "sections": [
+        "featured"
+      ],
+      "category": "plugins",
+      "featuredRank": 12,
+      "installable": true
+    },
+    {
+      "id": "electron-app",
+      "name": "Electron app",
+      "version": "1.0.0",
+      "description": "Vyotiq plugin for Electron + Vite apps: a workflow skill and main/renderer conventions rule.",
+      "kind": "plugin",
+      "bundledPath": "electron-app",
+      "source": "bundled",
+      "publisher": "Agent V",
+      "verified": true,
+      "sections": [
+        "featured"
+      ],
+      "category": "plugins",
+      "featuredRank": 13,
+      "installable": true
+    },
+    {
+      "id": "quality",
+      "name": "Quality",
+      "version": "1.0.0",
+      "description": "Vyotiq plugin for code and security review: nested skills plus quality conventions.",
+      "kind": "plugin",
+      "bundledPath": "quality",
+      "source": "bundled",
+      "publisher": "Agent V",
+      "verified": true,
+      "sections": [
+        "featured"
+      ],
+      "category": "plugins",
+      "featuredRank": 14,
+      "installable": true
+    },
+    {
+      "id": "shipping",
+      "name": "Shipping",
+      "version": "1.0.0",
+      "description": "Vyotiq plugin for commits, PRs, and tests: nested skills plus shipping conventions.",
+      "kind": "plugin",
+      "bundledPath": "shipping",
+      "source": "bundled",
+      "publisher": "Agent V",
+      "verified": true,
+      "sections": [
+        "featured"
+      ],
+      "category": "plugins",
+      "featuredRank": 15,
+      "installable": true
     }
   ]
 }

@@ -115,7 +115,8 @@ export function PanelToolbarDropdown({
         role="menu"
         aria-label={ariaLabel}
         className={cn(
-          'app-region-no-drag fixed z-dropdown overflow-visible rounded-md border border-border bg-bg py-1 shadow-lg animate-fade-in',
+          'app-region-no-drag fixed z-dropdown overflow-visible rounded-md border border-border bg-card py-1 shadow-menu animate-menu-in',
+          placement === 'up' ? 'origin-bottom' : 'origin-top',
           panelClassName
         )}
         style={{

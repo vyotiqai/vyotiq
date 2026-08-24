@@ -9,6 +9,9 @@ export type CompactionVerifyFailureKind =
   | 'missing_decision'
   | 'missing_wrote_file'
   | 'missing_contract_goal'
+  | 'missing_todo'
+  | 'missing_done_when'
+  | 'missing_constraint'
   | 'low_file_coverage'
 
 export type CompactionVerifyFailure = {
@@ -198,6 +201,10 @@ function askQuestionPromptNeedle(decision: string): string | null {
   return prompt.length >= 12 ? prompt : null
 }
 
+export function factMentionedInText(fact: string, summary: string): boolean {
+  return decisionMentioned(fact, summary)
+}
+
 function decisionMentioned(decision: string, summary: string): boolean {
   const needle = foldDecisionText(decision)
   if (!needle) return true
@@ -228,6 +235,12 @@ export function formatCompactionVerifyFailure(failure: CompactionVerifyFailure):
       return `Missing written file: ${failure.detail}`
     case 'missing_contract_goal':
       return `Missing contract goal: ${failure.detail}`
+    case 'missing_todo':
+      return `Missing todo: ${failure.detail}`
+    case 'missing_done_when':
+      return `Missing done-when: ${failure.detail}`
+    case 'missing_constraint':
+      return `Missing constraint: ${failure.detail}`
     case 'low_file_coverage':
       return `Low file coverage: ${failure.detail}`
     default: {
@@ -276,6 +289,24 @@ export function verifyCompactionSummary(
     failures.push({ kind: 'missing_contract_goal', detail: facts.contractGoal })
   }
 
+  for (const todo of facts.todos) {
+    if (!decisionMentioned(todo, summary)) {
+      failures.push({ kind: 'missing_todo', detail: todo })
+    }
+  }
+
+  for (const line of facts.doneWhen) {
+    if (!decisionMentioned(line, summary)) {
+      failures.push({ kind: 'missing_done_when', detail: line })
+    }
+  }
+
+  for (const constraint of facts.constraints ?? []) {
+    if (!decisionMentioned(constraint, summary)) {
+      failures.push({ kind: 'missing_constraint', detail: constraint })
+    }
+  }
+
   for (const file of facts.files) {
     if (pathMentionedInText(file, summary)) mentionedFiles.push(file)
   }
@@ -314,6 +345,13 @@ export function requiredFoldFactsFocus(facts: FoldFacts): string {
   }
   if (facts.doneWhen.length > 0) {
     parts.push(`Contract done-when:\n${facts.doneWhen.map((line) => `- ${line}`).join('\n')}`)
+  }
+  if ((facts.constraints ?? []).length > 0) {
+    parts.push(
+      `User constraints to preserve in Constraints:\n${(facts.constraints ?? [])
+        .map((line) => `- ${line}`)
+        .join('\n')}`
+    )
   }
   if (facts.wroteFiles.length > 0) {
     parts.push(

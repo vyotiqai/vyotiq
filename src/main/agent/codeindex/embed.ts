@@ -110,12 +110,44 @@ export type OllamaEmbedOptions = {
 }
 
 /** Optional Ollama embeddings when a local server is running. */
+/**
+ * Auto-detect the Ollama model's true vector dimension on first embed, rather
+ * than trusting an assumed 768. Without this, a 1024-dim model (mxbai-embed-large,
+ * bge-m3, …) was silently truncated to 768, producing corrupt similarity scores.
+ * When `dimensions` is configured explicitly we still validate the response matches.
+ */
 export function createOllamaEmbedder(opts: OllamaEmbedOptions = {}): Embedder {
   const baseUrl = (opts.baseUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, '')
   const model = opts.model ?? 'nomic-embed-text'
-  const dimensions = opts.dimensions ?? 768
+  const explicitDimensions = opts.dimensions
   const fetchImpl = opts.fetchImpl ?? fetch
   const modelId = `ollama:${model}`
+
+  // configured (explicit) > auto-detected (observed) > default 768
+  let observedDimensions: number | null = null
+
+  /** Adopt or validate the response dimension; returns the canonical dimension. */
+  function reconcileDimension(actual: number): number {
+    if (actual <= 0) return observedDimensions ?? explicitDimensions ?? 768
+    if (observedDimensions == null) {
+      // First real observation: an explicit config that disagrees is a user error.
+      if (explicitDimensions != null && explicitDimensions !== actual) {
+        throw new Error(
+          `Ollama model "${model}" produces ${actual}-dim vectors but codeIndex is configured ` +
+            `for ${explicitDimensions}-dim. Set dimensions to ${actual} (or pick a matching model).`
+        )
+      }
+      observedDimensions = actual
+      return actual
+    }
+    if (observedDimensions !== actual) {
+      throw new Error(
+        `Ollama embedding dimension changed mid-session for "${model}": ` +
+          `expected ${observedDimensions}, got ${actual}`
+      )
+    }
+    return observedDimensions
+  }
 
   async function embedOnePrompt(
     prompt: string,
@@ -131,15 +163,18 @@ export function createOllamaEmbedder(opts: OllamaEmbedOptions = {}): Embedder {
       throw new Error(`Ollama embeddings failed: HTTP ${res.status}`)
     }
     const json = (await res.json()) as { embedding?: number[] }
-    if (!Array.isArray(json.embedding)) {
+    if (!Array.isArray(json.embedding) || json.embedding.length === 0) {
       throw new Error('Ollama embeddings response missing embedding[]')
     }
-    return l2NormalizeVec(json.embedding, dimensions)
+    const dim = reconcileDimension(json.embedding.length)
+    return l2NormalizeVec(json.embedding, dim)
   }
 
   return {
     modelId,
-    dimensions,
+    get dimensions(): number {
+      return observedDimensions ?? explicitDimensions ?? 768
+    },
     async embed(
       texts: string[],
       embedOpts?: { signal?: AbortSignal }
@@ -148,6 +183,10 @@ export function createOllamaEmbedder(opts: OllamaEmbedOptions = {}): Embedder {
       if (embedOpts?.signal?.aborted) {
         throw new DOMException('Aborted', 'AbortError')
       }
+      // True once /api/embed returned a well-formed batch; a thrown error while
+      // mapping such a batch (e.g. dimension mismatch) must propagate, not be
+      // swallowed by the per-prompt fallback.
+      let batchValid = false
       try {
         const res = await fetchImpl(`${baseUrl}/api/embed`, {
           method: 'POST',
@@ -157,15 +196,26 @@ export function createOllamaEmbedder(opts: OllamaEmbedOptions = {}): Embedder {
         })
         if (res.ok) {
           const json = (await res.json()) as { embeddings?: number[][] }
-          if (Array.isArray(json.embeddings) && json.embeddings.length === texts.length) {
-            return json.embeddings.map((row) => l2NormalizeVec(row, dimensions))
+          const rows = json?.embeddings
+          if (
+            Array.isArray(rows) &&
+            rows.length === texts.length &&
+            rows.every((row) => Array.isArray(row) && row.length > 0)
+          ) {
+            batchValid = true
+            return rows.map((row) => {
+              const dim = reconcileDimension(row.length)
+              return l2NormalizeVec(row, dim)
+            })
           }
         }
       } catch (err) {
         if (isAbortError(err) || embedOpts?.signal?.aborted) {
           throw err instanceof DOMException ? err : new DOMException('Aborted', 'AbortError')
         }
-        // Fall through to per-prompt /api/embeddings.
+        // Fall through to per-prompt /api/embeddings only when the batch itself
+        // was unusable — never when a valid batch failed mid-processing.
+        if (batchValid) throw err
       }
       const out: Float32Array[] = []
       for (const prompt of texts) {

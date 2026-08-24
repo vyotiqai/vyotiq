@@ -1,7 +1,7 @@
 import { useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { parseOpenableAttachmentPath } from '@shared/utils/linkableWorkspacePath'
-import { FileChip, ImageChip, MarkdownContent, cn } from '@renderer/lib/ui'
+import { FileChip, ImageChip, MarkdownContent, Tooltip, cn } from '@renderer/lib/ui'
 import { useRunSession } from '../RunSessionContext'
 import { slashChipFromContent } from '@shared/slashCommands'
 import { TOOL_BODY_CLAMP_PX, USER_PROMPT_SURFACE } from '@renderer/lib/utils/layout'
@@ -79,6 +79,7 @@ export function UserPrompt({
   return (
     <div
       ref={promptRef}
+      data-user-prompt
       className={cn(
         USER_PROMPT_SURFACE,
         'relative',
@@ -118,48 +119,51 @@ export function UserPrompt({
       }
     >
       {editable ? (
-        <button
-          type="button"
-          className={cn(
-            'absolute top-1 z-[1] inline-grid size-6 place-items-center rounded-md',
-            revertable ? 'right-8' : 'right-1',
-            'text-muted hover:bg-surface hover:text-fg',
-            'opacity-0 vy-transition',
-            '[@media(hover:none)]:opacity-100',
-            'group-hover/prompt:opacity-100 group-focus-within/prompt:opacity-100',
-            'focus-visible:opacity-100 focus-visible:vy-focus-ring'
-          )}
-          aria-label="Edit message"
-          data-no-prompt-edit
-          onClick={(e) => {
-            e.stopPropagation()
-            onBeginEdit?.()
-          }}
-        >
-          <Icon name="edit" size={12} />
-        </button>
+        <Tooltip content="Edit message">
+          <button
+            type="button"
+            className={cn(
+              'absolute top-1 z-sticky inline-grid size-6 place-items-center rounded-md',
+              revertable ? 'right-8' : 'right-1',
+              'text-muted hover:bg-surface hover:text-fg',
+              'opacity-0 vy-transition',
+              '[@media(hover:none)]:opacity-100',
+              'group-hover/prompt:opacity-100 group-focus-within/prompt:opacity-100',
+              'focus-visible:opacity-100 focus-visible:vy-focus-ring'
+            )}
+            aria-label="Edit message"
+            data-no-prompt-edit
+            onClick={(e) => {
+              e.stopPropagation()
+              onBeginEdit?.()
+            }}
+          >
+            <Icon name="edit" size={14} />
+          </button>
+        </Tooltip>
       ) : null}
       {revertable ? (
-        <button
-          type="button"
-          className={cn(
-            'absolute right-1 top-1 z-[1] inline-grid size-6 place-items-center rounded-md',
-            'text-muted hover:bg-surface hover:text-fg',
-            'opacity-0 vy-transition',
-            '[@media(hover:none)]:opacity-100',
-            'group-hover/prompt:opacity-100 group-focus-within/prompt:opacity-100',
-            'focus-visible:opacity-100 focus-visible:vy-focus-ring'
-          )}
-          aria-label="Revert back"
-          title="Revert back to this prompt"
-          data-no-prompt-edit
-          onClick={(e) => {
-            e.stopPropagation()
-            onRevert?.()
-          }}
-        >
-          <Icon name="revert" size={12} />
-        </button>
+        <Tooltip content="Revert back to this prompt">
+          <button
+            type="button"
+            className={cn(
+              'absolute right-1 top-1 z-sticky inline-grid size-6 place-items-center rounded-md',
+              'text-muted hover:bg-surface hover:text-fg',
+              'opacity-0 vy-transition',
+              '[@media(hover:none)]:opacity-100',
+              'group-hover/prompt:opacity-100 group-focus-within/prompt:opacity-100',
+              'focus-visible:opacity-100 focus-visible:vy-focus-ring'
+            )}
+            aria-label="Revert back"
+            data-no-prompt-edit
+            onClick={(e) => {
+              e.stopPropagation()
+              onRevert?.()
+            }}
+          >
+            <Icon name="revert" size={14} />
+          </button>
+        </Tooltip>
       ) : null}
 
       {hasBody ? (

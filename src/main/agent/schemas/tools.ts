@@ -191,6 +191,22 @@ const gitCommitArgs = z
       .optional()
   })
 
+const githubPrCreateArgs = z.object({
+  draft: z.boolean().optional().describe('Create as draft (default true)')
+})
+
+const githubPrReviewArgs = z.object({
+  event: z.enum(['approve', 'request-changes', 'comment']).describe('Review action'),
+  body: z.string().trim().max(8_000).optional().describe('Review comment body'),
+  number: z.number().int().positive().optional().describe('PR number; omit for the current branch PR')
+})
+
+const githubIssueArgs = z.object({
+  action: z.enum(['list', 'create']).describe('List open issues or create one'),
+  title: z.string().trim().min(1).max(256).optional().describe('Required when action is create'),
+  body: z.string().trim().max(8_000).optional().describe('Issue body when creating')
+})
+
 const globArgs = z
   .object({
     pattern: z
@@ -361,6 +377,31 @@ const todoWriteArgs = z
     },
     { message: 'todo ids must be unique', path: ['todos'] }
   )
+
+const createPlanArgs = z.object({
+  title: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('H1 title for the plan'),
+  plan: z
+    .string()
+    .trim()
+    .min(1)
+    .describe('Markdown with Goal, Steps, and Done when'),
+  todos: z
+    .array(
+      z.object({
+        id: z.string().min(1).describe('Stable id'),
+        content: z.string().min(1).describe('Task text'),
+        status: z
+          .enum(['pending', 'in_progress', 'completed', 'cancelled'])
+          .describe('pending, in_progress, completed, or cancelled')
+      })
+    )
+    .describe('Optional tasks merged into todo_write')
+    .optional()
+})
 const browserSearchArgs = z
   .object({
     query: z.string().trim().min(1).describe('Search query string.'),
@@ -788,6 +829,36 @@ const diagnosticsArgs = z
       .optional()
   })
 
+const runTestsArgs = z
+  .object({
+    command: z
+      .string()
+      .trim()
+      .min(1)
+      .describe(
+        'Optional explicit test command (sandboxed; shell metacharacters are rejected). Omit to run the workspace test script.'
+      )
+      .optional(),
+    script: z
+      .string()
+      .trim()
+      .min(1)
+      .describe('Optional package script name to run via the workspace package manager (e.g. "test:unit").')
+      .optional()
+  })
+
+const gitApplyArgs = z
+  .object({
+    patch: z
+      .string()
+      .min(1)
+      .describe('Unified diff text to apply with `git apply` (must apply inside the workspace).'),
+    check: z
+      .boolean()
+      .describe('When true, validate the patch applies without modifying files (git apply --check).')
+      .optional()
+  })
+
 const skillArgs = z
   .object({
     name: z
@@ -844,10 +915,72 @@ const mergeAgentInstanceArgs = z.object({
     .describe('Finished child run id whose worktree branch should merge into the parent HEAD.')
 })
 
+const cancelAgentInstanceArgs = z.object({
+  run_id: z.string().min(1).describe('Child run id to cancel.')
+})
+
+const notebookLanguage = z.enum([
+  'python',
+  'markdown',
+  'javascript',
+  'typescript',
+  'r',
+  'sql',
+  'shell',
+  'raw',
+  'other'
+])
+
+const editNotebookArgs = z.object({
+  target_notebook: z
+    .string()
+    .min(1)
+    .describe('Workspace-relative .ipynb path. Cite as [[path]].'),
+  cell_idx: z
+    .number()
+    .int()
+    .nonnegative()
+    .describe('0-based cell index. For a new cell this is the insert index (length to append).'),
+  is_new_cell: z
+    .boolean()
+    .describe('When true, insert a cell at cell_idx instead of replacing inside an existing cell.')
+    .optional(),
+  cell_language: notebookLanguage
+    .describe('Cell language for a new cell (required when is_new_cell is true).')
+    .optional(),
+  old_string: z
+    .string()
+    .describe('Exact unique snippet to replace inside the cell. Required unless is_new_cell.')
+    .optional(),
+  new_string: z.string().describe('Replacement or new cell body.')
+})
+
+const lspArgs = z.object({
+  path: z.string().min(1).describe('Workspace-relative file. Cite as [[path]] or [[path:line]].'),
+  action: z
+    .enum(['hover', 'completion', 'diagnostics', 'definition', 'rename'])
+    .describe('Default diagnostics. rename is Agent-only and applies workspace edits.')
+    .optional(),
+  line: z.number().int().nonnegative().describe('0-based line for hover/definition/rename/completion.').optional(),
+  character: z
+    .number()
+    .int()
+    .nonnegative()
+    .describe('0-based character in the line.')
+    .optional(),
+  new_name: z
+    .string()
+    .trim()
+    .min(1)
+    .max(256)
+    .describe('Required for rename.')
+    .optional()
+})
+
 const TOOL_REGISTRY = {
   read: {
     description:
-      'Read a file under the workspace root (text only). Directories return a shallow listing. Prefer startLine/endLine for a line window and omit offset/limit then — offset/limit is a byte window, not lines. Cite as [[path]] or [[path:line]].',
+      'Read a file under the workspace root (text only). Directories return a shallow listing. Prefer startLine/endLine for a line window and omit offset/limit then — offset/limit is a byte window, not lines. For .ipynb cell edits use edit_notebook. Cite as [[path]] or [[path:line]].',
     schema: readArgs
   },
   edit: {
@@ -872,7 +1005,7 @@ const TOOL_REGISTRY = {
   },
   codebase_search: {
     description:
-      'Semantic search over the local codebase index. Prefer for conceptual questions; use grep/search for exact identifiers or regex. Not memory RAG. Cite hits as [[path]] or [[path:line]].',
+      'Local codebase search over the indexed repository. Prefers dense semantic ranking when an embedding model is configured (Ollama or a downloaded model); otherwise it transparently falls back to lexical/FTS matching. Use for conceptual questions; use grep/search for exact identifiers or regex. The tool result states which mode was used. Not memory RAG. Cite hits as [[path]] or [[path:line]].',
     schema: codebaseSearchArgs
   },
   list_dir: {
@@ -898,6 +1031,11 @@ const TOOL_REGISTRY = {
     description:
       "This run's task list. Pass todos: [{ id, content, status }]. Default replace clears omitted ids; merge:true upserts by id. Extra in_progress items are demoted to pending (one kept). completed counts toward N/M; cancelled stays in the denominator.",
     schema: todoWriteArgs
+  },
+  create_plan: {
+    description:
+      'Publish this run plan.md (Plan mode). title is the H1. plan markdown should cover Goal, Steps, and Done when. Optional todos merge into todo_write. Copies Done when into contract.md. Do not put the plan only in chat.',
+    schema: createPlanArgs
   },
   browser_search: {
     description:
@@ -1058,10 +1196,45 @@ const TOOL_REGISTRY = {
       'Create a git commit (optional push) staging only files this run changed plus optional explicit paths; unrelated dirty files stay uncommitted. Fails when this run changed nothing and paths is omitted. Agent-only; requires approval when enabled.',
     schema: gitCommitArgs
   },
+  git_apply: {
+    description:
+      'Apply a unified diff to the workspace with `git apply` (or `git apply --check` when check is true). Agent-only; requires approval when enabled.',
+    schema: gitApplyArgs
+  },
+  github_pr_create: {
+    description:
+      'Push the current topic branch and create a GitHub pull request via gh. Agent-only; requires approval.',
+    schema: githubPrCreateArgs
+  },
+  github_pr_review: {
+    description:
+      'Submit a GitHub pull request review (approve, request-changes, or comment) via gh. Agent-only; requires approval.',
+    schema: githubPrReviewArgs
+  },
+  github_issue: {
+    description:
+      'List open GitHub issues or create one via gh. Create requires approval. Agent-only.',
+    schema: githubIssueArgs
+  },
   diagnostics: {
     description:
       'Run project typecheck or lint and return structured diagnostics when parseable. Uses the configured diagnostics command or a package script, else falls back to tsc --noEmit / eslint. Returns a skip notice only when there is no override command and no JS/TS project surface. Capped at 120s.',
     schema: diagnosticsArgs
+  },
+  run_tests: {
+    description:
+      'Run the workspace test suite and return pass/fail output. Accepts an optional sandboxed command or a named package script; otherwise runs the workspace test script (pnpm/npm test). Capped at 5 minutes.',
+    schema: runTestsArgs
+  },
+  edit_notebook: {
+    description:
+      'Edit one cell in a nbformat v4 .ipynb (insert or unique string replace). Does not execute the kernel. Agent-only. Cite as [[path]].',
+    schema: editNotebookArgs
+  },
+  lsp: {
+    description:
+      'Language-server hover, completions, diagnostics, definition, or rename for a workspace file when a server is on PATH. rename applies edits (Agent-only). Cite as [[path]] or [[path:line]].',
+    schema: lspArgs
   },
   spawn_agent_instance: {
     description:
@@ -1081,6 +1254,11 @@ const TOOL_REGISTRY = {
     description:
       'Merge one successfully finished (done) instance worktree branch into parent HEAD (clean tree; one at a time).',
     schema: mergeAgentInstanceArgs
+  },
+  cancel_agent_instance: {
+    description:
+      'Cancel a still-running spawned instance (by run_id). Use when a child is stuck, looping on denials, or no longer needed; pull its output afterwards.',
+    schema: cancelAgentInstanceArgs
   }
 } as const
 
@@ -1132,15 +1310,20 @@ const TOOL_NAME_ALIASES = new Map<string, AgentToolName>([
   ['listfiles', 'list_dir'],
   ['ls', 'list_dir'],
   ['todo', 'todo_write'],
+  ['writeplan', 'create_plan'],
   ['semanticsearch', 'codebase_search'],
   ['searchreplace', 'str_replace'],
   ['replaceinfile', 'str_replace'],
-  ['getmcptools', 'mcp_list_tools']
+  ['getmcptools', 'mcp_list_tools'],
+  ['task', 'spawn_agent_instance'],
+  ['subagent', 'spawn_agent_instance'],
+  ['notebookedit', 'edit_notebook'],
+  ['readlints', 'lsp']
 ])
 
 /**
  * Map invented / PascalCase names onto the builtin catalog.
- * MCP names (`mcp__…`) are left unchanged. Ambiguous names (`Task`, `Agent`) are not remapped.
+ * MCP names (`mcp__…`) are left unchanged. `Agent` is not remapped (ambiguous with mode).
  */
 export function canonicalizeAgentToolName(name: string): string {
   const trimmed = name.trim()
@@ -1193,13 +1376,16 @@ export function formatMalformedToolArgsError(name: string): string {
 export function formatUnknownToolError(name: string): string {
   const catalog = "Call only names from this turn's tool catalog."
   if (name === 'write_plan') {
-    return `Unknown tool "write_plan". Plan mode does not add tools — use edit to write plan.md.`
+    return `Unknown tool "write_plan". Use create_plan to write plan.md.`
   }
   if (/^memory_/i.test(name)) {
     return `Unknown tool "${name}". Memory tools are memory_list, memory_read, and memory_write.`
   }
   if (/^todo_/i.test(name)) {
     return `Unknown tool "${name}". The run task list tool is todo_write.`
+  }
+  if (/^(generate_image|edit_image)$/i.test(name)) {
+    return `Unknown tool "${name}". Image generation is not in the catalog.`
   }
   if (/^(task|agent|subagent)$/i.test(name)) {
     return `Unknown tool "${name}". ${catalog} Parallel work uses spawn_agent_instance (root Agent runs).`

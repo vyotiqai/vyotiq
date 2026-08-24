@@ -22,8 +22,8 @@ function ConfirmActionButton({
       ref={buttonRef}
       type="button"
       className={cn(
-        'app-region-no-drag inline-grid place-items-center rounded-md text-muted vy-transition hover:bg-surface/60 hover:text-fg',
-        size === 'sm' ? 'size-5' : 'size-6',
+        'app-region-no-drag relative inline-grid place-items-center rounded-md text-muted vy-transition hover:bg-surface/60 hover:text-fg',
+        size === 'sm' ? 'size-6' : 'size-7',
         className
       )}
       aria-label={label}

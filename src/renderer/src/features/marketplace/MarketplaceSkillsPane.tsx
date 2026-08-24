@@ -442,10 +442,14 @@ function SkillEditor({
   }
 
   if (loading) {
-    return <p className="m-0 text-xs text-muted">Loading skill…</p>
+    return (
+      <p className="m-0 text-xs text-muted" role="status">Loading skill…</p>
+    )
   }
   if (loadError) {
-    return <p className="m-0 text-xs text-danger">{loadError}</p>
+    return (
+      <p className="m-0 text-xs text-danger" role="alert">{loadError}</p>
+    )
   }
 
   return (

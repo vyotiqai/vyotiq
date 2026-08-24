@@ -45,15 +45,17 @@ export const ACTIVE_PROVIDER_OPTIONS = PROVIDER_DEFAULTS.map((p) => ({
 }))
 
 export const CODEINDEX_EMBEDDER_OPTIONS = [
-  { value: 'mdenseon', label: 'LightOn dense (mDenseOn / ONNX)' },
+  { value: 'lfm2', label: 'LFM2.5-Embedding-350M (local / Ollama, 1024-dim)' },
+  { value: 'mdenseon', label: 'LightOn dense (mDenseOn / DenseOn ONNX)' },
   { value: 'ollama', label: 'Ollama' },
-  { value: 'hash', label: 'Local hash' }
+  { value: 'hash', label: 'Local hash (offline bag-of-tokens fallback)' }
 ]
 
 export const DICTATION_ENGINE_OPTIONS = [
   { value: 'openai', label: 'OpenAI' },
   { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'local', label: 'Local' }
+  { value: 'local', label: 'Local' },
+  { value: 'qwen3-asr', label: 'Qwen3-ASR (local server)' }
 ]
 
 export const DICTATION_WAVEFORM_STYLE_OPTIONS = [

@@ -24,7 +24,7 @@ const MENTION_TREE_MAX_PX = 480
 
 const stickySectionHeader = cn(
   composerDropdownSectionHeader,
-  'sticky top-0 z-[1] bg-card'
+  'sticky top-0 z-sticky bg-card'
 )
 
 function itemIcon(item: MentionMenuItem): IconName {
@@ -130,7 +130,7 @@ function MentionRow({
       onClick={onPick}
     >
       {item.kind === 'file' || item.kind === 'docs' ? (
-        <FileTypeBadge path={item.path} />
+        <FileTypeBadge path={item.path} size="md" />
       ) : (
         <Icon name={itemIcon(item)} size={16} className="shrink-0 text-muted" />
       )}
@@ -248,7 +248,7 @@ export function MentionMenu({
       aria-label="Mentions"
       aria-activedescendant={activeDescendant}
       tabIndex={0}
-      className="fixed z-dropdown flex overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-fade-in"
+      className="fixed z-dropdown flex overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-menu-in origin-bottom"
       style={{
         top: position.placement === 'up' ? undefined : position.top,
         bottom:

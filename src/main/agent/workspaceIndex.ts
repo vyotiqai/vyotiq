@@ -24,6 +24,11 @@ import {
 } from './indexJobQueue'
 import { clearIndexSyncProgress } from './codeindex/indexProgress'
 import { setCodeIndexRuntimeStatus } from './codeindex/modelStatus'
+import {
+  advanceWarmPagingState,
+  warmProgressKey,
+  type WarmPagingState
+} from './workspaceIndexPaging'
 
 export const WORKSPACE_INDEX_DEBOUNCE_MS = SPARSE_GREP_SYNC_DEBOUNCE_MS
 
@@ -32,9 +37,18 @@ function workspaceKey(workspaceRoot: string): string {
 }
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
+const pagingTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const pagingState = new Map<string, WarmPagingState>()
 const abortControllers = new Map<string, AbortController>()
 /** Worktrees torn down permanently — block warm/search after instance finalize. */
 const permanentlyDisposedKeys = new Set<string>()
+
+function clearPaging(key: string): void {
+  const t = pagingTimers.get(key)
+  if (t) clearTimeout(t)
+  pagingTimers.delete(key)
+  pagingState.delete(key)
+}
 
 function controllerFor(workspaceRoot: string): AbortController {
   const key = workspaceKey(workspaceRoot)
@@ -130,6 +144,7 @@ export function warmWorkspaceIndexes(workspaceRoot: string): void {
             skipped: code.sync.skipped,
             removed: code.sync.removed,
             complete: code.sync.syncComplete,
+            cursor: code.sync.cursor,
             model: code.entry?.embedder.modelId
           })
         }
@@ -146,23 +161,69 @@ export function warmWorkspaceIndexes(workspaceRoot: string): void {
             indexed: sparse.sync.indexed,
             skipped: sparse.sync.skipped,
             removed: sparse.sync.removed,
-            complete: sparse.sync.syncComplete
+            complete: sparse.sync.syncComplete,
+            cursor: sparse.sync.cursor
           })
         }
         const codeDone = code.disabled === true || code.sync == null || code.sync.syncComplete
         const sparseDone = sparse.sync == null || sparse.sync.syncComplete
         if (!codeDone || !sparseDone) {
+          const progressKey = warmProgressKey({
+            codeScanned: code.sync?.scanned,
+            codeIndexed: code.sync?.indexed,
+            codeComplete: code.sync?.syncComplete,
+            codeCursor: code.sync?.cursor,
+            sparseScanned: sparse.sync?.scanned,
+            sparseIndexed: sparse.sync?.indexed,
+            sparseComplete: sparse.sync?.syncComplete,
+            sparseCursor: sparse.sync?.cursor
+          })
+          const next = advanceWarmPagingState(pagingState.get(key), progressKey)
+          pagingState.set(key, next)
+          if (next.stalled) {
+            logger.warn('Workspace index warm stalled (no paging progress)', {
+              scope: 'workspaceIndex',
+              workspace: workspaceRoot,
+              key: progressKey
+            })
+            clearPaging(key)
+            setCodeIndexRuntimeStatus({
+              phase: 'error',
+              modelId: code.entry?.indexModelId ?? code.entry?.embedder.modelId ?? '',
+              message: 'Index paging stalled — no progress',
+              error:
+                'Index paging made no progress. Click Reindex workspace to retry.',
+              progress: null,
+              indexProgress: null
+            })
+            return
+          }
+          logger.info('Workspace index warm paging backoff', {
+            scope: 'workspaceIndex',
+            workspace: workspaceRoot,
+            backoffMs: next.backoffMs,
+            stallCount: next.stallCount
+          })
           setCodeIndexRuntimeStatus({
             phase: 'indexing',
             modelId: code.entry?.indexModelId ?? code.entry?.embedder.modelId ?? '',
-            message: 'Indexes paging — continuing in background',
+            message: `Indexes paging — continuing in ${Math.round(next.backoffMs / 1000)}s`,
             error: null,
             progress: 0.7,
             indexProgress: null
           })
-          warmWorkspaceIndexes(workspaceRoot)
+          const prevPaging = pagingTimers.get(key)
+          if (prevPaging) clearTimeout(prevPaging)
+          pagingTimers.set(
+            key,
+            setTimeout(() => {
+              pagingTimers.delete(key)
+              warmWorkspaceIndexes(workspaceRoot)
+            }, next.backoffMs)
+          )
           return
         }
+        clearPaging(key)
         clearIndexSyncProgress()
         const queryModelId = code.entry?.embedder.modelId ?? ''
         const indexModelId = code.entry?.indexModelId ?? queryModelId
@@ -237,6 +298,7 @@ export function disposeWorkspaceIndexes(
   const prev = timers.get(key)
   if (prev) clearTimeout(prev)
   timers.delete(key)
+  clearPaging(key)
   dropPendingByCoalesceKey(`warm:${key}`)
   dropPendingByCoalesceKey(`reindex:${key}`)
   const ac = abortControllers.get(key)
@@ -252,6 +314,9 @@ export function disposeWorkspaceIndexes(
 export function clearWorkspaceIndexSyncTimers(): void {
   for (const t of timers.values()) clearTimeout(t)
   timers.clear()
+  for (const t of pagingTimers.values()) clearTimeout(t)
+  pagingTimers.clear()
+  pagingState.clear()
   for (const ac of abortControllers.values()) ac.abort()
   abortControllers.clear()
   permanentlyDisposedKeys.clear()

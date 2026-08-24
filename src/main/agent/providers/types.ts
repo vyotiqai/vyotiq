@@ -96,6 +96,10 @@ export interface ProviderChatRequest {
   baseUrl?: string
   /** Optional max output tokens from model metadata. */
   maxOutputTokens?: number
+  /** Sampling temperature. Unset leaves the provider default. */
+  temperature?: number
+  /** Stop sequences (provider-capped). */
+  stop?: string[]
   /** Anthropic-native context management / caching. */
   anthropicNative?: {
     enableContextManagement: boolean

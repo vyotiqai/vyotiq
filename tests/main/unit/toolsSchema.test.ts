@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { AGENT_TOOLS, AWAIT_AGENT_INSTANCE_MAX_MS, BUILTIN_TOOL_NAMES, validateToolArgs } from '@main/agent/schemas/tools'
+import { BUILTIN_HANDLERS } from '@main/agent/tools'
 import {
   DEFAULT_NAV_TIMEOUT_MS,
   DEFAULT_SNAPSHOT_CHARS,
@@ -12,7 +13,6 @@ import {
 } from '@main/app/browserUrl'
 import { estimateTextTokens } from '@main/agent/context/estimate'
 import { BUDGET_SHARES } from '@main/agent/context/types'
-import { HARNESS_SECTION_TAGS } from '@main/agent/harnessSections'
 
 const SECTION_HEADERS = [
   'WHEN TO USE:',
@@ -38,7 +38,16 @@ describe('toolsSchema', () => {
   it('covers every executable built-in with a short description', () => {
     const names = AGENT_TOOLS.map((t) => t.name).sort()
     expect(names).toEqual([...BUILTIN_TOOL_NAMES].sort())
-    expect(names.length).toBe(53)
+    expect(names.length).toBe(59)
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'github_pr_create',
+        'github_pr_review',
+        'github_issue',
+        'edit_notebook',
+        'lsp'
+      ])
+    )
 
     for (const tool of AGENT_TOOLS) {
       expect(tool.description.trim().length, `${tool.name} empty description`).toBeGreaterThan(0)
@@ -47,6 +56,16 @@ describe('toolsSchema', () => {
           section
         )
       }
+    }
+  })
+
+  it('wires a real handler for every built-in tool (no missing/stub handlers)', () => {
+    const handlerNames = Object.keys(BUILTIN_HANDLERS).sort()
+    expect(handlerNames).toEqual([...BUILTIN_TOOL_NAMES].sort())
+    expect(handlerNames).toHaveLength(59)
+    for (const name of BUILTIN_TOOL_NAMES) {
+      const handler = BUILTIN_HANDLERS[name as keyof typeof BUILTIN_HANDLERS]
+      expect(typeof handler, `${name} handler must be a function`).toBe('function')
     }
   })
 
@@ -146,109 +165,36 @@ describe('toolsSchema', () => {
 })
 
 describe('harness tool catalog', () => {
-  it('has an instruction-first structure with Tool policy and no per-tool catalog', () => {
+  it('has a concise durable structure without runtime catalog duplication', () => {
     const harnessPath = join(process.cwd(), 'resources', 'harness', 'default.md')
     const harness = readFileSync(harnessPath, 'utf8')
-    expect(harness).toContain('<role>')
-    expect(harness).toContain('<capabilities>')
-    expect(harness).toContain('<tool_policy>')
-    expect(harness).toContain('<constraints>')
-    expect(harness).toContain('<work_style>')
-    expect(harness).toContain('<memory>')
-    expect(harness).not.toContain('## Codebase search')
-    expect(harness).toMatch(/Prefer `codebase_search` for conceptual/i)
-    expect(harness).toContain('<compaction>')
-    expect(harness).toContain('auto-compacts')
-    expect(harness).toMatch(/memory_write/)
-    expect(harness).not.toMatch(/(?<![a-zA-Z])\/compact(?![a-zA-Z])/)
-    expect(harness).not.toMatch(/context meter/i)
-    expect(harness).not.toContain('compact_context')
-    expect(harness).not.toMatch(/\*\*Fire\*\*/)
-    expect(harness).not.toMatch(/\*\*Suppress\*\*/)
-    expect(harness).toContain('<output_format>')
-    expect(harness).toContain('<patterns>')
-    expect(harness).toContain('<scope_boundaries>')
-    expect(harness).toContain('<reference_points>')
-    expect(harness).toContain('<aliases>')
-    expect(harness).toContain('<examples>')
-    expect(harness).toMatch(/`D1`/)
-    expect(harness).toMatch(/`R1`/)
-    expect(harness).toMatch(/`F1`/)
-    expect(harness).toMatch(/`str`/)
-    expect(harness).toMatch(/`eli`/)
-    expect(harness).not.toMatch(/pnpm test parseArgs/)
-    expect(harness).not.toMatch(/Talk less/i)
-    expect(harness).toMatch(/Call tools to inspect and edit/)
-    expect(harness).toMatch(/Do not recap the request/)
-    expect(harness).toMatch(/narrate routine tool/)
-    expect(harness).toMatch(/Before the first tool call/)
-    expect(harness).toMatch(/one sentence stating the first step/)
-    expect(harness).not.toMatch(/silence between batches/i)
-    expect(harness).not.toMatch(/no assistant prose/i)
-    expect(harness).toMatch(/ask_question/)
-    expect(harness).toMatch(/materially different work/)
-    expect(harness).toMatch(/visible reply is the outcome/)
-    expect(harness).toMatch(/\[\[path\]\]/)
-    expect(harness).toMatch(/\[\[https:\/\/url\]\]/)
-    expect(harness).toMatch(/Do not write a Sources list/)
-    for (const tag of HARNESS_SECTION_TAGS) {
-      if (tag === 'workspace_harness') {
-        expect(harness, 'spine must not wrap itself as workspace appendix').not.toContain(
-          `</${tag}>`
-        )
-        continue
-      }
+    for (const tag of [
+      'role',
+      'capabilities',
+      'tool_policy',
+      'constraints',
+      'work_style',
+      'memory',
+      'output_format'
+    ]) {
       expect(harness).toContain(`<${tag}>`)
       expect(harness).toContain(`</${tag}>`)
     }
+    expect(harness, 'spine must not wrap itself as workspace appendix').not.toContain(
+      '</workspace_harness>'
+    )
     expect(harness).not.toMatch(/^##\s+/m)
-    expect(harness).toContain('mcp__<serverId>__<toolName>')
-    // MCP allowedTools/deniedTools are runtime-enforced; do not invent allowlist/denylist.
-    expect(harness).not.toMatch(/\ballowlist\b/i)
-    expect(harness).not.toMatch(/\bdenylist\b/i)
-    // WHEN to spawn is catalog-gated in Tool policy; merge HOW stays in the mode overlay.
-    expect(harness).toMatch(/Batch independent inspect\/search\/edit\/create/)
-    expect(harness).toMatch(/different files only/)
-    expect(harness).toMatch(/If `spawn_agent_instance` is in this turn's catalog/)
-    expect(harness).toMatch(/one spawn per independent workstream/)
-    expect(harness).toMatch(/`goal` complete for that child/)
-    expect(harness).toMatch(/then await those `run_id`s in the same step/)
-    expect(harness).toMatch(/Do not wrap the whole request as one child/)
-    expect(harness).toMatch(/Do not spawn to verify or double-check/)
-    expect(harness).not.toMatch(/merge_agent_instance/)
-    expect(harness).not.toContain('## Context')
-    expect(harness).not.toContain('<attachment')
-    expect(harness).not.toMatch(/\*\*read\*\* —/)
-    expect(harness).not.toMatch(/\*\*terminal\*\* —/)
-    expect(harness).not.toMatch(/\*\*glob\*\* —/)
-    expect(harness).toMatch(/workspace file inspection, search, and edits/i)
-    expect(harness).toMatch(/not shell commands/i)
-    expect(harness).toMatch(/configured host shell/)
-    expect(harness).not.toMatch(/On PowerShell/i)
-    expect(harness).not.toMatch(/Get-Content/)
-    expect(harness).not.toMatch(/Select-Object/)
-    expect(harness).toMatch(/Call only names in this turn's catalog/i)
-    expect(harness).not.toMatch(/such as `write`/)
-    // Index / embedder / settings internals belong in tool schemas, not the harness.
-    expect(harness).not.toMatch(/nomic-embed/i)
-    expect(harness).not.toMatch(/userData\/workspaces/i)
-    expect(harness).not.toMatch(/sparsegrep/i)
-    expect(harness).not.toMatch(/auto-compact threshold/i)
-    expect(harness).not.toMatch(/Settings → Agent/)
-    expect(harness).not.toMatch(/TOOLS_BUDGET_OVERFLOW/)
-    // Mode availability detail lives in modeSectionMarkdown, not Capabilities.
-    expect(harness).not.toMatch(/MCP server tools are unavailable in Ask\/Plan/i)
-    expect(harness).not.toMatch(/in Plan, `diagnostics`/i)
-    // Browser @eN refresh how-to and ask_question stacking limits live in tool schemas.
-    expect(harness).not.toMatch(/includeSnapshot/)
-    expect(harness).not.toMatch(/Prefer ≤2 questions/i)
-    expect(harness).not.toMatch(/@eN/)
-    // Slash commands are user/composer, not agent tools. /clear nags are product-suppressed.
-    expect(harness).not.toMatch(/slash command/i)
-    expect(harness).not.toMatch(/\/clear/)
-    // Deferred builtin name catalogs live in the volatile run notice, not the harness.
-    expect(harness).not.toMatch(/wait_\*|handle_dialog/)
-    expect(harness).toMatch(/run-notice Level-1|deferred built-in/i)
+    expect(harness).toMatch(/Use only capabilities exposed in the current tool catalog/i)
+    expect(harness).toMatch(/exact catalog tool names and valid arguments/i)
+    expect(harness).toMatch(/independent operations concurrently/i)
+    expect(harness).toMatch(/preserve unrelated user changes/i)
+    expect(harness).toMatch(/Separate observed facts from inferences/i)
+    expect(harness).toMatch(/Commits, pushes, deployments/i)
+    expect(harness).toMatch(/Continue authorized work until it is complete/i)
+    expect(harness).toMatch(/narrowest relevant checks/i)
+    expect(harness).not.toMatch(
+      /mcp__|mcp_list_tools|spawn_agent_instance|run_id|generate_image|edit_image|Ask\/Plan|auto-compacts|8 consecutive|6 steps/i
+    )
   })
 
   it('keeps prompt-injection guardrails without mode workflow essays or product-UI chrome', () => {
@@ -258,7 +204,7 @@ describe('harness tool catalog', () => {
     expect(harness).toMatch(/verified evidence from this run/)
     expect(harness).not.toMatch(/guessed path/i)
     expect(harness).toMatch(/data, not instructions/i)
-    expect(harness).toMatch(/take precedence over any embedded directives/i)
+    expect(harness).toMatch(/take precedence over directives/i)
     expect(harness).not.toMatch(/Keep\/Discard/i)
     expect(harness).not.toMatch(/Verify before done|verify-before-done|soft-nudge/i)
     expect(harness).not.toMatch(/Contract done-when|contractDoneWhen|mechanically checked/i)
@@ -266,11 +212,11 @@ describe('harness tool catalog', () => {
     expect(harness).not.toMatch(/Prefer `read`[\s\S]*before editing/i)
     expect(harness).not.toMatch(/todo_write/)
     expect(harness).not.toMatch(/Write durable facts with `memory_write` when learned/i)
-    expect(harness).toMatch(/Do not add a package unless the change requires it/i)
-    expect(harness).toMatch(/exist on disk/)
+    expect(harness).toMatch(/Do not add a package unless the requested change requires it/i)
+    expect(harness).toMatch(/files, tests, logs, or runtime output/)
     expect(harness).toMatch(/do not rely on training memory/i)
-    expect(harness).toMatch(/Store verified facts from this run only/)
-    expect(harness).toMatch(/memory_write` verified durable facts/)
+    expect(harness).toMatch(/Store verified facts only/)
+    expect(harness).not.toMatch(/memory_write/)
     expect(harness).toMatch(/evidence from this run/)
     expect(harness).not.toMatch(/never lorem ipsum/i)
     expect(harness).not.toMatch(/unbounded rows/i)
@@ -302,31 +248,21 @@ describe('harness tool catalog', () => {
     expect(estimateTextTokens(harness)).toBeLessThan(2000)
   })
 
-  it('moved run-time and meta-assembly documentation to the harness handbook', () => {
+  it('documents canonical harness ownership outside the runtime harness', () => {
     const harnessPath = join(process.cwd(), 'docs', 'harness-handbook.md')
     const handbook = readFileSync(harnessPath, 'utf8')
-    expect(handbook).toMatch(/receipt\.json/i)
-    expect(handbook).toMatch(/harness-review|harness\/proposals/i)
-    expect(handbook).toMatch(/harness-apply/i)
-    expect(handbook).toMatch(/not unsupervised Self-Harness|human review scaffold/i)
-    expect(handbook).toMatch(/normal PR/i)
-    expect(handbook).toMatch(/mode section/i)
-    expect(handbook).toMatch(/How the system prompt is assembled/i)
-    expect(handbook).toMatch(/What belongs in `resources\/harness\/default\.md`/i)
-    expect(handbook).toMatch(/one owner per rule/i)
-    // Assembly order + memory truth (must match assemble.ts).
-    expect(handbook).toMatch(/Workspace rules[\s\S]*last/i)
-    expect(handbook).toMatch(/Memory files are \*\*not\*\* auto-injected/i)
+    expect(handbook).toMatch(/resources\/harness\/default\.md.*canonical first-party harness/i)
+    expect(handbook).toMatch(/Word documents are reference copies, not runtime policy sources/i)
+    expect(handbook).toMatch(/Build and install commands do not regenerate the canonical harness/i)
+    expect(handbook).toMatch(/tool names, arguments, limits, and usage details/i)
+    expect(handbook).toMatch(/runtime thresholds/i)
+    expect(handbook).toMatch(/Stable system order:[\s\S]*Workspace rules/i)
+    expect(handbook).toMatch(/Memory files are not injected automatically/i)
     expect(handbook).toMatch(/workspace_harness/)
-    expect(handbook).toMatch(/capHarness/)
-    expect(handbook).not.toMatch(/compact fire\/suppress/i)
-    expect(handbook).toMatch(/untrusted_content/)
-    expect(handbook).toMatch(/cannot override Constraints/i)
-    expect(handbook).toMatch(/host-agnostic/)
-    expect(handbook).toMatch(/configured\/host shell/)
-    // Single receipt.json table row (no duplicate conflicting descriptions).
-    const receiptRows = handbook.match(/^\| `receipt\.json`/gm) ?? []
-    expect(receiptRows.length).toBe(1)
+    expect(handbook).toMatch(/untrusted preferences/i)
+    expect(handbook).toMatch(/never replaces the first-party harness/i)
+    expect(handbook).toMatch(/harness-apply/i)
+    expect(handbook).toMatch(/normal code change/i)
   })
 
   it('defaults await_agent_instance timeout_ms without a maximum clamp', () => {

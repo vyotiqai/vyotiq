@@ -247,7 +247,7 @@ function InstalledMarketplaceItem({
         />
       ) : null}
       <Button
-        variant="subtle"
+        variant="danger"
         className="mt-2"
         disabled={formLocked}
         onClick={() => void uninstall(item.id)}

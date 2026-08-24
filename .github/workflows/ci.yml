@@ -12,14 +12,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: pnpm/action-setup@v4
         with:
-          version: 11.20.0
+          version: 11.22.0
 
       - uses: actions/setup-node@v4
         with:
@@ -29,15 +29,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Install Playwright Chromium (Ubuntu)
-        if: runner.os == 'Linux'
-        run: npx playwright install --with-deps chromium
+      - name: Install Playwright Chromium
+        run: npx playwright install ${{ runner.os == 'Linux' && '--with-deps' || '' }} chromium
 
       - name: Typecheck
         run: pnpm typecheck
 
-      - name: Test
-        run: pnpm test
+      - name: Test (with coverage)
+        run: pnpm test:coverage
 
       - name: Lint
         run: pnpm lint
@@ -52,7 +51,7 @@ jobs:
         run: pnpm audit --audit-level high
 
       - name: Package unpacked (smoke)
-        run: pnpm exec electron-builder --${{ runner.os == 'Windows' && 'win' || 'linux' }} dir --publish never
+        run: pnpm exec electron-builder --${{ runner.os == 'Windows' && 'win' || runner.os == 'macOS' && 'mac' || 'linux' }} dir --publish never
 
       - name: GUI e2e
         run: pnpm test:gui-e2e

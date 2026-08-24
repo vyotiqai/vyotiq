@@ -14,10 +14,13 @@ describe('useAppearance', () => {
     document.documentElement.removeAttribute('data-font-scale')
     document.documentElement.removeAttribute('data-density')
     document.documentElement.removeAttribute('data-accent')
+    document.documentElement.removeAttribute('data-skin')
     // @ts-expect-error test bridge
     window.vyotiq = {
+      platform: 'win32',
       getSystemTheme: vi.fn(async () => ({ ok: true as const, data: false })),
-      onSystemThemeChanged: vi.fn(() => () => undefined)
+      onSystemThemeChanged: vi.fn(() => () => undefined),
+      onWindowFocusChanged: vi.fn(() => () => undefined)
     }
   })
 
@@ -29,10 +32,12 @@ describe('useAppearance', () => {
   it('applies appearance attributes to the document root', () => {
     renderHook(() =>
       useAppearance({
+        ...DEFAULT_SETTINGS,
         theme: 'dark',
         fontScale: 'large',
         uiDensity: 'compact',
-        accentPreset: 'blue'
+        accentPreset: 'blue',
+        skinId: 'native'
       })
     )
     const root = document.documentElement
@@ -40,6 +45,7 @@ describe('useAppearance', () => {
     expect(root.getAttribute('data-font-scale')).toBe('large')
     expect(root.getAttribute('data-density')).toBe('compact')
     expect(root.getAttribute('data-accent')).toBe('blue')
+    expect(root.getAttribute('data-skin')).toBe('native')
   })
 
   it('writes boot cache on apply', async () => {
@@ -59,14 +65,17 @@ describe('useAppearance', () => {
     let handler: ((prefersDark: boolean) => void) | undefined
     // @ts-expect-error test bridge
     window.vyotiq = {
+      platform: 'win32',
       getSystemTheme: vi.fn(async () => ({ ok: true as const, data: true })),
       onSystemThemeChanged: vi.fn((cb: (prefersDark: boolean) => void) => {
         handler = cb
         return () => undefined
-      })
+      }),
+      onWindowFocusChanged: vi.fn(() => () => undefined)
     }
     renderHook(() =>
       useAppearance({
+        ...DEFAULT_SETTINGS,
         theme: 'system',
         fontScale: 'default',
         uiDensity: 'default',

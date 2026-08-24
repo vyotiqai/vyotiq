@@ -106,7 +106,8 @@ export function assertInlineInstanceUnscopedToolAllowed(
   if (status.worktreePath) return
   throw new Error(
     `${toolLabel} is denied for path_scope-shared inline instances without a worktree. ` +
-      'Use edit/str_replace within path_scope, or run in a git repo so the instance gets an isolated worktree.'
+      'Use edit/str_replace within path_scope, or run in a git repo so the instance gets an isolated worktree. ' +
+      'This denial will not change on retry — do not repeat this call; finish within path_scope or conclude as blocked.'
   )
 }
 

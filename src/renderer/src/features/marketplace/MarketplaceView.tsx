@@ -170,10 +170,16 @@ export function MarketplaceView({
   const sectionTab: SectionTab = manageActive ? 'manage' : 'browse'
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg animate-fade-in">
+    <div
+      className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg animate-fade-in"
+      data-marketplace-shell
+    >
       <PageHeader
         bordered={false}
-        className={cn('shrink-0 border-b border-border/30 bg-bg py-3', CHAT_GUTTER)}
+        className={cn(
+          'shrink-0 border-b border-border/30 bg-bg py-3',
+          CHAT_GUTTER
+        )}
         title="Marketplace"
         description="MCP servers, skills, and packages for the agent."
         trailing={

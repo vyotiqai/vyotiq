@@ -138,6 +138,16 @@ Instructions.
     expect(parsed.metadata?.version).toBe('1.0.0')
   })
 
+  it('recovers Word-flattened SKILL.md that lost --- fences', () => {
+    const parsed = parseSkillFrontmatter(
+      'name: implement-feature description: Plan and implement a requested feature. Use when adding behavior. metadata: version: "1.0.0"\n\n## Instructions\n\nDo the work.\n'
+    )
+    expect(parsed.name).toBe('implement-feature')
+    expect(parsed.description).toContain('Use when adding behavior')
+    expect(parsed.metadata?.version).toBe('1.0.0')
+    expect(parsed.body).toContain('## Instructions')
+  })
+
   it('parses metadata.version and rejects invalid names', () => {
     const raw = `---
 name: pdf-processing
@@ -193,6 +203,17 @@ Instructions.
     expect(detected.kind).toBe('skill')
     expect(detected.id).toBe('my-skill')
     expect(detected.version).toBe('1.2.0')
+  })
+
+  it('detects skill packages whose SKILL.md was flattened by Word export', () => {
+    writeFileSync(
+      join(dir, 'SKILL.md'),
+      'name: flattened-skill description: Use when installing a marketplace skill that lost YAML fences. metadata: version: "1.4.0"\n\nBody\n'
+    )
+    const detected = detectPackageAt(dir)
+    expect(detected.kind).toBe('skill')
+    expect(detected.id).toBe('flattened-skill')
+    expect(detected.version).toBe('1.4.0')
   })
 
   it('detects legacy skill.md packages', () => {
@@ -427,7 +448,12 @@ describe('bundled marketplace catalog', () => {
       'review-code',
       'write-tests'
     ])
-    expect(plugins).toHaveLength(0)
+    expect(plugins.map((p) => p.id).sort()).toEqual([
+      'devtools',
+      'electron-app',
+      'quality',
+      'shipping'
+    ])
 
     for (const entry of catalog.packages) {
       expect(entry.installable).not.toBe(false)

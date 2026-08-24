@@ -23,7 +23,7 @@ export type ToolBodyProps = {
   expanded?: boolean
   loading?: boolean
   loadFailed?: boolean
-  /** Live progress lines from a long-running tool (e.g. image gen). */
+  /** Live progress lines from a long-running tool. */
   toolProgress?: UiToolProgressEntry[]
   /** Live terminal stdout/stderr streamed while the command runs. */
   terminalOutput?: string

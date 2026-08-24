@@ -82,7 +82,7 @@ export function DockTabBar({
   return (
     <div
       className={cn(
-        'flex min-w-0 shrink-0 flex-row items-center gap-0.5 bg-bg',
+        'flex min-w-0 shrink-0 flex-row items-center gap-0.5 bg-transparent',
         inTitleBar
           ? 'h-full w-full min-w-0 border-0 px-1 py-0'
           : 'border-b border-border/40 px-1 py-0.5',
@@ -232,7 +232,7 @@ export function DockTabBar({
               aria-label={expanded ? 'Collapse panel' : 'Expand panel'}
               onClick={onToggleExpanded}
             >
-              <Icon name={expanded ? 'sidebar' : 'maximize'} size={14} className="shrink-0" />
+              <Icon name={expanded ? 'sidebar' : 'expand'} size={14} className="shrink-0" />
             </button>
           </Tooltip>
         ) : null}

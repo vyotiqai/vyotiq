@@ -151,12 +151,32 @@ export function parseRuleFrontmatter(raw: string): {
   return { meta, body: body.trim() }
 }
 
+function globToRegExp(glob: string): RegExp {
+  const normalized = glob.replace(/\\/g, '/')
+  const escaped = normalized
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '\0')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\0/g, '.*')
+    .replace(/\?/g, '[^/]')
+  return new RegExp(`^${escaped}$`)
+}
+
 /**
- * Auto-inject when alwaysApply is true/absent.
- * `alwaysApply: false` rules are requestable (slash /create-rule open) — skip auto-inject.
- * Without active-file context, globs alone do not auto-inject when alwaysApply is false.
+ * Auto-inject when alwaysApply is true/absent and there are no globs.
+ * `alwaysApply: false` without globs is requestable only.
+ * Globs inject when the focused file matches, even if alwaysApply is false.
  */
-export function shouldAutoInjectRule(meta: RuleFrontmatter): boolean {
+export function shouldAutoInjectRule(
+  meta: RuleFrontmatter,
+  focusedFile?: string | null
+): boolean {
+  if (meta.alwaysApply === true) return true
+  if (meta.globs && meta.globs.length > 0) {
+    if (!focusedFile) return false
+    const path = focusedFile.replace(/\\/g, '/')
+    return meta.globs.some((glob) => globToRegExp(glob).test(path))
+  }
   if (meta.alwaysApply === false) return false
   return true
 }
@@ -173,9 +193,9 @@ async function readCapped(filePath: string): Promise<string | null> {
   }
 }
 
-function normalizeRuleContent(raw: string): string | null {
+function normalizeRuleContent(raw: string, focusedFile?: string | null): string | null {
   const { meta, body } = parseRuleFrontmatter(raw)
-  if (!shouldAutoInjectRule(meta)) return null
+  if (!shouldAutoInjectRule(meta, focusedFile)) return null
   const content = body.trim()
   return content || null
 }
@@ -185,7 +205,8 @@ async function collectFromDir(
   dirPath: string,
   extensions: string[],
   depth: number,
-  out: RuleFile[]
+  out: RuleFile[],
+  focusedFile?: string | null
 ): Promise<void> {
   if (depth > MAX_DIR_DEPTH || out.length >= MAX_RULE_FILES) return
   let entries: Dirent[]
@@ -200,13 +221,13 @@ async function collectFromDir(
     if (out.length >= MAX_RULE_FILES) return
     const full = join(dirPath, entry.name)
     if (entry.isDirectory()) {
-      await collectFromDir(workspacePath, full, extensions, depth + 1, out)
+      await collectFromDir(workspacePath, full, extensions, depth + 1, out, focusedFile)
       continue
     }
     if (!extensions.some((ext) => entry.name.toLowerCase().endsWith(ext))) continue
     const raw = await readCapped(full)
     if (!raw) continue
-    const content = normalizeRuleContent(raw)
+    const content = normalizeRuleContent(raw, focusedFile)
     if (content) {
       out.push({ path: relative(workspacePath, full).split(sep).join('/'), content })
     }
@@ -214,11 +235,15 @@ async function collectFromDir(
 }
 
 /** Read every workspace instruction file, in precedence order. */
-export async function readWorkspaceRules(workspacePath: string | null): Promise<RuleFile[]> {
+export async function readWorkspaceRules(
+  workspacePath: string | null,
+  focusedFile?: string | null
+): Promise<RuleFile[]> {
   if (!workspacePath) return []
 
   const fingerprint = fingerprintFor(workspacePath)
-  const cached = cache.get(workspacePath)
+  const key = `${workspacePath}\0${focusedFile ?? ''}`
+  const cached = cache.get(key)
   if (cached && cached.fingerprint === fingerprint && Date.now() - cached.builtAt < CACHE_TTL_MS) {
     return cached.files
   }
@@ -231,10 +256,10 @@ export async function readWorkspaceRules(workspacePath: string | null): Promise<
     files.push({ path: name, content: raw })
   }
   for (const { dir, extensions } of RULE_DIRS) {
-    await collectFromDir(workspacePath, join(workspacePath, dir), extensions, 0, files)
+    await collectFromDir(workspacePath, join(workspacePath, dir), extensions, 0, files, focusedFile)
   }
 
-  cache.set(workspacePath, { fingerprint, files, builtAt: Date.now() })
+  cache.set(key, { fingerprint, files, builtAt: Date.now() })
   return files
 }
 
@@ -258,9 +283,10 @@ export function formatWorkspaceRules(files: RuleFile[]): string {
 }
 
 export async function buildWorkspaceRulesSection(
-  workspacePath: string | null
+  workspacePath: string | null,
+  focusedFile?: string | null
 ): Promise<string> {
-  return formatWorkspaceRules(await readWorkspaceRules(workspacePath))
+  return formatWorkspaceRules(await readWorkspaceRules(workspacePath, focusedFile))
 }
 
 export type WorkspaceRuleListItem = {

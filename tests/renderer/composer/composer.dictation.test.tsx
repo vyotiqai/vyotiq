@@ -200,11 +200,11 @@ describe('Composer dictation', () => {
     expect(plus.className).toMatch(/\brounded-md\b/)
     expect(plus.className).not.toMatch(/\brounded-full\b/)
     const shell = document.querySelector('[data-composer-shell]')
-    expect(shell?.className).toMatch(/\brounded-xl\b/)
+    expect(shell?.className).toMatch(/\bvy-chrome\b/)
     expect(shell?.className).not.toMatch(/\brounded-full\b/)
     expect(screen.queryByRole('button', { name: /^Dictate$/i })).toBeNull()
     expect(screen.queryByRole('button', { name: /^Send$/i })).toBeNull()
-    expect(screen.queryByRole('textbox', { name: /^Message$/i })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: /^Message$/i })).toBeNull()
     expect(screen.queryByText('Listening…')).toBeNull()
     expect(screen.queryByText(/^Listening$/)).toBeNull()
     const form = document.querySelector('[data-composer-shell] form')
@@ -221,7 +221,7 @@ describe('Composer dictation', () => {
       expect(window.vyotiq.transcribeDictation).toHaveBeenCalled()
     })
     await waitFor(() => {
-      const ta = screen.getByRole('textbox', { name: /^Message$/i })
+      const ta = screen.getByRole('combobox', { name: /^Message$/i })
       expect(ta.textContent).toContain('hello from mic')
     })
     await waitFor(() => {
@@ -371,7 +371,7 @@ describe('Composer dictation', () => {
     }
     render(<CaretHarness />)
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     await act(async () => {
       ta.focus()
     })
@@ -393,7 +393,7 @@ describe('Composer dictation', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByRole('textbox', { name: /^Message$/i }).textContent).toBe(
+      expect(screen.getByRole('combobox', { name: /^Message$/i }).textContent).toBe(
         'Fix the hello from mic auth check later'
       )
     })
@@ -474,7 +474,7 @@ describe('Composer dictation', () => {
     await waitFor(() => {
       expect(window.vyotiq.transcribeDictation).toHaveBeenCalled()
     })
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     expect(ta.textContent ?? '').not.toMatch(/late transcript must not insert/)
   })
 
@@ -539,7 +539,7 @@ describe('Composer dictation', () => {
     expect(payload.data).toBeTruthy()
     expect(payload.pcm16k).toBeTruthy()
     await waitFor(() => {
-      const ta = screen.getByRole('textbox', { name: /^Message$/i })
+      const ta = screen.getByRole('combobox', { name: /^Message$/i })
       expect(ta.textContent).toContain('local transcript')
     })
   })
@@ -577,7 +577,7 @@ describe('Composer dictation', () => {
       expect(window.vyotiq.transcribeDictation).toHaveBeenCalled()
     })
     await waitFor(() => {
-      const ta = screen.getByRole('textbox', { name: /^Message$/i })
+      const ta = screen.getByRole('combobox', { name: /^Message$/i })
       expect(ta.textContent).toContain('size-capped transcript')
     })
   })

@@ -1,19 +1,16 @@
 import { existsSync } from 'fs'
 import { isAbortError } from '../../../shared/errors'
 import type { Embedder } from './embed'
-import {
-  denseOnOnnxFiles,
-  downloadModelFiles,
-  mDenseOnOnnxFiles,
-  modelFilesPresent,
-  type DownloadFileSpec
-} from './modelDownload'
+import { downloadModelFiles, modelFilesPresent } from './modelDownload'
 import { codeIndexModelDir } from './modelPaths'
 import { setCodeIndexRuntimeStatus } from './modelStatus'
 import {
   DENSEON_ONNX_MODEL_ID,
+  LFM2_EMBEDDING_DIM,
+  LFM2_EMBEDDING_MODEL_ID,
   LIGHTON_DENSE_DIM,
-  MDENSEON_MODEL_ID
+  MDENSEON_MODEL_ID,
+  neuralModelFamily
 } from './types'
 import { applyOrtThreadEnvHints, buildOrtSessionOptions } from './ortSessionOptions'
 import { embedBatchedOnnx, type OnnxTensorCtor, type OnnxTokenizer } from './onnxEmbed'
@@ -22,6 +19,8 @@ import {
   getEmbedUtilityClient,
   setEmbedUtilitySessionLostHandler
 } from './embedUtilityClient'
+import { NEURAL_ARTIFACTS, getNeuralArtifact, type NeuralArtifact } from './registry'
+import { loadGenericOnnxSession } from './onnxGeneric'
 
 export type MDenseOnEnsureOptions = {
   autoDownload?: boolean
@@ -44,33 +43,12 @@ export type OnnxEmbedSession = {
   dispose?: () => void
 }
 
-type Artifact = {
-  artifactId: string
-  modelId: string
-  files: DownloadFileSpec[]
-  /**
-   * When false, never fetch from hub — only use if already on disk.
-   * mDenseOn has no public ONNX export yet (2026-08); DenseOn is the bootstrap download.
-   */
-  allowAutoDownload: boolean
-}
+/** Mirrors the shared registry; LightOn + LFM2 neural ONNX embedders. */
+type Artifact = NeuralArtifact
 
-const ARTIFACTS: Artifact[] = [
-  {
-    artifactId: 'mDenseOn-onnx-int8',
-    modelId: MDENSEON_MODEL_ID,
-    files: mDenseOnOnnxFiles(),
-    allowAutoDownload: false
-  },
-  {
-    artifactId: 'DenseOn-onnx-int8',
-    modelId: DENSEON_ONNX_MODEL_ID,
-    files: denseOnOnnxFiles(),
-    allowAutoDownload: true
-  }
-]
+const ARTIFACTS: Artifact[] = NEURAL_ARTIFACTS
 
-/** True when LightOn ONNX weights are already on disk (no session load). */
+/** True when any neural ONNX weights are already on disk (no session load). */
 export function mDenseOnWeightsOnDisk(): boolean {
   for (const art of ARTIFACTS) {
     if (modelFilesPresent(codeIndexModelDir(art.artifactId), art.files)) return true
@@ -78,10 +56,17 @@ export function mDenseOnWeightsOnDisk(): boolean {
   return false
 }
 
+/** True when a specific neural model's weights are on disk. */
+export function neuralWeightsOnDisk(modelId: string): boolean {
+  const art = getNeuralArtifact(modelId)
+  if (!art) return false
+  return modelFilesPresent(codeIndexModelDir(art.artifactId), art.files)
+}
+
 let cachedSession: OnnxEmbedSession | null = null
 let ensurePromise: Promise<OnnxEmbedSession | null> | null = null
 
-export type EmbedderFailKind = 'mdenseon' | 'ollama'
+export type EmbedderFailKind = 'mdenseon' | 'lfm2' | 'ollama'
 
 /** Skip failed ONNX ensure / Ollama probe for this long (search must not retry 120s loads). */
 const DEFAULT_EMBEDDER_FAIL_TTL_MS = 5 * 60_000
@@ -148,7 +133,8 @@ export const clearMDenseOnSessionForTests = clearMDenseOnSession
 /** In-process ORT load (tests / VYOTIQ_EMBED_IN_PROCESS / explicit inProcess). */
 export async function loadTransformersSessionInProcess(
   modelDir: string,
-  modelId: string
+  modelId: string,
+  dimensions: number = LIGHTON_DENSE_DIM
 ): Promise<OnnxEmbedSession> {
   setCodeIndexRuntimeStatus({
     phase: 'loading',
@@ -175,7 +161,7 @@ export async function loadTransformersSessionInProcess(
 
   return {
     modelId,
-    dimensions: LIGHTON_DENSE_DIM,
+    dimensions,
     async embed(
       texts: string[],
       role: 'query' | 'document',
@@ -187,7 +173,7 @@ export async function loadTransformersSessionInProcess(
         texts,
         role,
         signal,
-        hiddenSize: LIGHTON_DENSE_DIM,
+        hiddenSize: dimensions,
         ...(Tensor ? { Tensor } : {})
       })
     },
@@ -206,6 +192,9 @@ async function loadSession(
   modelId: string,
   opts: MDenseOnEnsureOptions
 ): Promise<OnnxEmbedSession> {
+  const artifact = getNeuralArtifact(modelId)
+  const dimensions = artifact?.dimensions ?? LIGHTON_DENSE_DIM
+
   const preferUtility =
     !opts.inProcess &&
     !opts.createSession &&
@@ -233,7 +222,10 @@ async function loadSession(
     }
   }
 
-  return loadTransformersSessionInProcess(modelDir, modelId)
+  if (artifact?.loader === 'generic') {
+    return loadGenericOnnxSession(modelDir, modelId, dimensions)
+  }
+  return loadTransformersSessionInProcess(modelDir, modelId, dimensions)
 }
 
 /**
@@ -241,10 +233,20 @@ async function loadSession(
  * Uses mDenseOn ONNX when already cached; otherwise downloads DenseOn INT8 bootstrap.
  */
 export async function ensureMDenseOnModel(
-  opts: MDenseOnEnsureOptions = {}
+  opts: MDenseOnEnsureOptions = {},
+  targetModelId?: string
 ): Promise<OnnxEmbedSession | null> {
-  if (cachedSession) return cachedSession
-  if (isEmbedderFailCached('mdenseon')) return null
+  const failKind: EmbedderFailKind =
+    targetModelId === LFM2_EMBEDDING_MODEL_ID ? 'lfm2' : 'mdenseon'
+  // Reuse a cached model only when it matches the requested family.
+  if (
+    cachedSession &&
+    (targetModelId == null ||
+      neuralModelFamily(cachedSession.modelId) === neuralModelFamily(targetModelId))
+  ) {
+    return cachedSession
+  }
+  if (isEmbedderFailCached(failKind)) return null
   if (ensurePromise) return ensurePromise
 
   ensurePromise = (async () => {
@@ -265,7 +267,9 @@ export async function ensureMDenseOnModel(
 
     const autoDownload = opts.autoDownload !== false
 
-    for (const art of ARTIFACTS) {
+    for (const art of ARTIFACTS.filter(
+      (a) => targetModelId == null || a.modelId === targetModelId
+    )) {
       const modelDir = codeIndexModelDir(art.artifactId)
       const present = modelFilesPresent(modelDir, art.files)
 
@@ -317,7 +321,7 @@ export async function ensureMDenseOnModel(
 
     setCodeIndexRuntimeStatus({
       phase: 'fallback_hash',
-      message: 'LightOn dense ONNX unavailable — using hash',
+      message: 'Neural dense ONNX unavailable — using hash',
       progress: null,
       error: null
     })
@@ -327,14 +331,14 @@ export async function ensureMDenseOnModel(
   try {
     const session = await ensurePromise
     if (session) {
-      clearEmbedderFailCache('mdenseon')
+      clearEmbedderFailCache(failKind)
       return session
     }
-    rememberEmbedderFail('mdenseon')
+    rememberEmbedderFail(failKind)
     return null
   } catch (err) {
     if (!isAbortError(err)) {
-      rememberEmbedderFail('mdenseon')
+      rememberEmbedderFail(failKind)
     }
     throw err
   } finally {
@@ -345,29 +349,39 @@ export async function ensureMDenseOnModel(
 export type MDenseOnEmbedderOptions = MDenseOnEnsureOptions & {
   /** Force a pre-built session (tests). */
   session?: OnnxEmbedSession
+  /** Restrict ensure to a specific neural model (e.g. LFM2_EMBEDDING_MODEL_ID). */
+  targetModelId?: string
 }
 
-/** Embedder wrapping LightOn dense ONNX (mDenseOn or DenseOn bootstrap). */
-export function createMDenseOnEmbedder(opts: MDenseOnEmbedderOptions = {}): Embedder {
+/** Embedder wrapping any neural dense ONNX from the registry. */
+export function createNeuralOnnxEmbedder(opts: MDenseOnEmbedderOptions = {}): Embedder {
+  const targetModelId = opts.targetModelId ?? MDENSEON_MODEL_ID
+  const targetDimensions = getNeuralArtifact(targetModelId)?.dimensions ?? LIGHTON_DENSE_DIM
   let sessionPromise: Promise<OnnxEmbedSession | null> | null = null
 
   const getSession = async (): Promise<OnnxEmbedSession> => {
     if (opts.session) return opts.session
-    if (!sessionPromise) sessionPromise = ensureMDenseOnModel(opts)
+    if (!sessionPromise) sessionPromise = ensureMDenseOnModel(opts, targetModelId)
     const s = await sessionPromise
-    if (!s) throw new Error('LightOn dense ONNX model not available')
+    if (!s) throw new Error(`Neural dense ONNX model not available: ${targetModelId}`)
     return s
   }
 
   return {
     get modelId() {
-      return opts.session?.modelId ?? cachedSession?.modelId ?? MDENSEON_MODEL_ID
+      return opts.session?.modelId ?? cachedSession?.modelId ?? targetModelId
     },
-    dimensions: LIGHTON_DENSE_DIM,
-    async embed(texts: string[], embedOpts?: { role?: 'query' | 'document'; signal?: AbortSignal }): Promise<Float32Array[]> {
+    dimensions: targetDimensions,
+    async embed(
+      texts: string[],
+      embedOpts?: { role?: 'query' | 'document'; signal?: AbortSignal }
+    ): Promise<Float32Array[]> {
       const role = embedOpts?.role ?? 'document'
       const session = await getSession()
       return session.embed(texts, role, embedOpts?.signal)
     }
   }
 }
+
+/** Backward-compatible alias for the LightOn dense ONNX default. */
+export const createMDenseOnEmbedder = createNeuralOnnxEmbedder

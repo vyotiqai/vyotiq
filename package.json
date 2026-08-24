@@ -9,13 +9,17 @@
   "main": "./out/main/index.js",
   "author": "Vyotiq",
   "homepage": "https://vyotiq.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/vyotiqai/vyotiq.git"
+  },
   "scripts": {
-    "dev": "pnpm sync:file-icons && pnpm sync:codeindex-wasm && electron-vite dev",
+    "dev": "pnpm sync:harness && pnpm sync:file-icons && pnpm sync:codeindex-wasm && electron-vite dev",
     "build": "pnpm typecheck && pnpm build:vite",
-    "build:vite": "pnpm sync:app-icon && pnpm sync:file-icons && pnpm sync:codeindex-wasm && electron-vite build",
+    "build:vite": "pnpm sync:harness && pnpm sync:docx-md && pnpm sync:app-icon && pnpm sync:file-icons && pnpm sync:codeindex-wasm && electron-vite build",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
+    "test": "pnpm sync:harness && pnpm sync:docx-md && vitest run",
+    "test:coverage": "pnpm sync:harness && pnpm sync:docx-md && vitest run --coverage",
     "test:reliability": "vitest run tests/main/unit/runsState.test.ts tests/main/unit/agentLoopResume.test.ts tests/main/unit/followUpStore.test.ts tests/main/unit/loopCheckpoint.test.ts tests/main/unit/runRegistry.test.ts tests/main/unit/eventAppendQueue.test.ts tests/main/unit/networkMonitor.test.ts tests/main/unit/sparsegrepSyncPaginated.test.ts tests/main/unit/globIndex.test.ts tests/main/audit/enduranceRun.audit.test.ts tests/main/audit/largeRepoScanCap.audit.test.ts tests/renderer/chat/autoResume.test.tsx tests/renderer/chat/chatStreamController.test.ts",
     "test:e2e": "vitest run tests/main/e2e",
     "test:gui-e2e": "playwright test -c tests/gui-e2e/playwright.config.ts",
@@ -30,13 +34,16 @@
     "pack:dir:win": "pnpm build && electron-builder --win dir --publish never",
     "pack:dir:win:alt": "pnpm build && electron-builder --win dir --publish never --config.directories.output=dist-package-alt",
     "sync:provider-icons": "node scripts/sync-provider-brand-paths.mjs",
+    "sync:harness": "node scripts/sync-harness.mjs",
+    "sync:docx-md": "node scripts/sync-docx-md.mjs",
+    "sync:brand": "node scripts/generate-precision-mono-brand.mjs",
     "sync:app-icon": "node scripts/sync-app-icon.mjs",
     "sync:file-icons": "node scripts/sync-file-icons.mjs",
     "sync:codeindex-wasm": "node scripts/sync-codeindex-wasm.mjs",
     "sync:landing-brand": "node scripts/sync-landing-brand.mjs",
-    "landing:dev": "pnpm sync:landing-brand && pnpm --filter @vyotiq/landing dev",
-    "landing:build": "pnpm sync:landing-brand && pnpm --filter @vyotiq/landing build",
-    "postinstall": "node node_modules/electron/install.js && (electron-builder install-app-deps || node -e \"console.warn('[vyotiq] native module rebuild failed — node-pty will use pipe fallback if unavailable')\") && node scripts/sync-file-icons.mjs && node scripts/sync-codeindex-wasm.mjs"
+    "landing:dev": "pnpm sync:brand && pnpm sync:landing-brand && pnpm --filter @vyotiq/landing dev",
+    "landing:build": "pnpm sync:brand && pnpm sync:landing-brand && pnpm --filter @vyotiq/landing build",
+    "postinstall": "node node_modules/electron/install.js && (electron-builder install-app-deps || node -e \"console.warn('[vyotiq] native module rebuild failed — node-pty will use pipe fallback if unavailable')\") && node scripts/sync-file-icons.mjs && node scripts/sync-codeindex-wasm.mjs && node scripts/sync-harness.mjs && node scripts/sync-docx-md.mjs && node scripts/generate-precision-mono-brand.mjs"
   },
   "dependencies": {
     "@codemirror/lang-css": "^6.3.1",
@@ -65,6 +72,7 @@
     "codemirror": "^6.0.2",
     "cross-spawn": "^7.0.6",
     "electron-log": "^5.4.4",
+    "electron-updater": "^6.8.9",
     "gpt-tokenizer": "^3.4.0",
     "lucide-react": "^1.27.0",
     "material-icon-theme": "^5.37.0",
@@ -80,7 +88,8 @@
     "zod": "^3.25.76"
   },
   "optionalDependencies": {
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "node-llama-cpp": "^3.0.0"
   },
   "devDependencies": {
     "@babel/core": "^8.0.1",

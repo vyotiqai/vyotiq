@@ -16,7 +16,7 @@ import { publishIndexSyncProgress } from './indexProgress'
 import type { CodeIndexSyncProgress } from '../../../shared/ipc/schemas/settings'
 
 type Role = 'query' | 'document'
-type EmbedderKind = 'session' | 'hash' | 'ollama'
+type EmbedderKind = 'session' | 'hash' | 'ollama' | 'llamacpp'
 type SparseLookupKind = 'regex' | 'substring'
 
 export type SparseUtilityResult =

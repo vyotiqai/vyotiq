@@ -7,6 +7,44 @@
 
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
+:root,
+[data-skin="default"] {
+  --vy-font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
+  --vy-font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --vy-radius-sm: 4px;
+  --vy-radius-md: 6px;
+  --vy-radius-lg: 8px;
+  --vy-radius-xl: 10px;
+  --vy-chrome-border-width: 1px;
+  --vy-chrome-border-color: var(--vy-border);
+  --vy-chrome-surface: var(--vy-bg);
+  --vy-prompt-surface: var(--vy-bg);
+  --vy-accent-hover: var(--vy-fg-strong);
+}
+
+[data-skin="proof"] {
+  --vy-radius-sm: 2px;
+  --vy-radius-md: 4px;
+  --vy-radius-lg: 6px;
+  --vy-radius-xl: 8px;
+  --vy-shadow-chrome: 0 0 0 1px var(--vy-border);
+}
+
+[data-skin="bench"] {
+  --vy-radius-sm: 2px;
+  --vy-radius-md: 4px;
+  --vy-radius-lg: 6px;
+  --vy-radius-xl: 8px;
+  --vy-shadow-chrome: none;
+  --vy-shadow-menu: 0 0 0 1px var(--vy-border);
+  --vy-chrome-surface: var(--vy-surface-2);
+}
+
+[data-skin="native"] {
+  --vy-font-sans: system-ui, sans-serif;
+  --vy-font-mono: ui-monospace, monospace;
+}
+
 /*
   Neutral grayscale design tokens (exact hex).
   Light: Base #FFF → 950 #0A0A0A
@@ -50,6 +88,7 @@
   --vy-composer: var(--vy-gray-100);
   --vy-overlay: rgb(10 10 10 / 0.28);
   --vy-window-close: #e81123;
+  --vy-window-close-fg: #ffffff;
   --vy-shadow: 0 0 0 1px var(--vy-border);
   --vy-shadow-menu: 0 0 0 1px var(--vy-border), 0 8px 24px rgb(10 10 10 / 0.08);
   --vy-shadow-chrome: 0 10px 28px -14px rgb(10 10 10 / 0.12);
@@ -68,6 +107,7 @@
   --z-dropdown: 20;
   --z-tooltip: 25;
   --z-drawer: 30;
+  --z-toast: 40;
 
   --vy-font-scale: 1;
   --vy-density-scale: 1;
@@ -113,6 +153,7 @@
   --vy-composer: var(--vy-gray-100);
   --vy-overlay: rgb(0 0 0 / 0.55);
   --vy-window-close: #e81123;
+  --vy-window-close-fg: #ffffff;
   --vy-shadow: 0 0 0 1px var(--vy-border);
   --vy-shadow-menu: 0 0 0 1px var(--vy-border), 0 10px 28px rgb(0 0 0 / 0.45);
   --vy-shadow-chrome: 0 10px 28px -14px rgb(0 0 0 / 0.45);
@@ -131,6 +172,7 @@
   --z-dropdown: 20;
   --z-tooltip: 25;
   --z-drawer: 30;
+  --z-toast: 40;
 
   --vy-font-scale: 1;
   --vy-density-scale: 1;
@@ -158,37 +200,123 @@
 [data-theme="light"][data-accent="blue"] {
   --vy-accent: #1d4ed8;
   --vy-accent-fg: #f8fafc;
+  --vy-accent-hover: #1e40af;
   --vy-focus: #3b82f6;
 }
 
 [data-theme="light"][data-accent="violet"] {
   --vy-accent: #6d28d9;
   --vy-accent-fg: #faf5ff;
+  --vy-accent-hover: #5b21b6;
   --vy-focus: #8b5cf6;
 }
 
 [data-theme="light"][data-accent="green"] {
   --vy-accent: #15803d;
   --vy-accent-fg: #f0fdf4;
+  --vy-accent-hover: #166534;
   --vy-focus: #22c55e;
 }
 
 [data-theme="dark"][data-accent="blue"] {
   --vy-accent: #3b82f6;
   --vy-accent-fg: #0a0a0a;
+  --vy-accent-hover: #60a5fa;
   --vy-focus: #60a5fa;
 }
 
 [data-theme="dark"][data-accent="violet"] {
   --vy-accent: #8b5cf6;
   --vy-accent-fg: #0a0a0a;
+  --vy-accent-hover: #a78bfa;
   --vy-focus: #a78bfa;
 }
 
 [data-theme="dark"][data-accent="green"] {
   --vy-accent: #22c55e;
   --vy-accent-fg: #0a0a0a;
+  --vy-accent-hover: #4ade80;
   --vy-focus: #4ade80;
+}
+
+[data-skin="proof"][data-theme="light"] {
+  --vy-gray-base: #ffffff;
+  --vy-gray-50: #f0f0f0;
+  --vy-gray-100: #f0f0f0;
+  --vy-gray-200: #e0e0e0;
+  --vy-gray-300: #525252;
+  --vy-gray-600: #404040;
+  --vy-gray-900: #000000;
+  --vy-gray-950: #000000;
+  --vy-bg: #ffffff;
+  --vy-card: #f0f0f0;
+  --vy-surface: #f0f0f0;
+  --vy-surface-2: #e0e0e0;
+  --vy-border: #525252;
+  --vy-border-strong: #404040;
+  --vy-muted: #404040;
+  --vy-secondary: #404040;
+  --vy-fg: #000000;
+  --vy-fg-strong: #000000;
+  --vy-composer: #f0f0f0;
+}
+
+[data-skin="proof"][data-theme="dark"] {
+  --vy-gray-base: #000000;
+  --vy-gray-50: #141414;
+  --vy-gray-100: #141414;
+  --vy-gray-200: #262626;
+  --vy-gray-300: #a3a3a3;
+  --vy-gray-600: #d4d4d4;
+  --vy-gray-900: #ffffff;
+  --vy-gray-950: #ffffff;
+  --vy-bg: #000000;
+  --vy-card: #141414;
+  --vy-surface: #141414;
+  --vy-surface-2: #262626;
+  --vy-border: #a3a3a3;
+  --vy-border-strong: #d4d4d4;
+  --vy-muted: #d4d4d4;
+  --vy-secondary: #d4d4d4;
+  --vy-fg: #ffffff;
+  --vy-fg-strong: #ffffff;
+  --vy-composer: #141414;
+}
+
+[data-skin="bench"][data-theme="light"] {
+  --vy-gray-base: #ffffff;
+  --vy-gray-50: #fafafa;
+  --vy-gray-100: #fafafa;
+  --vy-gray-200: #f5f5f5;
+  --vy-gray-300: #d4d4d4;
+  --vy-gray-600: #525252;
+  --vy-gray-900: #171717;
+  --vy-bg: #ffffff;
+  --vy-card: #fafafa;
+  --vy-surface: #fafafa;
+  --vy-surface-2: #f5f5f5;
+  --vy-border: #d4d4d4;
+  --vy-muted: #525252;
+  --vy-fg: #171717;
+  --vy-composer: #f5f5f5;
+}
+
+[data-skin="bench"][data-theme="dark"] {
+  --vy-gray-base: #000000;
+  --vy-gray-50: #0a0a0a;
+  --vy-gray-100: #0a0a0a;
+  --vy-gray-200: #171717;
+  --vy-gray-300: #373737;
+  --vy-gray-600: #a3a3a3;
+  --vy-gray-900: #f5f5f5;
+  --vy-bg: #000000;
+  --vy-card: #0a0a0a;
+  --vy-surface: #0a0a0a;
+  --vy-surface-2: #171717;
+  --vy-border: #373737;
+  --vy-muted: #a3a3a3;
+  --vy-fg: #f5f5f5;
+  --vy-composer: #171717;
 }
 
 /* Opacity-only — transform on ancestors ghosts contenteditable glyphs / spellcheck. */
@@ -225,8 +353,8 @@
 }
 
 @theme {
-  --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+  --font-sans: var(--vy-font-sans);
+  --font-mono: var(--vy-font-mono);
 
   --text-3xs: calc(9px * var(--vy-font-scale));
   --text-2xs: calc(10px * var(--vy-font-scale));
@@ -239,10 +367,10 @@
   --text-title: calc(17px * var(--vy-font-scale));
   --leading-mono: 1.6;
 
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-  --radius-xl: 10px;
+  --radius-sm: var(--vy-radius-sm);
+  --radius-md: var(--vy-radius-md);
+  --radius-lg: var(--vy-radius-lg);
+  --radius-xl: var(--vy-radius-xl);
   --radius-pill: 999px;
 
   --color-bg: var(--vy-bg);
@@ -258,6 +386,7 @@
   --color-fg-strong: var(--vy-fg-strong);
   --color-accent: var(--vy-accent);
   --color-accent-fg: var(--vy-accent-fg);
+  --color-accent-hover: var(--vy-accent-hover);
   --color-focus: var(--vy-focus);
   --color-success: var(--vy-success);
   --color-danger: var(--vy-danger);
@@ -265,6 +394,7 @@
   --color-composer: var(--vy-composer);
   --color-overlay: var(--vy-overlay);
   --color-window-close: var(--vy-window-close);
+  --color-window-close-fg: var(--vy-window-close-fg);
 
   --shadow-card: var(--vy-shadow);
   --shadow-menu: var(--vy-shadow-menu);
@@ -288,6 +418,7 @@
   --z-index-dropdown: var(--z-dropdown);
   --z-index-tooltip: var(--z-tooltip);
   --z-index-drawer: var(--z-drawer);
+  --z-index-toast: var(--z-toast);
 }
 
 @utility app-region-drag {
@@ -312,6 +443,13 @@
   transition-timing-function: var(--vy-ease);
 }
 
+@utility vy-chrome {
+  border-radius: var(--vy-radius-xl);
+  border-width: var(--vy-chrome-border-width);
+  border-style: solid;
+  border-color: var(--vy-chrome-border-color);
+}
+
 @utility vy-disabled-state {
   cursor: not-allowed;
   opacity: var(--vy-disabled-opacity);
@@ -323,7 +461,7 @@
   -webkit-mask-image: linear-gradient(to bottom, black 65%, transparent 100%);
 }
 
-/** Diff rows: tint is the sole add/del cue (no inset bar / sign column). */
+/** Diff rows: tint + gutter sign (+/−) mark add/del — never hue alone. */
 @utility diff-row-add {
   background: color-mix(in srgb, var(--color-success) 10%, transparent);
 }
@@ -496,6 +634,14 @@
   [data-code-editor] .cm-scroller {
     scrollbar-width: thin;
     scrollbar-color: var(--vy-muted) transparent;
+  }
+
+  [data-code-editor][data-word-wrap='true'] .cm-scroller {
+    overflow-x: hidden;
+  }
+
+  [data-code-editor][data-word-wrap='true'] .cm-line {
+    overflow-wrap: anywhere;
   }
 
   [data-code-editor] .cm-scroller::-webkit-scrollbar {
@@ -733,7 +879,10 @@
     padding: 0.35em 0.65em;
     text-align: left;
     vertical-align: top;
-    overflow-wrap: normal;
+    /* Bound column growth so one long cell can't starve the rest; wrap at word
+       boundaries (never mid-token). Horizontal scroll remains the fallback. */
+    max-width: 22rem;
+    overflow-wrap: break-word;
     word-break: normal;
   }
 
@@ -765,7 +914,8 @@
     padding-top: 0.15em;
   }
 
-  /* Prefer max-content + scroll over mid-token shatter wrap. */
+  /* Wrap long prose inside bounded columns; scroll only when many columns
+     still overflow. Never shatter mid-token (word-break stays normal). */
   table {
     width: max-content;
     min-width: 100%;
@@ -774,7 +924,8 @@
 
   th,
   td {
-    overflow-wrap: normal;
+    max-width: 22rem;
+    overflow-wrap: break-word;
     word-break: normal;
     min-width: 5.5rem;
   }
@@ -975,5 +1126,59 @@ dialog[open] {
   [data-vy-text-entry] {
     min-height: 2.75rem;
     font-size: 1rem;
+  }
+}
+
+/* Hero empty-state mode atmosphere — subtle composer framing only. */
+[data-chat-hero][data-hero-mode='agent'] [data-composer-shell] {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-accent) 18%, transparent),
+    var(--vy-shadow-floating-bottom, 0 8px 24px rgb(0 0 0 / 0.18));
+}
+
+[data-chat-hero][data-hero-mode='ask'] [data-composer-shell] {
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--color-border) 55%, transparent),
+    var(--vy-shadow-floating-bottom, 0 8px 24px rgb(0 0 0 / 0.18));
+}
+
+[data-chat-hero][data-hero-mode='plan'] [data-composer-hero] {
+  position: relative;
+}
+
+[data-chat-hero][data-hero-mode='plan'] [data-composer-hero]::before {
+  content: 'Goal\A Scope\A Risks\A Todos';
+  position: absolute;
+  inset: -1.5rem 0 auto;
+  z-index: 0;
+  pointer-events: none;
+  white-space: pre;
+  text-align: left;
+  font-size: 0.625rem;
+  line-height: 2.4;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--color-fg) 4%, transparent);
+}
+
+[data-chat-hero][data-hero-mode='plan'] [data-composer-hero] > * {
+  position: relative;
+  z-index: 1;
+}
+
+@media (prefers-contrast: more) {
+  [data-chat-hero][data-hero-mode='agent'] [data-composer-shell],
+  [data-chat-hero][data-hero-mode='ask'] [data-composer-shell] {
+    box-shadow: 0 0 0 2px var(--color-border);
+  }
+
+  [data-chat-hero][data-hero-mode='plan'] [data-composer-hero]::before {
+    color: color-mix(in srgb, var(--color-fg) 12%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-chat-hero][data-hero-mode='plan'] [data-composer-hero]::before {
+    content: none;
   }
 }

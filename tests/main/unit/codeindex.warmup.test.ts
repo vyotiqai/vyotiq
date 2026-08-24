@@ -2,6 +2,14 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+// Keep the bundled llama.cpp stage hermetic in unit tests: without this, the
+// optional `node-llama-cpp` dep would trigger a real 229 MB GGUF download from
+// Hugging Face. The real path is covered by a separate runtime smoke check.
+vi.mock('node-llama-cpp', () => ({
+  getLlama: vi.fn().mockRejectedValue(new Error('node-llama-cpp mocked unavailable in unit tests')),
+  resolveModelFile: vi.fn()
+}))
 import {
   CodeIndexStore,
   closeCodeIndex,

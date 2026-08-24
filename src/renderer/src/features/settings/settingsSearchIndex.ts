@@ -18,10 +18,42 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     section: 'general'
   },
   {
+    id: 'tab-autocomplete',
+    title: 'Tab autocomplete',
+    keywords: ['tab', 'autocomplete', 'ghost', 'inline', 'complete', 'fim', 'editor', 'files'],
+    section: 'general'
+  },
+  {
     id: 'workspaces',
     title: 'Workspaces',
     keywords: ['override', 'workspace', 'folder', 'tabs'],
     section: 'general'
+  },
+  {
+    id: 'appearance-skin',
+    title: 'Interface skin',
+    keywords: [
+      'appearance',
+      'skin',
+      'template',
+      'proof',
+      'bench',
+      'native',
+      'default',
+      'contrast',
+      'workshop',
+      'elevation',
+      'legibility',
+      'instrument',
+      'chrome'
+    ],
+    section: 'appearance'
+  },
+  {
+    id: 'appearance-custom-css',
+    title: 'User CSS overlay',
+    keywords: ['appearance', 'css', 'stylesheet', 'custom', 'overlay', 'tokens', 'skin'],
+    section: 'appearance'
   },
   {
     id: 'appearance-theme',
@@ -44,7 +76,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   {
     id: 'appearance-accent',
     title: 'Accent color',
-    keywords: ['appearance', 'accent', 'color', 'blue', 'violet', 'green'],
+    keywords: ['appearance', 'accent', 'color', 'blue', 'violet', 'green', 'neutral'],
     section: 'appearance'
   },
   {
@@ -116,7 +148,13 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   {
     id: 'codeindex-embedder',
     title: 'Embedder',
-    keywords: ['embedder', 'mdenseon', 'ollama', 'hash', 'onnx', 'denseon', 'codebase'],
+    keywords: ['embedder', 'mdenseon', 'lfm2', 'ollama', 'hash', 'onnx', 'denseon', 'liquidai', 'gguf', 'llama.cpp', 'node-llama-cpp', 'codebase', 'multilingual', '1024'],
+    section: 'indexing'
+  },
+  {
+    id: 'codeindex-lfm2-ollama-model',
+    title: 'LFM2 Ollama GGUF model',
+    keywords: ['lfm2', 'ollama', 'gguf', 'liquidai', 'llama.cpp', 'node-llama-cpp', 'embedder', 'codeindex', 'embedding'],
     section: 'indexing'
   },
   {
@@ -135,6 +173,21 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     id: 'codeindex-status',
     title: 'Index status',
     keywords: ['reindex', 'status', 'indexing', 'download', 'sparsegrep', 'codebase'],
+    section: 'indexing'
+  },
+  {
+    id: 'process-metrics',
+    title: 'Live processes',
+    keywords: [
+      'rss',
+      'memory',
+      'cpu',
+      'electron',
+      'onnx',
+      'embed',
+      'diagnostics',
+      'task manager'
+    ],
     section: 'indexing'
   },
   {
@@ -184,6 +237,40 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
       'local model',
       'OpenRouter'
     ],
+    section: 'voice'
+  },
+  {
+    id: 'dictation-qwen3-server',
+    title: 'Qwen3-ASR server URL',
+    keywords: [
+      'dictation',
+      'voice',
+      'qwen',
+      'qwen3',
+      'asr',
+      'transcribe',
+      'local server',
+      'vllm',
+      'microphone'
+    ],
+    section: 'voice'
+  },
+  {
+    id: 'dictation-qwen3-key',
+    title: 'Qwen3-ASR server API key',
+    keywords: ['dictation', 'voice', 'qwen', 'qwen3', 'asr', 'api key', 'token'],
+    section: 'voice'
+  },
+  {
+    id: 'dictation-qwen3-asr-0.6b',
+    title: 'Qwen3-ASR 0.6B',
+    keywords: ['dictation', 'voice', 'qwen', 'qwen3', 'asr', 'transcribe', 'local server'],
+    section: 'voice'
+  },
+  {
+    id: 'dictation-qwen3-asr-1.7b',
+    title: 'Qwen3-ASR 1.7B',
+    keywords: ['dictation', 'voice', 'qwen', 'qwen3', 'asr', 'transcribe', 'local server'],
     section: 'voice'
   },
   {
@@ -325,6 +412,18 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     section: 'about'
   },
   {
+    id: 'about-auto-check',
+    title: 'Check for updates on launch',
+    keywords: ['updates', 'auto check', 'upgrade', 'about'],
+    section: 'about'
+  },
+  {
+    id: 'about-updater',
+    title: 'App updates',
+    keywords: ['updates', 'updater', 'upgrade', 'release', 'about'],
+    section: 'about'
+  },
+  {
     id: 'github-client-id',
     title: 'GitHub client ID',
     keywords: ['github', 'oauth', 'pr', 'connect'],
@@ -410,7 +509,8 @@ function cssEscape(value: string): string {
 const FIELD_SCROLL_FALLBACK: Record<string, string> = {
   'ollama-url': 'api-keys',
   'custom-url': 'api-keys',
-  'codeindex-ollama-model': 'codeindex-embedder'
+  'codeindex-ollama-model': 'codeindex-embedder',
+  'codeindex-lfm2-ollama-model': 'codeindex-embedder'
 }
 
 function querySettingsField(fieldId: string): HTMLElement | null {

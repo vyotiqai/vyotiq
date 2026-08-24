@@ -41,7 +41,7 @@ export type UiGroupTiming = {
   endedAt?: number
 }
 
-/** One line of live progress from a long-running tool (e.g. image gen). */
+/** One line of live progress from a long-running tool. */
 export type UiToolProgressEntry = {
   kind: 'text' | 'thinking' | 'tool' | 'done'
   text: string
@@ -122,7 +122,7 @@ export type UiItem =
       groupExpanded?: boolean
       /** Set while this call is waiting on tool approval. */
       approval?: UiToolApproval
-      /** Live progress lines from a long-running tool (e.g. image gen). */
+      /** Live progress lines from a long-running tool. */
       toolProgress?: UiToolProgressEntry[]
     }
   | {

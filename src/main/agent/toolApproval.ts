@@ -100,26 +100,56 @@ export function isToolGated(
   name: string,
   mode: ToolApprovalMode,
   sessionAllowlist: ReadonlySet<string>,
-  workspaceAllowlist: readonly string[]
+  workspaceAllowlist: readonly string[],
+  argsJson?: string
 ): boolean {
   if (mode === 'off') return false
   const canonical = canonicalizeAgentToolName(name)
   if (sessionAllowlist.has(canonical) || sessionAllowlist.has(name)) return false
   if (workspaceAllowlist.includes(canonical) || workspaceAllowlist.includes(name)) return false
   if (mode === 'all') return true
-  return !isApprovalExemptTool(canonical)
+  let args: Record<string, unknown> | undefined
+  if (argsJson) {
+    try {
+      const parsed: unknown = JSON.parse(argsJson)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        args = parsed as Record<string, unknown>
+      }
+    } catch {
+      args = undefined
+    }
+  }
+  return !isApprovalExemptTool(canonical, args)
 }
 
 /** High-risk tools that stay gated in autonomous mode unless workspace-allowlisted. */
-export function isAutonomousHighRiskTool(name: string): boolean {
+export function isAutonomousHighRiskTool(name: string, argsJson?: string): boolean {
   const canonical = canonicalizeAgentToolName(name)
+  if (canonical === 'lsp') {
+    let action: unknown
+    if (argsJson) {
+      try {
+        const parsed: unknown = JSON.parse(argsJson)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          action = (parsed as Record<string, unknown>).action
+        }
+      } catch {
+        action = undefined
+      }
+    }
+    return action === 'rename'
+  }
   return (
     canonical === 'delete' ||
     canonical === 'terminal' ||
     canonical === 'edit' ||
     canonical === 'multi_edit' ||
     canonical === 'str_replace' ||
+    canonical === 'edit_notebook' ||
     canonical === 'git_commit' ||
+    canonical === 'github_pr_create' ||
+    canonical === 'github_pr_review' ||
+    canonical === 'github_issue' ||
     canonical === 'merge_agent_instance' ||
     canonical.startsWith('mcp__') ||
     !(BUILTIN_TOOL_NAMES as readonly string[]).includes(canonical)
@@ -242,13 +272,13 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
   return {
     async authorize(call): Promise<AuthorizeResult> {
       const name = canonicalizeAgentToolName(call.name)
-      if (!isToolGated(name, options.mode, sessionAllowlist, workspaceAllowlist)) {
+      if (!isToolGated(name, options.mode, sessionAllowlist, workspaceAllowlist, call.arguments)) {
         return { allowed: true }
       }
 
       if (
         options.autonomousMode &&
-        !isAutonomousHighRiskTool(name) &&
+        !isAutonomousHighRiskTool(name, call.arguments) &&
         !workspaceAllowlist.includes(name)
       ) {
         logger.info('Tool approval auto-granted (autonomous mode)', {
@@ -267,7 +297,18 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
         name,
         summary: summarizeToolArgs(name, call.arguments),
         argsPreview: scrubString(call.arguments.slice(0, 4000)),
-        mutating: isNetworkBrowseTool(name) ? false : !isApprovalExemptTool(name)
+        mutating: isNetworkBrowseTool(name)
+          ? false
+          : !isApprovalExemptTool(name, (() => {
+              try {
+                const parsed: unknown = JSON.parse(call.arguments || '{}')
+                return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+                  ? (parsed as Record<string, unknown>)
+                  : undefined
+              } catch {
+                return undefined
+              }
+            })())
       }
 
       const decision = await ask(request).catch((err: unknown) => {

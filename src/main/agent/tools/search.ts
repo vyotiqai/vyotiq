@@ -2,7 +2,8 @@ import { assertInsideWorkspace } from '../../../shared/workspacePath'
 import { readFileSync, statSync } from 'fs'
 import { extname } from 'path'
 import {
-  collectWorkspaceFiles,
+  collectWorkspaceFilesPage,
+  formatLiveScanCapNotice,
   TEXT_EXTS,
   throwIfAborted,
   yieldToEventLoop,
@@ -53,7 +54,8 @@ export async function toolSearch(
   query: string,
   maxResults?: number,
   signal?: AbortSignal,
-  regex = false
+  regex = false,
+  scanCap?: number
 ): Promise<string> {
   throwIfAborted(signal)
   const q = query.trim()
@@ -78,7 +80,13 @@ export async function toolSearch(
   let truncated = false
   let indexMode: 'trigram' | 'live' = 'live'
 
-  const allFiles = await collectWorkspaceFiles(workspaceRoot, undefined, signal)
+  const liveCap =
+    typeof scanCap === 'number' && Number.isFinite(scanCap)
+      ? Math.max(1, Math.floor(scanCap))
+      : SEARCH_SCAN_CAP
+  const page = await collectWorkspaceFilesPage(workspaceRoot, liveCap, undefined, signal)
+  const allFiles = page.files
+  const liveHitCap = !page.exhausted
   throwIfAborted(signal)
 
   for (const f of allFiles) {
@@ -129,10 +137,13 @@ export async function toolSearch(
     }
   }
 
-  if (hits.length === 0) return `No matches for "${query}"\nindex=${indexMode}`
   const notices: string[] = []
   if (truncated) notices.push(`… stopped at ${limit} matches`)
+  if (liveHitCap) notices.push(formatLiveScanCapNotice(liveCap))
   notices.push(`index=${indexMode}`)
+  if (hits.length === 0) {
+    return [`No matches for "${query}"`, ...notices].join('\n')
+  }
   return [hits.join('\n'), ...notices].join('\n')
 }
 
@@ -142,7 +153,7 @@ export function searchHitPathsFromResult(content: string): string[] {
   const seen = new Set<string>()
   for (const line of content.split('\n')) {
     const trimmed = line.trim()
-    if (!trimmed || trimmed.startsWith('…') || trimmed.startsWith('index=')) continue
+    if (!trimmed || trimmed.startsWith('…') || trimmed.startsWith('index=') || trimmed.startsWith('scan cap')) continue
     const fileHit = trimmed.match(/^file:\s*(.+)$/)
     if (fileHit) {
       const p = fileHit[1]!.trim()

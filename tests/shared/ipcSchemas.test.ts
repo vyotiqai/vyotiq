@@ -747,6 +747,8 @@ describe('ipc schemas', () => {
     expect(parsed.dictation.engine).toBe('openai')
     expect(legacy.dictation.engine).toBe('openai')
     expect(legacy.notifications).toEqual(DEFAULT_NOTIFICATION_SETTINGS)
+    expect(parsed.tabAutocomplete).toBe(true)
+    expect(legacy.tabAutocomplete).toBe(true)
     expect(SetSettingsRequestSchema.parse({ telemetryEnabled: true })).toEqual({
       telemetryEnabled: true
     })

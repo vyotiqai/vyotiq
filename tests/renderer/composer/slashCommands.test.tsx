@@ -117,7 +117,7 @@ describe('Composer slash commands', () => {
     const onDraftChange = vi.fn()
     const { rerender } = render(<Composer {...baseProps} draft="" onDraftChange={onDraftChange} />)
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     ta.textContent = '/com'
     fireEvent.input(ta)
     expect(onDraftChange).toHaveBeenCalledWith('/com')
@@ -134,7 +134,7 @@ describe('Composer slash commands', () => {
   it('does not accept a slash menu item when Enter is committing IME composition', async () => {
     const onDraftChange = vi.fn()
     const { rerender } = render(<Composer {...baseProps} draft="" onDraftChange={onDraftChange} />)
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     ta.textContent = '/com'
     fireEvent.input(ta)
     rerender(<Composer {...baseProps} draft="/com" onDraftChange={onDraftChange} />)
@@ -149,7 +149,7 @@ describe('Composer slash commands', () => {
 
   it('renders hero composer with message field', () => {
     render(<Composer {...baseProps} />)
-    expect(screen.getByRole('textbox', { name: /^Message$/i })).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: /^Message$/i })).toBeTruthy()
   })
 
   it('resolves /compact as a client action without sending chat', async () => {
@@ -178,7 +178,7 @@ describe('Composer slash commands', () => {
       />
     )
 
-    const form = screen.getByRole('textbox', { name: /^Message$/i }).closest('form')!
+    const form = screen.getByRole('combobox', { name: /^Message$/i }).closest('form')!
     fireEvent.submit(form)
 
     await waitFor(() => {
@@ -218,7 +218,7 @@ describe('Composer slash commands', () => {
       />
     )
 
-    const form = screen.getByRole('textbox', { name: /^Message$/i }).closest('form')!
+    const form = screen.getByRole('combobox', { name: /^Message$/i }).closest('form')!
     fireEvent.submit(form)
 
     await waitFor(() => {
@@ -236,7 +236,7 @@ describe('Composer slash commands', () => {
       <Composer {...baseProps} draft="" onDraftChange={onDraftChange} />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     ta.textContent = '/zzzznotacommand'
     fireEvent.input(ta)
     rerender(
@@ -273,7 +273,7 @@ describe('Composer slash commands', () => {
       />
     )
 
-    const form = screen.getByRole('textbox', { name: /^Message$/i }).closest('form')!
+    const form = screen.getByRole('combobox', { name: /^Message$/i }).closest('form')!
     fireEvent.submit(form)
 
     await waitFor(() => {
@@ -309,7 +309,7 @@ describe('Composer slash commands', () => {
       />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     ta.focus()
     const sel = window.getSelection()
     const range = document.createRange()
@@ -350,7 +350,7 @@ describe('Composer slash commands', () => {
       <Composer {...baseProps} draft="/compact" onDraftChange={onDraftChange} onSend={onSend} />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     ta.focus()
     fireEvent.click(ta)
 
@@ -383,7 +383,7 @@ describe('Composer slash commands', () => {
       <Composer {...baseProps} draft="/cod" onDraftChange={onDraftChange} onSend={onSend} />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     ta.focus()
     fireEvent.click(ta)
 
@@ -425,7 +425,7 @@ describe('Composer slash commands', () => {
 
     await waitFor(() => expect(window.vyotiq.slashCommandsList).toHaveBeenCalled())
 
-    const form = screen.getByRole('textbox', { name: /Edit message|Message/i }).closest('form')
+    const form = screen.getByRole('combobox', { name: /Edit message|Message/i }).closest('form')
     expect(form).toBeTruthy()
     fireEvent.submit(form!)
 
@@ -467,7 +467,7 @@ describe('Composer slash commands', () => {
 
     await waitFor(() => expect(window.vyotiq.slashCommandsList).toHaveBeenCalled())
 
-    const form = screen.getByRole('textbox', { name: /Edit message|Message/i }).closest('form')
+    const form = screen.getByRole('combobox', { name: /Edit message|Message/i }).closest('form')
     fireEvent.submit(form!)
 
     await waitFor(() => {
@@ -494,7 +494,7 @@ describe('Composer slash commands', () => {
       />
     )
     await waitFor(() => expect(screen.getByRole('listbox')).toBeTruthy())
-    fireEvent.keyDown(screen.getByRole('textbox', { name: /Edit message|Message/i }), {
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /Edit message|Message/i }), {
       key: 'Escape'
     })
     expect(onCancelEdit).not.toHaveBeenCalled()

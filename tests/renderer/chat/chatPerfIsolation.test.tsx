@@ -62,6 +62,38 @@ describe('useHasChatItems', () => {
     // Still true — ChatView must not treat this as a presence flip.
     expect(result.current).toBe(true)
   })
+
+  it('does not resubscribe when only the store wrapper object is recreated', () => {
+    const inner = makeStore([
+      {
+        kind: 'text',
+        id: 'a1',
+        role: 'assistant',
+        text: 'hi',
+        streaming: false
+      } as UiItem
+    ])
+    let subscribeCalls = 0
+    const subscribeItems = (listener: () => void): (() => void) => {
+      subscribeCalls += 1
+      return inner.subscribeItems(listener)
+    }
+    const wrap = (): ChatItemsStore => ({
+      subscribeItems,
+      getItemsRevision: inner.getItemsRevision,
+      getItems: inner.getItems
+    })
+    const { result, rerender } = renderHook(
+      ({ store }) => useHasChatItems(store, []),
+      { initialProps: { store: wrap() } }
+    )
+    expect(result.current).toBe(true)
+    expect(subscribeCalls).toBe(1)
+    rerender({ store: wrap() })
+    rerender({ store: wrap() })
+    expect(subscribeCalls).toBe(1)
+    expect(result.current).toBe(true)
+  })
 })
 
 describe('virtualizer full-DOM fallback gate', () => {

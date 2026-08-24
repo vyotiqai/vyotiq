@@ -1,6 +1,9 @@
 import { z } from 'zod'
 import type { ThemeId } from './theme'
 import { resolveTheme, type ResolvedTheme } from './theme'
+import { DEFAULT_SKIN_ID, SkinIdSchema, type SkinId } from './skins'
+
+export { SkinIdSchema, type SkinId, DEFAULT_SKIN_ID, SKIN_CATALOG, SKIN_IDS } from './skins'
 
 export const FontScaleSchema = z.enum(['small', 'default', 'large'])
 export type FontScale = z.infer<typeof FontScaleSchema>
@@ -31,6 +34,8 @@ export type AppearanceSettings = {
   fontScale: FontScale
   uiDensity: UiDensity
   accentPreset: AccentPreset
+  skinId: SkinId
+  customCssPath: string
 }
 
 export const APPEARANCE_LOCAL_STORAGE_KEY = 'vyotiq-appearance'
@@ -41,6 +46,7 @@ export type AppearanceBootCache = {
   fontScale: FontScale
   uiDensity: UiDensity
   accentPreset: AccentPreset
+  skinId: SkinId
 }
 
 export function pickAppearanceSettings(settings: AppearanceSettings): AppearanceSettings {
@@ -48,7 +54,9 @@ export function pickAppearanceSettings(settings: AppearanceSettings): Appearance
     theme: settings.theme,
     fontScale: settings.fontScale,
     uiDensity: settings.uiDensity,
-    accentPreset: settings.accentPreset
+    accentPreset: settings.accentPreset,
+    skinId: settings.skinId,
+    customCssPath: settings.customCssPath
   }
 }
 
@@ -74,6 +82,7 @@ export function readAppearanceBootCache(): AppearanceBootCache | null {
     const fontScale = obj.fontScale
     const uiDensity = obj.uiDensity
     const accentPreset = obj.accentPreset
+    const skinId = obj.skinId
     const resolvedTheme = obj.resolvedTheme
     if (
       (theme !== 'system' && theme !== 'light' && theme !== 'dark') ||
@@ -83,6 +92,10 @@ export function readAppearanceBootCache(): AppearanceBootCache | null {
         accentPreset !== 'blue' &&
         accentPreset !== 'violet' &&
         accentPreset !== 'green') ||
+      (skinId !== 'default' &&
+        skinId !== 'proof' &&
+        skinId !== 'bench' &&
+        skinId !== 'native') ||
       (resolvedTheme !== 'light' && resolvedTheme !== 'dark')
     ) {
       return null
@@ -92,6 +105,7 @@ export function readAppearanceBootCache(): AppearanceBootCache | null {
       fontScale,
       uiDensity,
       accentPreset,
+      skinId,
       resolvedTheme
     }
   } catch {

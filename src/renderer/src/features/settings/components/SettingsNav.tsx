@@ -55,6 +55,7 @@ export function SettingsNav({
 }) {
   return (
     <nav
+      data-settings-nav
       className={cn(
         'flex shrink-0 flex-row items-center gap-0.5 overflow-x-auto px-2 pb-2',
         'sm:flex-col sm:items-stretch sm:overflow-visible sm:px-3 sm:pb-3 sm:pt-0',

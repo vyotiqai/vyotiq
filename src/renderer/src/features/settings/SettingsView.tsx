@@ -57,6 +57,7 @@ export function SettingsView(props: SettingsViewProps) {
             settings={settings}
             form={form}
             onAppearanceChange={onAppearanceChange}
+            customCssError={props.customCssError}
           />
         )
       case 'providers':

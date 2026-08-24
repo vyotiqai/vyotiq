@@ -15,6 +15,7 @@ const PUSH_ONLY = new Set<keyof typeof IPC>([
   'agentQuestionRequest',
   'browserState',
   'windowMaximizedChanged',
+  'windowFocusChanged',
   'ptyData',
   'ptyExit',
   'themeChanged',
@@ -25,7 +26,9 @@ const PUSH_ONLY = new Set<keyof typeof IPC>([
   'workspaceEditorFlushRequest',
   'workspaceEditorFlushResponse',
   'notificationsChanged',
-  'notificationsActivate'
+  'notificationsActivate',
+  'appearanceCustomCssChanged',
+  'updaterStatusEvent'
 ])
 
 function registeredChannels(): Set<string> {

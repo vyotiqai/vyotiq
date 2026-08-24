@@ -85,6 +85,18 @@ describe('workspace rules', () => {
     expect(shouldAutoInjectRule({ alwaysApply: true })).toBe(true)
   })
 
+  it('injects glob rules only when the focused file matches', () => {
+    const meta = { globs: ['**/*.ts', 'src/**/*.tsx'] }
+    expect(shouldAutoInjectRule(meta)).toBe(false)
+    expect(shouldAutoInjectRule(meta, 'src/app.ts')).toBe(true)
+    expect(shouldAutoInjectRule(meta, 'src/ui/App.tsx')).toBe(true)
+    expect(shouldAutoInjectRule(meta, 'README.md')).toBe(false)
+    expect(shouldAutoInjectRule({ alwaysApply: false, globs: ['**/*.css'] }, 'src/app.ts')).toBe(
+      false
+    )
+    expect(shouldAutoInjectRule({ alwaysApply: false, globs: ['**/*.ts'] }, 'lib/util.ts')).toBe(true)
+  })
+
   it('skips alwaysApply:false cursor rules from auto-injection', async () => {
     mkdirSync(join(workspace, '.cursor', 'rules'), { recursive: true })
     writeFileSync(

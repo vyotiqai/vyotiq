@@ -69,4 +69,31 @@ describe('messageAppendQueue', () => {
     expect(notice?.message).toBe('disk full')
     expect(takeMessageAppendFailureNotice(dir)).toBeUndefined()
   })
+
+  it('retries a transient (EBUSY) append failure before persisting', async () => {
+    appendFileMock.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('resource busy'), { code: 'EBUSY' })
+    })
+
+    await enqueueMessageAppend(dir, `${JSON.stringify({ role: 'user', content: 'x' })}\n`)
+    await flushMessageAppends(dir)
+
+    expect(takeMessageAppendFailureNotice(dir)).toBeUndefined()
+    const lines = readFileSync(join(dir, 'messages.jsonl'), 'utf8').trim().split('\n')
+    expect(lines).toHaveLength(1)
+  })
+
+  it('surfaces an aggregated notice when several appends fail mid-run', async () => {
+    appendFileMock
+      .mockRejectedValueOnce(new Error('disk full'))
+      .mockRejectedValueOnce(new Error('disk full'))
+
+    await enqueueMessageAppend(dir, `${JSON.stringify({ role: 'user', content: 'a' })}\n`)
+    await enqueueMessageAppend(dir, `${JSON.stringify({ role: 'user', content: 'b' })}\n`)
+    await flushMessageAppends(dir).catch(() => undefined)
+
+    const notice = takeMessageAppendFailureNotice(dir)
+    expect(notice?.message).toContain('2 record(s) failed to persist to messages.jsonl')
+    expect(notice?.message).toContain('disk full')
+  })
 })

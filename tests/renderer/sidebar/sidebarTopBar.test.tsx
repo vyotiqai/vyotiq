@@ -191,7 +191,7 @@ describe('SidebarTopBar layout', () => {
 
     expect(wrapper!.className).not.toContain('border-border')
 
-    expect(wrapper!.className).toContain('focus-within:outline-none')
+    expect(wrapper!.className).toContain('focus-within:vy-focus-ring')
 
   })
 

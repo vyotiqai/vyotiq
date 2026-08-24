@@ -2,6 +2,7 @@ import { type ReactNode, type Ref } from 'react'
 import { Icon, type IconName } from '../icons'
 import { SIDEBAR_NAV_ACTIVE } from '@renderer/lib/utils/layout'
 import { cn } from './cn'
+import { Tooltip } from './Tooltip'
 
 export function NavItem({
   label,
@@ -44,7 +45,7 @@ export function NavItem({
   const isActive = active ?? current
 
   if (variant === 'icon') {
-    return (
+    const button = (
       <button
         ref={buttonRef}
         type="button"
@@ -61,13 +62,23 @@ export function NavItem({
         aria-haspopup={ariaHasPopup}
         aria-controls={ariaControls}
         disabled={disabled}
-        title={title ?? label}
         onClick={onClick}
       >
         {icon ? <Icon name={icon} size={18} weight={isActive ? 'fill' : 'bold'} /> : null}
         {trailing}
       </button>
     )
+    // Disabled buttons ignore pointer events — wrap so hover still shows why.
+    if (disabled) {
+      return (
+        <Tooltip content={title ?? label}>
+          <span className="inline-grid cursor-not-allowed" aria-disabled="true">
+            {button}
+          </span>
+        </Tooltip>
+      )
+    }
+    return <Tooltip content={title ?? label}>{button}</Tooltip>
   }
 
   return (

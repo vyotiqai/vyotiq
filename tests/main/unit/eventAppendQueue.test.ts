@@ -160,4 +160,44 @@ describe('eventAppendQueue', () => {
     expect(archived + active).toContain('MUST_KEEP')
     expect(active).toContain('after-rotate')
   })
+
+  it('retries a transient (EBUSY) append failure before persisting', async () => {
+    appendFileMock.mockImplementationOnce(async () => {
+      throw Object.assign(new Error('resource busy'), { code: 'EBUSY' })
+    })
+
+    enqueueEventAppend(dir, { type: 'status', status: 'running' })
+    await flushEventAppends(dir)
+
+    expect(takeEventAppendFailureNotice(dir)).toBeUndefined()
+    const lines = readFileSync(join(dir, 'events.jsonl'), 'utf8').trim().split('\n')
+    expect(lines).toHaveLength(1)
+    expect(JSON.parse(lines[0]!).event).toMatchObject({ type: 'status', status: 'running' })
+  })
+
+  it('does not retry a non-transient (no error code) failure', async () => {
+    appendFileMock.mockRejectedValueOnce(new Error('disk full'))
+
+    enqueueEventAppend(dir, { type: 'status', status: 'running' })
+    await expect(flushEventAppends(dir)).rejects.toThrow('disk full')
+    expect(appendFileMock.mock.calls.length).toBe(1)
+  })
+
+  it('surfaces an aggregated notice when several appends fail mid-run', async () => {
+    appendFileMock
+      .mockRejectedValueOnce(new Error('disk full'))
+      .mockRejectedValueOnce(new Error('disk full'))
+      .mockRejectedValueOnce(new Error('disk full'))
+
+    enqueueEventAppend(dir, { type: 'a' })
+    enqueueEventAppend(dir, { type: 'b' })
+    enqueueEventAppend(dir, { type: 'c' })
+    await flushEventAppends(dir).catch(() => undefined)
+
+    const notice = takeEventAppendFailureNotice(dir)
+    expect(notice?.message).toContain('3 record(s) failed to persist to events.jsonl')
+    expect(notice?.message).toContain('disk full')
+    // Second read is empty until a new batch of failures occurs.
+    expect(takeEventAppendFailureNotice(dir)).toBeUndefined()
+  })
 })

@@ -618,9 +618,12 @@ function ProjectRuleEditor({
     }
   }, [path, workspacePath, rootFile, onError])
 
-  if (loading) return <p className="m-0 text-xs text-muted">Loading rule…</p>
+  if (loading)
+    return <p className="m-0 text-xs text-muted" role="status">Loading rule…</p>
   if (loadError) {
-    return <p className="m-0 text-xs text-danger">{loadError}</p>
+    return (
+      <p className="m-0 text-xs text-danger" role="alert">{loadError}</p>
+    )
   }
 
   return (

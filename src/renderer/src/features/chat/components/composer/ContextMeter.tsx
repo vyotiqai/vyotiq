@@ -477,7 +477,8 @@ export function ContextMeter({
     panelRef,
     placement: 'up',
     align: 'end',
-    disabled: !alignedUsage
+    disabled: !alignedUsage,
+    trapFocus: true
   })
 
   const runCompaction = async (): Promise<void> => {
@@ -543,10 +544,6 @@ export function ContextMeter({
         onClick={() => setOpen((v) => !v)}
       >
         <UsageRing ratio={ratio} size={16} level={level} />
-        <span className="sr-only">
-          {displayPct}% · {usedLabel} of {budgetLabel}
-          {hitPct != null ? ` · ${hitPct}% cached` : ''}
-        </span>
       </button>
 
       {open && position && panelLayout
@@ -556,7 +553,7 @@ export function ContextMeter({
               id={panelId}
               role="dialog"
               aria-label="Context details"
-              className="fixed z-dropdown flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-fade-in"
+              className="fixed z-dropdown flex flex-col overflow-hidden rounded-xl border border-border bg-card shadow-menu animate-menu-in origin-bottom"
               style={{
                 top: position.placement === 'up' ? undefined : position.top,
                 bottom:

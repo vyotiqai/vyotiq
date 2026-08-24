@@ -10,7 +10,7 @@ const mockProvider: LlmProvider = {
 }
 
 describe('assembleContext overflow trim', () => {
-  it('drops the folded prefix without LLM compaction on hard overflow', async () => {
+  it('flags hard overflow without LLM compaction', async () => {
     const { assembleContext } = await import('@main/agent/context/assemble')
 
     const foldedMarker = 'FOLDED_PREFIX_UNIQUE_MARKER_ZZZ'
@@ -54,9 +54,9 @@ describe('assembleContext overflow trim', () => {
     })
 
     expect(result.compaction).toBeNull()
-    expect(result.contextShrunk).toBe(true)
+    expect(result.overflow).toBe(true)
     const wireText = result.messages.map((m) => String(m.content ?? '')).join('\n')
-    expect(wireText).not.toContain(foldedMarker)
     expect(wireText).toContain(keptMarker)
+    expect(wireText).toContain(foldedMarker)
   })
 })

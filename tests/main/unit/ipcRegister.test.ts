@@ -309,6 +309,7 @@ describe('registerIpc', () => {
       IPC.workspaceFormatFile,
       IPC.workspaceLspStatus,
       IPC.workspaceLspRequest,
+      IPC.workspaceInlineComplete,
       IPC.workspaceEditorRecoverySave,
       IPC.workspaceEditorRecoveryLoad,
       IPC.workspaceEditorRecoveryClear,
@@ -376,6 +377,12 @@ describe('registerIpc', () => {
         action: 'diagnostics',
         line: 0,
         character: 0
+      },
+      [IPC.workspaceInlineComplete]: {
+        workspacePath: '/not-open',
+        path: 'note.ts',
+        prefix: 'const x = ',
+        suffix: ''
       },
       [IPC.workspaceEditorRecoverySave]: {
         workspacePath: '/not-open',

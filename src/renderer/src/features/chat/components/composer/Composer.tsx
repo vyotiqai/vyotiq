@@ -282,6 +282,16 @@ export function Composer({
   cursorRef.current = cursor
   const [editingFollowUpId, setEditingFollowUpId] = useState<string | null>(null)
   const [editingFollowUpText, setEditingFollowUpText] = useState('')
+  const followUpEditRef = useRef<HTMLTextAreaElement>(null)
+
+  // Entering edit mode moves focus into the textarea so typing works immediately.
+  useEffect(() => {
+    if (editingFollowUpId == null) return
+    const el = followUpEditRef.current
+    if (!el) return
+    el.focus()
+    el.setSelectionRange(el.value.length, el.value.length)
+  }, [editingFollowUpId])
 
   const syncCursor = useCallback((): void => {
     const handle = taRef.current
@@ -867,18 +877,25 @@ export function Composer({
           {pendingFollowUps.map((entry) => {
             const isEditing = editingFollowUpId === entry.id
             const queueAction =
-              'shrink-0 rounded px-1.5 py-0.5 text-2xs font-medium text-muted vy-transition hover:bg-surface hover:text-fg'
+              'shrink-0 rounded px-2 py-1 text-2xs font-medium text-muted vy-transition hover:bg-surface hover:text-fg'
             return (
               <div
                 key={entry.id}
-                className="flex flex-wrap items-start gap-2 rounded-lg border border-border/60 bg-surface-2 px-2 py-1.5 text-caption"
+                className="flex flex-wrap items-start gap-2 rounded-lg border border-border bg-surface px-2 py-1.5 text-caption"
               >
                 {isEditing ? (
                   <>
                     <textarea
-                      className="min-h-[32px] min-w-[12rem] flex-1 resize-y rounded-md border border-border bg-bg px-2 py-1 text-md leading-snug text-fg"
+                      ref={followUpEditRef}
+                      className="min-h-[var(--vy-control-min-h)] min-w-[12rem] flex-1 resize-y rounded-md border border-border bg-bg px-2 py-1 text-md leading-snug text-fg"
                       value={editingFollowUpText}
                       onChange={(e) => setEditingFollowUpText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          e.stopPropagation()
+                          setEditingFollowUpId(null)
+                        }
+                      }}
                       aria-label="Edit queued follow-up"
                       rows={2}
                     />

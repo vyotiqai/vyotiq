@@ -72,17 +72,52 @@ export function shouldPreserveIndexedEmbeddings(opts: {
 /** Preferred LightOn mDenseOn ONNX identity (when weights exist). */
 export const MDENSEON_MODEL_ID = 'lightonai/mDenseOn@onnx-int8'
 /** Bootstrap INT8 ONNX until mDenseOn ONNX is published (same Dense family). */
-export const DENSEON_ONNX_MODEL_ID = 'lightonai/DenseOn@onnx-int8'
+export const DENSEON_ONNX_MODEL_ID = 'onnx-community/DenseOn@onnx-int8'
+/** Older label written to stores before the id was aligned with the download repo. */
+export const DENSEON_ONNX_MODEL_ID_LEGACY = 'lightonai/DenseOn@onnx-int8'
+
+/** LiquidAI LFM2.5-Embedding-350M — dense bi-encoder, 1024-dim CLS, 11 languages. */
+export const LFM2_EMBEDDING_MODEL_ID = 'liquidai/LFM2.5-Embedding-350M@onnx'
+export const LFM2_EMBEDDING_DIM = 1024
+/** Ollama/llama.cpp model tag for the LFM2.5-Embedding GGUF (local, no export needed).
+ *  Uses the hf.co/ form so Ollama pulls straight from the Hugging Face GGUF repo,
+ *  independent of Ollama's curated-library naming. */
+export const LFM2_OLLAMA_MODEL = 'hf.co/LiquidAI/LFM2.5-Embedding-350M-GGUF'
+
+/**
+ * Neural dense ONNX models are grouped into families that share an embedding
+ * space. Two model ids are compatible when they are the same id OR belong to
+ * the same family (e.g. lazy mDenseOn vs stored DenseOn-ONNX, both LightOn).
+ * LFM2 is its own family and is incompatible with LightOn (different dim / space).
+ */
+const NEURAL_MODEL_FAMILY: Record<string, string> = {
+  [MDENSEON_MODEL_ID]: 'lighton',
+  [DENSEON_ONNX_MODEL_ID]: 'lighton',
+  [DENSEON_ONNX_MODEL_ID_LEGACY]: 'lighton',
+  [LFM2_EMBEDDING_MODEL_ID]: 'lfm2'
+}
+
+/** Family key for a known neural dense ONNX model id, or null for unknowns. */
+export function neuralModelFamily(modelId: string): string | null {
+  return NEURAL_MODEL_FAMILY[modelId] ?? null
+}
+
+/** True for any neural dense ONNX embedder (LightOn or LFM2 families). */
+export function isNeuralDenseModelId(modelId: string): boolean {
+  return neuralModelFamily(modelId) != null
+}
 
 /** Lazy embedder may report mDenseOn before DenseOn-ONNX actually loads. */
 export function isLightOnDenseModelId(modelId: string): boolean {
-  return modelId === MDENSEON_MODEL_ID || modelId === DENSEON_ONNX_MODEL_ID
+  return neuralModelFamily(modelId) === 'lighton'
 }
 
-/** Same embedding space — including lazy mDenseOn id vs stored DenseOn-ONNX. */
+/** Same embedding space — same id or same neural family (LFM2 / LightOn). */
 export function denseModelIdsCompatible(storeModelId: string, embedderModelId: string): boolean {
   if (storeModelId === embedderModelId) return true
-  return isLightOnDenseModelId(storeModelId) && isLightOnDenseModelId(embedderModelId)
+  const a = neuralModelFamily(storeModelId)
+  const b = neuralModelFamily(embedderModelId)
+  return a != null && a === b
 }
 
 export const LIGHTON_DENSE_DIM = 768

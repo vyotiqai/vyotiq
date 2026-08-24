@@ -34,8 +34,8 @@ function LineText({
 }
 
 /**
- * Row cues: background tint marks add/del; compact line # for location.
- * Sign column (+/−) dropped — redundant with tint and stole dock width (D2/D7).
+ * Row cues: background tint + gutter sign (+/−) mark add/del — never hue alone.
+ * The sign lives in the line-# gutter; compact and keyboard-free (D2/D7 kept).
  */
 function DiffLines({
   lines,
@@ -73,10 +73,13 @@ function DiffLines({
 
   const gutterCh = useMemo(() => {
     let maxLn = 0
+    let hasSign = false
     for (const line of visible) {
       if (line.lineNumber != null && line.lineNumber > maxLn) maxLn = line.lineNumber
+      if (line.kind === 'add' || line.kind === 'del') hasSign = true
     }
-    return Math.max(2, String(maxLn || 0).length)
+    // +1ch reserves room for the add/del sign beside the widest line number.
+    return Math.max(hasSign ? 3 : 2, String(maxLn || 0).length + (hasSign ? 1 : 0))
   }, [visible])
 
   if (!filtered.length) return null
@@ -119,10 +122,11 @@ function DiffLines({
             )}
           >
             <span
-              className="shrink-0 select-none pr-1 text-right tabular-nums text-2xs text-tertiary/55"
+              className="shrink-0 select-none pr-1 text-right tabular-nums text-2xs text-tertiary"
               style={{ width: `${gutterCh}ch`, minWidth: '2ch' }}
               aria-hidden={line.lineNumber == null}
             >
+              {line.kind === 'add' ? '+' : line.kind === 'del' ? '−' : ''}
               {line.lineNumber ?? ''}
             </span>
             <span

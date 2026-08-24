@@ -127,3 +127,43 @@ export const PrEditTitleRequestSchema = z.object({
 export const PrEditTitleResultSchema = z.object({
   title: z.string()
 })
+
+export const PrReviewRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  event: z.enum(['approve', 'request-changes', 'comment']),
+  body: z.string().max(8_000).optional(),
+  number: z.number().int().positive().optional()
+})
+
+export const PrReviewResultSchema = z.object({
+  detail: z.string()
+})
+export type PrReviewResult = z.infer<typeof PrReviewResultSchema>
+
+export const GithubIssuesListRequestSchema = z.object({
+  workspacePath: z.string().min(1)
+})
+
+export const GithubIssueSchema = z.object({
+  number: z.number().int().positive(),
+  title: z.string(),
+  url: z.string(),
+  state: z.string()
+})
+
+export const GithubIssuesListResultSchema = z.object({
+  issues: z.array(GithubIssueSchema).max(50)
+})
+export type GithubIssuesListResult = z.infer<typeof GithubIssuesListResultSchema>
+
+export const GithubIssueCreateRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  title: z.string().min(1).max(256),
+  body: z.string().max(8_000).optional()
+})
+
+export const GithubIssueCreateResultSchema = z.object({
+  url: z.string(),
+  detail: z.string()
+})
+export type GithubIssueCreateResult = z.infer<typeof GithubIssueCreateResultSchema>

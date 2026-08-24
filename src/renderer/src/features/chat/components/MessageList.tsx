@@ -1232,6 +1232,17 @@ export function MessageList({
   }, [jumpToBottom, jumpToTop])
 
   useEffect(() => {
+    const onCommand = (event: Event): void => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id
+      if (id === 'jump-latest') jumpToBottom()
+      else if (id === 'jump-top') jumpToTop()
+      else if (id === 'find') setFindOpen(true)
+    }
+    window.addEventListener('vyotiq:command', onCommand)
+    return () => window.removeEventListener('vyotiq:command', onCommand)
+  }, [jumpToBottom, jumpToTop])
+
+  useEffect(() => {
     const paneOwnsEvent = (e: KeyboardEvent): boolean => {
       const target = e.target instanceof Element ? e.target : null
       const list = containerRef.current
@@ -1513,12 +1524,13 @@ export function MessageList({
 
   const remasureMountedRows = useCallback(() => {
     const root = containerRef.current
-    if (!root) return
+    const virtualizer = rowVirtualizerRef.current
+    if (!root || !virtualizer) return
     const nodes = root.querySelectorAll('[data-index]')
     for (const node of nodes) {
-      rowVirtualizer.measureElement(node)
+      virtualizer.measureElement(node)
     }
-  }, [rowVirtualizer])
+  }, [])
 
   // Never call measure() here — it clears itemSizeCache and off-screen rows fall
   // back to estimates (huge gaps between Thought/Read). Remasure mounted only.

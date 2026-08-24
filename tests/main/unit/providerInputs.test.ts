@@ -22,13 +22,19 @@ describe('OpenAI Responses input', () => {
       },
       { role: 'tool' as const, toolCallId: 'c1', toolName: 'read', content: 'file contents' }
     ]
-    const input = toResponsesInput(messages, undefined, {
-      kind: 'openai_responses',
-      responseId: 'resp_1',
-      outputItems: []
-    })
+    const input = toResponsesInput(
+      messages,
+      undefined,
+      {
+        kind: 'openai_responses',
+        responseId: 'resp_1',
+        outputItems: []
+      },
+      { systemStable: 'stable', systemVolatile: 'clock=step-2' }
+    )
     expect(input).toEqual([
-      { type: 'function_call_output', call_id: 'c1', output: 'file contents' }
+      { type: 'function_call_output', call_id: 'c1', output: 'file contents' },
+      { role: 'user', content: '<live_session>\nclock=step-2\n</live_session>' }
     ])
   })
 
@@ -131,12 +137,16 @@ describe('Gemini Interactions input', () => {
       { role: 'user' as const, content: 'hi' },
       { role: 'tool' as const, toolCallId: 'c1', toolName: 'read', content: 'ok' }
     ]
-    const input = toInteractionsInput(messages, 'system', true)
+    const input = toInteractionsInput(messages, 'system', true, {
+      systemStable: 'stable',
+      systemVolatile: 'clock=step-2'
+    })
     expect(input).toEqual([
       {
         type: 'function_response',
         function_response: { id: 'c1', name: 'read', response: { output: 'ok' } }
-      }
+      },
+      { type: 'text', text: '<live_session>\nclock=step-2\n</live_session>' }
     ])
   })
 

@@ -48,6 +48,8 @@ export type SettingsViewProps = {
     provider: SecretProvider
   ) => Promise<{ ok: true } | { ok: false; error: string }>
   onAppearanceChange?: (partial: Partial<AppearanceSettings>) => void
+  /** Read error from the app-level custom CSS overlay loader. */
+  customCssError?: string | null
   onPickWorkspace?: () => Promise<unknown>
   onModelsRefreshed?: () => void
   activeWorkspacePath?: string | null

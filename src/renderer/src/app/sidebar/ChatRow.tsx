@@ -118,6 +118,7 @@ export const ChatRow = memo(function ChatRow({
         <input
           ref={inputRef}
           type="text"
+          data-vy-text-entry
           className={cn(
             'app-region-no-drag w-full rounded-lg border border-border/50 bg-surface/60 text-fg outline-none focus:border-border-strong focus:bg-surface focus:vy-focus-ring',
             nested ? 'px-1.5 py-1 text-xs' : 'px-2 py-1.5 text-sm'
@@ -205,23 +206,12 @@ export const ChatRow = memo(function ChatRow({
         }}
       >
         <RunStatusDot run={run} />
-        {!nested ? (
-          <span
-            className="pointer-events-none flex shrink-0 text-muted/60"
-            role="img"
-            aria-label="Drag to open in a split pane"
-            title="Drag to open in a split pane"
-            data-split-pane-affordance
-          >
-            <Icon name="columns" size={12} />
-          </span>
-        ) : null}
         <span className="min-w-0 flex-1 truncate">{title}</span>
       </button>
 
       <div
         className={cn(
-          'app-region-no-drag absolute inset-y-0 right-0 z-10 flex items-center gap-px vy-transition pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100',
+          'app-region-no-drag absolute inset-y-0 right-0 z-sticky flex items-center gap-px vy-transition pointer-events-none opacity-0 group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100',
           '[@media(hover:none)]:pointer-events-auto [@media(hover:none)]:opacity-100',
           confirmingDelete && 'pointer-events-auto opacity-100'
         )}

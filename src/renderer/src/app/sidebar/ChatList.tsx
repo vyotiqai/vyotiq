@@ -211,13 +211,6 @@ function WorkspaceHeader({
         title={path}
         onClick={onSelectWorkspace}
       >
-        {hasActivity ? (
-          <span
-            className="size-1.5 shrink-0 rounded-full bg-fg motion-safe:animate-pulse"
-            title="Active run in workspace"
-            aria-hidden
-          />
-        ) : null}
         <span className="truncate font-medium">{name}</span>
       </button>
       {confirmingClose ? (

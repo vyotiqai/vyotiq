@@ -353,7 +353,13 @@ export function buildAnthropicBody(req: ProviderChatRequest): Record<string, unk
     }
   }
   Object.assign(body, anthropicThinkingFields(req))
+  applySampling(body, req)
   return body
+}
+
+function applySampling(body: Record<string, unknown>, req: ProviderChatRequest): void {
+  if (typeof req.temperature === 'number') body.temperature = req.temperature
+  if (req.stop && req.stop.length > 0) body.stop_sequences = req.stop.slice(0, 4)
 }
 
 export const anthropicProvider: LlmProvider = {
@@ -502,6 +508,7 @@ export const anthropicProvider: LlmProvider = {
     }
 
     Object.assign(body, anthropicThinkingFields(req))
+    applySampling(body, req)
 
     const baseHeaders: Record<string, string> = {
       'Content-Type': 'application/json',

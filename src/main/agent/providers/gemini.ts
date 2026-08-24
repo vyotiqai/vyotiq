@@ -204,6 +204,12 @@ export function buildGeminiBody(req: ProviderChatRequest): Record<string, unknow
   if (req.maxOutputTokens && req.maxOutputTokens > 0) {
     generationConfig.maxOutputTokens = req.maxOutputTokens
   }
+  if (typeof req.temperature === 'number') {
+    generationConfig.temperature = req.temperature
+  }
+  if (req.stop && req.stop.length > 0) {
+    generationConfig.stopSequences = req.stop.slice(0, 5)
+  }
   if (req.responseFormat) {
     generationConfig.responseMimeType = 'application/json'
     generationConfig.responseSchema = req.responseFormat.schema

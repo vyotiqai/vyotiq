@@ -50,7 +50,7 @@ import { fetchPublicResponse } from '../agent/tools/webFetch'
 export async function refreshRemoteCatalog(): Promise<MarketplaceCatalog> {
   const registryUrl = (getSettings().marketplace?.registryUrl ?? '').trim().replace(/\/$/, '')
   if (!registryUrl) {
-    return loadCachedRemoteCatalog()
+    return { schemaVersion: 1, packages: [] }
   }
   const url = `${registryUrl}/v1/catalog`
   try {
@@ -96,11 +96,13 @@ export async function browseCatalog(opts?: {
   q?: string
 }): Promise<MarketplaceCatalogEntry[]> {
   const bundled = loadBundledCatalog()
-  let remote = loadCachedRemoteCatalog()
   const registryUrl = (getSettings().marketplace?.registryUrl ?? '').trim()
-  // First browse with a registry configured but empty cache → fetch once.
-  if (registryUrl && remote.packages.length === 0) {
-    remote = await refreshRemoteCatalog()
+  let remote: MarketplaceCatalog = { schemaVersion: 1, packages: [] }
+  if (registryUrl) {
+    remote = loadCachedRemoteCatalog()
+    if (remote.packages.length === 0) {
+      remote = await refreshRemoteCatalog()
+    }
   }
   let entries = mergeCatalogs(bundled, remote)
   if (opts?.kind) {

@@ -1,35 +1,49 @@
-/** Shared Plan-mode `plan.md` outline — headings, prompts, and stub chrome. */
+/** Shared Plan-mode `plan.md` stub and chrome detection. */
 
 export const PLAN_STUB_HINT =
-  'Draft the plan here. Update as you learn. Do not edit product source in Plan mode.'
+  'Write the plan with create_plan. Stay on plan.md — do not edit product source.'
 
 /** Substring used to detect an unfilled Plan-mode stub. */
 export const PLAN_STUB_MARKER = 'Draft the plan here.'
 
 export const PLAN_SECTIONS = [
-  { heading: 'Goal', prompt: 'What result do you want?' },
-  { heading: 'Success criteria', prompt: 'How will we know it worked?' },
-  { heading: 'Scope', prompt: 'What is included and excluded?' },
-  { heading: 'Open questions', prompt: 'What needs your decision?' },
-  { heading: 'Approach', prompt: 'What direction will be taken and why?' },
-  { heading: 'Ordered steps', prompt: 'Small, understandable phases.' },
-  { heading: 'Verification', prompt: 'How the finished work will be checked.' },
-  { heading: 'Risks or trade-offs', prompt: 'Anything that could affect the outcome.' }
+  { heading: 'Goal' },
+  { heading: 'Steps' },
+  { heading: 'Done when' }
 ] as const
 
-const STUB_HINT_RE =
-  /^\s*_{0,2}\s*Draft the plan here(?:\. Update as you learn(?:\. Do not edit product source in Plan mode)?)?\.?\s*_{0,2}\s*$/i
+const LEGACY_HEADINGS = [
+  'Goal',
+  'Success criteria',
+  'Scope',
+  'Open questions',
+  'Approach',
+  'Ordered steps',
+  'Verification',
+  'Risks or trade-offs',
+  'Steps',
+  'Done when'
+] as const
 
-const PROMPT_NORMALIZED = new Set(
-  PLAN_SECTIONS.map((section) => normalizePromptText(section.prompt))
-)
+const LEGACY_PROMPTS = new Set([
+  'what result do you want',
+  'how will we know it worked',
+  'what is included and excluded',
+  'what needs your decision',
+  'what direction will be taken and why',
+  'small, understandable phases',
+  'how the finished work will be checked',
+  'anything that could affect the outcome'
+])
+
+const STUB_HEADING_KEYS = new Set(LEGACY_HEADINGS.map((heading) => planSectionKey(heading)))
 
 export const DEFAULT_PLAN_STUB = [
   '# Plan',
   '',
   `_${PLAN_STUB_HINT}_`,
   '',
-  ...PLAN_SECTIONS.flatMap(({ heading, prompt }) => [`## ${heading}`, '', `_${prompt}_`, ''])
+  ...PLAN_SECTIONS.flatMap(({ heading }) => [`## ${heading}`, '', ''])
 ].join('\n')
 
 function unwrapEmphasis(line: string): string {
@@ -55,7 +69,11 @@ export function isPlanTitleLine(line: string): boolean {
 }
 
 export function isPlanStubHintLine(line: string): boolean {
-  return STUB_HINT_RE.test(line.trim())
+  const text = unwrapEmphasis(line)
+  if (!text) return false
+  if (/^draft the plan here\b/i.test(text)) return true
+  if (/^write the plan with create_plan\b/i.test(text)) return true
+  return false
 }
 
 export function isPlanHeadingLine(line: string): boolean {
@@ -64,10 +82,10 @@ export function isPlanHeadingLine(line: string): boolean {
 
 export function isPlanSectionPromptLine(line: string): boolean {
   const normalized = normalizePromptText(line)
-  return normalized.length > 0 && PROMPT_NORMALIZED.has(normalized)
+  return normalized.length > 0 && LEGACY_PROMPTS.has(normalized)
 }
 
-/** Heading key for readiness: `Goal — …` → `goal`; `Done when` stays distinct. */
+/** Heading key for chrome detection: `Goal — …` → `goal`. */
 export function planSectionKey(headingText: string): string {
   return headingText
     .replace(/\s*[—–]\s+.*$/, '')
@@ -81,14 +99,15 @@ export function isPlanStubChromeLine(line: string): boolean {
   if (!trimmed) return true
   if (isPlanTitleLine(trimmed)) return true
   if (isPlanStubHintLine(trimmed)) return true
-  if (isPlanHeadingLine(trimmed)) return true
+  const heading = trimmed.match(/^#{1,6}\s+(.+?)\s*$/)
+  if (heading) return STUB_HEADING_KEYS.has(planSectionKey(heading[1]!))
   if (isPlanSectionPromptLine(trimmed)) return true
   if (/^(-{3,}|\*{3,}|_{3,})\s*$/.test(trimmed)) return true
   if (/^`{3,}/.test(trimmed)) return true
   return false
 }
 
-/** Body remaining after stub headings, hints, and section prompts. */
+/** Body remaining after stub headings, hints, and leftover section prompts. */
 export function stripPlanStubChrome(text: string): string {
   return text
     .split(/\r?\n/)

@@ -71,7 +71,12 @@ describe('skills smoke (bundled + isolated marketplace)', () => {
       'review-code',
       'write-tests'
     ])
-    expect(catalog.packages.filter((pkg) => pkg.kind === 'plugin')).toHaveLength(0)
+    expect(catalog.packages.filter((pkg) => pkg.kind === 'plugin').map((p) => p.id).sort()).toEqual([
+      'devtools',
+      'electron-app',
+      'quality',
+      'shipping'
+    ])
   })
 
   it('parses every bundled SKILL.md with agentskills frontmatter', async () => {

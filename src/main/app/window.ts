@@ -4,8 +4,11 @@ import { join } from 'path'
 import { is } from '@electron-toolkit/utils'
 import icon from '../../../resources/icon.png?asset'
 import { attachSecurity } from '@main/app/security'
+import { getSettings } from '@main/settings/settings'
 import type { ThemeId } from '../../shared/ipc'
 import { resolveTheme } from '../../shared/theme'
+import { resolveSkinWindowBackground } from '../../shared/skins'
+import type { SkinId } from '../../shared/skins'
 import { IPC } from '../../shared/channels'
 import {
   MACOS_TRAFFIC_LIGHT_X,
@@ -20,10 +23,12 @@ export function getMainWindow(): BrowserWindow | null {
   return mainWindow
 }
 
-/** Windows/Linux have no vibrancy — use an opaque chrome color so UI is visible. */
-function windowBackground(resolved: 'light' | 'dark'): string {
-  if (process.platform === 'darwin') return '#00000000'
-  return resolved === 'dark' ? '#000000' : '#ffffff'
+function resolvedThemeForWindow(theme: ThemeId): 'light' | 'dark' {
+  return resolveTheme(theme, nativeTheme.shouldUseDarkColors)
+}
+
+function windowBackground(theme: ThemeId, skinId: SkinId): string {
+  return resolveSkinWindowBackground(skinId, resolvedThemeForWindow(theme), process.platform)
 }
 
 function appIconPath(): string {
@@ -38,11 +43,16 @@ function appIconPath(): string {
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]
 }
 
-export function applyTitleBarTheme(theme: ThemeId): void {
+export function applyTitleBarTheme(theme: ThemeId, skinId?: SkinId): void {
   if (!mainWindow) return
-  const prefersDark = nativeTheme.shouldUseDarkColors
-  const resolved = resolveTheme(theme, prefersDark)
-  mainWindow.setBackgroundColor(windowBackground(resolved))
+  const skin = skinId ?? getSettings().skinId
+  mainWindow.setBackgroundColor(windowBackground(theme, skin))
+}
+
+export function applyWindowChrome(theme: ThemeId, skinId?: SkinId): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const skin = skinId ?? getSettings().skinId
+  applyTitleBarTheme(theme, skin)
 }
 
 function attachWindowStatePush(win: BrowserWindow): void {
@@ -54,11 +64,16 @@ function attachWindowStatePush(win: BrowserWindow): void {
   win.on('unmaximize', push)
   win.on('enter-full-screen', push)
   win.on('leave-full-screen', push)
+  win.on('focus', () => {
+    if (!win.isDestroyed()) win.webContents.send(IPC.windowFocusChanged, true)
+  })
+  win.on('blur', () => {
+    if (!win.isDestroyed()) win.webContents.send(IPC.windowFocusChanged, false)
+  })
 }
 
 export function createWindow(): BrowserWindow {
-  const prefersDark = nativeTheme.shouldUseDarkColors
-  const resolved: 'light' | 'dark' = prefersDark ? 'dark' : 'light'
+  const settings = getSettings()
 
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -71,12 +86,10 @@ export function createWindow(): BrowserWindow {
     // Custom renderer controls own the top-right on win/linux — no titleBarOverlay.
     ...(process.platform === 'darwin'
       ? {
-          trafficLightPosition: { x: MACOS_TRAFFIC_LIGHT_X, y: MACOS_TRAFFIC_LIGHT_Y },
-          vibrancy: 'under-window' as const,
-          visualEffectState: 'active' as const
+          trafficLightPosition: { x: MACOS_TRAFFIC_LIGHT_X, y: MACOS_TRAFFIC_LIGHT_Y }
         }
       : {}),
-    backgroundColor: windowBackground(resolved),
+    backgroundColor: windowBackground(settings.theme, settings.skinId),
     icon: appIconPath(),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -87,6 +100,7 @@ export function createWindow(): BrowserWindow {
     }
   })
 
+  applyWindowChrome(settings.theme, settings.skinId)
   attachSecurity(mainWindow)
   attachWindowStatePush(mainWindow)
   attachWebContentsCrashLogging(mainWindow.webContents)

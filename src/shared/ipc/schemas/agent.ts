@@ -199,7 +199,7 @@ const AgentEventUnionSchema = z.discriminatedUnion('type', [
     contentTruncated: z.boolean().optional()
   }),
   z.object({
-    /** Live progress from a long-running tool (e.g. image gen), shown under the tool row. */
+    /** Live progress from a long-running tool, shown under the tool row. */
     type: z.literal('tool_progress'),
     ...eventBase,
     parentToolCallId: z.string(),
@@ -567,6 +567,7 @@ export const ChatStartRequestSchema = z
     newMessages: z.array(ChatMessageSchema).optional(),
     incremental: z.boolean().optional(),
     workspacePath: z.string().min(1),
+    focusedFile: z.string().max(4_096).optional(),
     runId: RunIdSchema.optional(),
     /** Ask / Plan / Agent — authoritative for this invoke. */
     mode: AgentInteractionModeSchema.optional()

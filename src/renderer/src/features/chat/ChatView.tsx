@@ -15,7 +15,6 @@ import { isPlanDraftReady } from './utils/planDraft'
 import { Composer } from './components/composer'
 import { RunSessionProvider } from './RunSessionContext'
 import { AgentInstancePane } from './components/AgentInstancePane'
-import { ChatHeroStage } from './components/ChatHeroStage'
 import { ChatStartWork } from './components/ChatStartWork'
 import { ChatTranscriptStage } from './components/ChatTranscriptStage'
 import { formatStartWorkDraft, formatStartWorkLabel } from './utils/chatStartWork'
@@ -237,6 +236,7 @@ export function ChatView({
   operationalError,
   hasWorkspace,
   workspacePath,
+  tabAutocompleteEnabled = true,
   provider,
   model,
   ollamaBaseUrl,
@@ -335,6 +335,7 @@ export function ChatView({
   operationalError?: string | null
   hasWorkspace: boolean
   workspacePath: string | null
+  tabAutocompleteEnabled?: boolean
   provider: ProviderId
   model: string
   ollamaBaseUrl?: string
@@ -466,9 +467,9 @@ export function ChatView({
   const [activeRightPanel, setActiveRightPanel] = useState<ChatRightPanelId | null>(() => {
     try {
       const raw = localStorage.getItem(RIGHT_PANEL_KEY)
-      // Preserve the legacy value as the real workspace Files panel.
-      if (raw === 'files') return 'files'
-      if (isChatRightPanelId(raw)) return raw
+      // Restore the last panel, but never auto-open the Files panel (file
+      // explorer + editor) on startup — it only opens when the user opens it.
+      if (isChatRightPanelId(raw) && raw !== 'files') return raw
       // Migrate legacy browser-open preference.
       const legacy = localStorage.getItem(BROWSER_PANEL_OPEN_KEY)
       if (legacy === '1' || legacy === 'true') return 'browser'
@@ -518,7 +519,6 @@ export function ChatView({
       : turnStatus === 'error'
         ? 'Run failed'
         : null
-  const showHero = !hasItems && !transcriptLoading
   const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
   const [prNumber, setPrNumber] = useState<number | null>(null)
   /** Accumulated dock title tabs (multi-panel strip). */
@@ -573,8 +573,10 @@ export function ChatView({
 
   useLayoutEffect(() => {
     setTitleBarOccupied(dockImmersive || dockSideTitleBar)
-    return () => setTitleBarOccupied(false)
   }, [dockImmersive, dockSideTitleBar, setTitleBarOccupied])
+  useEffect(() => {
+    return () => setTitleBarOccupied(false)
+  }, [setTitleBarOccupied])
 
   /** Session-scoped: skip auto-open after the user closes a panel until they open it again. */
   const dismissedPanelsRef = useRef<Set<ChatRightPanelId>>(new Set())
@@ -838,6 +840,17 @@ export function ChatView({
     return () => window.removeEventListener('keydown', onKey)
   }, [toggleRightPanel])
 
+  useEffect(() => {
+    const onCommand = (event: Event): void => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id
+      if (id === 'panelTerminal') toggleRightPanel('terminal')
+      else if (id === 'panelChanges') toggleRightPanel('changes')
+      else if (id === 'panelBrowser') toggleRightPanel('browser')
+    }
+    window.addEventListener('vyotiq:command', onCommand)
+    return () => window.removeEventListener('vyotiq:command', onCommand)
+  }, [toggleRightPanel])
+
   const toggleDockExpanded = useCallback(() => {
     if (dockExpanded) {
       // Collapse: if Agent is focused, return to full chat (no side dock); else side dock.
@@ -954,7 +967,6 @@ export function ChatView({
       void window.vyotiq?.workspaceEditorRecoveryLoad({ workspacePath }).then((result) => {
         if (cancelled || !result.ok) return
         setPendingFilesRecovery({ workspacePath, data: result.data })
-        if (result.data.snapshot?.tabs.length) tryAutoOpenPanel('files')
       })
     }, 900)
     return () => {
@@ -1210,27 +1222,6 @@ export function ChatView({
           showThinking={showThinking}
           onOpenWorkspaceFile={openWorkspaceFile}
         />
-      ) : showHero ? (
-        <ChatHeroStage
-          chatBannerError={chatBannerError}
-          operationalBannerError={operationalBannerError}
-          onDismissError={onDismissError}
-          composer={
-            <RunSessionProvider value={composerRunSession}>
-              <MemoComposer
-                key={`composer:${surfaceKey}`}
-                {...composerProps}
-                variant="hero"
-                className="w-full"
-              />
-            </RunSessionProvider>
-          }
-          belowComposer={
-            showStartWork && startWork ? (
-              <ChatStartWork label={startWork.label} onFill={fillStartWorkDraft} />
-            ) : null
-          }
-        />
       ) : (
         <ChatTranscriptStage
           sideRailPad={agentSideRailPad}
@@ -1285,6 +1276,14 @@ export function ChatView({
                 inert={editing ? true : undefined}
                 aria-hidden={editing || undefined}
               >
+                {showStartWork && startWork ? (
+                  <ChatStartWork
+                    align="start"
+                    className="px-4"
+                    label={startWork.label}
+                    onFill={fillStartWorkDraft}
+                  />
+                ) : null}
                 <MemoComposer
                   key={`composer:${surfaceKey}`}
                   {...composerProps}
@@ -1316,6 +1315,7 @@ export function ChatView({
           <FilesPanel
             workspacePath={workspacePath}
             active={visiblePanelId === 'files'}
+            tabAutocompleteEnabled={tabAutocompleteEnabled}
             gitRevision={gitRevision}
             onGitMutated={notifyGitMutated}
             onFlushReady={registerFilesFlush}
@@ -1532,10 +1532,10 @@ export function ChatView({
             titleBarHost
           )
         : null}
-      <div className="relative flex min-h-0 min-w-0 flex-1">
+      <div className="relative flex min-h-0 min-w-0 flex-1" data-chat-surface>
         {dockImmersive ? (
           <div
-            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-bg"
+            className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent"
             data-dock-immersive
             data-dock-expanded="1"
           >

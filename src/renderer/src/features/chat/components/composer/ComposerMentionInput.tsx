@@ -347,13 +347,7 @@ export const ComposerMentionInput = forwardRef<
       parseComposerDocument(value).every((s) => s.type === 'text' && !s.value.trim()))
 
   return (
-    <div
-      className="relative min-w-0 w-full"
-      role="combobox"
-      aria-expanded={ariaExpanded ?? false}
-      aria-controls={ariaControls}
-      aria-haspopup="listbox"
-    >
+    <div className="relative min-w-0 w-full">
       {empty && placeholder ? (
         <div
           className="pointer-events-none absolute inset-0 flex items-center text-md leading-snug tracking-normal text-secondary"
@@ -363,9 +357,14 @@ export const ComposerMentionInput = forwardRef<
           {placeholder}
         </div>
       ) : null}
+      {/* Combobox role + expanded state live on the focused editable element
+          (ARIA 1.2): screen readers announce expansion only from the focused node. */}
       <div
         ref={elRef}
-        role="textbox"
+        role={disabled ? 'textbox' : 'combobox'}
+        aria-expanded={disabled ? undefined : (ariaExpanded ?? false)}
+        aria-controls={disabled ? undefined : ariaControls}
+        aria-haspopup={disabled ? undefined : 'listbox'}
         aria-multiline="true"
         aria-label="Message"
         aria-keyshortcuts="Meta+L Control+L"

@@ -17,9 +17,12 @@ vi.mock('@main/agent/tools/walk', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@main/agent/tools/walk')>()
   return {
     ...actual,
-    collectWorkspaceFiles: async (root: string) => [
-      { full: join(root, 'prefix.ts'), rel: 'prefix.ts' }
-    ]
+    collectWorkspaceFilesPage: async (root: string) => ({
+      files: [{ full: join(root, 'prefix.ts'), rel: 'prefix.ts' }],
+      lastRel: 'prefix.ts',
+      exhausted: true,
+      cursorMissing: false
+    })
   }
 })
 

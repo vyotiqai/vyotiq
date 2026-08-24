@@ -89,7 +89,7 @@ describe('ChatView operational errors', () => {
     )
 
     expect(screen.getByRole('alert').textContent).toContain('Pick workspace failed')
-    expect(document.querySelector('[data-composer-hero]')).toBeTruthy()
+    expect(document.querySelector('[data-composer-column], [data-composer-hero]')).toBeTruthy()
     expect(screen.queryByText(/No recent workspaces yet/i)).toBeNull()
   })
 

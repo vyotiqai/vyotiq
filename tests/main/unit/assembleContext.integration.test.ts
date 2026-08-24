@@ -199,6 +199,32 @@ describe('assembleContext integration', () => {
     expect(result.system).toContain('Do the thing')
   })
 
+  it('Plan-mode verbatim plan keeps the # Plan heading and is not truncated', async () => {
+    const steps = Array.from({ length: 80 }, (_, i) => `${i + 1}. Edit src/file${i}.ts`).join('\n')
+    const plan = ['# Plan', '', '## Goal', '', 'Ship the planner.', '', '## Ordered steps', '', steps].join(
+      '\n'
+    )
+    const result = await assembleContext({
+      harness: 'harness',
+      contract: '## Goal\nShip',
+      plan,
+      planVerbatim: true,
+      messages: [{ role: 'user', content: 'hello' }],
+      workspacePath: null,
+      goal: 'hello',
+      model,
+      toolsJsonEstimate: 100,
+      providerId: 'ollama',
+      provider: mockProvider,
+      signal: new AbortController().signal
+    })
+    const inner = result.systemStable.match(/<plan>\n([\s\S]*?)\n<\/plan>/)?.[1]
+    expect(inner).toBe(plan)
+    expect(inner).toContain('# Plan')
+    expect(inner).toContain('Edit src/file79.ts')
+    expect(inner).not.toContain('…')
+  })
+
   it('injects session env when provided', async () => {
     const result = await assembleContext({
       harness: 'harness',

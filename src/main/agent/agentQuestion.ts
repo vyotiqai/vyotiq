@@ -13,8 +13,8 @@ export type QuestionSender = (request: AgentQuestionRequest) => void
 /** Default wait for user answers before auto-denying (15 minutes). */
 export const AGENT_QUESTION_TIMEOUT_MS = 900_000
 
-/** Debug heartbeat while a question is parked waiting for the user. */
-export const AGENT_QUESTION_HEARTBEAT_MS = 60_000
+/** Debug heartbeat while a question is parked waiting for the user (5 min — a parked prompt is expected, not an incident). */
+export const AGENT_QUESTION_HEARTBEAT_MS = 300_000
 
 /** One sender per run: question prompts belong to the window that started it. */
 const senders = new Map<string, QuestionSender>()

@@ -71,7 +71,7 @@ describe('codeindex paginated sync', () => {
     expect(finalCount).toBe(total)
     expect(store.listFilePaths()).toContain('pkg0/file0.ts')
     expect(store.listFilePaths()).toContain(`pkg${Math.floor((total - 1) / 100)}/file${total - 1}.ts`)
-    expect(INDEX_SCAN_CAP).toBe(8000)
+    expect(INDEX_SCAN_CAP).toBe(24000)
 
     store.close()
   }, 60_000)

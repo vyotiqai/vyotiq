@@ -130,6 +130,7 @@ export function Sidebar({
       )}
       style={expandedWidthPx != null ? { width: expandedWidthPx } : undefined}
       aria-label="Sidebar"
+      data-sidebar-shell
       data-collapsed={isCollapsed || undefined}
     >
       {isCollapsed ? (

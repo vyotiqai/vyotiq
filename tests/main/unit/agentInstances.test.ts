@@ -36,9 +36,11 @@ vi.mock('@main/agent/startAgentRun', () => ({
 }))
 
 import {
+  cancelChildInstance,
   emitAgentInstanceUpdate,
   handleInlineInstanceFinished,
   mergeAgentInstanceBranch,
+  noteInlineInstanceDeniedTool,
   notifyChildTerminal,
   pullChildRun,
   registerChildInstance,
@@ -78,7 +80,6 @@ import {
   resetActiveRunsForTests,
   tryRegisterRunAbort
 } from '@main/agent/runRegistry'
-
 function mockWebContents() {
   return {
     isDestroyed: () => false,
@@ -701,6 +702,58 @@ describe('agentInstances', () => {
     expect(status?.worktreeBranch).toBeUndefined()
     expect(status?.pathScope).toEqual(['src'])
     clearRunAbort(child.runId)
+  })
+
+  it('auto-cancels an inline instance after repeated tool denials', async () => {
+    const child = await spawnAgentInstance({
+      parentRunId,
+      workspacePath,
+      goal: 'will be denied',
+      pathScope: ['src']
+    })
+    expect(child.ok).toBe(true)
+    if (!child.ok) return
+
+    // First denial records the strike but leaves the run live.
+    expect(noteInlineInstanceDeniedTool(child.runId)).toBe(false)
+    expect(getRunAbort(child.runId)?.signal.aborted).toBe(false)
+    // Reaching the threshold cancels the stuck loop.
+    expect(noteInlineInstanceDeniedTool(child.runId)).toBe(true)
+    // startAgentRunInBackground is mocked (no live loop), so cancel shows up
+    // as an aborted controller; the slot clears only in a real loop finally.
+    expect(getRunAbort(child.runId)?.signal.aborted).toBe(true)
+    const status = loadStatus(resolveRunDir(workspacePath, child.runId))
+    expect(status?.inlineInstance).toBe(true)
+  })
+
+  it('cancelChildInstance rejects non-children and cancels live children', async () => {
+    const child = await spawnAgentInstance({
+      parentRunId,
+      workspacePath,
+      goal: 'cancellable',
+      pathScope: ['src']
+    })
+    expect(child.ok).toBe(true)
+    if (!child.ok) return
+
+    const foreign = cancelChildInstance(workspacePath, 'not-the-parent', child.runId)
+    expect(foreign.ok).toBe(false)
+    if (!foreign.ok) expect(foreign.error).toMatch(/not an inline instance/)
+
+    const cancelled = cancelChildInstance(workspacePath, parentRunId, child.runId)
+    expect(cancelled.ok).toBe(true)
+    if (cancelled.ok) expect(cancelled.phase).toBe('cancelled')
+    expect(getRunAbort(child.runId)?.signal.aborted).toBe(true)
+
+    // Already-terminal children report as such instead of failing.
+    await updateStatus(resolveRunDir(workspacePath, child.runId), { status: 'done' }, { sync: true })
+    const again = cancelChildInstance(workspacePath, parentRunId, child.runId)
+    expect(again.ok).toBe(true)
+    if (again.ok) expect(again.phase).toBe('already-terminal')
+  })
+
+  it('ignores denial strikes for unknown runs', () => {
+    expect(noteInlineInstanceDeniedTool('no-such-run')).toBe(false)
   })
 })
 

@@ -1,12 +1,10 @@
-import { Icon } from '@renderer/lib/icons'
+import { Icon, type IconName } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
 import type { TodoItem, TodoStatus } from '../toolUi/parsers/todo'
 
-const STATUS_ICON: Record<
-  TodoStatus,
-  { name: 'check' | 'loader' | 'close' | 'circle'; className: string }
-> = {
-  pending: { name: 'circle', className: 'text-muted' },
+const STATUS_ICON: Record<TodoStatus, { name: IconName; className: string }> = {
+  // Square outline reads as an empty checkbox; a bare circle reads as a radio button.
+  pending: { name: 'square', className: 'text-muted' },
   in_progress: { name: 'loader', className: 'text-secondary motion-safe:animate-spin' },
   completed: { name: 'check', className: 'text-success' },
   cancelled: { name: 'close', className: 'text-muted' }
@@ -68,8 +66,9 @@ export function TodoChecklist({
                 ? 'line-clamp-3 [overflow-wrap:anywhere]'
                 : 'whitespace-pre-wrap [overflow-wrap:anywhere]',
               item.status === 'in_progress' && 'font-medium text-fg',
-              item.status === 'completed' && 'text-muted line-through',
-              item.status === 'cancelled' && 'text-muted'
+              item.status === 'completed' && 'text-muted',
+              // Strikethrough marks abandoned work, not finished work.
+              item.status === 'cancelled' && 'text-muted line-through'
             )}
           >
             {item.content}

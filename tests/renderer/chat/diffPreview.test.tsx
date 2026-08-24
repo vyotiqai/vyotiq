@@ -139,7 +139,7 @@ describe('DiffPreview', () => {
     expect(highlightToLines.mock.calls[0]![0]).toBe('first\nsecond')
   })
 
-  it('keeps a compact line gutter without a +/- sign column', () => {
+  it('marks add/del rows with a gutter sign so state is not hue-only', () => {
     const { container } = render(
       <DiffPreview
         lines={[line('add', 'added', 12), line('del', 'removed'), line('context', 'same', 13)]}
@@ -148,15 +148,15 @@ describe('DiffPreview', () => {
       />
     )
 
-    expect(screen.getByText('12')).toBeTruthy()
+    // Sign + number render as one text node per row ("+12", "−", "13").
+    expect(screen.getByText('+12')).toBeTruthy()
     expect(screen.getByText('13')).toBeTruthy()
-    expect(screen.queryByText('+')).toBeNull()
-    expect(screen.queryByText('-')).toBeNull()
     expect(container.querySelector('.diff-row-add')).toBeTruthy()
     expect(container.querySelector('.diff-row-del')).toBeTruthy()
-    const gutter = screen.getByText('12')
+    const gutter = screen.getByText('+12')
     expect(gutter.style.width).toMatch(/^\d+ch$/)
-    expect(Number.parseInt(gutter.style.width, 10)).toBeGreaterThanOrEqual(2)
+    // 2ch for digits + 1ch reserved for the add/del sign.
+    expect(Number.parseInt(gutter.style.width, 10)).toBeGreaterThanOrEqual(3)
   })
 
   it('skips syntax highlight while followEnd is streaming, then highlights when settled', async () => {

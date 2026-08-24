@@ -16,7 +16,11 @@ const GRAMMAR_FILES = [
   'tree-sitter-typescript.wasm',
   'tree-sitter-tsx.wasm',
   'tree-sitter-javascript.wasm',
-  'tree-sitter-python.wasm'
+  'tree-sitter-python.wasm',
+  'tree-sitter-go.wasm',
+  'tree-sitter-rust.wasm',
+  'tree-sitter-java.wasm',
+  'tree-sitter-c_sharp.wasm'
 ]
 
 async function sync() {

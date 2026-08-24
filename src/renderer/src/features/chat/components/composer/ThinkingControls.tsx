@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useState } from 'react'
+import { Icon } from '@renderer/lib/icons'
 import { Tooltip } from '@renderer/lib/ui/Tooltip'
 import { cn } from '@renderer/lib/ui/cn'
 import type { ModelInfo, ProviderId, ThinkingEffort, ThinkingMode } from '@shared/ipc'
@@ -291,16 +292,15 @@ export function ThinkingControls({
           </button>
           <button
             type="button"
-            className="rounded px-0.5 text-warning/80 vy-transition hover:bg-warning/20 hover:text-warning"
+            className="inline-grid size-4 place-items-center rounded text-warning/80 vy-transition hover:bg-warning/20 hover:text-warning"
             aria-label="Dismiss lower-thinking suggestion"
-            title="Dismiss"
             onClick={(e) => {
               e.preventDefault()
               e.stopPropagation()
               dismissSuggest()
             }}
           >
-            ×
+            <Icon name="close" size={12} />
           </button>
         </span>
       ) : null}

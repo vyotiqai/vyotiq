@@ -56,7 +56,7 @@ describe('Composer layout', () => {
     expect(form?.className).toMatch(/(?:^|\s)gap-1(?:\s|$)/)
     expect(form?.className).not.toMatch(/(?:^|\s)gap-1\.5(?:\s|$)/)
 
-    const textarea = screen.getByRole('textbox', { name: /^Message$/i })
+    const textarea = screen.getByRole('combobox', { name: /^Message$/i })
     const toolbar = form?.querySelector('[data-composer-toolbar]')
     const plus = screen.getByRole('button', { name: /^Attach files$/i })
     const primary = screen.getByRole('button', { name: /^Dictate$/i })
@@ -86,7 +86,7 @@ describe('Composer layout', () => {
     const shell = document.querySelector('[data-composer-shell]')
     const form = shell?.querySelector('form')
     expect(form).toBeTruthy()
-    const textarea = screen.getByRole('textbox', { name: /^Message$/i })
+    const textarea = screen.getByRole('combobox', { name: /^Message$/i })
     textarea.textContent = 'line one\nline two\nline three\nline four\nline five'
     fireEvent.input(textarea)
 

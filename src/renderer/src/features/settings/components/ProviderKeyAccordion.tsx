@@ -107,14 +107,14 @@ export function ProviderKeyAccordion({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-fg-strong">{providerLabel(id)}</span>
                   {collapsedHost ? (
-                    <span className="mt-0.5 block truncate text-[10px] text-muted" title={rowUrl}>
+                    <span className="mt-0.5 block truncate text-2xs text-muted" title={rowUrl}>
                       {collapsedHost}
                     </span>
                   ) : null}
                 </span>
                 <span
                   className={cn(
-                    'shrink-0 rounded-sm px-1.5 py-0.5 text-[10px] uppercase tracking-wide',
+                    'shrink-0 rounded-sm px-1.5 py-0.5 text-2xs uppercase tracking-wide',
                     isActive
                       ? 'bg-surface-2 text-fg'
                       : saved

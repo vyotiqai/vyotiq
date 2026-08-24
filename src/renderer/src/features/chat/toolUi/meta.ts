@@ -26,7 +26,8 @@ const EDIT_TOOLS = new Set([
   'multi_edit',
   'str_replace',
   'memory_write',
-  'delete'
+  'delete',
+  'edit_notebook'
 ])
 const SEARCH_TOOLS = new Set([
   'search',
@@ -49,9 +50,11 @@ const SEARCH_TOOLS = new Set([
   'await_agent_instance',
   'pull_agent_instance',
   'merge_agent_instance',
+  'cancel_agent_instance',
   'git_status',
   'git_diff',
-  'Skill'
+  'Skill',
+  'lsp'
 ])
 const BROWSER_TOOLS = new Set([
   'browser_navigate',
@@ -270,7 +273,16 @@ const TOOL_ICON_BY_NAME: Record<string, IconName> = {
   await_agent_instance: 'cpu',
   pull_agent_instance: 'cpu',
   merge_agent_instance: 'branch',
-  diagnostics: 'scanSearch'
+  cancel_agent_instance: 'close',
+  diagnostics: 'scanSearch',
+  run_tests: 'scanSearch',
+  git_apply: 'branch',
+  github_pr_create: 'branch',
+  github_pr_review: 'branch',
+  github_issue: 'branch',
+  edit_notebook: 'file',
+  lsp: 'scanSearch',
+  create_plan: 'listTodo'
 }
 
 export function toolIconName(name: string): IconName {

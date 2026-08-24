@@ -74,7 +74,7 @@ describe('ComposerMentionInput sync', () => {
         onPasteFiles={onPasteFiles}
       />
     )
-    const el = screen.getByRole('textbox', { name: /^message$/i })
+    const el = screen.getByRole('combobox', { name: /^message$/i })
     fireEvent.paste(el, {
       clipboardData: {
         files: [file],

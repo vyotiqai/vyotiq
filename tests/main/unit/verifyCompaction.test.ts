@@ -24,6 +24,12 @@ const RECORDED_SUMMARY = readFileSync(
   join(__dirname, '../../fixtures/compact/recorded-81cf5721-verify-failed-summary.md'),
   'utf8'
 )
+  .replace(
+    /^(Session Intent|Files Touched|Key Decisions|Constraints|Open Bugs\/Blockers|Next Steps)$/gm,
+    '## $1'
+  )
+  .replace(/^(plan\.md|contract\.md)(\s+\(.*\))$/gm, '- $1$2')
+  .trim()
 
 const CORE_DECISION =
   'Primary language/runtime for the agent core?: Not sure \u2014 recommend one'

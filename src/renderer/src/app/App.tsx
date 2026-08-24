@@ -7,6 +7,7 @@ import type { PaneRenderOptions } from '../features/chat/ChatPaneHost'
 import { SettingsView, type SettingsSection } from '../features/settings'
 import { MarketplaceView } from '../features/marketplace'
 import { useAppearance } from '@renderer/lib/hooks/useAppearance'
+import { useCustomSkinCss } from '@renderer/lib/hooks/useCustomSkinCss'
 import { pickAppearanceSettings, stepFontScale, DEFAULT_FONT_SCALE } from '@shared/appearance'
 import { useSettings } from '@renderer/lib/hooks/useSettings'
 import { useWorkspaceManager, resolveComposerDraft } from '@renderer/lib/hooks/useWorkspaceManager'
@@ -88,6 +89,7 @@ function App() {
     setError: setSettingsError
   } = useSettings()
   const { setAppearance, hydrate } = useAppearance(pickAppearanceSettings(settings))
+  const { customCssError } = useCustomSkinCss(settings.customCssPath)
   const [openInstanceByParent, setOpenInstanceByParent] = useState<Record<string, string | null>>(
     {}
   )
@@ -220,10 +222,20 @@ function App() {
         theme: settings.theme,
         fontScale: settings.fontScale,
         uiDensity: settings.uiDensity,
-        accentPreset: settings.accentPreset
+        accentPreset: settings.accentPreset,
+        skinId: settings.skinId,
+        customCssPath: settings.customCssPath
       })
     )
-  }, [settings.theme, settings.fontScale, settings.uiDensity, settings.accentPreset, hydrate])
+  }, [
+    settings.theme,
+    settings.fontScale,
+    settings.uiDensity,
+    settings.accentPreset,
+    settings.skinId,
+    settings.customCssPath,
+    hydrate
+  ])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -1241,7 +1253,6 @@ function App() {
           activeRunId={pane.runId}
           transcriptLoading={snap.transcriptLoading}
           showPageHeading={false}
-          dockEmptyComposer
           onActivate={() => focusPaneById(pane.paneId)}
           onProviderModel={(provider, model) =>
             onProviderModelForWorkspace(pane.workspacePath, provider, model)
@@ -1400,7 +1411,8 @@ function App() {
       update,
       onChatSettingsChangeForWorkspace,
       onProviderModelForWorkspace,
-      onToggleFavorite
+      onToggleFavorite,
+      paneLayout?.panes.length
     ]
   )
 
@@ -1610,6 +1622,7 @@ function App() {
                 if (!res.ok) setAppearance(prev)
               })
             }}
+            customCssError={customCssError}
             onPickWorkspace={async () => {
               const res = await pickWorkspace()
               if (res.ok && res.data) await addWorkspace(res.data)
@@ -1690,6 +1703,7 @@ function App() {
             operationalError={operationalError}
             hasWorkspace={Boolean(focusedWorkspacePath ?? activeWorkspace)}
             workspacePath={focusedWorkspacePath ?? activeWorkspace}
+            tabAutocompleteEnabled={settings.tabAutocomplete !== false}
             provider={effectiveChatSettings.provider}
             model={effectiveChatSettings.model}
             ollamaBaseUrl={effectiveChatSettings.ollamaBaseUrl}

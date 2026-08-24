@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AppInfo } from '@shared/ipc'
+import type { AppInfo, UpdaterStatus } from '@shared/ipc'
 import { VyotiqLockup } from '@renderer/lib/brand'
-import { Button } from '@renderer/lib/ui'
+import { Button, Switch } from '@renderer/lib/ui'
 import { copyText } from '@renderer/lib/markdown/copyText'
 import type { SettingsFormState } from '../hooks/useSettingsForm'
 import { SettingsField, SettingsGroup, SettingsStack } from '../components/SettingsField'
@@ -44,11 +44,34 @@ function buildInfoText(info: AppInfo): string {
   ].join('\n')
 }
 
+function updaterHint(status: UpdaterStatus | null): string {
+  if (!status) return 'Check GitHub Releases for a newer install.'
+  if (status.message) return status.message
+  switch (status.state) {
+    case 'dev':
+      return 'Updates apply to packaged installs.'
+    case 'available':
+      return status.version ? `Version ${status.version} is available.` : 'An update is available.'
+    case 'ready':
+      return 'Restart to install the downloaded update.'
+    case 'none':
+      return 'This install is current.'
+    case 'downloading':
+      return status.progress != null
+        ? `Downloading ${Math.round(status.progress * 100)}%`
+        : 'Downloading update…'
+    default:
+      return 'Check GitHub Releases for a newer install.'
+  }
+}
+
 export function AboutSection({ form }: { form: SettingsFormState }) {
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [copied, setCopied] = useState(false)
   const [openingSite, setOpeningSite] = useState(false)
   const [openingDocs, setOpeningDocs] = useState(false)
+  const [updater, setUpdater] = useState<UpdaterStatus | null>(null)
+  const [updaterBusy, setUpdaterBusy] = useState(false)
   const setErrorMessage = form.setErrorMessage
   const setErrorRef = useRef(setErrorMessage)
   setErrorRef.current = setErrorMessage
@@ -72,8 +95,41 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
     }
   }, [])
 
+  useEffect(() => {
+    let cancelled = false
+    const api = window.vyotiq
+    if (!api?.getUpdaterStatus) return
+    void api.getUpdaterStatus().then((res) => {
+      if (cancelled) return
+      if (res.ok) setUpdater(res.data)
+    })
+    const stop = api.onUpdaterStatus?.((status) => {
+      if (!cancelled) setUpdater(status)
+    })
+    return () => {
+      cancelled = true
+      stop?.()
+    }
+  }, [])
+
   const dash = '—'
   const year = new Date().getFullYear()
+  const state = updater?.state
+  const canCheck = state !== 'dev' && state !== 'checking' && state !== 'downloading'
+  const canDownload = state === 'available'
+  const canInstall = state === 'ready'
+
+  const runUpdater = (fn: () => Promise<{ ok: boolean; error?: string }> | undefined): void => {
+    const task = fn()
+    if (!task) return
+    form.clearErrors()
+    setUpdaterBusy(true)
+    void task
+      .then((res) => {
+        if (!res.ok) form.setErrorMessage(res.error ?? 'Update failed')
+      })
+      .finally(() => setUpdaterBusy(false))
+  }
 
   return (
     <SettingsStack>
@@ -144,6 +200,55 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
           >
             {copied ? 'Copied' : 'Copy'}
           </Button>
+        </SettingsField>
+      </SettingsGroup>
+
+      <SettingsGroup title="Updates">
+        <SettingsField
+          id="about-auto-check"
+          title="Automatic checks"
+          hint="Look for GitHub Releases when the app starts."
+        >
+          <Switch
+            size="md"
+            checked={form.settings.autoCheckUpdates}
+            disabled={form.formLocked}
+            label="Check for updates automatically"
+            onCheckedChange={(checked) => {
+              void form.runUpdate({ autoCheckUpdates: checked })
+            }}
+          />
+        </SettingsField>
+        <SettingsField id="about-updater" title="App updates" hint={updaterHint(updater)}>
+          <div className="flex flex-wrap justify-end gap-1.5">
+            <Button
+              variant="subtle"
+              pending={updaterBusy && state === 'checking'}
+              disabled={!canCheck || updaterBusy || !window.vyotiq?.checkForAppUpdates}
+              onClick={() => runUpdater(() => window.vyotiq?.checkForAppUpdates())}
+            >
+              {state === 'checking' ? 'Checking…' : 'Check'}
+            </Button>
+            {canDownload || state === 'downloading' ? (
+              <Button
+                variant="subtle"
+                pending={state === 'downloading'}
+                disabled={!canDownload || updaterBusy || !window.vyotiq?.downloadAppUpdate}
+                onClick={() => runUpdater(() => window.vyotiq?.downloadAppUpdate())}
+              >
+                {state === 'downloading' ? 'Downloading…' : 'Download'}
+              </Button>
+            ) : null}
+            {canInstall ? (
+              <Button
+                variant="subtle"
+                disabled={updaterBusy || !window.vyotiq?.installAppUpdate}
+                onClick={() => runUpdater(() => window.vyotiq?.installAppUpdate())}
+              >
+                Restart to install
+              </Button>
+            ) : null}
+          </div>
         </SettingsField>
       </SettingsGroup>
 

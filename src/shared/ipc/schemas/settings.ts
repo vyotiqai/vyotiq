@@ -3,8 +3,10 @@ import {
   AccentPresetSchema,
   DEFAULT_ACCENT_PRESET,
   DEFAULT_FONT_SCALE,
+  DEFAULT_SKIN_ID,
   DEFAULT_UI_DENSITY,
   FontScaleSchema,
+  SkinIdSchema,
   UiDensitySchema
 } from '../../appearance'
 import type { ThemeId } from '../../theme'
@@ -29,9 +31,11 @@ export type { ThemeId } from '../../theme'
 export {
   AccentPresetSchema,
   FontScaleSchema,
+  SkinIdSchema,
   UiDensitySchema,
   type AccentPreset,
   type FontScale,
+  type SkinId,
   type UiDensity
 } from '../../appearance'
 
@@ -168,25 +172,31 @@ export type ToolApprovalSettings = z.infer<typeof ToolApprovalSettingsSchema>
 
 export const DEFAULT_TOOL_APPROVAL: ToolApprovalSettings = { mode: 'off', allowlist: [] }
 
-export const CodeIndexEmbedderSchema = z.enum(['mdenseon', 'ollama', 'hash'])
+export const CodeIndexEmbedderSchema = z.enum(['mdenseon', 'lfm2', 'ollama', 'hash'])
 export type CodeIndexEmbedderSetting = z.infer<typeof CodeIndexEmbedderSchema>
 
 export const CodeIndexSettingsSchema = z.object({
   enabled: z.boolean().default(true),
-  /** Default: LightOn dense ONNX (mDenseOn preferred; DenseOn bootstrap). */
-  embedder: CodeIndexEmbedderSchema.default('mdenseon'),
+  /**
+   * Default: LFM2.5-Embedding-350M (LiquidAI, 2026 — 1024-dim, 11 languages).
+   * Resolves to local ONNX export → local Ollama/llama.cpp GGUF → DenseOn fallback.
+   */
+  embedder: CodeIndexEmbedderSchema.default('lfm2'),
   /** Download ONNX weights into userData on first use. */
   autoDownload: z.boolean().default(true),
   /** Ollama embedding model when embedder=ollama. */
-  ollamaModel: z.string().min(1).default('nomic-embed-text')
+  ollamaModel: z.string().min(1).default('nomic-embed-text'),
+  /** Ollama model serving the LFM2.5-Embedding GGUF when embedder=lfm2 and no local ONNX. */
+  lfm2OllamaModel: z.string().min(1).default('hf.co/LiquidAI/LFM2.5-Embedding-350M-GGUF')
 })
 export type CodeIndexSettings = z.infer<typeof CodeIndexSettingsSchema>
 
 export const DEFAULT_CODE_INDEX_SETTINGS: CodeIndexSettings = {
   enabled: true,
-  embedder: 'mdenseon',
+  embedder: 'lfm2',
   autoDownload: true,
-  ollamaModel: 'nomic-embed-text'
+  ollamaModel: 'nomic-embed-text',
+  lfm2OllamaModel: 'hf.co/LiquidAI/LFM2.5-Embedding-350M-GGUF'
 }
 
 export const CodeIndexModelPhaseSchema = z.enum([
@@ -228,15 +238,41 @@ export const CodeIndexRuntimeStatusSchema = z.object({
 })
 export type CodeIndexRuntimeStatus = z.infer<typeof CodeIndexRuntimeStatusSchema>
 
+export const ProcessMetricsByTypeSchema = z.object({
+  type: z.string(),
+  count: z.number().int().nonnegative(),
+  cpuPercent: z.number(),
+  workingSetMb: z.number()
+})
+
+export const ProcessMetricsSnapshotSchema = z.object({
+  at: z.string(),
+  totalWorkingSetMb: z.number(),
+  maxCpuPercent: z.number(),
+  byType: z.array(ProcessMetricsByTypeSchema),
+  embedUtility: z.object({
+    pid: z.number().nullable(),
+    sessionLoaded: z.boolean(),
+    rssMb: z.number().nullable(),
+    heapUsedMb: z.number().nullable()
+  })
+})
+export type ProcessMetricsSnapshot = z.infer<typeof ProcessMetricsSnapshotSchema>
+
 export const CodeIndexReindexRequestSchema = z.object({
   workspacePath: z.string().min(1).optional()
 })
 export type CodeIndexReindexRequest = z.infer<typeof CodeIndexReindexRequestSchema>
 
-export const DictationEngineSchema = z.enum(['openai', 'openrouter', 'local'])
+export const DictationEngineSchema = z.enum(['openai', 'openrouter', 'local', 'qwen3-asr'])
 export type DictationEngine = z.infer<typeof DictationEngineSchema>
 
-export const DictationLocalModelIdSchema = z.enum(['whisper-tiny.en', 'whisper-small.en'])
+export const DictationLocalModelIdSchema = z.enum([
+  'whisper-tiny.en',
+  'whisper-small.en',
+  'qwen3-asr-0.6b',
+  'qwen3-asr-1.7b'
+])
 export type DictationLocalModelId = z.infer<typeof DictationLocalModelIdSchema>
 
 export const DictationWaveformStyleSchema = z.enum(['bars', 'dots', 'line', 'mirror'])
@@ -245,17 +281,28 @@ export type DictationWaveformStyle = z.infer<typeof DictationWaveformStyleSchema
 export const DictationSettingsSchema = z.object({
   /** Cloud vs on-device STT. Default keeps today's OpenAI path. */
   engine: DictationEngineSchema.default('openai'),
-  /** Which installed local Whisper weights to use. Empty until the user installs. */
+  /** Which installed local model to use. Empty until the user selects/installs. */
   localModelId: z.union([z.literal(''), DictationLocalModelIdSchema]).default(''),
   /** Composer listening visualizer. */
-  waveformStyle: DictationWaveformStyleSchema.default('bars')
+  waveformStyle: DictationWaveformStyleSchema.default('bars'),
+  /**
+   * OpenAI-compatible transcription base URL for the `qwen3-asr` engine.
+   * Point this at a running vLLM (`vllm serve Qwen/Qwen3-ASR-…`, base
+   * `http://127.0.0.1:8000/v1`) or `qwen-asr-serve` endpoint. The app POSTs
+   * `<url>/audio/transcriptions`; it does not download the model.
+   */
+  qwen3AsrServerUrl: z.string().min(1).default('http://127.0.0.1:8000/v1'),
+  /** Optional bearer token for the Qwen3-ASR server. Empty = no auth header. */
+  qwen3AsrApiKey: z.string().default('')
 })
 export type DictationSettings = z.infer<typeof DictationSettingsSchema>
 
 export const DEFAULT_DICTATION_SETTINGS: DictationSettings = {
   engine: 'openai',
   localModelId: '',
-  waveformStyle: 'bars'
+  waveformStyle: 'bars',
+  qwen3AsrServerUrl: 'http://127.0.0.1:8000/v1',
+  qwen3AsrApiKey: ''
 }
 
 export const DictationModelPhaseSchema = z.enum([
@@ -311,6 +358,9 @@ export const SettingsSchema = z.object({
   fontScale: FontScaleSchema.default(DEFAULT_FONT_SCALE),
   uiDensity: UiDensitySchema.default(DEFAULT_UI_DENSITY),
   accentPreset: AccentPresetSchema.default(DEFAULT_ACCENT_PRESET),
+  skinId: SkinIdSchema.catch(DEFAULT_SKIN_ID).default(DEFAULT_SKIN_ID),
+  /** Local user CSS overlay path. Empty = none. */
+  customCssPath: z.string().default(''),
   telemetryEnabled: z.boolean().default(false),
   mcpServers: z.array(McpServerSchema).default([]),
   keepRecentTurns: z.number().int().min(4).max(50).default(12),
@@ -364,6 +414,8 @@ export const SettingsSchema = z.object({
    * When true, opening an interrupted chat resumes automatically instead of showing Continue.
    */
   autoResumeInterruptedRuns: z.boolean().default(false),
+  /** Packaged builds check GitHub Releases for app updates on launch. */
+  autoCheckUpdates: z.boolean().default(true),
   /**
    * GitHub App / OAuth App client ID for in-app device-flow Connect.
    * Empty falls back to `VYOTIQ_GITHUB_CLIENT_ID` env.
@@ -394,7 +446,12 @@ export const SettingsSchema = z.object({
   /**
    * App-wide inbox + OS toast preferences. Not a workspace override.
    */
-  notifications: NotificationSettingsSchema.default(DEFAULT_NOTIFICATION_SETTINGS)
+  notifications: NotificationSettingsSchema.default(DEFAULT_NOTIFICATION_SETTINGS),
+  /**
+   * Ghost-text fill-in-the-middle in the Files editor using the active model.
+   * Tab accepts, Esc dismisses. Calls the active provider while typing.
+   */
+  tabAutocomplete: z.boolean().default(true)
 })
 export type Settings = z.infer<typeof SettingsSchema>
 
@@ -407,6 +464,8 @@ export const DEFAULT_SETTINGS: Settings = {
   fontScale: DEFAULT_FONT_SCALE,
   uiDensity: DEFAULT_UI_DENSITY,
   accentPreset: DEFAULT_ACCENT_PRESET,
+  skinId: DEFAULT_SKIN_ID,
+  customCssPath: '',
   telemetryEnabled: false,
   mcpServers: [],
   keepRecentTurns: 12,
@@ -429,6 +488,7 @@ export const DEFAULT_SETTINGS: Settings = {
   harnessProposalRewriter: false,
   autoModeSwitch: false,
   autoResumeInterruptedRuns: false,
+  autoCheckUpdates: true,
   githubClientId: '',
   marketplace: DEFAULT_MARKETPLACE_SETTINGS,
   codeIndex: DEFAULT_CODE_INDEX_SETTINGS,
@@ -437,7 +497,8 @@ export const DEFAULT_SETTINGS: Settings = {
   autonomousSkipQuestions: 'wait',
   offlineWaitMode: 'default',
   userRules: [],
-  notifications: DEFAULT_NOTIFICATION_SETTINGS
+  notifications: DEFAULT_NOTIFICATION_SETTINGS,
+  tabAutocomplete: true
 }
 
 export const SetSettingsRequestSchema = SettingsSchema.partial()

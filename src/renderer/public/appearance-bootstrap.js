@@ -1,32 +1,70 @@
-/* global localStorage, document */
+/* global localStorage, document, window */
 ;(function () {
+  function resolvedThemeFromSystem() {
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+    } catch {
+      return 'light'
+    }
+  }
+
+  function applyAppearanceFromCache(root, cache) {
+    var theme =
+      cache &&
+      (cache.resolvedTheme === 'light' || cache.resolvedTheme === 'dark')
+        ? cache.resolvedTheme
+        : resolvedThemeFromSystem()
+    root.setAttribute('data-theme', theme)
+
+    var fontScale =
+      cache &&
+      (cache.fontScale === 'small' ||
+        cache.fontScale === 'default' ||
+        cache.fontScale === 'large')
+        ? cache.fontScale
+        : 'default'
+    root.setAttribute('data-font-scale', fontScale)
+
+    var density =
+      cache &&
+      (cache.uiDensity === 'compact' ||
+        cache.uiDensity === 'default' ||
+        cache.uiDensity === 'comfortable')
+        ? cache.uiDensity
+        : 'default'
+    root.setAttribute('data-density', density)
+
+    var accent =
+      cache &&
+      (cache.accentPreset === 'neutral' ||
+        cache.accentPreset === 'blue' ||
+        cache.accentPreset === 'violet' ||
+        cache.accentPreset === 'green')
+        ? cache.accentPreset
+        : 'neutral'
+    root.setAttribute('data-accent', accent)
+
+    var skin =
+      cache &&
+      (cache.skinId === 'default' ||
+        cache.skinId === 'proof' ||
+        cache.skinId === 'bench' ||
+        cache.skinId === 'native')
+        ? cache.skinId
+        : 'default'
+    root.setAttribute('data-skin', skin)
+  }
+
+  var root = document.documentElement
   try {
     var raw = localStorage.getItem('vyotiq-appearance')
-    if (!raw) return
+    if (!raw) {
+      applyAppearanceFromCache(root, null)
+      return
+    }
     var cache = JSON.parse(raw)
-    var root = document.documentElement
-    if (cache.resolvedTheme === 'light' || cache.resolvedTheme === 'dark') {
-      root.setAttribute('data-theme', cache.resolvedTheme)
-    }
-    if (cache.fontScale === 'small' || cache.fontScale === 'default' || cache.fontScale === 'large') {
-      root.setAttribute('data-font-scale', cache.fontScale)
-    }
-    if (
-      cache.uiDensity === 'compact' ||
-      cache.uiDensity === 'default' ||
-      cache.uiDensity === 'comfortable'
-    ) {
-      root.setAttribute('data-density', cache.uiDensity)
-    }
-    if (
-      cache.accentPreset === 'neutral' ||
-      cache.accentPreset === 'blue' ||
-      cache.accentPreset === 'violet' ||
-      cache.accentPreset === 'green'
-    ) {
-      root.setAttribute('data-accent', cache.accentPreset)
-    }
+    applyAppearanceFromCache(root, cache)
   } catch {
-    /* ignore corrupt cache */
+    applyAppearanceFromCache(root, null)
   }
 })()

@@ -56,6 +56,15 @@ describe('buildOpenAiCompatBody prompt cache', () => {
     expect(body.max_tokens).toBe(4096)
   })
 
+  it('includes temperature and stop when set', () => {
+    const body = buildOpenAiCompatBody(
+      { ...baseReq, temperature: 0, stop: ['\n\n', '```'] },
+      { defaultBaseUrl: 'https://openrouter.ai/api/v1' }
+    )
+    expect(body.temperature).toBe(0)
+    expect(body.stop).toEqual(['\n\n', '```'])
+  })
+
   it('includes prompt_cache_key when enabled for OpenAI', () => {
     const body = buildOpenAiCompatBody(
       { ...baseReq, promptCacheKey: 'run-abc' },

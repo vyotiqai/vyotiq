@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { logger } from '@shared/logger'
+import { isReactMaxUpdateDepth } from '@renderer/logging/reactMaxUpdateDepth'
 import { Button } from './ui'
 
 type Props = {
@@ -28,12 +29,11 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
-    // logger.fatal emits locally and captures to Sentry when telemetry is active
-    // (via renderer capture backend) — do not double-call Sentry here.
-    logger.fatal('Renderer crash', {
+    const is185 = isReactMaxUpdateDepth(error.message)
+    logger.fatal(is185 ? 'React maximum update depth (#185)' : 'Renderer crash', {
       scope: 'renderer',
-      code: 'RENDERER_CRASH',
-      componentStack: info.componentStack?.slice(0, 500),
+      code: is185 ? 'REACT_185' : 'RENDERER_CRASH',
+      componentStack: info.componentStack?.slice(0, is185 ? 4000 : 500),
       err: error
     })
   }

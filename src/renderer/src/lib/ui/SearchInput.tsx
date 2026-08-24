@@ -55,7 +55,7 @@ export const SearchInput = forwardRef<
           <button
             type="button"
             className={cn(
-              'inline-grid size-6 shrink-0 place-items-center rounded-sm text-muted vy-transition',
+              'inline-grid size-6 shrink-0 place-items-center rounded-md text-muted vy-transition',
               tone === 'quiet'
                 ? 'hover:text-fg active:opacity-80'
                 : 'hover:bg-surface-2 hover:text-fg active:bg-surface'

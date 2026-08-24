@@ -22,7 +22,7 @@ export function SidebarSearchChrome({
       tone="quiet"
       className={cn(
         'h-8 min-h-0 w-full gap-1.5 rounded-none border-0 bg-transparent px-1',
-        'min-h-0 focus-within:bg-transparent focus-within:outline-none focus-within:outline-offset-0'
+        'min-h-0 focus-within:bg-transparent'
       )}
       inputClassName="h-8 min-h-0 py-0 text-sm"
       placeholder={workspaceReady ? 'Search chats' : 'Open workspace'}

@@ -530,7 +530,7 @@ export function PlanPanel({
   const emptyBody =
     tab === 'plan'
       ? agentMode === 'plan'
-        ? 'Draft plan.md for this run — Goal, Success criteria, Scope, Open questions, Approach, Ordered steps, Verification, and Risks or trade-offs. Copy Success criteria into Contract Done when.'
+        ? 'Draft plan.md for this run — Goal, Steps, and Done when. create_plan copies Done when into the contract.'
         : 'Switch to Plan mode and draft plan.md, or continue from an existing plan.'
       : tab === 'contract'
         ? 'The run contract is created when a chat starts.'

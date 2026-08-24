@@ -126,7 +126,7 @@ import {
   readContract,
   readContractAsync,
   readPlanAsync,
-  DEFAULT_PLAN_STUB,
+  readPlanRawAsync,
   resumeRun,
   saveCompaction,
   saveToolCatalogSticky,
@@ -183,10 +183,11 @@ import {
 } from './tools/modePolicy'
 import { AGENT_ONLY_BUILTIN } from './tools/classify'
 import { dedupeToolCalls, ensureToolCallIds } from './dedupeToolCalls'
-import { existsSync, writeFileSync } from 'fs'
+import { existsSync } from 'fs'
 import { resolveRunDir } from '../storage/paths'
-import { join } from 'path'
 import { isSafeInstanceWorktreePath } from '../git/instanceWorktree'
+import { ensurePlanStub } from './planArtifacts'
+import { isPlanDraftReady } from '../../shared/planQuality'
 
 export { cancelRun, clearRunAbort, registerRunAbort, resetActiveRunsForTests }
 
@@ -417,6 +418,11 @@ function* applyDrainedFollowUps(
   syncFollowUpsToDisk(runDir, runId)
 }
 
+/** Seed plan.md with the Goal / Steps / Done when stub — at run start and on mid-run switch to Plan. */
+function seedPlanStubIfMissing(runDir: string): void {
+  ensurePlanStub(runDir)
+}
+
 /**
  * Apply composer mode from chatFollowUp before the next model/tool catalog step.
  * Returns the mode when it changed so the caller can update its local agentMode.
@@ -431,6 +437,7 @@ function* applyPendingModeChange(
   const pending = takePendingMode(runId)
   if (pending == null || pending === currentMode) return currentMode
   writeStatus({ mode: pending })
+  if (pending === 'plan') seedPlanStubIfMissing(runDir)
   const ev: AgentEvent = {
     type: 'mode_changed',
     runId,
@@ -682,6 +689,7 @@ export async function* runAgent(input: {
   resume?: boolean
   /** Ask / Plan / Agent — defaults to agent when omitted. */
   mode?: AgentInteractionMode
+  focusedFile?: string | null
 }): AsyncGenerator<AgentEvent> {
   const globalSettings = getSettings()
   const workspaces = readWorkspacesState()
@@ -867,10 +875,7 @@ export async function* runAgent(input: {
     beginWriteCheckpoint(runDir, toolWorkspace, lastUserMessageIndex(messages))
 
     if (agentMode === 'plan') {
-      const planPath = join(runDir, 'plan.md')
-      if (!existsSync(planPath)) {
-        writeFileSync(planPath, DEFAULT_PLAN_STUB, 'utf8')
-      }
+      seedPlanStubIfMissing(runDir)
     }
 
     let compaction: CompactionRecord | null = loadCompaction(runDir)
@@ -1331,7 +1336,12 @@ export async function* runAgent(input: {
       for (const name of nextSticky) runStickyToolNames.add(name)
       const catalogFinger = trimmedTools.fingerprint || toolCatalogFingerprint(trimmedTools.tools)
       if (catalogFinger !== lastToolCatalogFingerprint) {
-        logger.info('Tool catalog fingerprint changed', {
+        // First catalog of a run always "changes" from nothing — that is not
+        // signal. Log at debug; info only for real mid-run catalog shifts
+        // (MCP pins/evictions), which are the ones that break prompt-cache
+        // prefix reuse within the run.
+        const logFn = lastToolCatalogFingerprint ? logger.info : logger.debug
+        logFn('Tool catalog fingerprint changed', {
           scope: 'agent',
           code: 'TOKEN_COST',
           runId,
@@ -1430,6 +1440,8 @@ export async function* runAgent(input: {
     }
     const knownPaths = seedKnownPathsFromMessages(messages)
     const mutationPaths = seedMutationPathsFromMessages(messages)
+    /** Plan-mode chat-essay nudges this invoke (cap 2). */
+    let planUnreadyNudges = 0
     /** Empty-response auto-continues this invoke (unbounded, same class as truncation). */
     let emptyResponseContinues = 0
     const costWarnOnce = new Set<string>()
@@ -1589,7 +1601,11 @@ export async function* runAgent(input: {
 
       const priorSummary = compaction?.summary
       const contract = await readContractAsync(runDir)
-      const plan = await readPlanAsync(runDir)
+      // Plan mode mirrors plan.md verbatim (stub included, never truncated) so
+      // str_replace/edit args match the on-disk file exactly; Agent mode only
+      // injects a filled (non-stub) plan.
+      const plan =
+        agentMode === 'plan' ? await readPlanRawAsync(runDir) : await readPlanAsync(runDir)
       const assembleLoopHint = combineLoopHints(
         omittedMcpHint,
         deferredMcpHint,
@@ -1617,11 +1633,13 @@ export async function* runAgent(input: {
         skillsSection,
         pluginRulesSection,
         userRules: getSettings().userRules ?? [],
+        focusedFile: input.focusedFile,
         modeSection:
           modeSectionMarkdown(agentMode, {
             autoModeSwitch: settings.autoModeSwitch,
             inlineInstance: isInlineInstance
           }) ?? undefined,
+        planVerbatim: agentMode === 'plan',
         loopHint: assembleLoopHint,
         taskList: formatTodosContextSection(readTodos(runDir)),
         providerId,
@@ -2703,6 +2721,22 @@ export async function* runAgent(input: {
 
         if (controller.signal.aborted) break
 
+        if (
+          agentMode === 'plan' &&
+          planUnreadyNudges < 2 &&
+          !isPlanDraftReady(await readPlanRawAsync(runDir))
+        ) {
+          planUnreadyNudges += 1
+          const nudge: ChatMessage = {
+            role: 'user',
+            content:
+              'Call `create_plan` with Goal, Steps, and Done when. Do not put the plan only in chat.'
+          }
+          messages.push(nudge)
+          appendMessage(runDir, nudge)
+          continue
+        }
+
         // Queued follow-ups at turn end auto-apply and continue the run.
         if (hasPendingFollowUps(runId)) {
           yield* applyDrainedFollowUps(runId, runDir, messages, 'next')
@@ -2884,6 +2918,8 @@ export async function* runAgent(input: {
         getAgentMode: () => agentMode,
         setAgentMode: (mode: AgentInteractionMode) => {
           agentMode = mode
+          const dir = runDir
+          if (mode === 'plan' && dir) seedPlanStubIfMissing(dir)
           return writeStatus({ mode })
         },
         autoModeSwitch: settings.autoModeSwitch,

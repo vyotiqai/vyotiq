@@ -495,7 +495,7 @@ export function AgentBrowserPanel({
 
           {historyOpen && recentGroups.length > 0 ? (
             <div
-              className="absolute left-0 right-0 top-full z-50 mt-1 max-h-[min(50vh,320px)] overflow-auto rounded-lg border border-border/60 bg-surface py-1 shadow-lg"
+              className="absolute left-0 right-0 top-full z-dropdown mt-1 max-h-[min(50vh,320px)] overflow-auto rounded-lg border border-border/60 bg-surface py-1 shadow-menu"
               data-browser-history-dropdown
             >
               {recentGroups.map((group) => (
@@ -539,7 +539,7 @@ export function AgentBrowserPanel({
             </svg>
           </button>
           {menuOpen ? (
-            <div className="absolute right-0 top-full z-50 mt-1 min-w-[13rem] rounded-lg border border-border/60 bg-surface py-1 shadow-lg">
+            <div className="absolute right-0 top-full z-dropdown mt-1 min-w-[13rem] rounded-lg border border-border/60 bg-surface py-1 shadow-menu">
               <MenuButton
                 onClick={() => handleMenuAction('screenshot')}
                 disabled={!hasPage}
@@ -719,7 +719,7 @@ function NavIconButton({
   return (
     <button
       type="button"
-      className="flex size-7 items-center justify-center rounded-md text-fg/70 transition-colors hover:bg-surface-2 disabled:opacity-30"
+      className="flex size-7 items-center justify-center rounded-md text-fg/70 vy-transition hover:bg-surface-2 disabled:opacity-[var(--vy-disabled-opacity)]"
       disabled={disabled}
       onClick={onClick}
       title={label}
@@ -753,7 +753,7 @@ function MenuButton({
   return (
     <button
       type="button"
-      className="flex w-full items-center px-3 py-1.5 text-left text-xs text-fg transition-colors hover:bg-surface-2 disabled:opacity-40"
+      className="flex w-full items-center px-3 py-1.5 text-left text-xs text-fg vy-transition hover:bg-surface-2 disabled:opacity-[var(--vy-disabled-opacity)]"
       onClick={onClick}
       disabled={disabled}
     >

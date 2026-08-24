@@ -201,7 +201,7 @@ export function ContextMenu({
               }
               title={item.disabled ? item.disabledReason : undefined}
               className={cn(
-                'flex min-h-8 w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-[12px] leading-5 outline-none focus-visible:vy-focus-ring vy-transition',
+                'flex min-h-8 w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-xs leading-5 outline-none focus-visible:vy-focus-ring vy-transition',
                 item.disabled
                   ? 'cursor-not-allowed text-muted/60'
                   : item.danger
@@ -219,11 +219,11 @@ export function ContextMenu({
                 close()
               }}
             >
-              {item.icon ? <Icon name={item.icon} size={15} className="shrink-0" /> : null}
+              {item.icon ? <Icon name={item.icon} size={16} className="shrink-0" /> : null}
               <span className="min-w-0 flex-1 truncate">{item.label}</span>
-              {item.checked ? <Icon name="check" size={13} className="shrink-0" /> : null}
+              {item.checked ? <Icon name="check" size={16} className="shrink-0" /> : null}
               {item.shortcut ? (
-                <span className="shrink-0 text-[11px] text-muted">{item.shortcut}</span>
+                <span className="shrink-0 text-caption text-muted">{item.shortcut}</span>
               ) : null}
               {item.disabled && item.disabledReason ? (
                 <span id={`context-menu-reason-${item.id}`} className="sr-only">

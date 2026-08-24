@@ -43,10 +43,17 @@ import type {
   Settings,
   CodeIndexSettings,
   CodeIndexRuntimeStatus,
+  ProcessMetricsSnapshot,
   DictationRuntimeStatus,
   DictationLocalModelId,
   TelemetryStatus,
   AppInfo,
+  UpdaterStatus,
+  WorkspaceGrepRequest,
+  WorkspaceGrepResult,
+  GitConflictFileResult,
+  GithubIssuesListResult,
+  GithubIssueCreateResult,
   CrashDiagnosticsSnapshot,
   CrashRecoveryPending,
   ToolApprovalDecision,
@@ -95,6 +102,9 @@ import type {
   WorkspaceLspStatus,
   WorkspaceLspRequest,
   WorkspaceLspResponse,
+  WorkspaceInlineCompleteRequest,
+  WorkspaceInlineCompleteAbortRequest,
+  WorkspaceInlineCompleteResult,
   WorkspaceEditorRecoverySaveRequest,
   WorkspaceEditorRecoveryLoadRequest,
   WorkspaceEditorRecoveryLoadResult,
@@ -351,6 +361,7 @@ export interface VyotiqApi {
   windowClose: () => Promise<IpcResult<true>>
   windowIsMaximized: () => Promise<IpcResult<boolean>>
   onWindowMaximizedChanged: (handler: (maximized: boolean) => void) => () => void
+  onWindowFocusChanged: (handler: (focused: boolean) => void) => () => void
   onBrowserState: (handler: (state: import('./ipc').AgentBrowserState) => void) => () => void
   browserGetState: () => Promise<IpcResult<import('./ipc').AgentBrowserState>>
   browserFocus: () => Promise<IpcResult<boolean>>
@@ -385,6 +396,35 @@ export interface VyotiqApi {
   consumeCrashRecovery: () => Promise<IpcResult<CrashRecoveryPending | null>>
   telemetryStatus: () => Promise<IpcResult<TelemetryStatus>>
   getAppInfo: () => Promise<IpcResult<AppInfo>>
+  getUpdaterStatus: () => Promise<IpcResult<UpdaterStatus>>
+  checkForAppUpdates: () => Promise<IpcResult<UpdaterStatus>>
+  downloadAppUpdate: () => Promise<IpcResult<UpdaterStatus>>
+  installAppUpdate: () => Promise<IpcResult<UpdaterStatus>>
+  workspaceGrep: (payload: WorkspaceGrepRequest) => Promise<IpcResult<WorkspaceGrepResult>>
+  gitConflictFile: (payload: {
+    workspacePath: string
+    path: string
+  }) => Promise<IpcResult<GitConflictFileResult>>
+  gitResolveConflict: (payload: {
+    workspacePath: string
+    path: string
+    content: string
+  }) => Promise<IpcResult<{ detail: string }>>
+  prReview: (payload: {
+    workspacePath: string
+    event: 'approve' | 'request-changes' | 'comment'
+    body?: string
+    number?: number
+  }) => Promise<IpcResult<{ detail: string }>>
+  githubIssuesList: (payload: {
+    workspacePath: string
+  }) => Promise<IpcResult<GithubIssuesListResult>>
+  githubIssueCreate: (payload: {
+    workspacePath: string
+    title: string
+    body?: string
+  }) => Promise<IpcResult<GithubIssueCreateResult>>
+  onUpdaterStatus: (handler: (status: UpdaterStatus) => void) => () => void
   mcpStatus: (payload?: { workspacePath?: string | null }) => Promise<IpcResult<McpStatusResult>>
   mcpRefresh: (payload?: { workspacePath?: string | null }) => Promise<IpcResult<McpStatusResult>>
   mcpSetAuthToken: (serverId: string, token: string) => Promise<IpcResult<true>>
@@ -470,6 +510,10 @@ export interface VyotiqApi {
     workspacePath: string
     path: string
   }) => Promise<IpcResult<{ name: string; mime: string; text: string; truncated: boolean }>>
+  workspaceReadImage: (payload: {
+    workspacePath: string
+    path: string
+  }) => Promise<IpcResult<{ mime: string; dataUrl: string }>>
   workspaceFileList: (
     payload: WorkspaceFileListRequest
   ) => Promise<IpcResult<WorkspaceFileListResult>>
@@ -503,6 +547,12 @@ export interface VyotiqApi {
   workspaceLspRequest: (
     payload: WorkspaceLspRequest
   ) => Promise<IpcResult<WorkspaceLspResponse>>
+  workspaceInlineComplete: (
+    payload: WorkspaceInlineCompleteRequest
+  ) => Promise<IpcResult<WorkspaceInlineCompleteResult>>
+  workspaceInlineCompleteAbort: (
+    payload: WorkspaceInlineCompleteAbortRequest
+  ) => Promise<IpcResult<true>>
   workspaceEditorRecoverySave: (
     payload: WorkspaceEditorRecoverySaveRequest
   ) => Promise<IpcResult<true>>
@@ -529,6 +579,9 @@ export interface VyotiqApi {
     kind?: 'typecheck' | 'lint'
   }) => Promise<IpcResult<{ ok: boolean; content: string; kind: 'typecheck' | 'lint' }>>
   getSystemTheme: () => Promise<IpcResult<boolean>>
+  appearancePickCustomCss: () => Promise<IpcResult<string | null>>
+  appearanceReadCustomCss: () => Promise<IpcResult<{ css: string }>>
+  onAppearanceCustomCssChanged: (handler: () => void) => () => void
   /** Main-process connectivity probe (1.1.1.1 HEAD) — matches agent retry logic. */
   probeNetwork: () => Promise<IpcResult<boolean>>
   /** Local codebase index embedder / download status. */
@@ -541,6 +594,8 @@ export interface VyotiqApi {
   >
   /** Live code-index / embed progress pushed from main. */
   onCodeIndexStatus: (handler: (status: CodeIndexRuntimeStatus) => void) => () => void
+  /** Chromium per-process RSS/CPU plus embed utility RSS. */
+  processMetrics: () => Promise<IpcResult<ProcessMetricsSnapshot>>
   onSkillsChanged: (handler: (payload: { workspacePath: string | null }) => void) => () => void
   listNotifications: () => Promise<IpcResult<NotificationList>>
   markNotificationsRead: (payload: NotificationMutateRequest) => Promise<IpcResult<NotificationList>>

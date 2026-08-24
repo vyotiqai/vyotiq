@@ -64,6 +64,8 @@ function statusBadge(status: GitChangedFile['status']): string {
       return 'Deleted'
     case 'modified':
       return 'Modified'
+    case 'conflicted':
+      return 'Conflict'
     default: {
       const _exhaustive: never = status
       return _exhaustive
@@ -80,6 +82,8 @@ function statusLetter(status: GitChangedFile['status']): BrowserFileEntry['statu
       return 'D'
     case 'modified':
       return 'M'
+    case 'conflicted':
+      return 'C'
     default: {
       const _exhaustive: never = status
       return _exhaustive
@@ -214,6 +218,14 @@ export function ChangesPanel({
   const [findQuery, setFindQuery] = useState('')
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
+  const [conflictSides, setConflictSides] = useState<{
+    path: string
+    ours: string
+    theirs: string
+    base: string
+    working: string
+  } | null>(null)
+  const [workingDraft, setWorkingDraft] = useState('')
   const [composing, setComposing] = useState(false)
   const [message, setMessage] = useState('')
   const [messageGenerating, setMessageGenerating] = useState(false)
@@ -390,8 +402,46 @@ export function ChangesPanel({
     return () => window.removeEventListener('keydown', onKey)
   }, [active, chrome, displayScope, refreshCommits])
 
+  useEffect(() => {
+    if (!active) return undefined
+    const onCommand = (event: Event): void => {
+      const id = (event as CustomEvent<{ id?: string }>).detail?.id
+      if (id === 'find') setFindOpen(true)
+      else if (id === 'refresh') {
+        chrome.refresh()
+        if (displayScope === 'commits') void refreshCommits()
+      }
+    }
+    window.addEventListener('vyotiq:command', onCommand)
+    return () => window.removeEventListener('vyotiq:command', onCommand)
+  }, [active, chrome, displayScope, refreshCommits])
+
   const status: GitStatus | null = chrome.status
   const gitFiles = useMemo(() => status?.files ?? [], [status?.files])
+
+  useEffect(() => {
+    if (
+      !workspacePath ||
+      !selectedPath ||
+      !gitFiles.some((file) => file.path === selectedPath && file.status === 'conflicted')
+    ) {
+      setConflictSides(null)
+      return
+    }
+    let cancelled = false
+    void window.vyotiq.gitConflictFile({ workspacePath, path: selectedPath }).then((res) => {
+      if (cancelled) return
+      if (!res.ok) {
+        chrome?.reportNotice(res.error, true)
+        return
+      }
+      setConflictSides({ path: selectedPath, ...res.data })
+      setWorkingDraft(res.data.working)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [workspacePath, selectedPath, gitFiles, chrome])
 
   const scopeTotals = useMemo(() => {
     const sumSide = (files: GitChangedFile[], side: 'all' | 'staged' | 'unstaged') => {
@@ -1234,6 +1284,133 @@ export function ChangesPanel({
               onOpenFile={onOpenFile}
             />
             )}
+            {workspacePath &&
+            selectedPath &&
+            gitFiles.some((file) => file.path === selectedPath && file.status === 'conflicted') ? (
+              <div className="flex shrink-0 flex-col gap-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1.5 text-caption">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="min-w-0 flex-1 truncate text-warning">Conflict: {selectedPath}</span>
+                  <button
+                    type="button"
+                    className="rounded border border-border px-1.5 py-0.5 text-fg"
+                    onClick={() => {
+                      const path = selectedPath
+                      const text =
+                        conflictSides?.path === path ? conflictSides.ours : null
+                      const apply = (content: string): void => {
+                        void window.vyotiq
+                          .gitResolveConflict({ workspacePath, path, content })
+                          .then((resolved) => {
+                            if (!resolved.ok) {
+                              chrome?.reportNotice(resolved.error, true)
+                              return
+                            }
+                            chrome?.refresh()
+                            onGitMutated?.()
+                          })
+                      }
+                      if (text != null) {
+                        apply(text)
+                        return
+                      }
+                      void window.vyotiq.gitConflictFile({ workspacePath, path }).then((res) => {
+                        if (!res.ok) {
+                          chrome?.reportNotice(res.error, true)
+                          return
+                        }
+                        apply(res.data.ours)
+                      })
+                    }}
+                  >
+                    Keep ours
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-border px-1.5 py-0.5 text-fg"
+                    onClick={() => {
+                      const path = selectedPath
+                      const text =
+                        conflictSides?.path === path ? conflictSides.theirs : null
+                      const apply = (content: string): void => {
+                        void window.vyotiq
+                          .gitResolveConflict({ workspacePath, path, content })
+                          .then((resolved) => {
+                            if (!resolved.ok) {
+                              chrome?.reportNotice(resolved.error, true)
+                              return
+                            }
+                            chrome?.refresh()
+                            onGitMutated?.()
+                          })
+                      }
+                      if (text != null) {
+                        apply(text)
+                        return
+                      }
+                      void window.vyotiq.gitConflictFile({ workspacePath, path }).then((res) => {
+                        if (!res.ok) {
+                          chrome?.reportNotice(res.error, true)
+                          return
+                        }
+                        apply(res.data.theirs)
+                      })
+                    }}
+                  >
+                    Keep theirs
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-border px-1.5 py-0.5 text-fg"
+                    onClick={() => {
+                      const path = selectedPath
+                      void window.vyotiq
+                        .gitResolveConflict({ workspacePath, path, content: workingDraft })
+                        .then((resolved) => {
+                          if (!resolved.ok) {
+                            chrome?.reportNotice(resolved.error, true)
+                            return
+                          }
+                          chrome?.refresh()
+                          onGitMutated?.()
+                        })
+                    }}
+                  >
+                    Save working
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded border border-border px-1.5 py-0.5 text-fg"
+                    onClick={() => onOpenFile?.(selectedPath)}
+                  >
+                    Open
+                  </button>
+                </div>
+                {conflictSides?.path === selectedPath ? (
+                  <div className="grid max-h-56 grid-cols-1 gap-1 overflow-auto md:grid-cols-3">
+                    <pre className="m-0 overflow-auto whitespace-pre-wrap rounded border border-border/50 bg-bg p-1.5 font-mono text-2xs text-fg">
+                      <span className="block font-medium text-muted">Ours</span>
+                      {conflictSides.ours || '∅'}
+                    </pre>
+                    <pre className="m-0 overflow-auto whitespace-pre-wrap rounded border border-border/50 bg-bg p-1.5 font-mono text-2xs text-fg">
+                      <span className="block font-medium text-muted">Theirs</span>
+                      {conflictSides.theirs || '∅'}
+                    </pre>
+                    <pre className="m-0 overflow-auto whitespace-pre-wrap rounded border border-border/50 bg-bg p-1.5 font-mono text-2xs text-fg">
+                      <span className="block font-medium text-muted">Base</span>
+                      {conflictSides.base || '∅'}
+                    </pre>
+                  </div>
+                ) : null}
+                <label className="m-0 block text-muted">
+                  Working copy
+                  <textarea
+                    className="mt-1 max-h-36 min-h-[4.5rem] w-full rounded border border-border bg-bg px-1.5 py-1 font-mono text-2xs text-fg"
+                    value={workingDraft}
+                    onChange={(e) => setWorkingDraft(e.target.value)}
+                  />
+                </label>
+              </div>
+            ) : null}
             {workspacePath &&
             displayScope !== 'commits' &&
             chrome.result?.kind !== 'not_repo' &&

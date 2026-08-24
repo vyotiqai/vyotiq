@@ -3,6 +3,28 @@ import { formatError, type ErrorCode } from '../../../shared/errors'
 import { isCircuitOpenError } from '../circuitBreaker'
 import type { StreamChunk } from './types'
 
+/**
+ * Soft (catalog/probe) failures repeat every time settings or the model picker
+ * probes a down local host — expected noise, not incidents. Log the first
+ * occurrence per provider+kind, then stay quiet for this cooldown window.
+ */
+const SOFT_WARN_COOLDOWN_MS = 5 * 60_000
+const softWarnLastAt = new Map<string, number>()
+
+function softWarnOnCooldown(provider: string, kind: string): boolean {
+  const key = `${provider}:${kind}`
+  const now = Date.now()
+  const last = softWarnLastAt.get(key)
+  if (last !== undefined && now - last < SOFT_WARN_COOLDOWN_MS) return true
+  softWarnLastAt.set(key, now)
+  return false
+}
+
+/** @internal Test helper — clear soft-warn cooldown state between cases. */
+export function resetSoftWarnCooldownsForTests(): void {
+  softWarnLastAt.clear()
+}
+
 /** Log provider failures without request bodies, API keys, or full response text. */
 export function logProviderFailure(
   provider: string,
@@ -45,6 +67,7 @@ export function logProviderFailure(
   }
 
   if (opts?.soft) {
+    if (softWarnOnCooldown(provider, kind)) return
     logger.warn(`Provider ${kind} failure`, fields)
     return
   }

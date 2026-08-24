@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { DetectedMcpServer, McpDetectResult } from '@shared/ipc'
-import { Button, Input } from '@renderer/lib/ui'
+import { Button, Input, selectClass } from '@renderer/lib/ui'
 import { isValidHttpUrl } from '@renderer/features/settings/utils/settingsHelpers'
 import type { MarketplaceController } from './useMarketplaceController'
 
@@ -98,7 +98,7 @@ export function MarketplaceAddPanel({
           mcpServers JSON. Agent V detects how to run it and connects tools to the agent.
         </p>
         <textarea
-          className="min-h-[72px] w-full rounded-md border border-border bg-bg px-2 py-1.5 font-mono text-xs text-fg"
+          className="min-h-[72px] w-full rounded-md border border-border bg-surface px-2 py-1.5 font-mono text-xs text-fg hover:border-border-strong focus-visible:border-border-strong focus-visible:vy-focus-ring disabled:vy-disabled-state disabled:hover:border-border vy-transition"
           aria-label="Paste MCP URL, command, or JSON"
           placeholder="https://github.com/…  ·  uvx mcp-server-fetch  ·  @modelcontextprotocol/server-memory"
           rows={3}
@@ -177,7 +177,7 @@ export function MarketplaceAddPanel({
                       }
                     />
                     <textarea
-                      className="min-h-[40px] w-full rounded-md border border-border bg-surface px-2 py-1.5 font-mono text-xs text-fg"
+                      className="min-h-[40px] w-full rounded-md border border-border bg-surface px-2 py-1.5 font-mono text-xs text-fg hover:border-border-strong focus-visible:border-border-strong focus-visible:vy-focus-ring disabled:vy-disabled-state disabled:hover:border-border vy-transition"
                       aria-label="Detected MCP arguments"
                       placeholder="Arguments (one per line)"
                       rows={2}
@@ -201,6 +201,7 @@ export function MarketplaceAddPanel({
               <label className="flex items-center gap-2 text-caption text-secondary">
                 <input
                   type="checkbox"
+                  className="size-3.5 accent-fg"
                   checked={overwriteDup}
                   disabled={formLocked}
                   onChange={(e) => setOverwriteDup(e.target.checked)}
@@ -451,7 +452,7 @@ export function MarketplaceAddPanel({
               onChange={(e) => setRemoteName(e.target.value)}
             />
             <select
-              className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs"
+              className={selectClass}
               aria-label="Remote MCP transport"
               value={remoteTransport}
               disabled={formLocked}

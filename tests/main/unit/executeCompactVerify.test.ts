@@ -109,6 +109,11 @@ const RECORDED_SUMMARY = readFileSync(
   join(__dirname, '../../fixtures/compact/recorded-81cf5721-verify-failed-summary.md'),
   'utf8'
 )
+  .replace(
+    /^(Session Intent|Files Touched|Key Decisions|Constraints|Open Bugs\/Blockers|Next Steps)$/gm,
+    '## $1'
+  )
+  .trim()
 
 const CORE_DECISION =
   'Primary language/runtime for the agent core?: Not sure \u2014 recommend one'
@@ -251,42 +256,49 @@ describe('executeCompactEvents extractive gate', () => {
     if (existsSync(root)) rmSync(root, { recursive: true, force: true })
   })
 
-  it('retries once then persists a verified fold', async () => {
+  it('pins omitted extractive facts so an amnesic summary verifies without retry', async () => {
     const runId = 'run-ok'
     const dir = createRun(workspace, runId, 'Rewrite auth to JWT')
     const plan = makePlan(
       dir,
       runId,
-      mockProviderPerCall([
-        () => [{ type: 'text', text: AMNESIA }],
-        () => [{ type: 'text', text: FAITHFUL }]
-      ])
+      mockProviderPerCall([() => [{ type: 'text', text: AMNESIA }]])
     )
 
     const { events, result } = await drain(plan)
     expect(events.map((e) => e.type)).toEqual([
       'compaction_started',
       'compaction_verifying',
-      'compaction_verify_retry',
-      'compaction_verifying',
       'compaction'
     ])
-    expect(result).toMatchObject({ verified: true, summary: FAITHFUL })
+    expect(result).toMatchObject({ verified: true })
+    expect(String((result as { summary: string }).summary)).toContain('src/auth.ts')
+    expect(String((result as { summary: string }).summary)).toContain('Use JWT')
     const saved = loadCompaction(dir)
     expect(saved?.verified).toBe(true)
     expect(saved?.foldedMessages).toBe(plan.toSummarize.length)
-    expect(saved?.verifyCoverage).toBe(1)
+    expect(saved?.pinnedFacts?.wroteFiles).toContain('src/auth.ts')
+    expect(saved?.pinnedFacts?.decisions?.some((d) => d.includes('JWT'))).toBe(true)
   })
 
-  it('does not write compaction.json when verification fails after retry', async () => {
+  it('does not write compaction.json when an invented path still fails after retry', async () => {
+    const invented = `## Session Intent
+Rewrite auth to JWT
+
+## Files Touched
+- src/auth.ts
+- src/invented/nope.ts
+
+## Key Decisions
+- Use JWT`
     const runId = 'run-fail'
     const dir = createRun(workspace, runId, 'Rewrite auth to JWT')
     const plan = makePlan(
       dir,
       runId,
       mockProviderPerCall([
-        () => [{ type: 'text', text: AMNESIA }],
-        () => [{ type: 'text', text: AMNESIA }]
+        () => [{ type: 'text', text: invented }],
+        () => [{ type: 'text', text: invented }]
       ])
     )
 
@@ -326,7 +338,8 @@ describe('executeCompactEvents extractive gate', () => {
       'compaction_verifying',
       'compaction'
     ])
-    expect(result).toMatchObject({ verified: true, summary: RECORDED_SUMMARY })
+    expect(result).toMatchObject({ verified: true })
+    expect(String((result as { summary: string }).summary)).toContain('TypeScript + Node.js')
     const saved = loadCompaction(dir)
     expect(saved?.verified).toBe(true)
     expect(saved?.foldedMessages).toBe(plan.toSummarize.length)
@@ -439,7 +452,7 @@ Rewrite auth to JWT
     expect(assembled.messages).toHaveLength(folded.messages.length)
   })
 
-  it('cache-safe fork reuses parent tools and systemStable; verify retry uses tools=[]', async () => {
+  it('message-shape summary and verify retry both exclude parent harness and tools', async () => {
     const runId = 'run-fork'
     const dir = createRun(workspace, runId, 'Rewrite auth to JWT')
     const parentTools: ToolDefinition[] = [
@@ -448,30 +461,24 @@ Rewrite auth to JWT
     ]
     const parentStable = 'PARENT_STABLE_FORK_UNIQUE'
     const { provider, requests } = capturingProvider([
-      () => [{ type: 'text', text: AMNESIA }],
-      () => [{ type: 'text', text: FAITHFUL }]
+      () => [{ type: 'text', text: AMNESIA }]
     ])
     const plan = makePlan(dir, runId, provider)
     plan.forkPrefix = { systemStable: parentStable, toolDefs: parentTools }
 
     const { result } = await drain(plan)
-    expect(result).toMatchObject({ verified: true, summary: FAITHFUL })
-    expect(requests.length).toBeGreaterThanOrEqual(2)
+    expect(result).toMatchObject({ verified: true })
+    expect(requests.length).toBe(1)
 
     const forkReq = requests[0]!
-    expect(forkReq.tools).toBe(parentTools)
-    expect(forkReq.tools.map((t) => t.name)).toEqual(['read', 'edit'])
-    expect(forkReq.systemStable).toBe(parentStable)
-    expect(forkReq.system).toBe(parentStable)
+    expect(forkReq.tools).toEqual([])
+    expect(forkReq.systemStable).toBeUndefined()
+    expect(forkReq.system).toMatch(/internal session summarizer/i)
+    expect(forkReq.system).not.toContain(parentStable)
     expect(forkReq.toolChoice).toBe('none')
     expect(forkReq.messages.slice(0, plan.toSummarize.length)).toEqual(plan.toSummarize)
     const forkLast = forkReq.messages[forkReq.messages.length - 1]!
     expect(forkLast.role).toBe('user')
-    expect(String(forkLast.content)).toMatch(/Summarize this coding-agent session/)
-
-    const retryReq = requests[1]!
-    expect(retryReq.tools).toEqual([])
-    expect(retryReq.toolChoice).toBe('none')
-    expect(retryReq.systemStable).toBeUndefined()
+    expect(String(forkLast.content)).toMatch(/Summarize the preceding session history/)
   })
 })

@@ -28,15 +28,21 @@ import {
 } from '@main/dictation/transcribe'
 import { resetDictationLocalStateForTests } from '@main/dictation/local'
 import { resetDictationRuntimeStatusForTests } from '@main/dictation/modelStatus'
-import { DEFAULT_SETTINGS, MAX_DICTATION_BYTES } from '@shared/ipc'
+import { DEFAULT_SETTINGS, MAX_DICTATION_BYTES, type DictationEngine } from '@shared/ipc'
 
 function settingsWithEngine(
-  engine: 'openai' | 'openrouter' | 'local',
-  localModelId = ''
+  engine: DictationEngine,
+  localModelId = '',
+  dictationOverride: Record<string, unknown> = {}
 ) {
   return {
     ...DEFAULT_SETTINGS,
-    dictation: { ...DEFAULT_SETTINGS.dictation, engine, localModelId }
+    dictation: {
+      ...DEFAULT_SETTINGS.dictation,
+      engine,
+      localModelId,
+      ...dictationOverride
+    }
   }
 }
 
@@ -167,5 +173,80 @@ describe('transcribeDictation', () => {
       })
     ).rejects.toThrow(/Settings → Voice/)
     expect(fetchWithRetryMock).not.toHaveBeenCalled()
+  })
+
+  it('qwen3-asr engine requires a selected Qwen3-ASR model', async () => {
+    getSettingsMock.mockReturnValue(settingsWithEngine('qwen3-asr', ''))
+    await expect(
+      transcribeDictation({ data: Buffer.from('hi').toString('base64'), mime: 'audio/webm' })
+    ).rejects.toThrow(/Select a Qwen3-ASR model/i)
+    expect(fetchWithRetryMock).not.toHaveBeenCalled()
+  })
+
+  it('qwen3-asr engine requires a server URL', async () => {
+    getSettingsMock.mockReturnValue(
+      settingsWithEngine('qwen3-asr', 'qwen3-asr-1.7b', { qwen3AsrServerUrl: '' })
+    )
+    await expect(
+      transcribeDictation({ data: Buffer.from('hi').toString('base64'), mime: 'audio/webm' })
+    ).rejects.toThrow(/server URL/i)
+    expect(fetchWithRetryMock).not.toHaveBeenCalled()
+  })
+
+  it('qwen3-asr posts to <serverUrl>/audio/transcriptions with the HF repo as model', async () => {
+    getSettingsMock.mockReturnValue(
+      settingsWithEngine('qwen3-asr', 'qwen3-asr-1.7b', {
+        qwen3AsrServerUrl: 'http://127.0.0.1:8000/v1'
+      })
+    )
+    fetchWithRetryMock.mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ text: ' qwen transcript ' })
+    })
+    const result = await transcribeDictation({
+      data: Buffer.from('fake-audio').toString('base64'),
+      mime: 'audio/webm'
+    })
+    expect(result).toEqual({ text: 'qwen transcript' })
+    const [url, init] = fetchWithRetryMock.mock.calls[0]!
+    expect(url).toBe('http://127.0.0.1:8000/v1/audio/transcriptions')
+    expect(init.headers.Authorization).toBeUndefined()
+    const form = init.body as FormData
+    expect(form.get('model')).toBe('Qwen/Qwen3-ASR-1.7B')
+  })
+
+  it('qwen3-asr sends an Authorization header when a server API key is set', async () => {
+    getSettingsMock.mockReturnValue(
+      settingsWithEngine('qwen3-asr', 'qwen3-asr-0.6b', {
+        qwen3AsrServerUrl: 'http://localhost:9000/v1',
+        qwen3AsrApiKey: 'tok-123'
+      })
+    )
+    fetchWithRetryMock.mockResolvedValue({
+      ok: true,
+      text: async () => JSON.stringify({ text: 'small model' })
+    })
+    const result = await transcribeDictation({
+      data: Buffer.from('fake-audio').toString('base64'),
+      mime: 'audio/webm'
+    })
+    expect(result).toEqual({ text: 'small model' })
+    const [, init] = fetchWithRetryMock.mock.calls[0]!
+    expect(init.headers.Authorization).toBe('Bearer tok-123')
+    const form = init.body as FormData
+    expect(form.get('model')).toBe('Qwen/Qwen3-ASR-0.6B')
+  })
+
+  it('qwen3-asr rewrites connection errors into a server-reachability hint', async () => {
+    getSettingsMock.mockReturnValue(
+      settingsWithEngine('qwen3-asr', 'qwen3-asr-1.7b', {
+        qwen3AsrServerUrl: 'http://127.0.0.1:8000/v1'
+      })
+    )
+    fetchWithRetryMock.mockRejectedValue(new Error('fetch failed (ECONNREFUSED)'))
+    await expect(
+      transcribeDictation({ data: Buffer.from('hi').toString('base64'), mime: 'audio/webm' })
+    ).rejects.toThrow(/Could not reach the Qwen3-ASR server/i)
+    expect(fetchWithRetryMock).toHaveBeenCalledTimes(1)
   })
 })

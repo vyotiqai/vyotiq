@@ -63,12 +63,21 @@ export {
 } from './retainedDecisions'
 export {
   extractFoldFacts,
+  extractUserConstraints,
   parseContractGoal,
   parseContractDoneWhen,
   collectPathsFromText,
   isPlausibleWorkspaceFilePath
 } from './foldFacts'
 export type { FoldFacts, FoldFactsExtras } from './foldFacts'
+export {
+  pinFoldFacts,
+  mergeFoldFacts,
+  foldFactsToPinned,
+  pinnedFactsToFoldFacts,
+  formatPinnedFacts
+} from './pinFoldFacts'
+export type { PinnedFoldFacts } from './pinFoldFacts'
 export {
   verifyCompactionSummary,
   formatCompactionVerifyFailure,
@@ -77,6 +86,7 @@ export {
   expandBraceGlobs,
   extractClaimedPaths,
   pathMentionedInText,
+  factMentionedInText,
   FILE_COVERAGE_RATIO,
   FILE_COVERAGE_MAX_NEEDED,
   MAX_VERIFY_FAILURES,

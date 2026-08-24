@@ -54,6 +54,7 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   str_replace: { running: 'Editing', done: 'Edited' },
   delete: { running: 'Deleting', done: 'Deleted' },
   todo_write: { running: 'Updating tasks', done: 'Updated tasks' },
+  create_plan: { running: 'Writing plan', done: 'Wrote plan' },
   web_fetch: { running: 'Fetching', done: 'Fetched' },
   web_search: { running: 'Searching web', done: 'Web search' },
   browser_navigate: { running: 'Browsing', done: 'Browsed' },
@@ -89,11 +90,19 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   git_status: { running: 'Checking git', done: 'Git status' },
   git_diff: { running: 'Diffing', done: 'Git diff' },
   git_commit: { running: 'Committing', done: 'Git commit' },
+  git_apply: { running: 'Applying patch', done: 'Applied patch' },
+  github_pr_create: { running: 'Creating PR', done: 'Created PR' },
+  github_pr_review: { running: 'Reviewing PR', done: 'Reviewed PR' },
+  github_issue: { running: 'GitHub issue', done: 'GitHub issue' },
   diagnostics: { running: 'Checking', done: 'Diagnostics' },
+  run_tests: { running: 'Testing', done: 'Tests' },
+  edit_notebook: { running: 'Editing notebook', done: 'Edited notebook' },
+  lsp: { running: 'Language server', done: 'Language server' },
   spawn_agent_instance: { running: 'Spawning instance', done: 'Spawned instance' },
   await_agent_instance: { running: 'Awaiting instance', done: 'Instance finished' },
   pull_agent_instance: { running: 'Pulling instance', done: 'Pulled instance' },
   merge_agent_instance: { running: 'Merging instance', done: 'Merged instance' },
+  cancel_agent_instance: { running: 'Cancelling instance', done: 'Cancelled instance' },
   ask_question: { running: 'Asking', done: 'Asked' },
   switch_mode: { running: 'Switching mode', done: 'Switched mode' }
 }
@@ -140,8 +149,12 @@ function formatPathTarget(path: string): string {
 
 export function normalizeToolTarget(name: string, args: Record<string, unknown> | null): string {
   if (!args) return ''
-  if (name === 'read' || name === 'edit' || name === 'str_replace' || name === 'delete') {
+  if (name === 'read' || name === 'edit' || name === 'str_replace' || name === 'delete' || name === 'lsp') {
     const path = args.path ?? args.file
+    if (typeof path === 'string') return formatPathTarget(path)
+  }
+  if (name === 'edit_notebook') {
+    const path = args.target_notebook ?? args.path
     if (typeof path === 'string') return formatPathTarget(path)
   }
   if (name === 'list_dir') {
@@ -170,6 +183,10 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
       const n = todos.length
       return n === 1 ? '1 task' : `${n} tasks`
     }
+  }
+  if (name === 'create_plan') {
+    const title = args.title
+    if (typeof title === 'string' && title.trim()) return truncate(title.trim())
   }
   if (name === 'web_fetch' || name === 'browser_navigate') {
     const url = args.url

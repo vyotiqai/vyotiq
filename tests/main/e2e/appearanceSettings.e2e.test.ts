@@ -99,5 +99,7 @@ describe('e2e: appearance settings persistence', () => {
     expect(loaded.fontScale).toBe('default')
     expect(loaded.uiDensity).toBe('default')
     expect(loaded.accentPreset).toBe('neutral')
+    expect(loaded.skinId).toBe('default')
+    expect(loaded.customCssPath).toBe('')
   })
 })

@@ -7,6 +7,7 @@ import {
   AgentQuestionRejectSchema,
   AgentBrowserStateSchema,
   CodeIndexRuntimeStatusSchema,
+  UpdaterStatusSchema,
   DictationRuntimeStatusSchema,
   GithubAuthStatusSchema,
   SkillsChangedPayloadSchema,
@@ -272,6 +273,13 @@ const api: VyotiqApi = {
       ipcRenderer.removeListener(IPC.windowMaximizedChanged, listener)
     }
   },
+  onWindowFocusChanged: (handler) => {
+    const listener = (_: IpcRendererEvent, focused: boolean): void => handler(focused)
+    ipcRenderer.on(IPC.windowFocusChanged, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.windowFocusChanged, listener)
+    }
+  },
   onBrowserState: (handler) => {
     const listener = (_: IpcRendererEvent, raw: unknown): void => {
       const parsed = AgentBrowserStateSchema.safeParse(raw)
@@ -324,6 +332,16 @@ const api: VyotiqApi = {
   consumeCrashRecovery: () => ipcRenderer.invoke(IPC.crashRecoveryConsume),
   telemetryStatus: () => ipcRenderer.invoke(IPC.telemetryStatus),
   getAppInfo: () => ipcRenderer.invoke(IPC.appInfo),
+  getUpdaterStatus: () => ipcRenderer.invoke(IPC.updaterStatus),
+  checkForAppUpdates: () => ipcRenderer.invoke(IPC.updaterCheck),
+  downloadAppUpdate: () => ipcRenderer.invoke(IPC.updaterDownload),
+  installAppUpdate: () => ipcRenderer.invoke(IPC.updaterInstall),
+  workspaceGrep: (payload) => ipcRenderer.invoke(IPC.workspaceGrep, payload),
+  gitConflictFile: (payload) => ipcRenderer.invoke(IPC.gitConflictFile, payload),
+  gitResolveConflict: (payload) => ipcRenderer.invoke(IPC.gitResolveConflict, payload),
+  prReview: (payload) => ipcRenderer.invoke(IPC.prReview, payload),
+  githubIssuesList: (payload) => ipcRenderer.invoke(IPC.githubIssuesList, payload),
+  githubIssueCreate: (payload) => ipcRenderer.invoke(IPC.githubIssueCreate, payload),
   mcpStatus: (payload) => ipcRenderer.invoke(IPC.mcpStatus, payload ?? {}),
   mcpRefresh: (payload) => ipcRenderer.invoke(IPC.mcpRefresh, payload ?? {}),
   mcpSetAuthToken: (serverId, token) =>
@@ -349,9 +367,30 @@ const api: VyotiqApi = {
   marketplaceAckRemoteInstall: (acked) =>
     ipcRenderer.invoke(IPC.marketplaceAckRemoteInstall, { acked }),
   getSystemTheme: () => ipcRenderer.invoke(IPC.getSystemTheme),
+  appearancePickCustomCss: () => ipcRenderer.invoke(IPC.appearancePickCustomCss),
+  appearanceReadCustomCss: () => ipcRenderer.invoke(IPC.appearanceReadCustomCss),
+  onAppearanceCustomCssChanged: (handler) => {
+    const listener = (_: IpcRendererEvent): void => handler()
+    ipcRenderer.on(IPC.appearanceCustomCssChanged, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.appearanceCustomCssChanged, listener)
+    }
+  },
+  onUpdaterStatus: (handler) => {
+    const listener = (_: IpcRendererEvent, status: unknown): void => {
+      const parsed = UpdaterStatusSchema.safeParse(status)
+      if (!parsed.success) return
+      handler(parsed.data)
+    }
+    ipcRenderer.on(IPC.updaterStatusEvent, listener)
+    return () => {
+      ipcRenderer.removeListener(IPC.updaterStatusEvent, listener)
+    }
+  },
   probeNetwork: () => ipcRenderer.invoke(IPC.networkProbe),
   codeIndexStatus: () => ipcRenderer.invoke(IPC.codeIndexStatus),
   codeIndexReindex: (payload) => ipcRenderer.invoke(IPC.codeIndexReindex, payload ?? {}),
+  processMetrics: () => ipcRenderer.invoke(IPC.processMetrics),
   onCodeIndexStatus: (handler) => {
     const listener = (_: IpcRendererEvent, status: unknown): void => {
       const parsed = CodeIndexRuntimeStatusSchema.safeParse(status)
@@ -413,6 +452,7 @@ const api: VyotiqApi = {
   },
   workspaceSuggestPaths: (payload) => ipcRenderer.invoke(IPC.workspaceSuggestPaths, payload),
   workspaceReadText: (payload) => ipcRenderer.invoke(IPC.workspaceReadText, payload),
+  workspaceReadImage: (payload) => ipcRenderer.invoke(IPC.workspaceReadImage, payload),
   workspaceFileList: (payload) => ipcRenderer.invoke(IPC.workspaceFileList, payload),
   workspaceFileRead: (payload) => ipcRenderer.invoke(IPC.workspaceFileRead, payload),
   workspaceFileSave: (payload) => ipcRenderer.invoke(IPC.workspaceFileSave, payload),
@@ -425,6 +465,9 @@ const api: VyotiqApi = {
   workspaceFormatFile: (payload) => ipcRenderer.invoke(IPC.workspaceFormatFile, payload),
   workspaceLspStatus: (payload) => ipcRenderer.invoke(IPC.workspaceLspStatus, payload),
   workspaceLspRequest: (payload) => ipcRenderer.invoke(IPC.workspaceLspRequest, payload),
+  workspaceInlineComplete: (payload) => ipcRenderer.invoke(IPC.workspaceInlineComplete, payload),
+  workspaceInlineCompleteAbort: (payload) =>
+    ipcRenderer.invoke(IPC.workspaceInlineCompleteAbort, payload),
   workspaceEditorRecoverySave: (payload) =>
     ipcRenderer.invoke(IPC.workspaceEditorRecoverySave, payload),
   workspaceEditorRecoveryLoad: (payload) =>

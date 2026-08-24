@@ -677,18 +677,16 @@ describe('ChatView composer placement', () => {
     expect(screen.getByText('Example Domain')).toBeTruthy()
   })
 
-  it('renders a single hero composer in empty state without dock gutter', () => {
+  it('renders a single docked composer in empty state', () => {
     render(<ChatView {...baseProps} items={[]} />)
 
-    const composers = screen.getAllByRole('textbox', { name: /^Message$/i })
+    const composers = screen.getAllByRole('combobox', { name: /^Message$/i })
     expect(composers).toHaveLength(1)
 
-    expect(document.querySelector('[data-composer-hero]')).toBeTruthy()
+    expect(document.querySelector('[data-composer-hero]')).toBeNull()
+    expect(document.querySelector('[data-composer-dock]')).toBeTruthy()
+    expect(document.querySelector('[data-chat-hero]')).toBeNull()
     expect(screen.queryByText(/Type \/ for commands/i)).toBeNull()
-
-    const composerRoot = composers[0].closest('.shrink-0')
-    expect(composerRoot?.className).not.toMatch(/px-4/)
-    expect(composerRoot?.className).not.toMatch(/sticky/)
   })
 
   it('renders a floating edge rail over the chat stage', () => {
@@ -741,22 +739,23 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-transcript-scroll]')?.className).not.toMatch(/pr-10/)
   })
 
-  it('centers the hero composer with symmetric gutter and column', () => {
+  it('docks the empty-chat composer with symmetric gutter and column', () => {
     render(<ChatView {...baseProps} items={[]} />)
 
-    const hero = document.querySelector('[data-chat-hero]')
-    expect(hero?.className).toMatch(/px-4/)
-    expect(hero?.className).not.toMatch(/pr-10/)
+    expect(document.querySelector('[data-chat-hero]')).toBeNull()
+    const dock = document.querySelector('[data-composer-dock]')
+    expect(dock?.className).toMatch(/pl-4/)
+    expect(dock?.className).toMatch(/pr-10/)
 
-    const heroColumn = document.querySelector('[data-composer-hero]')
-    expect(heroColumn?.className).toMatch(/mx-auto/)
-    expect(heroColumn?.className).toMatch(/max-w-\[840px\]/)
+    const column = document.querySelector('[data-composer-column]')
+    expect(column?.className).toMatch(/mx-auto/)
+    expect(column?.className).toMatch(/max-w-\[840px\]/)
     expect(document.querySelector('[data-hero-brand]')).toBeNull()
     expect(document.querySelector('[data-brand-lockup]')).toBeNull()
     expect(document.querySelector('[data-chat-start-work]')).toBeNull()
   })
 
-  it('top-aligns the side rail on empty hero', () => {
+  it('top-aligns the side rail on empty chat', () => {
     render(<ChatView {...baseProps} items={[]} />)
     const rail = document.querySelector('[data-chat-side-rail]')
     expect(rail?.className).toMatch(/justify-start/)
@@ -784,11 +783,11 @@ describe('ChatView composer placement', () => {
     expect(rail?.className).toMatch(/pt-4/)
   })
 
-  it('uses symmetric gutter on empty hero (rail overlays edge)', () => {
+  it('uses symmetric gutter on empty chat (rail overlays edge)', () => {
     render(<ChatView {...baseProps} items={[]} />)
-    const hero = document.querySelector('[data-chat-hero]')
-    expect(hero?.className).toMatch(/px-4/)
-    expect(hero?.className).not.toMatch(/pr-10/)
+    const dock = document.querySelector('[data-composer-dock]')
+    expect(dock?.className).toMatch(/pl-4/)
+    expect(dock?.className).toMatch(/pr-10/)
     expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
   })
 
@@ -1036,12 +1035,12 @@ describe('ChatView composer placement', () => {
     expect(screen.getAllByText(/loading chat/i).length).toBeGreaterThan(0)
   })
 
-  it('uses hero layout for an active run tab with no messages', () => {
+  it('uses dock layout for an active run tab with no messages', () => {
     render(<ChatView {...baseProps} items={[]} activeRunId="run-1" />)
 
-    expect(document.querySelector('[data-composer-hero]')).toBeTruthy()
-    expect(document.querySelector('[data-chat-hero]')).toBeTruthy()
-    expect(document.querySelector('[data-composer-dock]')).toBeNull()
+    expect(document.querySelector('[data-composer-hero]')).toBeNull()
+    expect(document.querySelector('[data-chat-hero]')).toBeNull()
+    expect(document.querySelector('[data-composer-dock]')).toBeTruthy()
     expect(document.querySelector('[data-empty-brand]')).toBeNull()
     expect(document.querySelector('[data-brand-lockup]')).toBeNull()
     expect(document.querySelector('[data-chat-start-work]')).toBeNull()
@@ -1288,7 +1287,7 @@ describe('ChatView composer placement', () => {
     })
   }
 
-  it('omits start-work on empty hero when git is clean', async () => {
+  it('omits start-work on empty chat when git is clean', async () => {
     vi.useFakeTimers()
     Object.defineProperty(window, 'vyotiq', {
       configurable: true,
@@ -1318,7 +1317,7 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-chat-start-work]')).toBeNull()
   })
 
-  it('fills the composer from uncommitted files on empty hero', async () => {
+  it('fills the composer from uncommitted files on empty chat', async () => {
     vi.useFakeTimers()
     const onComposerDraftChange = vi.fn()
     Object.defineProperty(window, 'vyotiq', {
@@ -1397,8 +1396,8 @@ describe('ChatView composer placement', () => {
     await settleGitChrome()
     fireEvent.click(screen.getByRole('button', { name: 'Review src/loop.ts' }))
     expect(onComposerDraftChange).toHaveBeenCalledWith('Review src/loop.ts.')
-    expect(document.querySelector('[data-chat-hero]')).toBeTruthy()
-    expect(document.querySelector('[data-composer-dock]')).toBeNull()
+    expect(document.querySelector('[data-chat-hero]')).toBeNull()
+    expect(document.querySelector('[data-composer-dock]')).toBeTruthy()
     expect(document.querySelector('[data-changes-panel]')).toBeNull()
   })
 })

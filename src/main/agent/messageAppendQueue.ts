@@ -1,42 +1,53 @@
 import { appendFile } from 'fs/promises'
 import { basename, join } from 'path'
 import { logger } from '../../shared/logger'
+import {
+  bumpFailure,
+  formatAppendFailure,
+  withTransientAppendRetry,
+  type DirAppendFailures
+} from './appendRetry'
 
 /** Per-run-dir serialized message append chain — ordered, non-blocking. */
 const appendChains = new Map<string, Promise<void>>()
-const lastErrors = new Map<string, Error>()
-/** First mid-run append failure per dir that has not yet been consumed as a notice. */
-const pendingNotices = new Map<string, Error>()
+/** Accumulated append failures per run dir, consumed by flushMessageAppends (throws). */
+const failuresForFlush = new Map<string, DirAppendFailures>()
+/**
+ * Accumulated mid-run append failures per run dir, surfaced to the run as a
+ * consumable notice. Reset only when the run reads the notice, so every batch of
+ * failures (not just the first) is reported.
+ */
+const pendingNotices = new Map<string, DirAppendFailures>()
 
 function recordAppendError(dir: string, err: unknown): void {
-  const error = err instanceof Error ? err : new Error(String(err))
-  lastErrors.set(dir, error)
-  if (!pendingNotices.has(dir)) pendingNotices.set(dir, error)
+  bumpFailure(failuresForFlush, dir, err)
+  bumpFailure(pendingNotices, dir, err)
 }
 
-function takeAppendError(dir: string): Error | undefined {
-  const err = lastErrors.get(dir)
-  if (err) lastErrors.delete(dir)
+function takeAppendError(dir: string): DirAppendFailures | undefined {
+  const err = failuresForFlush.get(dir)
+  if (err) failuresForFlush.delete(dir)
   return err
 }
 
-/** Consume the first unread mid-run append failure for a run dir, if any. */
+/** Consume the accumulated mid-run append failures for a run dir, if any. */
 export function takeMessageAppendFailureNotice(dir: string): Error | undefined {
-  const err = pendingNotices.get(dir)
-  if (err) pendingNotices.delete(dir)
-  return err
+  const f = pendingNotices.get(dir)
+  if (!f) return undefined
+  pendingNotices.delete(dir)
+  return formatAppendFailure('messages.jsonl', [f])
 }
 
 function throwIfAppendError(dir: string): void {
-  const err = takeAppendError(dir)
-  if (err) throw err
+  const f = takeAppendError(dir)
+  if (f) throw formatAppendFailure('messages.jsonl', [f])
 }
 
 export function enqueueMessageAppend(dir: string, line: string): Promise<void> {
   const path = join(dir, 'messages.jsonl')
   const prev = appendChains.get(dir) ?? Promise.resolve()
   const next = prev
-    .then(() => appendFile(path, line, 'utf8'))
+    .then(() => withTransientAppendRetry(() => appendFile(path, line, 'utf8')))
     .catch((err) => {
       recordAppendError(dir, err)
       logger.warn('Failed to append messages.jsonl', {
@@ -81,14 +92,18 @@ export function enqueueMessageRewrite(dir: string, rewrite: () => void): Promise
 export async function flushMessageAppends(dir?: string): Promise<void> {
   if (dir) {
     await appendChains.get(dir)
-    throwIfAppendError(dir)
+    const f = failuresForFlush.get(dir)
+    if (f) {
+      failuresForFlush.delete(dir)
+      throw formatAppendFailure('messages.jsonl', [f])
+    }
     return
   }
   await Promise.all([...appendChains.values()])
-  if (lastErrors.size === 0) return
-  const errors = [...lastErrors.values()]
-  lastErrors.clear()
-  throw errors[0]
+  if (failuresForFlush.size === 0) return
+  const all = [...failuresForFlush.values()]
+  failuresForFlush.clear()
+  throw formatAppendFailure('messages.jsonl', all)
 }
 
 /** @internal */
@@ -98,6 +113,6 @@ export function messageAppendChainSizeForTests(): number {
 
 export function resetMessageAppendQueueForTests(): void {
   appendChains.clear()
-  lastErrors.clear()
+  failuresForFlush.clear()
   pendingNotices.clear()
 }

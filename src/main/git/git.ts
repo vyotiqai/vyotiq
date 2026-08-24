@@ -1,5 +1,6 @@
 import { execFile as execFileCb } from 'child_process'
-import { existsSync, statSync, readFileSync } from 'fs'
+import { existsSync, statSync, readFileSync, writeFileSync, mkdtempSync, unlinkSync } from 'fs'
+import { tmpdir } from 'os'
 import { join } from 'path'
 import { promisify } from 'util'
 import type {
@@ -22,27 +23,69 @@ const PUSH_TIMEOUT_MS = 120_000
 const MAX_BUFFER = 4 * 1024 * 1024
 const GIT_PROBE_TTL_MS = 60_000
 
-let gitBinaryCache: { ok: boolean; checkedAt: number } | null = null
+let gitBinaryCache: { ok: boolean; bin: string | null; checkedAt: number } | null = null
 
-/** Whether `git` is on PATH. Cached briefly so chrome does not spam `--version`. */
-export async function gitAvailable(): Promise<boolean> {
-  const now = Date.now()
-  if (gitBinaryCache && now - gitBinaryCache.checkedAt < GIT_PROBE_TTL_MS) {
-    return gitBinaryCache.ok
-  }
+/**
+ * Common Git for Windows install locations that are frequently missing from
+ * PATH (winget/nsis per-user installs, scoop shims). Probing these keeps
+ * git_status/git_diff/git_commit/worktrees functional without a machine-wide
+ * PATH entry.
+ */
+function wellKnownGitBinaries(): string[] {
+  if (process.platform !== 'win32') return []
+  const out: string[] = []
+  const programFiles = process.env['ProgramFiles']
+  const programFilesX86 = process.env['ProgramFiles(x86)']
+  const localAppData = process.env['LOCALAPPDATA']
+  const userProfile = process.env['USERPROFILE']
+  if (programFiles) out.push(join(programFiles, 'Git', 'cmd', 'git.exe'))
+  if (programFilesX86) out.push(join(programFilesX86, 'Git', 'cmd', 'git.exe'))
+  if (localAppData) out.push(join(localAppData, 'Programs', 'Git', 'cmd', 'git.exe'))
+  if (userProfile) out.push(join(userProfile, 'scoop', 'shims', 'git.exe'))
+  return out
+}
+
+async function probeGitBinary(bin: string): Promise<boolean> {
   try {
-    await execFile('git', ['--version'], {
+    await execFile(bin, ['--version'], {
       encoding: 'utf8',
       timeout: 5_000,
       windowsHide: true,
       env: buildGitEnv()
     })
-    gitBinaryCache = { ok: true, checkedAt: now }
     return true
   } catch {
-    gitBinaryCache = { ok: false, checkedAt: now }
     return false
   }
+}
+
+/**
+ * Resolve a usable git binary: PATH first, then well-known Windows install
+ * locations. Cached briefly so chrome does not spam `--version`.
+ */
+export async function resolveGitBinary(): Promise<string | null> {
+  const now = Date.now()
+  if (gitBinaryCache && now - gitBinaryCache.checkedAt < GIT_PROBE_TTL_MS) {
+    return gitBinaryCache.ok ? gitBinaryCache.bin : null
+  }
+  if (await probeGitBinary('git')) {
+    gitBinaryCache = { ok: true, bin: 'git', checkedAt: now }
+    return 'git'
+  }
+  for (const candidate of wellKnownGitBinaries()) {
+    if (!existsSync(candidate)) continue
+    if (await probeGitBinary(candidate)) {
+      gitBinaryCache = { ok: true, bin: candidate, checkedAt: now }
+      return candidate
+    }
+  }
+  gitBinaryCache = { ok: false, bin: null, checkedAt: now }
+  return null
+}
+
+/** Whether a usable git binary was found (PATH or a known install location). */
+export async function gitAvailable(): Promise<boolean> {
+  return (await resolveGitBinary()) != null
 }
 
 /** @internal */
@@ -88,7 +131,9 @@ export async function hasGitCommits(cwd: string): Promise<boolean> {
 }
 
 async function git(args: string[], cwd: string, timeout: number): Promise<string> {
-  const { stdout } = await execFile('git', args, {
+  // Use the resolved binary so installs missing from PATH still work.
+  const bin = (await resolveGitBinary()) ?? 'git'
+  const { stdout } = await execFile(bin, args, {
     cwd,
     encoding: 'utf8',
     timeout,
@@ -127,6 +172,38 @@ async function gitQuiet(args: string[], cwd: string, timeout: number): Promise<s
     return await git(args, cwd, timeout)
   } catch {
     return null
+  }
+}
+
+/**
+ * Apply a unified diff to the workspace via `git apply` (or `--check` for a dry
+ * run). The patch is written to a temp file so git parses it the same way it
+ * would from disk. Fails when not a git repo or the patch does not apply.
+ */
+export async function applyGitPatch(
+  cwd: string,
+  patch: string,
+  opts: { check?: boolean }
+): Promise<{ ok: boolean; error?: string; applied?: string[] }> {
+  if (patch.trim().length === 0) return { ok: false, error: 'Empty patch' }
+  if (!isGitRepo(cwd)) return { ok: false, error: 'Not a git repository' }
+  const tmp = join(mkdtempSync(join(tmpdir(), 'vyotiq-patch-')), 'patch.diff')
+  writeFileSync(tmp, patch, 'utf8')
+  const args = opts.check
+    ? ['apply', '--check', '--whitespace=nowarn', tmp]
+    : ['apply', '--whitespace=nowarn', tmp]
+  try {
+    await git(args, cwd, WRITE_TIMEOUT_MS)
+    return { ok: true, applied: [] }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    return { ok: false, error: message || 'git apply failed' }
+  } finally {
+    try {
+      unlinkSync(tmp)
+    } catch {
+      // best-effort cleanup
+    }
   }
 }
 
@@ -214,6 +291,7 @@ async function numstatMap(cwd: string, args: string[]): Promise<Map<string, {
 }
 
 function statusFor(code: string): GitChangedFile['status'] {
+  if (code.includes('U') || code === 'AA' || code === 'DD') return 'conflicted'
   if (code.includes('D')) return 'deleted'
   if (code.includes('A')) return 'added'
   return 'modified'
@@ -617,7 +695,6 @@ function isEmptyHistoryError(message: string): boolean {
 /** Unit-separator fields so a tab in the subject cannot shift columns. */
 const GIT_LOG_FORMAT = '%H%x1f%h%x1f%s%x1f%an%x1f%cr'
 
-/** Recent commits for the Changes → Commits scope. */
 export async function readGitLog(cwd: string, limit = 40): Promise<GitLogEntry[]> {
   if (!isGitRepo(cwd)) return []
   const capped = Math.min(Math.max(1, limit), 100)
@@ -1033,4 +1110,36 @@ export async function checkoutBranch(
   if (!match) throw new Error(`Unknown branch: ${name}`)
   await git(['checkout', match.name], cwd, WRITE_TIMEOUT_MS)
   return { detail: `Checked out ${match.name}` }
+}
+
+/** Read merge-conflict stages (`:1:` base, `:2:` ours, `:3:` theirs) plus the working copy. */
+export async function readConflictFile(
+  cwd: string,
+  relPath: string
+): Promise<{ ours: string; theirs: string; base: string; working: string }> {
+  if (!isGitRepo(cwd)) throw new Error('Not a git repository')
+  if (!isSafeWorkspaceRelPath(relPath)) throw new Error('Invalid path')
+  const ours = (await gitQuiet(['show', `:2:${relPath}`], cwd, READ_TIMEOUT_MS)) ?? ''
+  const theirs = (await gitQuiet(['show', `:3:${relPath}`], cwd, READ_TIMEOUT_MS)) ?? ''
+  const base = (await gitQuiet(['show', `:1:${relPath}`], cwd, READ_TIMEOUT_MS)) ?? ''
+  let working = ''
+  try {
+    working = readFileSync(resolveInsideWorkspace(cwd, relPath), 'utf8')
+  } catch {
+    /* unmerged path may be missing on disk */
+  }
+  return { ours, theirs, base, working }
+}
+
+/** Write the resolved file and `git add` it. */
+export async function resolveConflict(
+  cwd: string,
+  relPath: string,
+  content: string
+): Promise<{ detail: string }> {
+  if (!isGitRepo(cwd)) throw new Error('Not a git repository')
+  if (!isSafeWorkspaceRelPath(relPath)) throw new Error('Invalid path')
+  writeFileSync(resolveInsideWorkspace(cwd, relPath), content, 'utf8')
+  await git(['add', '--', relPath], cwd, WRITE_TIMEOUT_MS)
+  return { detail: `Resolved ${relPath}` }
 }

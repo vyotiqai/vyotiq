@@ -22,7 +22,7 @@ export type LoopStop = { reason: LoopStopReason; message: string }
  */
 export const MCP_NOT_IN_CATALOG_FAIL_FAST_THRESHOLD = 2
 
-const WRITE_TOOLS = new Set(['edit', 'str_replace', 'multi_edit'])
+const WRITE_TOOLS = new Set(['edit', 'str_replace', 'multi_edit', 'edit_notebook'])
 const FILE_MUTATION_TOOLS = new Set([...WRITE_TOOLS, 'delete'])
 
 const MCP_NOT_IN_CATALOG_MARKER = "is not in this step's tool catalog"
@@ -245,8 +245,11 @@ export function editPathsFromToolCall(
   name: string,
   args: Record<string, unknown>
 ): string[] {
-  if (name === 'edit' || name === 'str_replace') {
-    const raw = readPathArg(args)
+  if (name === 'edit' || name === 'str_replace' || name === 'edit_notebook') {
+    const raw =
+      name === 'edit_notebook' && typeof args.target_notebook === 'string'
+        ? args.target_notebook
+        : readPathArg(args)
     const path = raw ? normalizeWorkspaceRelPath(raw) : ''
     return path ? [path] : []
   }

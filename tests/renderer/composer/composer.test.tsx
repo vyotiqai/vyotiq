@@ -122,7 +122,7 @@ describe('Composer', () => {
       />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     ta.textContent = 'keep me'
     fireEvent.input(ta)
     fireEvent.click(screen.getByRole('button', { name: /^Send$/i }))
@@ -157,7 +157,7 @@ describe('Composer', () => {
       />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     ta.textContent = 'first message'
     fireEvent.input(ta)
     fireEvent.click(screen.getByRole('button', { name: /^Send$/i }))
@@ -197,7 +197,7 @@ describe('Composer', () => {
       />
     )
 
-    fireEvent.submit(screen.getByRole('textbox', { name: /^Message$/i }).closest('form')!)
+    fireEvent.submit(screen.getByRole('combobox', { name: /^Message$/i }).closest('form')!)
 
     expect((await screen.findByRole('alert')).textContent).toMatch(/no longer exists/i)
     expect(onSend).not.toHaveBeenCalled()
@@ -296,7 +296,7 @@ describe('Composer', () => {
       />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     ta.textContent = 'read the attachment'
     fireEvent.input(ta)
     const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement
@@ -414,7 +414,7 @@ describe('Composer', () => {
       />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     expect(ta.getAttribute('contenteditable')).toBe('true')
     expect(screen.getByRole('button', { name: /^Stop$/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /^Send follow-up$/i })).toBeNull()
@@ -442,7 +442,7 @@ describe('Composer', () => {
       />
     )
 
-    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: /^Message$/i }))
+    expect(document.activeElement).toBe(screen.getByRole('combobox', { name: /^Message$/i }))
   })
 
   it('cancels inline edit on Escape when no menu consumed it', () => {
@@ -467,7 +467,7 @@ describe('Composer', () => {
       />
     )
 
-    fireEvent.keyDown(screen.getByRole('textbox', { name: /^Message$/i }), { key: 'Escape' })
+    fireEvent.keyDown(screen.getByRole('combobox', { name: /^Message$/i }), { key: 'Escape' })
     expect(onCancelEdit).toHaveBeenCalledTimes(1)
   })
 
@@ -488,7 +488,7 @@ describe('Composer', () => {
       />
     )
 
-    const ta = screen.getByRole('textbox', { name: /^Message$/i })
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
     ta.textContent = 'steer left'
     fireEvent.input(ta)
     fireEvent.keyDown(ta, { key: 'Enter', code: 'Enter' })

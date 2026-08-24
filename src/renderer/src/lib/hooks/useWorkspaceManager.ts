@@ -1022,7 +1022,7 @@ export function useWorkspaceManager(options?: {
     async (
       workspacePath: string,
       runId: string,
-      opts?: { isCurrent?: () => boolean }
+      opts?: { isCurrent?: () => boolean; allowAutoResume?: boolean }
     ): Promise<void> => {
       const ctrl = ensureController(workspacePath, runId)
       if (ctrl.running || ctrl.pendingRun) return
@@ -1093,7 +1093,8 @@ export function useWorkspaceManager(options?: {
                 }
               : null
           ) &&
-          !autoResumeAttemptedRef.current.has(runId)
+          !autoResumeAttemptedRef.current.has(runId) &&
+          opts?.allowAutoResume === true
         ) {
           const settingsRes = await window.vyotiq.getSettings()
           if (!stillCurrent()) return
@@ -1115,7 +1116,7 @@ export function useWorkspaceManager(options?: {
 
   const loadRunIntoTab = useCallback(
     async (workspacePath: string, runId: string): Promise<void> => {
-      await loadRunTranscript(workspacePath, runId)
+      await loadRunTranscript(workspacePath, runId, { allowAutoResume: true })
     },
     [loadRunTranscript]
   )
@@ -1365,9 +1366,15 @@ export function useWorkspaceManager(options?: {
           ensureController(path, runId)
         }
         if (ui.activeRunId) {
-          await loadRunTranscript(path, ui.activeRunId, {
-            isCurrent: () => !cancelled
-          })
+          const activePath = res.data.activePath
+          const isActiveWorkspace =
+            activePath != null && workspacePathsEqual(path, activePath)
+          if (isActiveWorkspace) {
+            await loadRunTranscript(path, ui.activeRunId, {
+              isCurrent: () => !cancelled,
+              allowAutoResume: true
+            })
+          }
         }
         if (cancelled) return
         void refreshRuns(path)
@@ -1502,7 +1509,9 @@ export function useWorkspaceManager(options?: {
     for (const pane of initial.panes) {
       if (!pane.runId) continue
       ensureController(pane.workspacePath, pane.runId)
-      void loadRunTranscript(pane.workspacePath, pane.runId)
+      void loadRunTranscript(pane.workspacePath, pane.runId, {
+        allowAutoResume: workspacePathsEqual(pane.workspacePath, activeWorkspace)
+      })
     }
   }, [
     activeContext?.activeRunId,
@@ -1645,6 +1654,9 @@ export function useWorkspaceManager(options?: {
         if (visibleRunId) {
           backgroundRunIdsRef.current.delete(visibleRunId)
           const ctrl = ensureController(path, visibleRunId)
+          if (!ctrl.running && !ctrl.pendingRun && ctrl.items.length === 0) {
+            void loadRunTranscript(path, visibleRunId, { allowAutoResume: true })
+          }
           void ctrl.resumeUiIfNeeded()
         }
         setChatSurfaceEpoch((t) => t + 1)
@@ -1659,6 +1671,7 @@ export function useWorkspaceManager(options?: {
       commitPaneLayout,
       ensureController,
       flushPersistUiState,
+      loadRunTranscript,
       suspendAllExcept
     ]
   )

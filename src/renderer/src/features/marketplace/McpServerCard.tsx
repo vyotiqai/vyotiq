@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { McpServer, McpServerStatus, McpTransport } from '@shared/ipc'
-import { Input, Textarea, Button } from '@renderer/lib/ui'
+import { Input, Textarea, Button, selectClass } from '@renderer/lib/ui'
 import {
   hasNonBearerAuthorization,
   headersWithoutAuthorization
@@ -266,7 +266,7 @@ export function McpServerCard({
           }}
         />
         <select
-          className="rounded-md border border-border bg-bg px-2 py-1.5 text-xs"
+          className={selectClass}
           aria-label={`MCP transport for ${server.id}`}
           disabled={disabled}
           value={transport}
@@ -442,7 +442,7 @@ export function McpServerCard({
       ) : null}
 
       {hideRemove ? null : (
-        <Button variant="subtle" className="mt-2" disabled={disabled} onClick={onRemove}>
+        <Button variant="danger" className="mt-2" disabled={disabled} onClick={onRemove}>
           Remove
         </Button>
       )}

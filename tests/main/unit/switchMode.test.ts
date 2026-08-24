@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { DEFAULT_SETTINGS } from '@shared/ipc'
 import {
   assertToolAllowedInMode,
@@ -148,5 +151,35 @@ describe('switch_mode', () => {
     }).map((t) => t.name)
     expect(agentTools).not.toContain('switch_mode')
     expect(agentTools).toContain('edit')
+  })
+
+  it('seeds plan.md when switching to plan', async () => {
+    const workspace = mkdtempSync(join(tmpdir(), 'vyotiq-switch-plan-'))
+    const runDir = join(workspace, 'run')
+    mkdirSync(runDir)
+    try {
+      let mode: 'ask' | 'plan' | 'agent' = 'ask'
+      const result = await executeTool(
+        'switch_mode',
+        JSON.stringify({ mode: 'plan' }),
+        workspace,
+        new AbortController().signal,
+        {
+          runId: 'run-plan-seed',
+          runDir,
+          getAgentMode: () => mode,
+          setAgentMode: (next) => {
+            mode = next
+          },
+          autoModeSwitch: true
+        }
+      )
+      expect(result.ok).toBe(true)
+      expect(mode).toBe('plan')
+      expect(existsSync(join(runDir, 'plan.md'))).toBe(true)
+      expect(readFileSync(join(runDir, 'plan.md'), 'utf8')).toContain('## Steps')
+    } finally {
+      rmSync(workspace, { recursive: true, force: true })
+    }
   })
 })

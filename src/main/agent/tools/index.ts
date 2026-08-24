@@ -48,6 +48,8 @@ import {
   assertInlineInstanceUnscopedToolAllowed
 } from './writeGuard'
 import { toolTodoWrite, type TodoItem } from './todo'
+import { executeCreatePlan } from './createPlan'
+import { ensurePlanStub } from '../planArtifacts'
 import {
   isFindstrNoMatchContent,
   isDirMissingPathContent,
@@ -60,6 +62,10 @@ import { toolMemoryList, toolMemoryRead, toolMemoryWrite } from './memory'
 import { toolSkill, summarizeSkillArgs } from './skill'
 import { toolGitDiffAsync, toolGitStatusAsync } from './gitHelpers'
 import { toolDiagnosticsAsync } from './diagnostics'
+import { toolRunTestsAsync } from './runTests'
+import { toolApplyPatchAsync } from './applyPatch'
+import { toolEditNotebookAsync, type EditNotebookArgs } from './editNotebook'
+import { toolLsp, applyLspRenameEdits } from './lsp'
 import { getSettings } from '@main/settings/settings'
 import {
   navigateUrl,
@@ -85,8 +91,10 @@ import { getWriteCheckpoint } from '../checkpoints'
 import { needsOpaqueWatch, recordTerminalCommandPriors } from './terminalCheckpoint'
 import { applyMcpFilesystemMutations, recordMcpFilesystemPriors } from './mcpCheckpoint'
 import {
+  cancelChildInstance,
   formatAgentInstanceLabel,
   mergeAgentInstanceBranch,
+  noteInlineInstanceDeniedTool,
   pullChildRun,
   spawnAgentInstance,
   waitForChildTerminal,
@@ -103,6 +111,12 @@ import {
 import { resolveInsideWorkspace } from '@main/workspace/safePath'
 import { clearWorkspaceSnapshotCache } from '../context/workspaceSnapshot'
 import { commitPaths } from '@main/git/git'
+import {
+  prCreate,
+  reviewPullRequest,
+  listGithubIssues,
+  createGithubIssue
+} from '@main/git/gh'
 import { invalidateGitStatusCache } from '@main/git/gitStatusCache'
 import { invalidateSlashCommandsCache } from '../slashCommands/listCache'
 import { clearGitignoreMatcherCache } from './gitignore'
@@ -182,6 +196,8 @@ export type ToolExecutionContext = {
   terminalShell?: TerminalShell
   /** Snapshot of settings.diagnosticsCommand for this invoke (not live mid-run). */
   diagnosticsCommand?: string
+  /** Paths already inspected or edited this run (read-before-edit soft warn). */
+  knownPaths?: ReadonlySet<string>
   /**
    * Invoke-snapshotted settings for tools that must not read live Settings mid-run.
    */
@@ -446,7 +462,7 @@ function formatMcpPromptLines(entries: Awaited<ReturnType<typeof listMcpPrompts>
     .join('\n')
 }
 
-const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
+export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
   read: (workspace, args, signal) => {
     throwIfAborted(signal)
     const path = requirePathArg('read', args)
@@ -594,6 +610,15 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const n = next.length
     const countLabel = n === 1 ? '1 task' : `${n} tasks`
     return toolOk('todo_write', notice ? `${countLabel}; ${notice}` : countLabel, content)
+  },
+  create_plan: (workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const result = executeCreatePlan(workspace, args, {
+      runDir: context.runDir
+    })
+    return result.ok
+      ? toolOk('create_plan', result.summary, result.content)
+      : toolFail('create_plan', result.summary, result.content)
   },
   browser_search: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
@@ -1344,6 +1369,9 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       )
     }
     await context.setAgentMode(mode)
+    if (mode === 'plan' && context.runDir) {
+      ensurePlanStub(context.runDir)
+    }
     if (context.runId) {
       context.emitAgentEvent?.({
         type: 'mode_changed',
@@ -1550,6 +1578,76 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       return toolFail('git_commit', 'git commit', msg)
     }
   },
+  git_apply: async (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const result = await toolApplyPatchAsync(workspace, args, signal)
+    throwIfAborted(signal)
+    if (!result.ok) return toolFail('git_apply', result.summary, result.content)
+    invalidateAfterWorkspaceMutation(workspace)
+    return toolOk('git_apply', result.summary, result.content)
+  },
+  github_pr_create: async (workspace, args, signal) => {
+    throwIfAborted(signal)
+    try {
+      const result = await prCreate(workspace, { draft: args.draft !== false })
+      throwIfAborted(signal)
+      return toolOk(
+        'github_pr_create',
+        result.url,
+        [result.detail, result.url].filter(Boolean).join('\n')
+      )
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return toolFail('github_pr_create', 'gh pr create', msg)
+    }
+  },
+  github_pr_review: async (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const event = args.event as 'approve' | 'request-changes' | 'comment'
+    try {
+      const result = await reviewPullRequest(
+        workspace,
+        event,
+        typeof args.body === 'string' ? args.body : undefined,
+        typeof args.number === 'number' ? args.number : undefined
+      )
+      throwIfAborted(signal)
+      return toolOk('github_pr_review', event, result.detail)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return toolFail('github_pr_review', 'gh pr review', msg)
+    }
+  },
+  github_issue: async (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const action = args.action as 'list' | 'create'
+    try {
+      if (action === 'list') {
+        const result = await listGithubIssues(workspace)
+        throwIfAborted(signal)
+        const lines = result.issues.map(
+          (issue) => `#${issue.number} ${issue.state} ${issue.title} ${issue.url}`
+        )
+        return toolOk(
+          'github_issue',
+          'list',
+          lines.length > 0 ? lines.join('\n') : 'No open issues.'
+        )
+      }
+      const title = typeof args.title === 'string' ? args.title.trim() : ''
+      if (!title) return toolFail('github_issue', 'create', 'title is required when action is create')
+      const result = await createGithubIssue(
+        workspace,
+        title,
+        typeof args.body === 'string' ? args.body : undefined
+      )
+      throwIfAborted(signal)
+      return toolOk('github_issue', result.url, `${result.detail}\n${result.url}`)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return toolFail('github_issue', `gh issue ${action}`, msg)
+    }
+  },
   diagnostics: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
     const kind = args.kind === 'lint' ? 'lint' : 'typecheck'
@@ -1562,6 +1660,53 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     if (!result.ok) return toolFail('diagnostics', kind, result.content)
     return toolOk('diagnostics', kind, result.content)
+  },
+  run_tests: async (workspace, args, signal) => {
+    throwIfAborted(signal)
+    const result = await toolRunTestsAsync(workspace, args, signal)
+    throwIfAborted(signal)
+    if (!result.ok) return toolFail('run_tests', result.command, result.content)
+    return toolOk('run_tests', result.command, result.content)
+  },
+  edit_notebook: async (workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const path = String(args.target_notebook ?? '')
+    if (!context.skipWriteCheckpoint) {
+      getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
+    }
+    const content = await toolEditNotebookAsync(workspace, args as EditNotebookArgs)
+    invalidateAfterWorkspaceMutation(workspace, path)
+    return toolOk('edit_notebook', path, content)
+  },
+  lsp: async (workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    const result = await toolLsp(workspace, args)
+    throwIfAborted(signal)
+    if (result.pendingRenameEdits && result.pendingRenameEdits.length > 0) {
+      const paths = [...new Set(result.pendingRenameEdits.map((edit) => edit.path))]
+      try {
+        assertInlineInstancePathScope(context.runDir, paths, {
+          inlineInstance: context.inlineInstance
+        })
+      } catch (err) {
+        return toolFail('lsp', result.summary, formatError(err))
+      }
+      if (!context.skipWriteCheckpoint) {
+        const cp = getWriteCheckpoint(context.runDir)
+        if (cp) {
+          for (const path of paths) cp.recordPrior(path, 'write')
+        }
+      }
+      const mutated = await applyLspRenameEdits(workspace, result.pendingRenameEdits)
+      invalidateAfterWorkspaceMutation(workspace, mutated)
+      return toolOk(
+        'lsp',
+        result.summary,
+        `Applied ${result.pendingRenameEdits.length} edit(s) in ${mutated.length} file(s):\n${result.content}`
+      )
+    }
+    if (!result.ok) return toolFail('lsp', result.summary, result.content)
+    return toolOk('lsp', result.summary, result.content)
   },
   spawn_agent_instance: async (workspace, args, signal, context) => {
     throwIfAborted(signal)
@@ -1660,6 +1805,26 @@ const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     }
     invalidateAfterWorkspaceMutation(workspace)
     return toolOk('merge_agent_instance', formatAgentInstanceLabel(childRunId), result.detail)
+  },
+  cancel_agent_instance: async (workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    if (!context.runId) {
+      return toolFail('cancel_agent_instance', 'cancel', 'cancel_agent_instance requires an active run')
+    }
+    const childRunId = readString(args, 'run_id')
+    if (!childRunId) return toolFail('cancel_agent_instance', 'cancel', 'run_id is required')
+    const result = cancelChildInstance(workspace, context.runId, childRunId)
+    const label = formatAgentInstanceLabel(childRunId)
+    if (!result.ok) return toolFail('cancel_agent_instance', label, result.error)
+    if (result.phase === 'already-terminal') {
+      const status = loadStatus(resolveRunDir(workspace, childRunId))?.status ?? 'unknown'
+      return toolOk('cancel_agent_instance', label, `${label}\nphase: already-terminal (${status})`)
+    }
+    return toolOk(
+      'cancel_agent_instance',
+      label,
+      `${label}\nphase: cancelling\n\nInstance cancelled. Its partial output is available via pull_agent_instance.`
+    )
   }
 }
 
@@ -1736,6 +1901,24 @@ function normalizeParsedToolArgs(
   }
   if (typeof normalized.serverId !== 'string' && typeof normalized.server_id === 'string') {
     normalized.serverId = normalized.server_id
+  }
+  if (name === 'spawn_agent_instance' && typeof normalized.goal !== 'string') {
+    const prompt = readString(normalized, 'prompt') ?? readString(normalized, 'description')
+    if (prompt) normalized.goal = prompt
+  }
+  if (name === 'lsp') {
+    if (typeof normalized.action !== 'string') {
+      normalized.action = 'diagnostics'
+    }
+    if (typeof normalized.new_name !== 'string' && typeof normalized.newName === 'string') {
+      normalized.new_name = normalized.newName
+    }
+    const path = readPathArg(normalized)
+    if (path && typeof normalized.path !== 'string') normalized.path = path
+  }
+  if (name === 'edit_notebook' && typeof normalized.target_notebook !== 'string') {
+    const path = readPathArg(normalized)
+    if (path) normalized.target_notebook = path
   }
 
   return normalized
@@ -1953,7 +2136,7 @@ export async function executeTool(
   // Enforce inline instance path_scope on product-file writers (not run artifacts).
   if (
     effectiveWorkspace === workspace &&
-    (name === 'edit' || name === 'str_replace' || name === 'multi_edit' || name === 'delete')
+    (name === 'edit' || name === 'str_replace' || name === 'multi_edit' || name === 'delete' || name === 'edit_notebook')
   ) {
     const writePaths: string[] = []
     if (name === 'multi_edit' && Array.isArray(effectiveArgs.edits)) {
@@ -1961,6 +2144,12 @@ export async function executeTool(
         const p = readPathArg(edit)
         if (p) writePaths.push(p)
       }
+    } else if (name === 'edit_notebook') {
+      const p =
+        typeof effectiveArgs.target_notebook === 'string'
+          ? effectiveArgs.target_notebook
+          : readPathArg(effectiveArgs)
+      if (p) writePaths.push(p)
     } else {
       const p = readPathArg(effectiveArgs)
       if (p) writePaths.push(p)
@@ -1980,6 +2169,7 @@ export async function executeTool(
     try {
       assertInlineInstanceTerminalAllowed(effectiveContext.runDir, unscopedOpts)
     } catch (err) {
+      noteInlineInstanceDeniedTool(effectiveContext.runId)
       return toolFail(name, summary, formatError(err))
     }
   }
@@ -1987,12 +2177,18 @@ export async function executeTool(
     try {
       assertInlineInstanceUnscopedToolAllowed(effectiveContext.runDir, 'diagnostics', unscopedOpts)
     } catch (err) {
+      noteInlineInstanceDeniedTool(effectiveContext.runId)
       return toolFail(name, summary, formatError(err))
     }
   }
   if (name === 'git_commit') {
     try {
       assertInlineInstanceUnscopedToolAllowed(effectiveContext.runDir, 'git_commit', unscopedOpts)
+    } catch (err) {
+      noteInlineInstanceDeniedTool(effectiveContext.runId)
+      return toolFail(name, summary, formatError(err))
+    }
+    try {
       if (effectiveArgs.push === true) {
         assertInlineInstancePushDenied(effectiveContext.runDir, unscopedOpts)
       }

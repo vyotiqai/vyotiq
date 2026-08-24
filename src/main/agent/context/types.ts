@@ -17,6 +17,7 @@ export type BudgetLayers = {
 export const BUDGET_SHARES: BudgetLayers = SHARED_BUDGET_SHARES
 
 export const KEEP_RECENT_TURNS = 12
+export const KEEP_LAST_TOOL_RESULTS = 6
 export const MEMORY_INDEX_CAP = 3000
 export const MEMORY_STATE_CAP = 3000
 export const DEFAULT_CONTEXT_WINDOW = SHARED_DEFAULT_CONTEXT_WINDOW
@@ -51,6 +52,21 @@ export const CompactionRecordSchema = z.object({
   contentWindowAtCompact: z.number().int().min(1).optional(),
   /** User decisions from ask_question in the folded prefix. */
   retainedDecisions: z.array(z.string()).max(8).optional(),
+  /**
+   * Extractive facts pinned independently of the LLM summary. Assemble injects
+   * these with a reserved budget so rolling/token caps cannot drop them.
+   */
+  pinnedFacts: z
+    .object({
+      files: z.array(z.string()).max(64),
+      wroteFiles: z.array(z.string()).max(64),
+      decisions: z.array(z.string()).max(32),
+      todos: z.array(z.string()).max(32),
+      doneWhen: z.array(z.string()).max(32),
+      constraints: z.array(z.string()).max(32),
+      contractGoal: z.string().max(240).optional()
+    })
+    .optional(),
   /** Extractive verifier accepted this summary before the watermark advanced. */
   verified: z.boolean().optional(),
   /** Share of extracted fold files cited in the summary (0–1). */
@@ -64,6 +80,7 @@ export type AssembleInput = {
   harness: string
   messages: ChatMessage[]
   workspacePath: string | null
+  focusedFile?: string | null
   goal: string
   model: ModelInfo
   toolsJsonEstimate: number
@@ -78,6 +95,11 @@ export type AssembleInput = {
   userRules?: UserRule[]
   modeSection?: string
   plan?: string
+  /**
+   * Plan mode: keep the `<plan>` inner text equal to on-disk plan.md (no
+   * heading strip, no token cap) so str_replace/edit args can quote it.
+   */
+  planVerbatim?: boolean
   sessionEnv?: string
   /** Current run task list from todos.json (volatile; survives compaction folds). */
   taskList?: string

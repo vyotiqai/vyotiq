@@ -142,7 +142,7 @@ describe('Sidebar chrome', () => {
 
     const aside = container.querySelector('aside')
     expect(aside).toBeTruthy()
-    expect(aside!.className).toContain('bg-bg')
+    expect(aside!.className).toContain('bg-transparent')
     expect(aside!.className).not.toContain('bg-card')
 
     const footer = screen.getByRole('button', { name: /^settings$/i }).parentElement

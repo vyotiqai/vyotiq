@@ -70,16 +70,16 @@ export function useGitRevision(
 }
 
 function useLiveItems(itemsStore: ChatItemsStore | undefined, items: UiItem[]): UiItem[] {
+  const subscribeItems = itemsStore?.subscribeItems
+  const getItemsRevision = itemsStore?.getItemsRevision
+  const getItems = itemsStore?.getItems
   const subscribe = useCallback(
-    (onStoreChange: () => void) => itemsStore?.subscribeItems(onStoreChange) ?? (() => {}),
-    [itemsStore]
+    (onStoreChange: () => void) => subscribeItems?.(onStoreChange) ?? (() => {}),
+    [subscribeItems]
   )
-  const getRevision = useCallback(
-    () => itemsStore?.getItemsRevision() ?? 0,
-    [itemsStore]
-  )
+  const getRevision = useCallback(() => getItemsRevision?.() ?? 0, [getItemsRevision])
   useSyncExternalStore(subscribe, getRevision, getRevision)
-  return itemsStore ? itemsStore.getItems() : items
+  return getItems ? getItems() : items
 }
 
 /**
@@ -90,15 +90,20 @@ export function useHasChatItems(
   itemsStore: ChatItemsStore | undefined,
   items: UiItem[]
 ): boolean {
+  const itemsRef = useRef(items)
+  itemsRef.current = items
+  const subscribeItems = itemsStore?.subscribeItems
+  const getItems = itemsStore?.getItems
   const subscribe = useCallback(
-    (onStoreChange: () => void) => itemsStore?.subscribeItems(onStoreChange) ?? (() => {}),
-    [itemsStore]
+    (onStoreChange: () => void) => subscribeItems?.(onStoreChange) ?? (() => {}),
+    [subscribeItems]
   )
   const getSnapshot = useCallback((): boolean => {
-    const list = itemsStore ? itemsStore.getItems() : items
-    return list.length > 0
-  }, [itemsStore, items])
-  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+    if (getItems) return getItems().length > 0
+    return itemsRef.current.length > 0
+  }, [getItems])
+  const fromStore = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  return getItems ? fromStore : items.length > 0
 }
 
 export function useChatLiveItems(
@@ -113,12 +118,15 @@ export function useResolvedTurnUsage(
   metaStore: ChatMetaStore | undefined,
   turnUsage: readonly StepUsageTotals[] | undefined
 ): readonly StepUsageTotals[] | undefined {
+  const subscribeMeta = metaStore?.subscribeMeta
+  const getMetaRevision = metaStore?.getMetaRevision
+  const getTurnUsage = metaStore?.getTurnUsage
   const subscribe = useCallback(
-    (onStoreChange: () => void) => metaStore?.subscribeMeta(onStoreChange) ?? (() => {}),
-    [metaStore]
+    (onStoreChange: () => void) => subscribeMeta?.(onStoreChange) ?? (() => {}),
+    [subscribeMeta]
   )
-  const getRevision = useCallback(() => metaStore?.getMetaRevision() ?? 0, [metaStore])
+  const getRevision = useCallback(() => getMetaRevision?.() ?? 0, [getMetaRevision])
   useSyncExternalStore(subscribe, getRevision, getRevision)
-  if (metaStore?.getTurnUsage) return metaStore.getTurnUsage()
+  if (getTurnUsage) return getTurnUsage()
   return turnUsage
 }

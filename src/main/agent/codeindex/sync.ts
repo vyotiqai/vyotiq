@@ -32,7 +32,7 @@ import {
  */
 const YIELD_EVERY = 32
 /** Max files considered per dense index page (production source). */
-export const INDEX_SCAN_CAP = 8000
+export const INDEX_SCAN_CAP = 24000
 /** Full-tree reconcile walk after the last page (must exceed one page). */
 export const CODE_INDEX_RECONCILE_WALK_CAP = INDEX_SCAN_CAP * 2
 /**

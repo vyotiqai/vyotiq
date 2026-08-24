@@ -43,7 +43,7 @@ describe('ContextMeter', () => {
     render(<ContextMeter usage={baseUsage} />)
 
     const trigger = screen.getByRole('button', { name: /context window 50% full/i })
-    expect(trigger.textContent).toContain('50%')
+    expect(trigger.getAttribute('aria-label')).toContain('50%')
 
     fireEvent.click(trigger)
 
@@ -117,7 +117,7 @@ describe('ContextMeter', () => {
     const trigger = screen.getByRole('button', { name: /context/i })
     expect(trigger.className).not.toMatch(/bg-warning/)
     expect(trigger.getAttribute('aria-label')).toMatch(/Long-run tip available/i)
-    expect(trigger.textContent).toMatch(/70k/)
+    expect(trigger.getAttribute('aria-label')).toMatch(/70k/)
     fireEvent.click(trigger)
     expect(screen.getByText(/Long run — \/clear/i)).toBeTruthy()
   })

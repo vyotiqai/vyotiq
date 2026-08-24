@@ -78,6 +78,25 @@ export function GeneralSection({
         </SettingsField>
       </SettingsGroup>
 
+      <SettingsGroup title="Editor">
+        <SettingsField
+          id="tab-autocomplete"
+          title="Tab autocomplete"
+          hint="Ghost text in the Files editor from the active model. Tab accepts, Esc dismisses. Typing the next characters keeps the rest."
+          help="Uses the workspace-active provider and model. Requests fire after a short pause while typing. Turn off to stop those calls."
+        >
+          <Switch
+            size="md"
+            checked={form.settings.tabAutocomplete ?? true}
+            disabled={form.formLocked}
+            label="Tab autocomplete"
+            onCheckedChange={(checked) => {
+              void form.runUpdate({ tabAutocomplete: checked })
+            }}
+          />
+        </SettingsField>
+      </SettingsGroup>
+
       <SettingsGroup title="Workspaces">
         <SettingsField
           id="workspaces"

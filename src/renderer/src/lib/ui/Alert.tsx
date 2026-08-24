@@ -17,7 +17,7 @@ export function linkifyAlertText(text: string, onOpenUrl: (url: string) => void)
       <button
         key={`${match.index}:${url}`}
         type="button"
-        className="underline underline-offset-2 hover:opacity-90"
+        className="underline underline-offset-2 vy-transition hover:text-fg"
         onClick={() => onOpenUrl(url)}
       >
         {url}

@@ -21,6 +21,14 @@ export type TerminalSessionStatus = 'running' | 'done' | 'timeout' | 'pattern_ma
 /** Resource-safety limit: max concurrent background terminal sessions per run invoke. */
 export const MAX_BACKGROUND_TERMINALS_PER_INVOKE = 8
 
+/**
+ * Finished sessions stay readable for later polls, but only for this long —
+ * after the TTL (or once too many pile up) they are disposed so the map and
+ * the concurrency budget cannot leak across a long-lived invoke.
+ */
+export const FINISHED_TERMINAL_SESSION_TTL_MS = 15 * 60_000
+export const MAX_FINISHED_TERMINAL_SESSIONS_PER_INVOKE = 16
+
 type TerminalSession = {
   id: string
   runId: string
@@ -39,6 +47,8 @@ type TerminalSession = {
   pattern?: RegExp
   patternMatched?: boolean
   createdAt: number
+  /** When the child process closed (finished sessions only). Drives TTL pruning. */
+  finishedAt?: number
   onOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
   /** Resolvers waiting for close / pattern / status change (event-driven poll). */
   waiters: Set<() => void>
@@ -75,7 +85,7 @@ function assertSessionOwnership(
 ): asserts session is TerminalSession {
   if (!session) {
     throw new Error(
-      `Unknown terminal session_id: ${sessionId}. Background shells do not survive app restart — start a new command.`
+      `Unknown terminal session_id: ${sessionId}. Background shells do not survive app restart and finished sessions are pruned automatically — run the command again.`
     )
   }
   if (session.runId !== runId || session.invokeId !== invokeId) {
@@ -104,6 +114,7 @@ export function disposeTerminalSession(id: string): void {
     killProcessTree(session.child.pid, 'dispose')
   }
   session.running = false
+  session.finishedAt ??= Date.now()
   if (session.status === 'running') session.status = 'aborted'
   notifySessionWaiters(session)
   sessions.delete(id)
@@ -145,6 +156,36 @@ export function disposeTerminalSessionsForWorkspace(workspacePath: string): numb
     disposed++
   }
   return disposed
+}
+
+/**
+ * Dispose finished sessions for this invoke that are past the TTL, then — if
+ * too many still linger — dispose the oldest so output history stays bounded.
+ * Called before each new spawn: finished sessions must never wedge the
+ * concurrency cap for the rest of an invoke (they used to leak until the run
+ * ended, surfacing as "Too many concurrent background terminal sessions").
+ */
+export function pruneFinishedTerminalSessionsForInvoke(runId: string, invokeId: number): number {
+  const now = Date.now()
+  const finished: TerminalSession[] = []
+  for (const session of sessions.values()) {
+    if (session.runId !== runId || session.invokeId !== invokeId) continue
+    if (session.running) continue
+    if (session.finishedAt !== undefined && now - session.finishedAt >= FINISHED_TERMINAL_SESSION_TTL_MS) {
+      disposeTerminalSession(session.id)
+      continue
+    }
+    finished.push(session)
+  }
+  let pruned = 0
+  while (finished.length > MAX_FINISHED_TERMINAL_SESSIONS_PER_INVOKE) {
+    finished.sort((a, b) => (a.finishedAt ?? 0) - (b.finishedAt ?? 0))
+    const oldest = finished.shift()
+    if (!oldest) break
+    disposeTerminalSession(oldest.id)
+    pruned++
+  }
+  return pruned
 }
 
 /** Kill sessions whose cwd or workspace root sits under `root` (instance worktree teardown). */
@@ -258,9 +299,11 @@ export async function startBackgroundTerminal(
     ].join('\n')
   }
 
+  // Reclaim finished sessions first so the cap reflects live shells only.
+  pruneFinishedTerminalSessionsForInvoke(opts.runId, opts.invokeId)
   let invokeCount = 0
   for (const s of sessions.values()) {
-    if (s.runId === opts.runId && s.invokeId === opts.invokeId) invokeCount++
+    if (s.runId === opts.runId && s.invokeId === opts.invokeId && s.running) invokeCount++
   }
   if (invokeCount >= MAX_BACKGROUND_TERMINALS_PER_INVOKE) {
     return [
@@ -317,6 +360,7 @@ export async function startBackgroundTerminal(
   const onAbort = (): void => {
     if (session.running && child.pid) killProcessTree(child.pid, 'session-abort')
     session.running = false
+    session.finishedAt ??= Date.now()
     session.status = 'aborted'
     notifySessionWaiters(session)
   }
@@ -343,12 +387,14 @@ export async function startBackgroundTerminal(
   })
   child.on('error', () => {
     session.running = false
+    session.finishedAt ??= Date.now()
     session.status = 'done'
     session.exitCode = 1
     notifySessionWaiters(session)
   })
   child.on('close', (code) => {
     session.running = false
+    session.finishedAt = Date.now()
     session.exitCode = code
     if (session.status === 'running' || session.status === 'pattern_matched') {
       session.status = matchesPattern(session) ? 'pattern_matched' : 'done'
@@ -407,6 +453,7 @@ export async function pollTerminalSession(opts: PollTerminalSessionOpts): Promis
           killProcessTree(session.child.pid, 'poll-hard-cancel')
         }
         session.running = false
+        session.finishedAt ??= Date.now()
         session.status = 'aborted'
         notifySessionWaiters(session)
       }

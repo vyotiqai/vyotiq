@@ -28,6 +28,7 @@ export function SettingsCard({
 }) {
   return (
     <div
+      data-settings-card
       className={cn(
         'divide-y divide-border/60 overflow-hidden rounded-xl bg-surface',
         className
@@ -96,7 +97,7 @@ export function SettingsField({
               <Tooltip content={help} side="top" delayMs={200}>
                 <button
                   type="button"
-                  className="inline-flex size-6 shrink-0 items-center justify-center rounded-full text-[10px] font-medium text-muted hover:text-fg"
+                  className="inline-flex size-6 shrink-0 items-center justify-center rounded-full text-2xs font-medium text-muted hover:text-fg"
                   aria-label={`About ${title}`}
                 >
                   ?

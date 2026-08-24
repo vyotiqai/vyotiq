@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { SettingsFormState } from '../hooks/useSettingsForm'
-import type { CodeIndexEmbedderSetting, CodeIndexRuntimeStatus } from '@shared/ipc'
+import type { CodeIndexEmbedderSetting, CodeIndexRuntimeStatus, ProcessMetricsSnapshot } from '@shared/ipc'
 import { Input, Switch, Button, Menu } from '@renderer/lib/ui'
 import { CODEINDEX_EMBEDDER_OPTIONS } from '../constants'
 import { SettingsField, SettingsGroup, SettingsStack } from '../components/SettingsField'
@@ -72,7 +72,7 @@ function IndexProgressPanel({ status }: { status: CodeIndexRuntimeStatus | null 
         </div>
       ) : null}
       {showDetail ? (
-        <div className="m-0 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px] text-secondary">
+        <div className="m-0 grid grid-cols-2 gap-x-3 gap-y-0.5 text-caption text-secondary">
           <span>
             {ip.filesDone}/{ip.filesTotal} scanned
           </span>
@@ -89,28 +89,40 @@ function IndexProgressPanel({ status }: { status: CodeIndexRuntimeStatus | null 
               : '\u00a0'}
           </span>
           {ip.currentPath ? (
-            <span className="col-span-2 truncate font-mono text-[10px]" title={ip.currentPath}>
+            <span className="col-span-2 truncate font-mono text-2xs" title={ip.currentPath}>
               {ip.currentPath}
             </span>
           ) : null}
         </div>
       ) : status.phase === 'indexing' && status.message ? (
-        <p className="m-0 text-[11px] text-secondary">{status.message}</p>
+        <p className="m-0 text-caption text-secondary">{status.message}</p>
       ) : null}
     </div>
   )
 }
 
+function mbForType(snap: ProcessMetricsSnapshot, type: string): number {
+  return snap.byType.find((row) => row.type === type)?.workingSetMb ?? 0
+}
+
+function processMetricsLabel(snap: ProcessMetricsSnapshot): string {
+  const embed = snap.embedUtility.rssMb
+  const embedPart = embed != null ? `${Math.round(embed)} MB` : 'unloaded'
+  return `Main ${mbForType(snap, 'Browser')} MB · GPU ${mbForType(snap, 'GPU')} MB · Tabs ${mbForType(snap, 'Tab')} MB · Embed ${embedPart} · ${snap.totalWorkingSetMb} MB total`
+}
+
 export function IndexingSection({ form }: { form: SettingsFormState }) {
   const codeIndex = form.settings.codeIndex ?? {
     enabled: true,
-    embedder: 'mdenseon' as const,
+    embedder: 'lfm2' as const,
     autoDownload: true,
-    ollamaModel: 'nomic-embed-text'
+    ollamaModel: 'nomic-embed-text',
+    lfm2OllamaModel: 'hf.co/LiquidAI/LFM2.5-Embedding-350M-GGUF'
   }
   const [runtime, setRuntime] = useState<CodeIndexRuntimeStatus | null>(null)
   const [reindexBusy, setReindexBusy] = useState(false)
   const [statusError, setStatusError] = useState<string | null>(null)
+  const [processMetrics, setProcessMetrics] = useState<ProcessMetricsSnapshot | null>(null)
 
   const refreshStatus = useCallback(() => {
     void window.vyotiq.codeIndexStatus().then((res) => {
@@ -142,6 +154,23 @@ export function IndexingSection({ form }: { form: SettingsFormState }) {
     }
   }, [refreshStatus, codeIndex.embedder, codeIndex.enabled, codeIndex.autoDownload])
 
+  useEffect(() => {
+    let cancelled = false
+    const pull = (): void => {
+      if (typeof window.vyotiq.processMetrics !== 'function') return
+      void window.vyotiq.processMetrics().then((res) => {
+        if (cancelled || !res.ok) return
+        setProcessMetrics(res.data)
+      })
+    }
+    pull()
+    const id = window.setInterval(pull, 8000)
+    return () => {
+      cancelled = true
+      window.clearInterval(id)
+    }
+  }, [])
+
   const patchCodeIndex = (partial: Partial<typeof codeIndex>) => {
     void form.runUpdate({
       codeIndex: { ...codeIndex, ...partial }
@@ -169,8 +198,8 @@ export function IndexingSection({ form }: { form: SettingsFormState }) {
         <SettingsField
           id="codeindex-embedder"
           title="Embedder"
-          hint="mDenseOn (LightOn dense ONNX) · Ollama · hash fallback. Reindex after changing."
-          help="Default setting is mDenseOn. Auto-download fetches DenseOn INT8 ONNX (~150MB into userData); mDenseOn weights are used only if already on disk. Ollama uses your local server. Hash is offline bag-of-tokens. Closing open indexes happens automatically; click Reindex workspace to rebuild under the new embedder."
+          hint="LFM2.5-Embedding-350M (default) · LightOn dense ONNX · Ollama · hash fallback. Reindex after changing."
+          help="Default is LFM2.5-Embedding-350M (LiquidAI, 2026 — 1024-dim, 11 languages). It resolves to your local exported ONNX first, then a bundled llama.cpp (node-llama-cpp) that pulls the GGUF straight from Hugging Face — no Ollama server and no manual export, fully local. If that is unavailable it tries a local Ollama GGUF, then falls back to LightOn DenseOn so retrieval stays semantic. LFM2.5 ONNX export (scripts/export-lfm2-embedding-onnx.py) is optional and takes precedence. LightOn DenseOn auto-downloads its INT8 ONNX (~150MB); mDenseOn is used only if its ONNX is already on disk. Hash is offline bag-of-tokens. Closing open indexes happens automatically; click Reindex workspace to rebuild under the new embedder."
         >
           <Menu
             aria-label="Codebase embedder"
@@ -186,17 +215,42 @@ export function IndexingSection({ form }: { form: SettingsFormState }) {
         <SettingsField
           id="codeindex-auto-download"
           title="Auto-download model"
-          hint="Fetch DenseOn ONNX on first use (not mDenseOn)."
-          help="When on, downloads DenseOn INT8 bootstrap weights under userData/codeindex/models/. mDenseOn is never auto-fetched (no public ONNX yet). When off, falls back to hash until weights are present."
+          hint="Fetch DenseOn ONNX on first use (covers the LFM2 fallback)."
+          help="When on, the LFM2/DenseOn paths auto-fetch DenseOn INT8 bootstrap weights under userData/codeindex/models/ so retrieval stays semantic even without LFM2 weights. mDenseOn and LFM2.5-Embedding-350M are never auto-fetched (no public ONNX; you export LFM2's, or serve it via Ollama). When off, an unavailable neural model falls back to hash until weights are present."
         >
           <Switch
             size="md"
             checked={codeIndex.autoDownload}
-            disabled={form.formLocked || !codeIndex.enabled || codeIndex.embedder !== 'mdenseon'}
+            disabled={
+              form.formLocked ||
+              !codeIndex.enabled ||
+              (codeIndex.embedder !== 'mdenseon' && codeIndex.embedder !== 'lfm2')
+            }
             label="Auto-download embedder model"
             onCheckedChange={(checked) => patchCodeIndex({ autoDownload: checked })}
           />
         </SettingsField>
+
+        {codeIndex.embedder === 'lfm2' ? (
+          <SettingsField
+            id="codeindex-lfm2-ollama-model"
+            title="LFM2 Ollama GGUF model"
+            hint="Optional Ollama fallback when the bundled llama.cpp path is unavailable."
+            help="LFM2 normally loads via the bundled llama.cpp (node-llama-cpp), which downloads the GGUF from Hugging Face automatically — no Ollama needed. This field only matters if you prefer running LFM2 through a local Ollama server instead: set its model tag (e.g. `hf.co/LiquidAI/LFM2.5-Embedding-350M-GGUF`) and ensure Ollama is running with that model pulled. ONNX export (scripts/export-lfm2-embedding-onnx.py) still takes precedence over both."
+          >
+            <Input
+              className="max-w-xs"
+              aria-label="LFM2 Ollama GGUF model"
+              disabled={form.formLocked}
+              defaultValue={codeIndex.lfm2OllamaModel ?? 'hf.co/LiquidAI/LFM2.5-Embedding-350M-GGUF'}
+              key={`ci-lfm2-${codeIndex.lfm2OllamaModel}`}
+              onBlur={(e) => {
+                const v = e.target.value.trim() || 'liquidai/lfm2.5-embedding-350m'
+                if (v !== codeIndex.lfm2OllamaModel) patchCodeIndex({ lfm2OllamaModel: v })
+              }}
+            />
+          </SettingsField>
+        ) : null}
 
         {codeIndex.embedder === 'ollama' ? (
           <SettingsField
@@ -262,6 +316,20 @@ export function IndexingSection({ form }: { form: SettingsFormState }) {
               {reindexBusy ? 'Reindexing…' : 'Reindex workspace'}
             </Button>
           </div>
+        </SettingsField>
+      </SettingsGroup>
+
+      <SettingsGroup title="Process memory">
+        <SettingsField
+          id="process-metrics"
+          title="Live processes"
+          hint="Chromium working set plus the ONNX embed utility. Matches Task Manager’s combined Electron RSS."
+          help="Main is the Browser process. Tabs include the app renderer and any DevTools or agent-browser views. Embed is the code-index ONNX child."
+          wide
+        >
+          <p className="m-0 text-xs text-secondary">
+            {processMetrics ? processMetricsLabel(processMetrics) : 'Sampling…'}
+          </p>
         </SettingsField>
       </SettingsGroup>
     </SettingsStack>

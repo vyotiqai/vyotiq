@@ -20,7 +20,7 @@ export type DiagnosticItem = {
   severity?: string
 }
 
-function packageScripts(workspace: string): Record<string, string> {
+export function packageScripts(workspace: string): Record<string, string> {
   const pkgPath = join(workspace, 'package.json')
   if (!existsSync(pkgPath)) return {}
   try {
@@ -31,7 +31,7 @@ function packageScripts(workspace: string): Record<string, string> {
   }
 }
 
-function preferPnpm(workspace: string): boolean {
+export function preferPnpm(workspace: string): boolean {
   return existsSync(join(workspace, 'pnpm-lock.yaml'))
 }
 
@@ -87,7 +87,7 @@ export function hasJavaScriptProject(workspace: string): boolean {
  * so `;`, `|`, `&`, `$`, backticks, redirections, globs, etc. cannot execute
  * arbitrary commands. `cross-spawn` resolves `.cmd`/`.bat` shims on Windows.
  */
-function parseSafeCommand(command: string): { bin: string; args: string[] } {
+export function parseSafeCommand(command: string): { bin: string; args: string[] } {
   const trimmed = command.trim()
   if (!trimmed) throw new Error('Empty diagnostics command')
 
@@ -148,7 +148,7 @@ function parseSafeCommand(command: string): { bin: string; args: string[] } {
   return { bin: args[0]!, args: args.slice(1) }
 }
 
-function resolveDiagnosticsBin(workspace: string, bin: string): string {
+export function resolveDiagnosticsBin(workspace: string, bin: string): string {
   if (bin.includes('..')) {
     throw new Error(`Diagnostics binary cannot contain '..' traversal`)
   }
@@ -163,7 +163,7 @@ function resolveDiagnosticsBin(workspace: string, bin: string): string {
   return bin
 }
 
-function runSafeCommand(
+export function runSafeCommand(
   bin: string,
   args: string[],
   options: {

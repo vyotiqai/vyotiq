@@ -3,6 +3,7 @@ import type { AgentInteractionMode } from '../../../shared/ipc'
 import { parseMcpToolName } from '../mcp'
 import { wrapPromptSection } from '../promptSections'
 import { AGENT_ONLY_BUILTIN } from './classify'
+import { lspActionFromArgs } from './lsp'
 
 /** Options for mode policy gates (tool allowlists + mode section prompts). */
 export type ModePolicyOptions = {
@@ -47,7 +48,8 @@ export const ASK_SAFE_BUILTIN = new Set([
   'memory_read',
   'Skill',
   'git_status',
-  'git_diff'
+  'git_diff',
+  'lsp'
   // `diagnostics` spawns a shell — Plan-only (see PLAN_EXTRA / agent), not Ask.
 ])
 
@@ -58,7 +60,8 @@ const PLAN_EXTRA_BUILTIN = new Set([
   'edit',
   'str_replace',
   'multi_edit',
-  'diagnostics'
+  'diagnostics',
+  'run_tests'
 ])
 
 /** Filenames Plan mode may write inside the run directory. */
@@ -267,6 +270,13 @@ export function assertToolAllowedInMode(
     return {
       ok: false,
       error: `${mode === 'ask' ? 'Ask' : 'Plan'} mode does not allow tool "${name}". ${switchToAgentHint}`
+    }
+  }
+
+  if (name === 'lsp' && lspActionFromArgs(args) === 'rename') {
+    return {
+      ok: false,
+      error: `${mode === 'ask' ? 'Ask' : 'Plan'} mode does not allow lsp rename. ${switchToAgentHint}`
     }
   }
 

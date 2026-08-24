@@ -2,7 +2,8 @@ import { readFileSync, statSync } from 'fs'
 import { extname, join } from 'path'
 import { assertInsideWorkspace } from '../../../shared/workspacePath'
 import {
-  collectWorkspaceFiles,
+  collectWorkspaceFilesPage,
+  formatLiveScanCapNotice,
   globToRegExp,
   TEXT_EXTS,
   throwIfAborted,
@@ -26,6 +27,8 @@ export type GrepOptions = {
   caseSensitive?: boolean
   contextLines?: number
   maxResults?: number
+  /** Override live-walk file cap (tests). Production uses GREP_SCAN_CAP. */
+  scanCap?: number
 }
 
 function compile(pattern: string, caseSensitive: boolean): RegExp {
@@ -171,9 +174,16 @@ export async function toolGrep(
     files = candidates
   }
 
+  let liveHitCap = false
+  const liveCap =
+    typeof options.scanCap === 'number' && Number.isFinite(options.scanCap)
+      ? Math.max(1, Math.floor(options.scanCap))
+      : GREP_SCAN_CAP
   if (files == null) {
     indexMode = 'live'
-    files = await collectWorkspaceFiles(workspaceRoot, undefined, signal)
+    const page = await collectWorkspaceFilesPage(workspaceRoot, liveCap, undefined, signal)
+    files = page.files
+    liveHitCap = !page.exhausted
     throwIfAborted(signal)
   }
 
@@ -198,6 +208,7 @@ export async function toolGrep(
   if (indexSyncInProgress) {
     notices.push(`index sync in progress (${indexedFileCount} files indexed so far)`)
   }
+  if (liveHitCap) notices.push(formatLiveScanCapNotice(liveCap))
   notices.push(`index=${indexMode}`)
   return notices.join('\n')
 }
@@ -227,4 +238,28 @@ export function grepFilesForTest(
   if (matchCount === 0) return `No matches for /${pattern.trim()}/`
   const suffix = truncated ? `\n… stopped at ${maxResults} matches` : ''
   return `${out.join('\n').trimEnd()}${suffix}`
+}
+
+export type GrepWorkspaceHit = { path: string; line: number; text: string }
+
+/** Structured hits for the Files panel (not an agent tool). */
+export async function grepWorkspaceHits(
+  workspaceRoot: string,
+  query: string,
+  options: { include?: string; maxResults?: number } = {},
+  signal?: AbortSignal
+): Promise<{ hits: GrepWorkspaceHit[]; truncated: boolean }> {
+  const maxResults = Math.max(1, Math.min(500, options.maxResults ?? 80))
+  const raw = await toolGrep(workspaceRoot, query, {
+    include: options.include,
+    maxResults,
+    contextLines: 0
+  }, signal)
+  const hits: GrepWorkspaceHit[] = []
+  for (const line of raw.split('\n')) {
+    const match = /^(.*):(\d+): (.*)$/.exec(line)
+    if (!match) continue
+    hits.push({ path: match[1]!, line: Number(match[2]), text: match[3]! })
+  }
+  return { hits, truncated: raw.includes('stopped at') }
 }

@@ -38,7 +38,9 @@ export const SHORTCUT_TITLES: Record<ShortcutId, string> = {
   panelTerminal: 'Terminal panel',
   panelChanges: 'Changes panel',
   panelBrowser: 'Browser panel',
-  closeChat: 'Close chat tab'
+  closeChat: 'Close chat tab',
+  findInFiles: 'Find in files',
+  commandPalette: 'Command palette'
 }
 
 export type ShortcutCatalogEntry = {
@@ -49,14 +51,9 @@ export type ShortcutCatalogEntry = {
 
 /** Chords that exist in the app but are not in SHORTCUT_BINDINGS. */
 export function extraShortcutCatalog(): ShortcutCatalogEntry[] {
-  const mod = modPrefix()
   return [
     { id: 'jump-latest', title: 'Jump to latest', label: 'End' },
-    { id: 'jump-top', title: 'Jump to top', label: 'Home' },
-    { id: 'edit-last', title: 'Edit last prompt', label: '↑' },
-    { id: 'font-smaller', title: 'Smaller text', label: `${mod}-` },
-    { id: 'font-larger', title: 'Larger text', label: `${mod}=` },
-    { id: 'font-reset', title: 'Reset text size', label: `${mod}0` }
+    { id: 'jump-top', title: 'Jump to top', label: 'Home' }
   ]
 }
 

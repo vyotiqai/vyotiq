@@ -86,25 +86,22 @@ export function docxParagraphs(docxBuf) {
     if (openIndex < 0) continue
     const paragraphXml = chunk.slice(openIndex)
     const text = decodeRuns(paragraphXml).trim()
-    if (text) paragraphs.push({ style: headingStyle(paragraphXml), text })
+    const border = /<w:pBdr[\s>]/.test(paragraphXml)
+    if (text || border) {
+      paragraphs.push({ style: headingStyle(paragraphXml), text, border })
+    }
   }
   return paragraphs
 }
 
-export const HARNESS_SECTION_TAGS = [
+export const REQUIRED_HARNESS_SECTION_TAGS = [
   'role',
   'capabilities',
   'tool_policy',
   'constraints',
   'work_style',
   'memory',
-  'compaction',
-  'output_format',
-  'patterns',
-  'reference_points',
-  'scope_boundaries',
-  'aliases',
-  'examples'
+  'output_format'
 ]
 
 export function validateHarnessMarkdown(text) {
@@ -114,7 +111,7 @@ export function validateHarnessMarkdown(text) {
   if (text.includes('<workspace_harness>') || text.includes('</workspace_harness>')) {
     errors.push('must not wrap the canonical spine as a workspace appendix')
   }
-  for (const tag of HARNESS_SECTION_TAGS) {
+  for (const tag of REQUIRED_HARNESS_SECTION_TAGS) {
     const opens = text.match(new RegExp(`<${tag}>`, 'g'))?.length ?? 0
     const closes = text.match(new RegExp(`</${tag}>`, 'g'))?.length ?? 0
     if (opens !== 1 || closes !== 1) errors.push(`<${tag}> must appear exactly once as a pair`)

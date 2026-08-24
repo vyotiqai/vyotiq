@@ -46,7 +46,8 @@ function seedModelInfo(id: string, providerId: ProviderId): ModelInfo {
     supportsThinking,
     thinkingApi: supportsThinking ? thinkingApiFor(id, providerId) : undefined,
     ...(ollamaThinking ?? {}),
-    contextWindow: known ?? (providerId === 'ollama' ? 32_768 : 128_000)
+    contextWindow: known ?? (providerId === 'ollama' ? 32_768 : 128_000),
+    isPlaceholder: true
   }
 }
 

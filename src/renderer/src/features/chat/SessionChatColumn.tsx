@@ -14,11 +14,13 @@ import type {
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import type { ChatStreamController } from '@renderer/lib/hooks/createChatStreamController'
 import { Composer } from './components/composer'
-import { useChatLiveItems, useHasChatItems } from './components/ChatStreamLeaves'
+import { useChatLiveItems, useGitRevision, useHasChatItems } from './components/ChatStreamLeaves'
+import { useGitChrome } from './components/GitChrome'
+import { ChatStartWork } from './components/ChatStartWork'
+import { formatStartWorkDraft, formatStartWorkLabel } from './utils/chatStartWork'
 import { RunSessionProvider } from './RunSessionContext'
 import { MessageList } from './components/MessageList'
 import { AgentInstancePane } from './components/AgentInstancePane'
-import { ChatHeroStage } from './components/ChatHeroStage'
 import { ChatTranscriptStage } from './components/ChatTranscriptStage'
 import { useInlineInstanceUi } from './hooks/useInlineInstanceUi'
 import {
@@ -100,8 +102,6 @@ export function SessionChatColumn({
   slashHandlers,
   sideRailPad = false,
   showPageHeading = true,
-  /** Multi-pane: keep empty sessions docked (no centered hero). */
-  dockEmptyComposer = false,
   onActivate,
   approvalAutoFocus = true,
   onOpenChanges,
@@ -196,7 +196,6 @@ export function SessionChatColumn({
   slashHandlers?: import('./components/composer/slashCommandExecute').SlashClientHandlers
   sideRailPad?: boolean
   showPageHeading?: boolean
-  dockEmptyComposer?: boolean
   onActivate?: () => void
   approvalAutoFocus?: boolean
   onOpenChanges?: () => void
@@ -234,9 +233,24 @@ export function SessionChatColumn({
       : turnStatus === 'error'
         ? 'Run failed'
         : null
-  const showHero = !dockEmptyComposer && !hasItems && !transcriptLoading
   // Match ChatView: remount on workspace/epoch only — not draft→run (avoids composer wipe).
   const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
+  const [gitRevision, bumpGitRevision] = useGitRevision(workspacePath, running, liveItems)
+  const gitChrome = useGitChrome(workspacePath, gitRevision, Boolean(workspacePath))
+  const startWork = useMemo(() => {
+    if (!onComposerDraftChange || !gitChrome.ready) return null
+    const status = gitChrome.status
+    if (status == null || status.fileCount <= 0) return null
+    const label = formatStartWorkLabel(status.files, status.fileCount)
+    const draft = formatStartWorkDraft(status.files, status.fileCount)
+    if (!label || !draft) return null
+    return { label, draft }
+  }, [gitChrome.ready, gitChrome.status, onComposerDraftChange])
+  const fillStartWorkDraft = useCallback(() => {
+    if (!startWork) return
+    onComposerDraftChange?.(startWork.draft)
+  }, [onComposerDraftChange, startWork])
+  const showStartWork = startWork != null && !hasItems && !transcriptLoading
 
   const {
     editingUserMessageIndex,
@@ -396,21 +410,6 @@ export function SessionChatColumn({
         />
       ) : (
         <RunSessionProvider value={runSession}>
-          {showHero ? (
-            <ChatHeroStage
-              chatBannerError={chatBannerError}
-              operationalBannerError={operationalBannerError}
-              onDismissError={onDismissError}
-              composer={
-                <MemoComposer
-                  key={`composer:${surfaceKey}`}
-                  {...composerProps}
-                  variant="hero"
-                  className="w-full"
-                />
-              }
-            />
-          ) : (
             <ChatTranscriptStage
               sideRailPad={sideRailPad}
               pendingGates={pendingGates}
@@ -459,6 +458,14 @@ export function SessionChatColumn({
                   inert={editing ? true : undefined}
                   aria-hidden={editing || undefined}
                 >
+                  {showStartWork && startWork ? (
+                    <ChatStartWork
+                      align="start"
+                      className="px-4"
+                      label={startWork.label}
+                      onFill={fillStartWorkDraft}
+                    />
+                  ) : null}
                   <MemoComposer
                     key={`composer:${surfaceKey}`}
                     {...composerProps}
@@ -468,7 +475,6 @@ export function SessionChatColumn({
                 </div>
               }
             />
-          )}
         </RunSessionProvider>
       )}
     </>

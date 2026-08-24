@@ -165,8 +165,7 @@ export function ChatPaneHost({
               role="region"
               aria-label={paneTitle}
               className={cn(
-                'relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
-                focused ? 'bg-bg' : 'bg-bg/95',
+                'relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent',
                 index > 0 && 'border-l border-border/50',
                 focused && multi && 'ring-1 ring-inset ring-border-strong/60'
               )}
@@ -182,7 +181,7 @@ export function ChatPaneHost({
                 <div
                   aria-hidden
                   className={cn(
-                    'pointer-events-none absolute inset-y-0 z-30 bg-fg/8 ring-1 ring-inset ring-border-strong/70',
+                    'pointer-events-none absolute inset-y-0 z-drawer bg-fg/8 ring-1 ring-inset ring-border-strong/70',
                     highlight === 'left' && 'left-0 w-1/3',
                     highlight === 'right' && 'right-0 w-1/3',
                     highlight === 'center' && 'left-1/3 w-1/3'
@@ -192,7 +191,7 @@ export function ChatPaneHost({
               {multi ? (
                 <div
                   className={cn(
-                    'absolute inset-x-0 top-0 z-20 flex h-7 items-center justify-between gap-2 border-b border-border/40 bg-bg/90 px-2 backdrop-blur-sm',
+                    'absolute inset-x-0 top-0 z-dropdown flex h-7 items-center justify-between gap-2 border-b border-border/40 bg-transparent px-2',
                     isRightmost && sideRailPad && 'pr-10'
                   )}
                   data-chat-pane-header

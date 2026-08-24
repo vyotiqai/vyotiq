@@ -246,9 +246,9 @@ describe('landing docs architecture and truth', () => {
     expect(footer).not.toContain("aria-current={onDocs ? 'page' : undefined}")
   })
 
-  it('lists all 50 built-ins including Skill', () => {
+  it('lists all 59 built-ins including Skill', () => {
     const tools = readDoc('reference/tools.md')
-    expect(BUILTIN_TOOL_NAMES).toHaveLength(53)
+    expect(BUILTIN_TOOL_NAMES).toHaveLength(59)
     for (const name of BUILTIN_TOOL_NAMES) {
       expect(tools, `missing tool ${name}`).toContain(`\`${name}\``)
     }
@@ -374,7 +374,7 @@ describe('landing docs architecture and truth', () => {
 
     expect(hero.match(/<h1\b/g)).toHaveLength(1)
     expect(hero.match(/<p\b/g)).toHaveLength(2)
-    expect(hero.match(/<a\b/g)).toHaveLength(1)
+    expect(hero.match(/<a\b/g)).toHaveLength(2)
     expect(hero).toContain('home-eyebrow')
     expect(hero).toContain('{SITE_PRODUCT}')
     expect(hero).not.toContain('{SITE_BRAND} {SITE_PRODUCT}')
@@ -475,7 +475,7 @@ describe('landing docs architecture and truth', () => {
     expect(pkg).toContain('"description": "Agent V — coding workspace for real repositories"')
 
     expect(readme).toMatch(/^# Agent V/m)
-    expect(readme).toContain('The built-in catalog has **50** tools')
+    expect(readme).toContain('The built-in catalog has **59** tools')
     expect(readme).not.toMatch(/\b43 tools\b/i)
     expect(readme).not.toMatch(/docs\/architecture\.md/)
     expect(readme).toContain('**MCPs**')
@@ -488,7 +488,7 @@ describe('landing docs architecture and truth', () => {
     for (const label of ['**MCPs**', '**Skills**', '**Rules**', '**Packages**']) {
       expect(marketplace).toContain(label)
     }
-    expect(install).toContain('There is no public download page')
+    expect(install).toContain('https://github.com/vyotiqai/vyotiq/releases/latest')
     expect(install).toContain('`pnpm pack:win`')
     expect(install).toContain('`pnpm pack:mac`')
     expect(install).toContain('`pnpm pack:linux`')

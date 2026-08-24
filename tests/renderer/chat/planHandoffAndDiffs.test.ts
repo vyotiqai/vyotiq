@@ -139,8 +139,8 @@ describe('isPlanDraftReady', () => {
     expect(isPlanDraftReady('# Plan\n\n- [ ] x\n')).toBe(false)
   })
 
-  it('rejects a one-line body without the required sections', () => {
-    expect(isPlanDraftReady('# Plan\n\n1. Do the thing\n')).toBe(false)
+  it('accepts a one-line body that meets the length floor', () => {
+    expect(isPlanDraftReady('# Plan\n\n1. Do the thing\n')).toBe(true)
   })
 
   it('accepts Goal, Success criteria, Approach, and Ordered steps', () => {

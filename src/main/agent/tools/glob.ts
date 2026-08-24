@@ -1,7 +1,14 @@
 import { join } from 'path'
 import { assertInsideWorkspace } from '../../../shared/workspacePath'
 import { querySparseFileList } from '../sparsegrep'
-import { collectWorkspaceFiles, globToRegExp, CODE_INDEX_EXTS, throwIfAborted, type WalkedFile } from './walk'
+import {
+  collectWorkspaceFilesPage,
+  formatLiveScanCapNotice,
+  globToRegExp,
+  CODE_INDEX_EXTS,
+  throwIfAborted,
+  type WalkedFile
+} from './walk'
 
 export const GLOB_SCAN_CAP = 20_000
 export const GLOB_DEFAULT_MAX_RESULTS = 100
@@ -33,7 +40,8 @@ export async function toolGlob(
   workspaceRoot: string,
   pattern: string,
   maxResults?: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  scanCap?: number
 ): Promise<string> {
   const trimmed = pattern.trim()
   if (!trimmed) throw new Error('glob requires a non-empty pattern')
@@ -62,9 +70,16 @@ export async function toolGlob(
     }
   }
 
+  let liveHitCap = false
+  const liveCap =
+    typeof scanCap === 'number' && Number.isFinite(scanCap)
+      ? Math.max(1, Math.floor(scanCap))
+      : GLOB_SCAN_CAP
   if (!files) {
     indexMode = 'live'
-    files = await collectWorkspaceFiles(workspaceRoot, undefined, signal)
+    const page = await collectWorkspaceFilesPage(workspaceRoot, liveCap, undefined, signal)
+    files = page.files
+    liveHitCap = !page.exhausted
     throwIfAborted(signal)
   }
 
@@ -78,6 +93,7 @@ export async function toolGlob(
     if (indexSyncInProgress) {
       notices.push(`index sync in progress (${indexedFileCount} files indexed so far)`)
     }
+    if (liveHitCap) notices.push(formatLiveScanCapNotice(liveCap))
     notices.push(`index=${indexMode}`)
     return notices.join('\n')
   }
@@ -90,6 +106,7 @@ export async function toolGlob(
   if (indexSyncInProgress) {
     suffixParts.push(`index sync in progress (${indexedFileCount} files indexed so far)`)
   }
+  if (liveHitCap) suffixParts.push(formatLiveScanCapNotice(liveCap))
   suffixParts.push(`index=${indexMode}`)
   const suffix = suffixParts.length > 0 ? `\n${suffixParts.join('\n')}` : ''
   return `${shown.join('\n')}${suffix}`

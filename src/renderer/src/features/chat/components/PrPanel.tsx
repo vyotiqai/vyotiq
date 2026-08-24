@@ -15,7 +15,7 @@ import {
 } from './ChangedFilesBrowser'
 import type { WorkspaceFileOpenOptions } from './FilesPanel'
 
-type PrTab = 'changes' | 'description' | 'commits' | 'checks' | 'reviews'
+type PrTab = 'changes' | 'description' | 'commits' | 'checks' | 'reviews' | 'issues'
 
 function formatPrState(state: string): string {
   const lower = state.trim().toLowerCase()
@@ -302,6 +302,14 @@ export function PrPanel({
   const [authBusy, setAuthBusy] = useState(false)
   const [ghInstallBusy, setGhInstallBusy] = useState(false)
   const [createBusy, setCreateBusy] = useState(false)
+  const [reviewEvent, setReviewEvent] = useState<'approve' | 'request-changes' | 'comment'>('comment')
+  const [reviewBody, setReviewBody] = useState('')
+  const [reviewBusy, setReviewBusy] = useState(false)
+  const [issues, setIssues] = useState<Array<{ number: number; title: string; url: string; state: string }>>([])
+  const [issuesBusy, setIssuesBusy] = useState(false)
+  const [issueTitle, setIssueTitle] = useState('')
+  const [issueBody, setIssueBody] = useState('')
+  const [issueCreateBusy, setIssueCreateBusy] = useState(false)
   const headerMenusRef = useRef<HTMLDivElement>(null)
   const findInputRef = useRef<HTMLInputElement>(null)
   const titleInputRef = useRef<HTMLInputElement>(null)
@@ -397,6 +405,27 @@ export function PrPanel({
       if (seq === loadSeqRef.current) setLoading(false)
     }
   }, [workspacePath])
+
+  const loadIssues = useCallback(async () => {
+    if (!workspacePath) return
+    setIssuesBusy(true)
+    try {
+      const res = await window.vyotiq.githubIssuesList({ workspacePath })
+      if (!res.ok) {
+        setNotice(res.error)
+        setNoticeFailed(true)
+        return
+      }
+      setIssues(res.data.issues)
+    } finally {
+      setIssuesBusy(false)
+    }
+  }, [workspacePath])
+
+  useEffect(() => {
+    if (tab !== 'issues') return
+    void loadIssues()
+  }, [tab, loadIssues])
 
   const hadGhAuthRef = useRef(false)
 
@@ -1081,7 +1110,8 @@ export function PrPanel({
                 ['description', 'Description'],
                 ['commits', `Commits ${pr.commits.length}`],
                 ['checks', checksLabel(pr)],
-                ['reviews', reviewsLabel(pr)]
+                ['reviews', reviewsLabel(pr)],
+                ['issues', 'Issues']
               ] as const
             ).map(([id, label]) => (
               <button
@@ -1164,6 +1194,100 @@ export function PrPanel({
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden p-3">
         {loading ? (
           <p className="m-0 text-xs text-muted">Loading…</p>
+        ) : tab === 'issues' ? (
+          <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-auto">
+            {!pr ? (
+              <Button
+                variant="subtle"
+                className="h-7 w-fit px-2.5 text-caption"
+                onClick={() => setTab('changes')}
+              >
+                Back
+              </Button>
+            ) : null}
+            <form
+              className="flex flex-col gap-2 border-b border-border/40 pb-3"
+              onSubmit={(event) => {
+                event.preventDefault()
+                const title = issueTitle.trim()
+                if (!title || !workspacePath) return
+                setIssueCreateBusy(true)
+                setNotice(null)
+                void window.vyotiq
+                  .githubIssueCreate({
+                    workspacePath,
+                    title,
+                    body: issueBody.trim() || undefined
+                  })
+                  .then((res) => {
+                    if (!res.ok) {
+                      setNotice(res.error)
+                      setNoticeFailed(true)
+                      return
+                    }
+                    setNotice(res.data.detail)
+                    setNoticeFailed(false)
+                    setIssueTitle('')
+                    setIssueBody('')
+                    void loadIssues()
+                    if (res.data.url) void window.vyotiq.shellOpenExternal(res.data.url)
+                  })
+                  .finally(() => setIssueCreateBusy(false))
+              }}
+            >
+              <label className="m-0 text-caption text-muted">
+                New issue
+                <input
+                  className="mt-1 block w-full rounded border border-border bg-bg px-2 py-1 text-fg"
+                  value={issueTitle}
+                  onChange={(e) => setIssueTitle(e.target.value)}
+                  placeholder="Title"
+                  required
+                />
+              </label>
+              <textarea
+                className="min-h-[4.5rem] rounded border border-border bg-bg px-2 py-1 text-caption text-fg"
+                placeholder="Optional description"
+                value={issueBody}
+                onChange={(e) => setIssueBody(e.target.value)}
+              />
+              <Button
+                type="submit"
+                variant="subtle"
+                pending={issueCreateBusy}
+                disabled={issueCreateBusy || !issueTitle.trim()}
+              >
+                {issueCreateBusy ? 'Creating…' : 'Create issue'}
+              </Button>
+            </form>
+            {issuesBusy && issues.length === 0 ? (
+              <p className="m-0 text-caption text-muted">Loading issues…</p>
+            ) : issues.length === 0 ? (
+              <p className="m-0 text-caption text-muted">No open issues.</p>
+            ) : (
+              <ul className="m-0 list-none space-y-1.5 p-0">
+                {issues.map((issue) => (
+                  <li
+                    key={issue.number}
+                    className="flex items-center gap-2 rounded-md border border-border/40 px-2.5 py-1.5 text-caption"
+                  >
+                    <span className="shrink-0 text-muted">#{issue.number}</span>
+                    <span className="min-w-0 flex-1 truncate text-fg">{issue.title}</span>
+                    <span className="shrink-0 text-muted">{issue.state}</span>
+                    {issue.url ? (
+                      <button
+                        type="button"
+                        className="shrink-0 text-accent"
+                        onClick={() => void window.vyotiq.shellOpenExternal(issue.url)}
+                      >
+                        Open
+                      </button>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         ) : !pr ? (
           showGhInstall ? (
             <EmptyPanel
@@ -1180,16 +1304,25 @@ export function PrPanel({
               title={prEmptyTitle(error)}
               body={prEmptyBody(error)}
               actions={
-                canCreatePr ? (
+                <span className="flex flex-wrap items-center gap-1.5">
+                  {canCreatePr ? (
+                    <Button
+                      variant="subtle"
+                      className="h-7 px-2.5 text-caption"
+                      disabled={createBusy}
+                      onClick={() => void createPr()}
+                    >
+                      {createBusy ? 'Creating…' : 'Create draft PR'}
+                    </Button>
+                  ) : null}
                   <Button
                     variant="subtle"
                     className="h-7 px-2.5 text-caption"
-                    disabled={createBusy}
-                    onClick={() => void createPr()}
+                    onClick={() => setTab('issues')}
                   >
-                    {createBusy ? 'Creating…' : 'Create draft PR'}
+                    Issues
                   </Button>
-                ) : undefined
+                </span>
               }
             />
           )
@@ -1264,6 +1397,59 @@ export function PrPanel({
                     ))}
                   </ul>
                 )}
+                {workspacePath && window.vyotiq?.prReview ? (
+                  <form
+                    className="flex flex-col gap-2 border-t border-border/40 pt-3"
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      setReviewBusy(true)
+                      setNotice(null)
+                      void window.vyotiq
+                        .prReview({
+                          workspacePath,
+                          event: reviewEvent,
+                          body: reviewBody.trim() || undefined,
+                          number: pr.number
+                        })
+                        .then((res) => {
+                          if (!res.ok) {
+                            setNotice(res.error)
+                            setNoticeFailed(true)
+                            return
+                          }
+                          setNotice(res.data.detail)
+                          setNoticeFailed(false)
+                          setReviewBody('')
+                          void load()
+                        })
+                        .finally(() => setReviewBusy(false))
+                    }}
+                  >
+                    <label className="m-0 text-caption text-muted">
+                      Submit review
+                      <select
+                        className="ml-2 rounded border border-border bg-bg px-1 py-0.5 text-fg"
+                        value={reviewEvent}
+                        onChange={(e) =>
+                          setReviewEvent(e.target.value as 'approve' | 'request-changes' | 'comment')
+                        }
+                      >
+                        <option value="comment">Comment</option>
+                        <option value="approve">Approve</option>
+                        <option value="request-changes">Request changes</option>
+                      </select>
+                    </label>
+                    <textarea
+                      className="min-h-[4.5rem] rounded border border-border bg-bg px-2 py-1 text-caption text-fg"
+                      placeholder="Review comment"
+                      value={reviewBody}
+                      onChange={(e) => setReviewBody(e.target.value)}
+                    />
+                    <Button type="submit" variant="subtle" pending={reviewBusy} disabled={reviewBusy}>
+                      {reviewBusy ? 'Submitting…' : 'Submit review'}
+                    </Button>
+                  </form>
+                ) : null}
               </>
             )}
           </div>

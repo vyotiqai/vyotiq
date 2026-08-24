@@ -1,6 +1,12 @@
 import { appendFile, open, readdir, rename, stat, unlink, writeFile } from 'fs/promises'
 import { basename, join } from 'path'
 import { logger } from '../../shared/logger'
+import {
+  bumpFailure,
+  formatAppendFailure,
+  withTransientAppendRetry,
+  type DirAppendFailures
+} from './appendRetry'
 
 /** Rotate events.jsonl once it grows past this size; the most recent tail is kept. */
 export const EVENTS_FILE_MAX_BYTES = 2 * 1024 * 1024
@@ -8,34 +14,41 @@ export const EVENTS_FILE_KEEP_BYTES = 1024 * 1024
 const MAX_EVENT_ARCHIVES = 5
 const EVENT_ARCHIVE_PREFIX = 'events.archive.'
 
-/** Per-run-dir serialized append chain — ordered, non-blocking, single-writer safe. */
+/**
+ * Per-run-dir serialized append chain — ordered, non-blocking, single-writer safe.
+ */
 const appendChains = new Map<string, Promise<void>>()
-const lastErrors = new Map<string, Error>()
-/** First mid-run append failure per dir that has not yet been consumed as a notice. */
-const pendingNotices = new Map<string, Error>()
+/** Accumulated append failures per run dir, consumed by flushEventAppends (throws). */
+const failuresForFlush = new Map<string, DirAppendFailures>()
+/**
+ * Accumulated mid-run append failures per run dir, surfaced to the run as a
+ * consumable notice. Unlike failuresForFlush this is reset only when the run
+ * reads the notice, so every batch of failures (not just the first) is reported.
+ */
+const pendingNotices = new Map<string, DirAppendFailures>()
 
 function recordAppendError(dir: string, err: unknown): void {
-  const error = err instanceof Error ? err : new Error(String(err))
-  lastErrors.set(dir, error)
-  if (!pendingNotices.has(dir)) pendingNotices.set(dir, error)
+  bumpFailure(failuresForFlush, dir, err)
+  bumpFailure(pendingNotices, dir, err)
 }
 
-function takeAppendError(dir: string): Error | undefined {
-  const err = lastErrors.get(dir)
-  if (err) lastErrors.delete(dir)
+function takeAppendError(dir: string): DirAppendFailures | undefined {
+  const err = failuresForFlush.get(dir)
+  if (err) failuresForFlush.delete(dir)
   return err
 }
 
-/** Consume the first unread mid-run append failure for a run dir, if any. */
+/** Consume the accumulated mid-run append failures for a run dir, if any. */
 export function takeEventAppendFailureNotice(dir: string): Error | undefined {
-  const err = pendingNotices.get(dir)
-  if (err) pendingNotices.delete(dir)
-  return err
+  const f = pendingNotices.get(dir)
+  if (!f) return undefined
+  pendingNotices.delete(dir)
+  return formatAppendFailure('events.jsonl', [f])
 }
 
 function throwIfAppendError(dir: string): void {
-  const err = takeAppendError(dir)
-  if (err) throw err
+  const f = takeAppendError(dir)
+  if (f) throw formatAppendFailure('events.jsonl', [f])
 }
 
 function archiveFilename(): string {
@@ -142,8 +155,10 @@ export function enqueueEventAppend(dir: string, event: unknown): void {
   const prev = appendChains.get(dir) ?? Promise.resolve()
   const next = prev
     .then(async () => {
-      await rotateEventsFileIfNeeded(path, dir)
-      await appendFile(path, line, 'utf8')
+      await withTransientAppendRetry(async () => {
+        await rotateEventsFileIfNeeded(path, dir)
+        await appendFile(path, line, 'utf8')
+      })
     })
     .catch((err) => {
       recordAppendError(dir, err)
@@ -163,14 +178,18 @@ export function enqueueEventAppend(dir: string, event: unknown): void {
 export async function flushEventAppends(dir?: string): Promise<void> {
   if (dir) {
     await appendChains.get(dir)
-    throwIfAppendError(dir)
+    const f = failuresForFlush.get(dir)
+    if (f) {
+      failuresForFlush.delete(dir)
+      throw formatAppendFailure('events.jsonl', [f])
+    }
     return
   }
   await Promise.all([...appendChains.values()])
-  if (lastErrors.size === 0) return
-  const errors = [...lastErrors.values()]
-  lastErrors.clear()
-  throw errors[0]
+  if (failuresForFlush.size === 0) return
+  const all = [...failuresForFlush.values()]
+  failuresForFlush.clear()
+  throw formatAppendFailure('events.jsonl', all)
 }
 
 /** @internal Test helper — how many run dirs still have a pending chain. */
@@ -180,6 +199,6 @@ export function appendChainSizeForTests(): number {
 
 export function resetEventAppendQueueForTests(): void {
   appendChains.clear()
-  lastErrors.clear()
+  failuresForFlush.clear()
   pendingNotices.clear()
 }

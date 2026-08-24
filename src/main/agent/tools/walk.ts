@@ -428,6 +428,11 @@ export type WorkspaceFilesPage = {
   cursorMissing: boolean
 }
 
+/** Notice when a live grep/glob/search walk hit its file cap. */
+export function formatLiveScanCapNotice(cap: number): string {
+  return `scan cap ${cap}; narrow the query or wait for index=`
+}
+
 function walkHitCap(count: number, cap: number | undefined): boolean {
   return cap != null && Number.isFinite(cap) && count >= cap
 }

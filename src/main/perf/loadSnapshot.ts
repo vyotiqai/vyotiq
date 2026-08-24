@@ -16,8 +16,14 @@ import {
   getChatEventDispatcherSnapshot
 } from '../ipc/streamBatch'
 import { getWorkspaces } from '../workspace/workspaces'
+import {
+  collectProcessMetricsSnapshot,
+  shouldLogProcessMetrics,
+  type ProcessMetricsSnapshot
+} from './processMetrics'
 
 const LOAD_SNAPSHOT_MS = 5_000
+let lastProcessMetricsLogAt = 0
 
 export type LoadSnapshot = {
   at: string
@@ -85,6 +91,19 @@ export function collectLoadSnapshot(): LoadSnapshot {
   }
 }
 
+export function collectProcessMetrics(): ProcessMetricsSnapshot {
+  refreshEmbedUtilityPerfStatsBestEffort()
+  return collectProcessMetricsSnapshot(getEmbedUtilityPerfStats())
+}
+
+function sampleProcessMetricsAndMaybeLog(): void {
+  const snap = collectProcessMetrics()
+  const now = Date.now()
+  if (!shouldLogProcessMetrics(snap, now, lastProcessMetricsLogAt)) return
+  lastProcessMetricsLogAt = now
+  console.warn('[vyotiq-perf] processes', JSON.stringify(snap))
+}
+
 export function logLoadSnapshot(): void {
   if (!isPerfDebugEnabled()) return
   refreshEmbedUtilityPerfStatsBestEffort()
@@ -103,14 +122,25 @@ export function logLoadSnapshot(): void {
   }
 }
 
-/** Start periodic load snapshots + event-loop lag sampling (no-op unless VYOTIQ_PERF=1). */
+function tickLoadPerfMonitor(): void {
+  sampleProcessMetricsAndMaybeLog()
+  logLoadSnapshot()
+}
+
+/**
+ * Always-on process RSS/CPU sampler (logs when combined working set > 1GB or
+ * any process CPU > 15%, at most every 30s). Verbose 5s load dump still needs
+ * VYOTIQ_PERF=1.
+ */
 export function startLoadPerfMonitor(): void {
-  if (!isPerfDebugEnabled()) return
   if (timer) return
-  sampleEventLoopLag()
-  lagTimer = setInterval(sampleEventLoopLag, 500)
-  timer = setInterval(logLoadSnapshot, LOAD_SNAPSHOT_MS)
-  console.info('[vyotiq-perf] load monitor started (every 5s)')
+  const verbose = isPerfDebugEnabled()
+  if (verbose) {
+    sampleEventLoopLag()
+    lagTimer = setInterval(sampleEventLoopLag, 500)
+    console.info('[vyotiq-perf] load monitor started (every 5s)')
+  }
+  timer = setInterval(tickLoadPerfMonitor, LOAD_SNAPSHOT_MS)
 }
 
 export function stopLoadPerfMonitor(): void {
@@ -124,4 +154,5 @@ export function stopLoadPerfMonitor(): void {
   }
   lastLagMs = 0
   lagSamples.length = 0
+  lastProcessMetricsLogAt = 0
 }

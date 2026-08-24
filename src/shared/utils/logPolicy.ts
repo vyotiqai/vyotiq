@@ -54,6 +54,8 @@ export const ALLOWED_LOG_FIELD_KEYS = new Set([
   'crashDumpsPath',
   'crashReporterStarted',
   'crashDumpCount',
+  /** React component stack for #185 / renderer crashes (path-scrubbed). */
+  'componentStack',
   'exitCodeHex',
   'processType',
   'serviceName',

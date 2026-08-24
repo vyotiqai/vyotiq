@@ -31,7 +31,6 @@ describe('ChatRow drag', () => {
     const row = screen.getByTitle('List files')
     expect(row.getAttribute('data-session-open')).toBe('1')
     expect(row.getAttribute('data-session-focused')).toBe('0')
-    expect(screen.getByRole('img', { name: 'Drag to open in a split pane' })).toBeTruthy()
 
     rerender(
       <ChatRow
@@ -91,7 +90,6 @@ describe('ChatRow drag', () => {
     )
     const row = screen.getByTitle('Instance · List files')
     expect(row.getAttribute('draggable')).toBe('false')
-    expect(screen.queryByRole('img', { name: 'Drag to open in a split pane' })).toBeNull()
     const setData = vi.fn()
     fireEvent.dragStart(row, {
       dataTransfer: {

@@ -190,6 +190,7 @@ async function runSingleTool(
       diagnosticsCommand: ctx.diagnosticsCommand,
       invokeSettings: ctx.invokeSettings,
       emitAgentEvent: ctx.emitLiveEvent,
+      knownPaths: ctx.knownPaths,
       runEnabledMcpIds: ctx.runEnabledMcpIds,
       mcpToolPolicies: ctx.mcpToolPolicies,
       stepMcpToolNames: ctx.stepMcpToolNames,
@@ -415,7 +416,7 @@ export function groupStepToolCalls(calls: ToolCall[]): ToolCall[][] {
   }
 
   for (const call of calls) {
-    const cls = stepToolBatchClass(call.name)
+    const cls = stepToolBatchClass(call.name, toolArgsFromCall(call.arguments))
     if (cls === 'serial') {
       flushBatch()
       groups.push([call])
@@ -517,7 +518,7 @@ export async function executeStepToolCalls(
     }
 
     const head = group[0]
-    const batchClass = head ? stepToolBatchClass(head.name) : 'serial'
+    const batchClass = head ? stepToolBatchClass(head.name, toolArgsFromCall(head.arguments)) : 'serial'
     const parallel = group.length > 1 && isParallelBatchClass(batchClass)
     if (parallel) {
       const liveEmitted = new Set<string>()

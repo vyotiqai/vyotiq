@@ -2,13 +2,15 @@ import { app, BrowserWindow, dialog, ipcMain, nativeTheme } from 'electron'
 import { join } from 'path'
 import { electronApp } from '@electron-toolkit/utils'
 import { watchWindowShortcuts } from '@main/app/windowShortcuts'
-import { createWindow, applyTitleBarTheme, getMainWindow } from '@main/app/window'
+import { createWindow, applyWindowChrome, getMainWindow } from '@main/app/window'
+import { initCustomCssWatchFromSettings } from '@main/appearance/customCss'
 import { configureChromiumDiskCache } from '@main/app/chromiumProfile'
 import { applyCertificateLogging, applyCsp } from '@main/app/security'
 import { closeAgentBrowser } from '@main/app/agentBrowser'
 import { disposeAllPtySessions, replayPtySessionsToWindow } from '@main/app/ptySessions'
 import { disposeAllTerminalSessions } from '@main/agent/tools/terminalSessions'
 import { registerIpc } from './ipc/register'
+import { initAutoUpdater } from '@main/app/updater'
 import { initNotifications } from './notifications/service'
 import { shutdownMcpServers, syncMcpServers } from '@main/agent/mcp'
 import { resolveEffectiveMcpServers, syncMarketplaceMcpIntoSettings, purgeOrphanMarketplacePackageDirs } from '@main/marketplace'
@@ -186,6 +188,7 @@ if (!gotLock) {
     }
     initNotifications()
     registerIpc()
+    initAutoUpdater()
     startLoadPerfMonitor()
     try {
       const orphan = purgeOrphanMarketplacePackageDirs()
@@ -208,21 +211,23 @@ if (!gotLock) {
     })
 
     createWindow()
-    applyTitleBarTheme(getSettings().theme)
+    applyWindowChrome(getSettings().theme, getSettings().skinId)
+    initCustomCssWatchFromSettings()
 
     const pushNativeTheme = (): void => {
       const win = getMainWindow()
       if (win && !win.isDestroyed()) {
         win.webContents.send(IPC.themeChanged, nativeTheme.shouldUseDarkColors)
       }
-      applyTitleBarTheme(getSettings().theme)
+      const settings = getSettings()
+      applyWindowChrome(settings.theme, settings.skinId)
     }
     nativeTheme.on('updated', pushNativeTheme)
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         const win = createWindow()
-        applyTitleBarTheme(getSettings().theme)
+        applyWindowChrome(getSettings().theme, getSettings().skinId)
         win.webContents.once('did-finish-load', () => {
           replayPtySessionsToWindow(win)
         })

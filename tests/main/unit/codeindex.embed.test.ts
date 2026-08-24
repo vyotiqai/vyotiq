@@ -50,6 +50,39 @@ describe('codeindex Ollama embedder + fallback', () => {
     expect(String(fetchImpl.mock.calls[0]?.[0])).toMatch(/\/api\/embed$/)
   })
 
+  it('auto-detects the true Ollama dimension when none is configured', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        embeddings: [Array.from({ length: 1024 }, (_, i) => (i === 0 ? 1 : 0))]
+      })
+    }))
+    const embedder = createOllamaEmbedder({
+      fetchImpl: fetchImpl as unknown as typeof fetch
+    })
+    // Before any embed the getter still reports the safe default.
+    expect(embedder.dimensions).toBe(768)
+    const [vec] = await embedder.embed(['hello code'])
+    // After embed the real dimension is adopted and NOT truncated.
+    expect(embedder.dimensions).toBe(1024)
+    expect(vec!.length).toBe(1024)
+    expect(Math.abs(vec![0]! - 1)).toBeLessThan(1e-5)
+  })
+
+  it('throws when an explicit dimension does not match the Ollama model', async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        embeddings: [Array.from({ length: 1024 }, () => 0.1)]
+      })
+    }))
+    const embedder = createOllamaEmbedder({
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      dimensions: 768
+    })
+    await expect(embedder.embed(['hello code'])).rejects.toThrow(/1024-dim/)
+  })
+
   it('falls back to /api/embeddings when /api/embed is unavailable', async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       if (String(url).endsWith('/api/embed')) {

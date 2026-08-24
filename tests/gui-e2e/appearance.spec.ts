@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { expect, test } from '@playwright/test'
 import { APPEARANCE_LOCAL_STORAGE_KEY } from '../../src/shared/appearance'
@@ -18,7 +18,7 @@ let launched: LaunchedApp
 
 test.beforeAll(async () => {
   launched = await launchApp()
-})
+}, { timeout: 90_000 })
 
 test.afterAll(async () => {
   if (launched) await closeApp(launched)
@@ -35,9 +35,23 @@ test('settings nav opens appearance section with all controls', async () => {
   await openAppearanceSection(window)
 
   await expect(window.getByRole('button', { name: /^theme$/i })).toBeVisible()
+  await expect(window.getByText('Interface skin')).toBeVisible()
   await expect(window.getByRole('button', { name: /^text size$/i })).toBeVisible()
   await expect(window.getByRole('button', { name: /^ui density$/i })).toBeVisible()
   await expect(window.getByRole('button', { name: /^accent color$/i })).toBeVisible()
+  await expect(window.getByText('User CSS overlay')).toBeVisible()
+})
+
+test('settings search navigates to interface skin field', async () => {
+  const { window } = launched
+  await openSettings(window)
+
+  const search = window.getByRole('textbox', { name: /search settings/i })
+  await search.fill('template')
+  await search.press('Enter')
+
+  await expect(window.getByText('Interface skin')).toBeVisible({ timeout: 10_000 })
+  await expect(window.getByRole('button', { name: /^bench$/i })).toBeVisible()
 })
 
 test('settings search navigates to appearance accent field', async () => {
@@ -129,9 +143,79 @@ test('accent menu updates data-accent and CSS accent token', async () => {
   expect(settings?.accentPreset).toBe('violet')
 })
 
+test('skin grid applies data-skin and persists proof', async () => {
+  const { window } = launched
+  await openAppearanceSection(window)
+  await window.getByRole('button', { name: /^proof$/i }).click()
+
+  await expect
+    .poll(async () => readRootAppearance(window))
+    .toMatchObject({ skin: 'proof' })
+
+  const settings = await window.evaluate(async () => {
+    const res = await window.vyotiq.getSettings()
+    return res.ok ? res.data : null
+  })
+  expect(settings?.skinId).toBe('proof')
+})
+
+test('bench skin applies data-skin and persists', async () => {
+  const { window } = launched
+  await openAppearanceSection(window)
+  await window.getByRole('button', { name: /^bench$/i }).click()
+
+  await expect
+    .poll(async () => readRootAppearance(window))
+    .toMatchObject({ skin: 'bench' })
+
+  const settings = await window.evaluate(async () => {
+    const res = await window.vyotiq.getSettings()
+    return res.ok ? res.data : null
+  })
+  expect(settings?.skinId).toBe('bench')
+})
+
+test('native skin applies data-skin and persists', async () => {
+  const { window } = launched
+  await openAppearanceSection(window)
+  await window.getByRole('button', { name: /^native$/i }).click()
+
+  await expect
+    .poll(async () => readRootAppearance(window))
+    .toMatchObject({ skin: 'native' })
+
+  const settings = await window.evaluate(async () => {
+    const res = await window.vyotiq.getSettings()
+    return res.ok ? res.data : null
+  })
+  expect(settings?.skinId).toBe('native')
+})
+
+test('custom CSS overlay injects user skin style tag', async () => {
+  const { window, userDataDir } = launched
+  const cssPath = join(userDataDir, 'overlay.css')
+  writeFileSync(cssPath, ':root { --vy-fg: #123456; }', 'utf8')
+
+  await window.evaluate(async (path) => {
+    await window.vyotiq.setSettings({ customCssPath: path, skinId: 'default' })
+  }, cssPath)
+
+  await expect
+    .poll(async () =>
+      window.evaluate(() => document.getElementById('vyotiq-user-skin')?.textContent ?? '')
+    )
+    .toContain('--vy-fg')
+
+  const fg = await window.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--vy-fg').trim()
+  )
+  expect(fg.toLowerCase()).toBe('#123456')
+})
+
 test('appearance boot cache survives reload before React hydrates', async () => {
   const { window } = launched
   await openAppearanceSection(window)
+  await window.getByRole('button', { name: /^bench$/i }).click()
   await selectSettingsMenu(window, /^theme$/i, /^light$/i)
   await selectSettingsMenu(window, /^text size$/i, /^small$/i)
   await selectSettingsMenu(window, /^ui density$/i, /^comfortable$/i)
@@ -144,7 +228,8 @@ test('appearance boot cache survives reload before React hydrates', async () => 
       resolvedTheme: 'light',
       fontScale: 'small',
       uiDensity: 'comfortable',
-      accentPreset: 'green'
+      accentPreset: 'green',
+      skinId: 'bench'
     })
 
   await window.reload()
@@ -156,7 +241,8 @@ test('appearance boot cache survives reload before React hydrates', async () => 
       theme: 'light',
       fontScale: 'small',
       density: 'comfortable',
-      accent: 'green'
+      accent: 'green',
+      skin: 'bench'
     })
 
   const settings = await window.evaluate(async () => {
@@ -167,7 +253,8 @@ test('appearance boot cache survives reload before React hydrates', async () => 
     theme: 'light',
     fontScale: 'small',
     uiDensity: 'comfortable',
-    accentPreset: 'green'
+    accentPreset: 'green',
+    skinId: 'bench'
   })
 })
 
@@ -243,4 +330,5 @@ test('corrupt appearance boot cache does not break startup', async () => {
   expect(attrs.fontScale).toBe('default')
   expect(attrs.density).toBe('default')
   expect(attrs.accent).toBe('neutral')
+  expect(attrs.skin).toBe('default')
 })

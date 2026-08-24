@@ -244,4 +244,38 @@ describe('terminalSessions', () => {
     disposeTerminalSessionsForInvoke('run-cap', 3)
     expect(countTerminalSessionsForInvoke('run-cap', 3)).toBe(0)
   }, 15_000)
+
+  it('finished sessions do not consume the concurrency budget', async () => {
+    cwd = mkdtempSync(join(tmpdir(), 'vyotiq-term-cap-done-'))
+    const signal = new AbortController().signal
+    const quick =
+      process.platform === 'win32' ? 'cmd /c echo done-quick' : 'echo done-quick'
+    // More than the cap of short-lived commands — each finishes before the
+    // next spawn, so none may count against MAX_BACKGROUND_TERMINALS.
+    for (let i = 0; i < 12; i++) {
+      const result = await startBackgroundTerminal({
+        runId: 'run-cap-drain',
+        invokeId: 1,
+        workspaceRoot: cwd,
+        command: quick,
+        signal,
+        shell: process.platform === 'win32' ? 'cmd' : 'auto',
+        blockUntilMs: 10_000
+      })
+      expect(result).toMatch(/status:\s*done/)
+    }
+    // A long-running session still starts afterwards.
+    const long = await startBackgroundTerminal({
+      runId: 'run-cap-drain',
+      invokeId: 1,
+      workspaceRoot: cwd,
+      command: process.platform === 'win32' ? 'ping -n 60 127.0.0.1 > nul' : 'sleep 60',
+      signal,
+      shell: process.platform === 'win32' ? 'cmd' : 'auto',
+      blockUntilMs: 0
+    })
+    expect(long).not.toMatch(/Too many concurrent background terminal sessions/)
+    disposeTerminalSessionsForInvoke('run-cap-drain', 1)
+    expect(countTerminalSessionsForInvoke('run-cap-drain', 1)).toBe(0)
+  }, 20_000)
 })

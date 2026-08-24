@@ -51,7 +51,7 @@ export function denseOnOnnxFiles(repo = 'onnx-community/DenseOn-ONNX'): Download
 }
 
 /** Preferred mDenseOn files when an ONNX export exists on the hub. */
-export function mDenseOnOnnxFiles(repo = 'lightonai/mDenseOn'): DownloadFileSpec[] {
+export function mDenseOnOnnxFiles(repo = 'lightonai/mDenseOn-ONNX'): DownloadFileSpec[] {
   return [
     'config.json',
     'tokenizer.json',
@@ -61,6 +61,25 @@ export function mDenseOnOnnxFiles(repo = 'lightonai/mDenseOn'): DownloadFileSpec
   ].map((relativePath) => ({
     relativePath,
     url: hfResolve(repo, relativePath)
+  }))
+}
+
+/**
+ * LiquidAI LFM2.5-Embedding-350M is consumed as a LOCALLY EXPORTED ONNX
+ * (see scripts/export-lfm2-embedding-onnx.py) — there is no public ONNX for the
+ * embedding variant. These are the files the export must produce under the model dir.
+ */
+export function lfm2OnnxFiles(): DownloadFileSpec[] {
+  return [
+    'config.json',
+    'tokenizer.json',
+    'tokenizer_config.json',
+    'special_tokens_map.json',
+    'onnx/model_quantized.onnx'
+  ].map((relativePath) => ({
+    relativePath,
+    // No hub URL: the ONNX is produced by the local export script.
+    url: ''
   }))
 }
 

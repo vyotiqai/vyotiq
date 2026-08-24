@@ -1203,6 +1203,8 @@ export function buildOpenAiCompatBody(
       : {}),
     stream: true,
     ...(req.maxOutputTokens && req.maxOutputTokens > 0 ? { max_tokens: req.maxOutputTokens } : {}),
+    ...(typeof req.temperature === 'number' ? { temperature: req.temperature } : {}),
+    ...(req.stop && req.stop.length > 0 ? { stop: req.stop.slice(0, 4) } : {}),
     ...(opts.enablePromptCache && req.promptCacheKey
       ? {
           prompt_cache_key: req.promptCacheKey,
@@ -1720,7 +1722,10 @@ export const openrouterProvider = createOpenAiCompatibleProvider('openrouter', {
     'X-Title': 'Vyotiq'
   },
   requireToolsParam: true,
-  openRouterReasoning: true
+  openRouterReasoning: true,
+  // Send prompt_cache_key (stable per runId) so upstream providers can keep
+  // cache affinity across steps; without it every step billed as cold input.
+  enablePromptCache: true
 })
 export const xaiProvider = createOpenAiCompatibleProvider('xai', {
   defaultBaseUrl: 'https://api.x.ai/v1',

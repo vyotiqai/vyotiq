@@ -8,10 +8,13 @@ import type {
   SecretProvider
 } from '@shared/ipc'
 import { DEFAULT_DICTATION_SETTINGS } from '@shared/ipc'
-import { DICTATION_LOCAL_CATALOG } from '@shared/dictation'
-import { Button, Menu, type MenuOption } from '@renderer/lib/ui'
+import { DICTATION_LOCAL_CATALOG, isQwen3AsrModelId } from '@shared/dictation'
+import { Button, Input, Menu, type MenuOption } from '@renderer/lib/ui'
 import { DICTATION_ENGINE_OPTIONS, DICTATION_WAVEFORM_STYLE_OPTIONS } from '../constants'
 import { SettingsField, SettingsGroup, SettingsStack } from '../components/SettingsField'
+
+const WHISPER_MODELS = DICTATION_LOCAL_CATALOG.filter((m) => m.backend === 'whisper')
+const QWEN_MODELS = DICTATION_LOCAL_CATALOG.filter((m) => m.backend === 'qwen3-asr')
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
@@ -34,6 +37,8 @@ function engineKeyHint(
         : 'No OpenRouter API key — add one in Settings → Providers.'
     case 'local':
       return 'Works offline after a model is installed. English only.'
+    case 'qwen3-asr':
+      return 'Point this at a running vLLM or qwen-asr-serve endpoint in Settings → Voice.'
     default: {
       const _exhaustive: never = engine
       return _exhaustive
@@ -115,6 +120,8 @@ export function VoiceSection({
   const [runtime, setRuntime] = useState<DictationRuntimeStatus | null>(null)
   const [busy, setBusy] = useState(false)
   const [statusError, setStatusError] = useState<string | null>(null)
+  const [serverUrl, setServerUrl] = useState(dictation.qwen3AsrServerUrl)
+  const [serverKey, setServerKey] = useState(dictation.qwen3AsrApiKey)
 
   const refreshStatus = useCallback(() => {
     void window.vyotiq.dictationStatus().then((res) => {
@@ -126,6 +133,11 @@ export function VoiceSection({
       }
     })
   }, [])
+
+  useEffect(() => {
+    setServerUrl(dictation.qwen3AsrServerUrl)
+    setServerKey(dictation.qwen3AsrApiKey)
+  }, [dictation.qwen3AsrServerUrl, dictation.qwen3AsrApiKey])
 
   useEffect(() => {
     refreshStatus()
@@ -154,11 +166,17 @@ export function VoiceSection({
 
   const patchEngine = (engine: DictationEngine) => {
     if (engine === 'local' && !localInstalled) return
-    const localModelId =
+    let localModelId: DictationLocalModelId | '' =
       dictation.localModelId ||
       runtime?.loadedModelId ||
       runtime?.installed[0]?.id ||
       ''
+    if (engine === 'qwen3-asr' && !isQwen3AsrModelId(localModelId)) {
+      localModelId = QWEN_MODELS[0]?.id ?? ''
+    }
+    if (engine === 'local' && !WHISPER_MODELS.some((m) => m.id === localModelId)) {
+      localModelId = runtime?.loadedModelId || runtime?.installed[0]?.id || WHISPER_MODELS[0]?.id || ''
+    }
     void form.runUpdate({ dictation: { ...dictation, engine, localModelId } })
   }
 
@@ -170,6 +188,14 @@ export function VoiceSection({
   const patchWaveformStyle = (waveformStyle: DictationWaveformStyle) => {
     if ((dictation.waveformStyle ?? 'bars') === waveformStyle) return
     void form.runUpdate({ dictation: { ...dictation, waveformStyle } })
+  }
+
+  const patchServerUrl = (value: string) => {
+    void form.runUpdate({ dictation: { ...dictation, qwen3AsrServerUrl: value } })
+  }
+
+  const patchServerKey = (value: string) => {
+    void form.runUpdate({ dictation: { ...dictation, qwen3AsrApiKey: value } })
   }
 
   const runModelAction = (
@@ -194,8 +220,8 @@ export function VoiceSection({
         <SettingsField
           id="dictation-engine"
           title="Dictation engine"
-          hint="OpenAI and OpenRouter use gpt-transcribe. Local runs Whisper on this machine."
-          help="Engine is read on each mic stop — no restart. Local stays disabled until at least one Whisper model is installed below. Install does not switch the engine by itself."
+          hint="OpenAI and OpenRouter use gpt-transcribe. Local (Whisper) runs ONNX on this machine. Qwen3-ASR connects to a local vLLM / qwen-asr-serve GPU server."
+          help="Engine is read on each mic stop — no restart. Local stays disabled until at least one Whisper model is installed below. Qwen3-ASR needs a running local server (see below)."
         >
           <div className="flex w-full max-w-xs flex-col items-stretch gap-1.5">
             <Menu
@@ -212,7 +238,7 @@ export function VoiceSection({
             </p>
             {!localInstalled ? (
               <p className="m-0 text-xs text-muted">
-                Install a model below to enable Local.
+                Install a Whisper model below to enable Local.
               </p>
             ) : null}
             {dictation.engine === 'local' && !localInstalled ? (
@@ -240,8 +266,8 @@ export function VoiceSection({
         </SettingsField>
       </SettingsGroup>
 
-      <SettingsGroup title="Local models">
-        {DICTATION_LOCAL_CATALOG.map((model) => {
+      <SettingsGroup title="Local Whisper models">
+        {WHISPER_MODELS.map((model) => {
           const inst = runtime?.installed.find((m) => m.id === model.id)
           const installed = inst != null
           const loaded = inst?.loaded === true
@@ -289,16 +315,16 @@ export function VoiceSection({
                       Install {model.label}
                     </Button>
                   ) : null}
-                  {installed && !inUse ? (
-                    <Button
-                      type="button"
-                      variant="subtle"
-                      disabled={form.formLocked || busy || downloading}
-                      onClick={() => patchLocalModelId(model.id)}
-                    >
-                      Use {model.label}
-                    </Button>
-                  ) : null}
+                   {installed && !inUse ? (
+                     <Button
+                       type="button"
+                       variant="subtle"
+                       disabled={form.formLocked || busy || downloading || dictation.engine === 'qwen3-asr'}
+                       onClick={() => patchLocalModelId(model.id)}
+                     >
+                       Use {model.label}
+                     </Button>
+                   ) : null}
                   {loaded ? (
                     <Button
                       type="button"
@@ -312,7 +338,7 @@ export function VoiceSection({
                   {installed ? (
                     <Button
                       type="button"
-                      variant="subtle"
+                      variant="danger"
                       disabled={form.formLocked || busy || downloading}
                       onClick={() =>
                         runModelAction(() =>
@@ -333,6 +359,83 @@ export function VoiceSection({
             {statusError}
           </p>
         ) : null}
+      </SettingsGroup>
+
+      <SettingsGroup title="Qwen3-ASR (local server)">
+        <SettingsField
+          id="dictation-qwen3-server"
+          title="Server URL"
+          hint="OpenAI-compatible transcription base URL."
+          help="Run `vllm serve Qwen/Qwen3-ASR-0.6B` (or `qwen-asr-serve`) and paste its base URL, e.g. http://127.0.0.1:8000/v1. The app POSTs `<url>/audio/transcriptions`; it does not download the model."
+          wide
+        >
+          <Input
+            type="url"
+            aria-label="Qwen3-ASR server URL"
+            placeholder="http://127.0.0.1:8000/v1"
+            value={serverUrl}
+            disabled={form.formLocked}
+            onChange={(e) => setServerUrl(e.target.value)}
+            onBlur={() => {
+              if (serverUrl !== dictation.qwen3AsrServerUrl) patchServerUrl(serverUrl)
+            }}
+          />
+        </SettingsField>
+        <SettingsField
+          id="dictation-qwen3-key"
+          title="API key (optional)"
+          hint="Bearer token for the server. Leave blank if the server has no auth."
+          help="Only needed when vLLM / qwen-asr-serve was started with `--api-key`."
+          wide
+        >
+          <Input
+            type="password"
+            aria-label="Qwen3-ASR server API key"
+            placeholder="Optional"
+            value={serverKey}
+            disabled={form.formLocked}
+            onChange={(e) => setServerKey(e.target.value)}
+            onBlur={() => {
+              if (serverKey !== dictation.qwen3AsrApiKey) patchServerKey(serverKey)
+            }}
+          />
+        </SettingsField>
+        {QWEN_MODELS.map((model) => {
+          const inUse = dictation.localModelId === model.id
+          return (
+            <SettingsField
+              key={model.id}
+              id={`dictation-${model.id}`}
+              title={model.label}
+              hint={`${model.roleLabel} · ${model.language} · ${model.approxDownloadLabel}`}
+              help={`${model.ramHint} Select a model, then start the matching server (served as ${model.hubRepo}).`}
+              wide
+            >
+              <div className="flex w-full flex-col gap-2">
+                <p className="m-0 text-xs text-secondary">
+                  Served by your local GPU server
+                  {inUse ? ' · In use' : ''}
+                </p>
+                <div className="flex flex-wrap gap-2">
+                   {!inUse ? (
+                     <Button
+                       type="button"
+                       variant="subtle"
+                       disabled={form.formLocked || busy || dictation.engine === 'local'}
+                       onClick={() => patchLocalModelId(model.id)}
+                     >
+                       Use {model.label}
+                     </Button>
+                   ) : (
+                     <Button type="button" variant="subtle" disabled>
+                       In use
+                     </Button>
+                   )}
+                </div>
+              </div>
+            </SettingsField>
+          )
+        })}
       </SettingsGroup>
     </SettingsStack>
   )

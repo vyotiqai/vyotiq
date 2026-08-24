@@ -2,7 +2,7 @@ import { z } from 'zod'
 
 export const GitChangedFileSchema = z.object({
   path: z.string(),
-  status: z.enum(['modified', 'added', 'deleted', 'untracked']),
+  status: z.enum(['modified', 'added', 'deleted', 'untracked', 'conflicted']),
   /** Combined line deltas (staged + unstaged). */
   added: z.number().int().min(0),
   removed: z.number().int().min(0),
@@ -232,3 +232,22 @@ export const GitCommitFilesResultSchema = z.object({
   files: z.array(GitChangedFileSchema)
 })
 export type GitCommitFilesResult = z.infer<typeof GitCommitFilesResultSchema>
+
+export const GitConflictFileRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  path: z.string().min(1).max(4_096)
+})
+
+export const GitConflictFileResultSchema = z.object({
+  ours: z.string(),
+  theirs: z.string(),
+  base: z.string(),
+  working: z.string()
+})
+export type GitConflictFileResult = z.infer<typeof GitConflictFileResultSchema>
+
+export const GitResolveConflictRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  path: z.string().min(1).max(4_096),
+  content: z.string()
+})

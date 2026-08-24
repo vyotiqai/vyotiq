@@ -25,6 +25,8 @@ export type AppShortcutHandlers = {
   drawerOpen?: boolean
   /** Live check — session query lives in hot UI store, not always in React props. */
   hasSessionQuery?: () => boolean
+  onOpenCommandPalette?: () => void
+  onFindInFiles?: () => void
 }
 
 /**
@@ -44,7 +46,9 @@ export function useAppShortcuts(handlers: AppShortcutHandlers): void {
     running,
     onStop,
     drawerOpen,
-    hasSessionQuery
+    hasSessionQuery,
+    onOpenCommandPalette,
+    onFindInFiles
   } = handlers
 
   useEffect(() => {
@@ -116,6 +120,18 @@ export function useAppShortcuts(handlers: AppShortcutHandlers): void {
         e.preventDefault()
         onStop()
       }
+
+      if (matchShortcut(e, 'commandPalette')) {
+        if (shouldBlockAppShortcut(e.target)) return
+        e.preventDefault()
+        onOpenCommandPalette?.()
+        return
+      }
+
+      if (matchShortcut(e, 'findInFiles')) {
+        e.preventDefault()
+        onFindInFiles?.()
+      }
     }
 
     window.addEventListener('keydown', onKeyDown)
@@ -132,6 +148,8 @@ export function useAppShortcuts(handlers: AppShortcutHandlers): void {
     running,
     onStop,
     drawerOpen,
-    hasSessionQuery
+    hasSessionQuery,
+    onOpenCommandPalette,
+    onFindInFiles
   ])
 }

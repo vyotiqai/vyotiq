@@ -261,7 +261,7 @@ export const ChangeSummary = memo(function ChangeSummary({
             <li key={file.path} className="min-w-0 [&+&]:border-t [&+&]:border-border/60">
               <div
                 className={cn(
-                  'sticky top-0 z-[1] flex min-w-0 items-center gap-2 bg-surface px-3 py-1.5 text-xs',
+                  'sticky top-0 z-sticky flex min-w-0 items-center gap-2 bg-surface px-3 py-1.5 text-xs',
                   expanded && 'border-b border-border/40'
                 )}
               >

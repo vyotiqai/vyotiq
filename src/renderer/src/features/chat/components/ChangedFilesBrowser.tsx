@@ -187,7 +187,7 @@ function StageControls({
         <Tooltip content="Stage file">
           <button
             type="button"
-            className="rounded px-1 text-2xs text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-50"
+            className="rounded px-1 text-2xs text-muted hover:bg-surface-2 hover:text-fg disabled:vy-disabled-state"
             disabled={busy}
             aria-label={`Stage ${file.path}`}
             onClick={(e) => {
@@ -203,7 +203,7 @@ function StageControls({
         <Tooltip content="Unstage file">
           <button
             type="button"
-            className="rounded px-1 text-2xs text-muted hover:bg-surface-2 hover:text-fg disabled:opacity-50"
+            className="rounded px-1 text-2xs text-muted hover:bg-surface-2 hover:text-fg disabled:vy-disabled-state"
             disabled={busy}
             aria-label={`Unstage ${file.path}`}
             onClick={(e) => {
@@ -286,7 +286,7 @@ function FileRow({
     >
       <div
         className={cn(
-          'sticky top-0 z-[1] flex w-full min-w-0 items-center gap-1.5 border-b border-transparent bg-surface px-3 py-1.5 text-xs',
+          'sticky top-0 z-sticky flex w-full min-w-0 items-center gap-1.5 border-b border-transparent bg-surface px-3 py-1.5 text-xs',
           expanded && 'border-border/40',
           selected ? 'bg-accent/10' : 'hover:bg-surface-2/80'
         )}
