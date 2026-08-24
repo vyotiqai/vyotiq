@@ -5,13 +5,6 @@ section: tools
 order: 4
 type: guide
 audience: Version-control users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/ChangesPanel.tsx
-  - src/renderer/src/features/chat/components/GitChrome.tsx
-  - src/main/git/git.ts
-  - src/main/agent/schemas/tools.ts
 related:
   - agent/checkpoints
   - tools/pull-requests

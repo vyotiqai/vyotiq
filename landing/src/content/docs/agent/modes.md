@@ -5,12 +5,6 @@ section: agent
 order: 1
 type: guide
 audience: All agent users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/main/agent/tools/modePolicy.ts
-  - src/renderer/src/features/chat/components/composer/Composer.tsx
-  - src/renderer/src/features/chat/components/PlanPanel.tsx
 related:
   - agent/plans-todos-questions
   - reference/tools

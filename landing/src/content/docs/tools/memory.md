@@ -5,13 +5,6 @@ section: tools
 order: 6
 type: guide
 audience: Users needing durable context
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/main/agent/context/memory.ts
-  - src/main/agent/tools/memory.ts
-  - src/main/agent/schemas/tools.ts
-  - src/renderer/src/features/settings/sections/AgentSection.tsx
 related:
   - tools/indexing
   - concepts/privacy-data

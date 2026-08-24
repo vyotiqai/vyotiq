@@ -5,15 +5,6 @@ section: troubleshooting
 order: 4
 type: troubleshooting
 audience: Customization users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/marketplace/MarketplaceFeedbackBanner.tsx
-  - src/renderer/src/features/marketplace/MarketplaceAddPanel.tsx
-  - src/main/agent/mcp/index.ts
-  - src/main/marketplace/install.ts
-  - src/main/agent/mcp/oauth.ts
-  - src/shared/mcpApps.ts
 related:
   - customize/marketplace
   - customize/mcp

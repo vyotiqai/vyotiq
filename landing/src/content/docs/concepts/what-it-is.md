@@ -5,12 +5,6 @@ section: concepts
 order: 1
 type: concept
 audience: Evaluators and users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/app/App.tsx
-  - src/main/index.ts
-  - resources/harness/default.md
 related:
   - concepts/runs-sessions-state
   - concepts/security

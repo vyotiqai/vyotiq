@@ -5,13 +5,6 @@ section: tools
 order: 2
 type: guide
 audience: Web-development users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/AgentBrowserPanel.tsx
-  - src/main/app/agentBrowser.ts
-  - src/main/app/browserUrl.ts
-  - src/renderer/src/features/settings/sections/ToolsSection.tsx
 related:
   - concepts/security
   - troubleshooting/browser-terminal

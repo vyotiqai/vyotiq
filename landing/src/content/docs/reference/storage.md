@@ -5,20 +5,13 @@ section: reference
 order: 6
 type: reference
 audience: Support and administrators
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/main/storage/paths.ts
-  - src/main/settings/settings.ts
-  - src/main/logging/init.ts
-  - src/main/notifications/store.ts
-  - src/main/agent/codeindex/modelPaths.ts
-  - src/main/marketplace/safePath.ts
 related:
   - concepts/privacy-data
   - concepts/runs-sessions-state
   - tools/memory
 ---
+
+[Privacy and data storage](/docs/concepts/privacy-data) states the policy. This page lists locations.
 
 Agent V stores local state in Electron's platform-specific userData directory. That directory is named for the packaged app Vyotiq. Use [Settings → General](/docs/reference/settings) → Open logs folder and Settings → About → Copy before guessing an absolute support path.
 

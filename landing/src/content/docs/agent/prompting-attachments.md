@@ -5,15 +5,6 @@ section: agent
 order: 2
 type: guide
 audience: All agent users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/composer/mentionModel.ts
-  - src/renderer/src/features/chat/components/composer/Composer.tsx
-  - src/renderer/src/features/chat/components/composer/ComposerPlusButton.tsx
-  - src/renderer/src/features/chat/components/composer/useComposerFiles.ts
-  - src/renderer/src/features/chat/components/composer/useComposerImages.ts
-  - src/renderer/src/features/chat/components/composer/useComposerAudio.ts
 related:
   - reference/attachments
   - agent/context-compaction

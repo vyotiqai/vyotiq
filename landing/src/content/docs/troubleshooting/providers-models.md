@@ -5,13 +5,6 @@ section: troubleshooting
 order: 1
 type: troubleshooting
 audience: Users blocked from chat
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/settings/sections/ProvidersSection.tsx
-  - src/renderer/src/features/chat/components/composer/ModelPicker.tsx
-  - src/main/agent/providers/modelCache.ts
-  - src/shared/domain/providers.ts
 related:
   - customize/providers
   - customize/models

@@ -5,14 +5,6 @@ section: agent
 order: 3
 type: concept
 audience: Multi-project users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/app/sidebar/ChatList.tsx
-  - src/renderer/src/app/sidebar/ChatRow.tsx
-  - src/renderer/src/features/chat/components/AgentSessionBar.tsx
-  - src/renderer/src/features/chat/ChatPaneHost.tsx
-  - src/renderer/src/app/App.tsx
 related:
   - concepts/runs-sessions-state
   - agent/background-runs

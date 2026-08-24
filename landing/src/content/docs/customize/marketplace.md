@@ -5,14 +5,6 @@ section: customize
 order: 3
 type: concept
 audience: Customization users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/marketplace/MarketplaceView.tsx
-  - src/renderer/src/features/marketplace/MarketplaceHome.tsx
-  - src/renderer/src/features/marketplace/MarketplaceManage.tsx
-  - src/renderer/src/features/marketplace/ConnectMcpWizard.tsx
-  - resources/marketplace/catalog.json
 related:
   - customize/mcp
   - customize/skills

@@ -5,13 +5,6 @@ section: troubleshooting
 order: 5
 type: troubleshooting
 audience: Search and voice users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/settings/sections/IndexingSection.tsx
-  - src/renderer/src/features/settings/sections/VoiceSection.tsx
-  - src/main/agent/codeindex/index.ts
-  - src/main/dictation/index.ts
 related:
   - tools/indexing
   - tools/voice-dictation

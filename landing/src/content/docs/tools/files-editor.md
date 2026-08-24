@@ -5,13 +5,6 @@ section: tools
 order: 1
 type: guide
 audience: Users editing in the app
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/FilesPanel.tsx
-  - src/renderer/src/features/chat/components/TextCodeEditor.tsx
-  - src/main/workspace/fileService.ts
-  - src/main/workspace/lspService.ts
 related:
   - tools/changes-git
   - agent/checkpoints

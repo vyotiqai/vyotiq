@@ -5,13 +5,6 @@ section: customize
 order: 5
 type: guide
 audience: Workflow authors
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/marketplace/MarketplaceSkillsPane.tsx
-  - src/main/agent/skills/local.ts
-  - src/main/agent/skills/parse.ts
-  - src/main/agent/slashCommands/skills.ts
 related:
   - customize/slash-commands
   - customize/rules

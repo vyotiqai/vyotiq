@@ -5,12 +5,6 @@ section: customize
 order: 8
 type: reference
 audience: Keyboard-oriented users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/main/agent/slashCommands/builtins.ts
-  - src/main/agent/slashCommands/index.ts
-  - src/renderer/src/features/chat/components/composer/SlashCommandMenu.tsx
 related:
   - customize/skills
   - customize/mcp

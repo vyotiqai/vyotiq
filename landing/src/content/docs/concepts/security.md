@@ -5,14 +5,6 @@ section: concepts
 order: 3
 type: concept
 audience: Security-conscious users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/main/agent/toolApproval.ts
-  - src/main/agent/tools/modePolicy.ts
-  - src/main/agent/tools/writeGuard.ts
-  - src/main/app/security.ts
-  - src/main/app/browserContentBoundary.ts
 related:
   - concepts/privacy-data
   - agent/modes

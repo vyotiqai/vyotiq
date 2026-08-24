@@ -5,13 +5,6 @@ section: agent
 order: 6
 type: guide
 audience: Users reviewing edits
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/ChangesPanel.tsx
-  - src/main/agent/checkpoints.ts
-  - src/main/agent/rewindRun.ts
-  - src/main/agent/slashCommands/builtins.ts
 related:
   - tools/changes-git
   - customize/slash-commands

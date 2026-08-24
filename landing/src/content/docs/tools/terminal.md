@@ -5,13 +5,6 @@ section: tools
 order: 3
 type: guide
 audience: CLI users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/TerminalPanel.tsx
-  - src/renderer/src/features/chat/components/TerminalSessionBar.tsx
-  - src/main/app/ptySessions.ts
-  - src/main/agent/tools/terminal.ts
 related:
   - troubleshooting/browser-terminal
   - reference/settings

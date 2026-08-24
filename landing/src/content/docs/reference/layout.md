@@ -5,13 +5,6 @@ section: reference
 order: 5
 type: reference
 audience: Support and new users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/ChatView.tsx
-  - src/renderer/src/app/sidebar/Sidebar.tsx
-  - src/renderer/src/features/chat/components/composer/ComposerToolbar.tsx
-  - src/renderer/src/features/chat/components/DockTabBar.tsx
 related:
   - start/product-tour
   - reference/attachments

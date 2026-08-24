@@ -5,12 +5,6 @@ section: start
 order: 1
 type: quickstart
 audience: Evaluators and new users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - package.json
-  - electron-builder.yml
-  - src/renderer/src/features/settings/sections/AboutSection.tsx
 related:
   - start/quickstart
   - concepts/privacy-data

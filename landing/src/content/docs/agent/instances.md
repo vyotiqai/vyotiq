@@ -5,13 +5,6 @@ section: agent
 order: 7
 type: guide
 audience: Advanced agent users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/AgentInstancePane.tsx
-  - src/main/agent/agentInstances.ts
-  - src/main/git/instanceWorktree.ts
-  - src/main/agent/schemas/tools.ts
 related:
   - agent/workspaces-sessions
   - reference/tools

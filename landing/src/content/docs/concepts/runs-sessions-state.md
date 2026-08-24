@@ -5,13 +5,6 @@ section: concepts
 order: 2
 type: concept
 audience: Users and support
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/main/agent/state.ts
-  - src/main/agent/runRegistry.ts
-  - src/main/storage/paths.ts
-  - src/main/agent/startAgentRun.ts
 related:
   - agent/workspaces-sessions
   - agent/background-runs

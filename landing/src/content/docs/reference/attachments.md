@@ -5,13 +5,6 @@ section: reference
 order: 4
 type: reference
 audience: Users attaching context
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/composer/useComposerFiles.ts
-  - src/renderer/src/features/chat/components/composer/useComposerImages.ts
-  - src/renderer/src/features/chat/components/composer/useComposerAudio.ts
-  - src/shared/ipc/schemas/agent.ts
 related:
   - agent/prompting-attachments
   - customize/models

@@ -5,13 +5,6 @@ section: agent
 order: 5
 type: concept
 audience: Long-chat users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/composer/ContextMeter.tsx
-  - src/main/agent/compactRun.ts
-  - src/main/agent/context/compact.ts
-  - src/renderer/src/features/settings/sections/AgentSection.tsx
 related:
   - customize/models
   - agent/prompting-attachments

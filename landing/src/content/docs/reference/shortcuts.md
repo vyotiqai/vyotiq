@@ -5,12 +5,6 @@ section: reference
 order: 3
 type: reference
 audience: Power users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/lib/shortcuts/bindings.ts
-  - src/main/app/windowShortcuts.ts
-  - src/renderer/src/features/settings/sections/ShortcutsSection.tsx
 related:
   - reference/layout
   - tools/terminal

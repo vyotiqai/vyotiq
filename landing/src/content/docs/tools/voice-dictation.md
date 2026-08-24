@@ -5,13 +5,6 @@ section: tools
 order: 8
 type: guide
 audience: Voice users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/settings/sections/VoiceSection.tsx
-  - src/renderer/src/features/chat/components/composer/useComposerDictation.ts
-  - src/main/dictation/index.ts
-  - src/shared/dictation.ts
 related:
   - troubleshooting/indexing-dictation
   - customize/providers

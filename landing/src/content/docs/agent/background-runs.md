@@ -5,14 +5,6 @@ section: agent
 order: 4
 type: guide
 audience: Long-running task users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/app/sidebar/ChatRow.tsx
-  - src/renderer/src/lib/chat/backgroundRunToast.ts
-  - src/renderer/src/features/settings/sections/ToolsSection.tsx
-  - src/main/agent/startAgentRun.ts
-  - src/main/agent/loop.ts
 related:
   - troubleshooting/runs-network-recovery
   - tools/notifications

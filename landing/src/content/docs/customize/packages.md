@@ -5,13 +5,6 @@ section: customize
 order: 7
 type: guide
 audience: Marketplace users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/marketplace/MarketplaceInstalledList.tsx
-  - src/renderer/src/features/marketplace/WorkspaceEnableControls.tsx
-  - src/renderer/src/features/marketplace/RegistrySettingsPanel.tsx
-  - src/main/marketplace/install.ts
 related:
   - customize/marketplace
   - troubleshooting/marketplace-mcp

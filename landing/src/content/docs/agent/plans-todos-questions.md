@@ -5,16 +5,6 @@ section: agent
 order: 8
 type: guide
 audience: Plan and long-task users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/AskQuestionPanel.tsx
-  - src/renderer/src/features/chat/components/TasksCeilingBand.tsx
-  - src/renderer/src/features/chat/components/PlanPanel.tsx
-  - src/renderer/src/features/chat/utils/planDraft.ts
-  - src/shared/planStub.ts
-  - src/main/agent/tools/todo.ts
-  - src/main/agent/tools/modePolicy.ts
 related:
   - agent/modes
   - concepts/runs-sessions-state

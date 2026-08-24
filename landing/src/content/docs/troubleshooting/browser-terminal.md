@@ -5,13 +5,6 @@ section: troubleshooting
 order: 3
 type: troubleshooting
 audience: Browser and terminal users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/AgentBrowserPanel.tsx
-  - src/renderer/src/features/chat/components/TerminalPanel.tsx
-  - src/main/app/ptySessions.ts
-  - src/main/agent/loop.ts
 related:
   - tools/browser
   - tools/terminal

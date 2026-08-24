@@ -5,13 +5,6 @@ section: troubleshooting
 order: 6
 type: troubleshooting
 audience: GitHub users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/PrPanel.tsx
-  - src/renderer/src/features/chat/components/GitChrome.tsx
-  - src/main/git/githubAuth.ts
-  - src/main/git/ghBinary.ts
 related:
   - tools/changes-git
   - tools/pull-requests

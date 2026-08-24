@@ -5,14 +5,6 @@ section: start
 order: 2
 type: quickstart
 audience: First-time users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/settings/sections/GeneralSection.tsx
-  - src/renderer/src/features/settings/sections/ProvidersSection.tsx
-  - src/renderer/src/features/chat/components/composer/Composer.tsx
-  - src/renderer/src/features/chat/components/ChangesPanel.tsx
-  - src/renderer/src/features/chat/components/ToolApprovalOnboardingModal.tsx
 related:
   - customize/providers
   - agent/modes

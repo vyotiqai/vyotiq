@@ -5,13 +5,6 @@ section: customize
 order: 1
 type: guide
 audience: Everyone configuring models
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/settings/sections/ProvidersSection.tsx
-  - src/renderer/src/features/settings/components/ProviderKeyAccordion.tsx
-  - src/shared/domain/providers.ts
-  - src/main/settings/settings.ts
 related:
   - customize/models
   - troubleshooting/providers-models

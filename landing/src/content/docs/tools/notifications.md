@@ -5,13 +5,6 @@ section: tools
 order: 9
 type: guide
 audience: Background-run users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/app/sidebar/NotificationsInbox.tsx
-  - src/renderer/src/features/settings/sections/GeneralSection.tsx
-  - src/main/notifications/service.ts
-  - src/shared/ipc/schemas/notifications.ts
 related:
   - agent/background-runs
   - concepts/privacy-data

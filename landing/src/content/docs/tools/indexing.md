@@ -5,13 +5,6 @@ section: tools
 order: 7
 type: guide
 audience: Large-repository users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/settings/sections/IndexingSection.tsx
-  - src/main/agent/codeindex/index.ts
-  - src/main/agent/sparsegrep/index.ts
-  - src/main/agent/tools/search.ts
 related:
   - troubleshooting/indexing-dictation
   - tools/memory

@@ -5,13 +5,6 @@ section: reference
 order: 1
 type: reference
 audience: Administrators and support
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/settings/constants.ts
-  - src/renderer/src/features/settings/settingsSearchIndex.ts
-  - src/renderer/src/features/settings/sections
-  - src/shared/ipc/schemas/settings.ts
 related:
   - customize/providers
   - tools/indexing

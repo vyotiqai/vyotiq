@@ -5,13 +5,6 @@ section: tools
 order: 5
 type: guide
 audience: GitHub users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/PrPanel.tsx
-  - src/renderer/src/features/chat/components/GithubAuthPanel.tsx
-  - src/main/git/gh.ts
-  - src/main/git/githubAuth.ts
 related:
   - tools/changes-git
   - troubleshooting/git-pull-requests

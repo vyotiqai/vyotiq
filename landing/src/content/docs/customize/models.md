@@ -5,13 +5,6 @@ section: customize
 order: 2
 type: guide
 audience: Model selectors
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/chat/components/composer/ModelPicker.tsx
-  - src/renderer/src/features/chat/components/composer/composerModelUtils.ts
-  - src/main/agent/providers/modelCache.ts
-  - src/shared/domain/providers.ts
 related:
   - customize/providers
   - agent/context-compaction

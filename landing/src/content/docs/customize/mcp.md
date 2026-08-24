@@ -5,18 +5,6 @@ section: customize
 order: 4
 type: guide
 audience: Integration users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/marketplace/MarketplaceMcpPane.tsx
-  - src/renderer/src/features/marketplace/MarketplaceAddPanel.tsx
-  - src/main/agent/mcp/index.ts
-  - src/main/agent/mcp/oauth.ts
-  - src/main/marketplace/mcpImport.ts
-  - src/renderer/src/features/marketplace/ConnectMcpWizard.tsx
-  - src/main/agent/mcp/oauthStaticClient.ts
-  - src/main/agent/toolApproval.ts
-  - src/shared/mcpApps.ts
 related:
   - concepts/security
   - troubleshooting/marketplace-mcp

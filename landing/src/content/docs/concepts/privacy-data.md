@@ -5,15 +5,6 @@ section: concepts
 order: 4
 type: concept
 audience: All users and auditors
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/main/settings/settings.ts
-  - src/main/storage/paths.ts
-  - src/main/logging/init.ts
-  - src/main/notifications/store.ts
-  - src/main/agent/codeindex/modelPaths.ts
-  - src/main/workspace/workspaces.ts
 related:
   - reference/storage
   - concepts/security

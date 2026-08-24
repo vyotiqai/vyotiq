@@ -5,12 +5,6 @@ section: reference
 order: 2
 type: reference
 audience: Advanced users
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/main/agent/schemas/tools.ts
-  - src/main/agent/tools/index.ts
-  - src/main/agent/tools/modePolicy.ts
 related:
   - agent/modes
   - concepts/security

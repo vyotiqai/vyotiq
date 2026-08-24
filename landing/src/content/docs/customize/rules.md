@@ -5,13 +5,6 @@ section: customize
 order: 6
 type: guide
 audience: Users standardizing agent behavior
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/features/marketplace/MarketplaceRulesPane.tsx
-  - src/main/agent/context/rules.ts
-  - src/main/agent/context/userRules.ts
-  - src/shared/utils/skillMarkdown.ts
 related:
   - customize/skills
   - concepts/security

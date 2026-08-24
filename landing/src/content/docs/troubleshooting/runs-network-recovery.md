@@ -5,13 +5,6 @@ section: troubleshooting
 order: 2
 type: troubleshooting
 audience: Users with failed runs
-owner: Vyotiq product
-lastVerified: 1.0.0
-sources:
-  - src/renderer/src/lib/hooks/useOfflineSendQueue.ts
-  - src/renderer/src/features/chat/SessionChatColumn.tsx
-  - src/shared/errors.ts
-  - src/main/logging/crashDiagnostics.ts
 related:
   - agent/background-runs
   - tools/notifications
