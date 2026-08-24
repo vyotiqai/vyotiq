@@ -4,7 +4,6 @@ import { SITE_BRAND, SITE_PRODUCT } from '../lib/site'
 
 const year = new Date().getFullYear()
 const onDocs = Astro.url.pathname === '/docs' || Astro.url.pathname.startsWith('/docs/')
-const onDocsIndex = Astro.url.pathname === '/docs' || Astro.url.pathname === '/docs/'
 ---
 
 <footer class="border-t border-border">
@@ -16,12 +15,24 @@ const onDocsIndex = Astro.url.pathname === '/docs' || Astro.url.pathname === '/d
     </p>
     <nav class="flex flex-wrap items-center gap-x-5 gap-y-2" aria-label="Footer">
       <a
+        class="inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg"
+        href="/#overview"
+      >
+        Overview
+      </a>
+      <a
+        class="inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg"
+        href="/#capabilities"
+      >
+        Capabilities
+      </a>
+      <a
         class:list={[
           'inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg',
           onDocs && 'text-fg'
         ]}
         href="/docs"
-        aria-current={onDocsIndex ? 'page' : undefined}
+        aria-current={onDocs ? 'page' : undefined}
       >
         Docs
       </a>
@@ -36,6 +47,20 @@ const onDocsIndex = Astro.url.pathname === '/docs' || Astro.url.pathname === '/d
         href="/docs/concepts/security"
       >
         Security
+      </a>
+      <a
+        class="inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg"
+        href="/docs/concepts/privacy-data"
+      >
+        Privacy
+      </a>
+      <a
+        class="inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg"
+        href="https://github.com/vyotiqai/vyotiq-agent-v"
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        GitHub
       </a>
     </nav>
   </div>

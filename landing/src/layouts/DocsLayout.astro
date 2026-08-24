@@ -3,12 +3,18 @@ import BaseLayout from './BaseLayout.astro'
 import LandingIcon from '../components/LandingIcon.astro'
 import SiteFooter from '../components/SiteFooter.astro'
 import SiteHeader from '../components/SiteHeader.astro'
-import { SITE_BRAND, SITE_PRODUCT } from '../lib/site'
+import { SITE_BRAND, SITE_PRODUCT, SITE_VERSION } from '../lib/site'
 import {
+  docsEditHref,
+  docsFeedbackHref,
   docsHref,
+  docsNavTitle,
   docsPageContext,
   docsSearchEntries,
+  docsSectionHref,
+  docsTocLabel,
   groupedDocs,
+  type DocSection,
   type DocsSearchEntry
 } from '../lib/docs'
 
@@ -18,32 +24,39 @@ interface Props {
   title: string
   description: string
   currentId?: string | null
+  currentSection?: DocSection | null
   headings?: Heading[]
   type?: 'quickstart' | 'guide' | 'concept' | 'reference' | 'troubleshooting'
   audience?: string
-  owner?: string
-  sources?: string[]
-  lastVerified?: string
 }
 
 const {
   title,
   description,
   currentId = null,
+  currentSection = null,
   headings = [],
   type,
-  audience,
-  owner,
-  sources = [],
-  lastVerified
+  audience
 } = Astro.props
+
+const TYPE_LABEL: Record<NonNullable<Props['type']>, string> = {
+  quickstart: 'Quickstart',
+  guide: 'Guide',
+  concept: 'Concept',
+  reference: 'Reference',
+  troubleshooting: 'Troubleshooting'
+}
 
 const groups = await groupedDocs()
 const searchEntries = await docsSearchEntries()
 const toc = headings.filter((h) => h.depth === 2 || h.depth === 3)
 const pageTitle = `${title} — ${SITE_PRODUCT}`
-const onIndex = currentId == null
+const onIndex = currentId == null && currentSection == null
+const onSection = currentSection != null
 const context = currentId ? await docsPageContext(currentId) : null
+const typeLabel = type ? TYPE_LABEL[type] : null
+const quickstartPage = type === 'quickstart' && currentId === 'start/quickstart'
 const pageUrl = new URL(Astro.url.pathname, Astro.site)
 const structuredData = [
   {
@@ -76,7 +89,7 @@ const structuredData = [
           description,
           audience: audience ? { '@type': 'Audience', audienceType: audience } : undefined,
           url: pageUrl.href,
-          author: { '@type': 'Organization', name: owner ?? SITE_BRAND }
+          author: { '@type': 'Organization', name: SITE_BRAND }
         }
       ]
     : [])
@@ -90,8 +103,9 @@ const structuredData = [
       <button class="docs-search-button" type="button" data-docs-search-open>
         <LandingIcon name="search" size={15} />
         <span>Search docs</span>
-        <kbd>Ctrl K</kbd>
+        <kbd><span data-mod-key>Ctrl</span> K</kbd>
       </button>
+      <div class="docs-nav-scroll">
       <details class="docs-nav-box" id="docs-nav-box" open>
         <summary class="docs-nav-summary">Docs menu</summary>
         <a
@@ -104,7 +118,13 @@ const structuredData = [
         {
           groups.map((group) => (
             <div class="docs-nav-group">
-              <p class="docs-nav-heading">{group.label}</p>
+              <a
+                class:list={['docs-nav-heading', currentSection === group.section && 'docs-nav-section-current']}
+                href={docsSectionHref(group.section)}
+                aria-current={currentSection === group.section ? 'page' : undefined}
+              >
+                {group.label}
+              </a>
               <ul>
                 {group.entries.map((entry) => {
                   const current = entry.id === currentId
@@ -115,7 +135,7 @@ const structuredData = [
                         class:list={[current && 'docs-nav-current']}
                         aria-current={current ? 'page' : undefined}
                       >
-                        {entry.data.title}
+                        {docsNavTitle(entry.id, entry.data.title)}
                       </a>
                     </li>
                   )
@@ -125,46 +145,82 @@ const structuredData = [
           ))
         }
       </details>
+      </div>
     </aside>
 
     <main id="main-content" class="min-w-0" tabindex="-1">
-      <article class:list={['doc-prose', onIndex && 'docs-index-prose']}>
+      <article class:list={['doc-prose', onIndex && 'docs-index-prose', quickstartPage && 'docs-quickstart']}>
         {
-          context ? (
+          context || onSection ? (
             <nav class="docs-breadcrumbs" aria-label="Breadcrumb">
               <a href="/docs">Docs</a>
               <span aria-hidden="true">/</span>
-              <span>{context.sectionLabel}</span>
-              <span aria-hidden="true">/</span>
-              <span aria-current="page">{title}</span>
+              {context ? (
+                <>
+                  <a href={context.sectionHref}>{context.sectionLabel}</a>
+                  <span aria-hidden="true">/</span>
+                  <span aria-current="page">{title}</span>
+                </>
+              ) : (
+                <span aria-current="page">{title}</span>
+              )}
             </nav>
           ) : null
         }
-        <h1>{title}</h1>
+        <h1 id="page-title">{title}</h1>
         <p class="doc-lede">{description}</p>
         {
-          !onIndex && type && audience && owner && lastVerified ? (
-            <dl class="docs-page-meta">
-              <div>
-                <dt>Type</dt>
-                <dd>{type}</dd>
-              </div>
-              <div>
-                <dt>For</dt>
-                <dd>{audience}</dd>
-              </div>
-              <div>
-                <dt>Verified</dt>
-                <dd>Agent V {lastVerified}</dd>
-              </div>
-              <div>
-                <dt>Owner</dt>
-                <dd>{owner}</dd>
-              </div>
-            </dl>
+          !onIndex && (typeLabel || audience) ? (
+            <ul class="docs-page-meta">
+              {typeLabel ? <li>{typeLabel}</li> : null}
+              {audience ? <li>{audience}</li> : null}
+              <li>Applies to Agent V {SITE_VERSION}</li>
+            </ul>
           ) : null
         }
-        <slot />
+        {
+          toc.length > 0 ? (
+            <details class="docs-mobile-toc">
+              <summary>On this page</summary>
+              <ul>
+                {toc.map((heading) => (
+                  <li class:list={[heading.depth === 3 && 'docs-toc-h3']}>
+                    <a href={`#${heading.slug}`}>{docsTocLabel(heading.text)}</a>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          ) : null
+        }
+        {
+          quickstartPage ? (
+            <figure class="docs-product-shot">
+              <img
+                class="docs-product-shot-light"
+                src="/product/agent-v-light.png"
+                alt="Agent V workspace with sidebar, composer, and chat"
+                width="1280"
+                height="800"
+                loading="lazy"
+                decoding="async"
+              />
+              <img
+                class="docs-product-shot-dark"
+                src="/product/agent-v-dark.png"
+                alt=""
+                width="1280"
+                height="800"
+                loading="lazy"
+                decoding="async"
+                aria-hidden="true"
+              />
+              <figcaption>Sidebar, composer, and review surfaces in one workspace.</figcaption>
+            </figure>
+          ) : null
+        }
+        <div data-docs-body>
+          <slot />
+        </div>
         {
           context && context.related.length > 0 ? (
             <section class="docs-related" aria-labelledby="related-pages-heading">
@@ -207,17 +263,18 @@ const structuredData = [
           ) : null
         }
         {
-          sources.length > 0 ? (
-            <details class="docs-sources">
-              <summary>Product sources checked</summary>
-              <ul>
-                {sources.map((source) => (
-                  <li>
-                    <code>{source}</code>
-                  </li>
-                ))}
-              </ul>
-            </details>
+          currentId ? (
+            <p class="docs-edit-links">
+              <a href={docsEditHref(currentId)}>
+                Edit page
+                <LandingIcon name="arrow-up-right" size={12} />
+              </a>
+              <span aria-hidden="true">·</span>
+              <a href={docsFeedbackHref(title)}>
+                Report an issue
+                <LandingIcon name="arrow-up-right" size={12} />
+              </a>
+            </p>
           ) : null
         }
       </article>
@@ -230,7 +287,7 @@ const structuredData = [
           <ul>
             {toc.map((heading) => (
               <li class:list={[heading.depth === 3 && 'docs-toc-h3']}>
-                <a href={`#${heading.slug}`}>{heading.text}</a>
+                <a href={`#${heading.slug}`}>{docsTocLabel(heading.text)}</a>
               </li>
             ))}
           </ul>
@@ -316,9 +373,15 @@ const structuredData = [
           }, 0)
           return { entry, score }
         })
-        .filter((match) => terms.length === 0 || match.score >= 0)
+        .filter((match) => terms.length > 0 && match.score >= 0)
         .sort((a, b) => b.score - a.score || a.entry.title.localeCompare(b.entry.title))
         .slice(0, 12)
+
+      if (terms.length === 0) {
+        results.replaceChildren()
+        status.textContent = 'Type to search documentation.'
+        return
+      }
 
       results.replaceChildren(
         ...matches.map(({ entry }) => {
@@ -371,11 +434,58 @@ const structuredData = [
       }
     })
 
+    const isApple =
+      /Mac|iPhone|iPad/.test(navigator.platform) || navigator.userAgent.includes('Mac')
+    document.querySelectorAll('[data-mod-key]').forEach((node) => {
+      node.textContent = isApple ? '⌘' : 'Ctrl'
+    })
+
+    const navScroll = document.querySelector('.docs-nav-scroll')
+    const currentNav = document.querySelector('.docs-nav a[aria-current="page"]')
+    if (navScroll instanceof HTMLElement && currentNav instanceof HTMLElement) {
+      const navBox = navScroll.getBoundingClientRect()
+      const itemBox = currentNav.getBoundingClientRect()
+      if (itemBox.top < navBox.top || itemBox.bottom > navBox.bottom) {
+        navScroll.scrollTop += itemBox.top - navBox.top - (navBox.height - itemBox.height) / 2
+      }
+    }
+
+    const tocLinks = [...document.querySelectorAll<HTMLAnchorElement>('.docs-toc a[href^="#"]')]
+    const headingEls = tocLinks
+      .map((link) => document.getElementById(decodeURIComponent(link.hash.slice(1))))
+      .filter((el): el is HTMLElement => el instanceof HTMLElement)
+
+    function setActiveToc(id: string | null): void {
+      for (const link of tocLinks) {
+        const active = id != null && link.hash === `#${id}`
+        if (active) link.setAttribute('aria-current', 'location')
+        else link.removeAttribute('aria-current')
+      }
+    }
+
+    if (headingEls.length > 0 && 'IntersectionObserver' in window) {
+      const visible = new Map<string, IntersectionObserverEntry>()
+      const observer = new IntersectionObserver(
+        (entries) => {
+          for (const entry of entries) {
+            if (entry.isIntersecting) visible.set(entry.target.id, entry)
+            else visible.delete(entry.target.id)
+          }
+          const firstVisible = headingEls.find((el) => visible.has(el.id))
+          setActiveToc(firstVisible?.id ?? headingEls[0]?.id ?? null)
+        },
+        { rootMargin: '-20% 0px -65% 0px', threshold: [0, 1] }
+      )
+      for (const el of headingEls) observer.observe(el)
+      setActiveToc(headingEls[0]?.id ?? null)
+    }
+
     document.querySelector<HTMLElement>('[data-docs-copy]')?.addEventListener('click', async (event) => {
       const button = event.currentTarget
       if (!(button instanceof HTMLButtonElement) || !copyLabel) return
-      const article = document.querySelector<HTMLElement>('.doc-prose')
-      const text = `${document.title}\n${location.href}\n\n${article?.innerText ?? ''}`.trim()
+      const heading = document.querySelector<HTMLElement>('#page-title')
+      const body = document.querySelector<HTMLElement>('[data-docs-body]')
+      const text = `${heading?.innerText ?? document.title}\n${location.href}\n\n${body?.innerText ?? ''}`.trim()
       try {
         await navigator.clipboard.writeText(text)
         copyLabel.textContent = 'Copied'
@@ -386,5 +496,31 @@ const structuredData = [
         copyLabel.textContent = 'Copy page'
       }, 1600)
     })
+
+    const prose = document.querySelector<HTMLElement>('[data-docs-body]')
+    if (prose) {
+      for (const heading of prose.querySelectorAll<HTMLHeadingElement>('h2, h3')) {
+        const id = heading.id || heading.textContent?.trim().toLowerCase().replace(/\s+/g, '-')
+        if (!id) continue
+        if (!heading.id) heading.id = id
+        if (heading.querySelector('.docs-heading-anchor')) continue
+        const anchor = document.createElement('a')
+        anchor.className = 'docs-heading-anchor'
+        anchor.href = `#${id}`
+        anchor.setAttribute('aria-label', `Link to ${heading.textContent?.trim() ?? 'section'}`)
+        anchor.innerHTML =
+          '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>'
+        heading.append(anchor)
+      }
+      const keys = new Set(['Esc', 'Enter', 'Tab'])
+      for (const code of prose.querySelectorAll('code')) {
+        if (code.closest('pre')) continue
+        const label = code.textContent?.trim() ?? ''
+        if (!keys.has(label)) continue
+        const kbd = document.createElement('kbd')
+        kbd.textContent = label
+        code.replaceWith(kbd)
+      }
+    }
   </script>
 </BaseLayout>

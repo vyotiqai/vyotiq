@@ -1,0 +1,71 @@
+---
+title: Marketplace overview
+description: Use Browse for registry packages and Manage for MCPs, Skills, Rules, and installed Packages.
+section: customize
+order: 3
+type: concept
+audience: Customization users
+owner: Vyotiq product
+lastVerified: 1.0.0
+sources:
+  - src/renderer/src/features/marketplace/MarketplaceView.tsx
+  - src/renderer/src/features/marketplace/MarketplaceHome.tsx
+  - src/renderer/src/features/marketplace/MarketplaceManage.tsx
+  - src/renderer/src/features/marketplace/ConnectMcpWizard.tsx
+  - resources/marketplace/catalog.json
+related:
+  - customize/mcp
+  - customize/skills
+  - customize/rules
+  - customize/packages
+---
+
+Marketplace is the customization hub. It has two jobs: browse packages from a configured registry and manage the local systems already available to the app.
+
+## Browse
+
+The Marketplace home shows registry content when a registry is configured and acknowledged. A package can contain supported customization assets. Registry trust matters because installed content can influence agent behavior or connect external systems.
+
+Read the package description and contents before installing. Installation success should appear without restarting the app.
+
+## Manage
+
+Open Marketplace → Manage. The exact tabs are:
+
+- **MCPs**
+- **Skills**
+- **Rules**
+- **Packages**
+
+These are not aliases:
+
+- **MCPs** connect local or remote Model Context Protocol servers.
+- **Skills** are SKILL.md instruction packages the agent can load.
+- **Rules** are user or workspace behavior instructions.
+- **Packages** bundle installable Marketplace content and lifecycle state.
+
+## Scope and workspace overrides
+
+Global enablement applies app-wide. For eligible **MCPs** and **Packages**, Force on/off can create a workspace override that wins for agent runs in that workspace. Global MCP connections stay available for other workspaces.
+
+Workspace overrides are managed with the workspace's Override state under [Settings → General](/docs/reference/settings) → Workspaces.
+
+## Live updates
+
+Created or edited **Skills** and **Rules** are discovered through live refresh paths. Installed or removed Marketplace state should update in Manage without requiring an application restart.
+
+## Security boundary
+
+A visible listing is not an endorsement of every server, prompt, rule, or package. Review registry acknowledgement, server transport and auth, package contents, and workspace scope. MCP server tool calls remain Agent-only and can still be gated by tool approval.
+
+Use the focused pages for setup and failure recovery. Start with MCP servers for integrations and **Packages** and workspace overrides for install lifecycle.
+
+## Discover GitHub and Google
+
+Browse includes a Discover row of larger cards. This catalog wave is GitHub, Gmail, Google Drive, and Google Calendar. Add on a card installs that MCP and opens Connect.
+
+Add GitHub uses Sign in with OAuth, or paste a personal access token when OAuth is unavailable. Native GitHub in the Pull Request panel stays separate from GitHub MCP.
+
+Add Gmail (and Drive or Calendar) requires a Google Cloud Web client. Register the fixed redirect URI `http://127.0.0.1:19847/oauth/callback` then paste the client ID and secret. The first Google app collects that client; later Google Adds skip to workspace scope, Read only versus Read and write, and consent.
+
+MCP server tools run in Agent mode. MCP tools protection defaults on under [Settings → Tools](/docs/reference/settings#tools).

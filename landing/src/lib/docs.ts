@@ -1,16 +1,7 @@
 import { getCollection, type CollectionEntry } from 'astro:content'
+import { DOC_SECTIONS, type DocSection } from './sections'
 
-export const DOC_SECTIONS = [
-  'start',
-  'agent',
-  'customize',
-  'tools',
-  'concepts',
-  'reference',
-  'troubleshooting'
-] as const
-
-export type DocSection = (typeof DOC_SECTIONS)[number]
+export { DOC_SECTIONS, type DocSection }
 
 export const DOC_SECTION_LABEL: Record<DocSection, string> = {
   start: 'Start here',
@@ -22,8 +13,93 @@ export const DOC_SECTION_LABEL: Record<DocSection, string> = {
   troubleshooting: 'Troubleshooting'
 }
 
+export const DOC_SECTION_INTRO: Record<DocSection, string> = {
+  start: 'Install Agent V, tour the workspace, and complete your first useful run.',
+  agent: 'Choose a mode, manage sessions and runs, and work with plans, todos, and checkpoints.',
+  customize: 'Configure providers, models, MCP servers, skills, rules, and packages.',
+  tools: 'Use the files editor, terminal, browser, Git surfaces, indexing, memory, and voice.',
+  concepts: 'Understand what Agent V is, how runs and state work, and how privacy and security apply.',
+  reference: 'Look up settings, shortcuts, tools, attachments, layout, and storage paths.',
+  troubleshooting:
+    'Recover from failed runs, provider issues, Marketplace and MCP problems, and Git or indexing errors.'
+}
+
+export const DOCS_REPO = 'https://github.com/vyotiqai/vyotiq-agent-v'
+
 export function docsHref(id: string): string {
   return `/docs/${id}`
+}
+
+export function docsSectionHref(section: DocSection): string {
+  return `/docs/${section}`
+}
+
+export function docsEditHref(id: string): string {
+  return `${DOCS_REPO}/edit/main/landing/src/content/docs/${id}.md`
+}
+
+export function docsFeedbackHref(title: string): string {
+  const params = new URLSearchParams({
+    labels: 'documentation',
+    title: `Docs feedback: ${title}`
+  })
+  return `${DOCS_REPO}/issues/new?${params}`
+}
+
+/** Shorter sidebar labels — full titles stay on the page, index, and search. */
+export function docsNavTitle(id: string, title: string): string {
+  const labels: Record<string, string> = {
+    'start/install': 'Install',
+    'start/product-tour': 'Product tour',
+    'start/quickstart': 'Quickstart',
+    'agent/background-runs': 'Background runs',
+    'agent/checkpoints': 'Checkpoints',
+    'agent/context-compaction': 'Compaction',
+    'agent/instances': 'Instances',
+    'agent/modes': 'Modes',
+    'agent/plans-todos-questions': 'Plans & todos',
+    'agent/prompting-attachments': 'Prompts & files',
+    'agent/workspaces-sessions': 'Workspaces',
+    'customize/marketplace': 'Marketplace',
+    'customize/mcp': 'MCP',
+    'customize/models': 'Models',
+    'customize/packages': 'Packages',
+    'customize/providers': 'Providers',
+    'customize/rules': 'Rules',
+    'customize/skills': 'Skills',
+    'customize/slash-commands': 'Slash commands',
+    'tools/browser': 'Browser',
+    'tools/changes-git': 'Changes & Git',
+    'tools/files-editor': 'Files editor',
+    'tools/indexing': 'Indexing',
+    'tools/memory': 'Memory',
+    'tools/notifications': 'Notifications',
+    'tools/pull-requests': 'Pull requests',
+    'tools/terminal': 'Terminal',
+    'tools/voice-dictation': 'Voice',
+    'concepts/privacy-data': 'Privacy',
+    'concepts/runs-sessions-state': 'Runs & state',
+    'concepts/security': 'Security',
+    'concepts/what-it-is': 'What it is',
+    'reference/attachments': 'Attachments',
+    'reference/layout': 'Layout',
+    'reference/settings': 'Settings',
+    'reference/shortcuts': 'Shortcuts',
+    'reference/storage': 'Storage',
+    'reference/tools': 'Tools',
+    'troubleshooting/browser-terminal': 'Browser & terminal',
+    'troubleshooting/git-pull-requests': 'Git & PRs',
+    'troubleshooting/indexing-dictation': 'Indexing & voice',
+    'troubleshooting/marketplace-mcp': 'Marketplace & MCP',
+    'troubleshooting/providers-models': 'Providers & models',
+    'troubleshooting/runs-network-recovery': 'Runs & recovery'
+  }
+  return labels[id] ?? title
+}
+
+/** Strip quickstart step prefixes from TOC labels. */
+export function docsTocLabel(text: string): string {
+  return text.replace(/^\d+\.\s+/, '')
 }
 
 export type DocsNavGroup = {
@@ -80,12 +156,13 @@ export async function docsSearchEntries(): Promise<DocsSearchEntry[]> {
     description: entry.data.description,
     section: DOC_SECTION_LABEL[entry.data.section],
     href: docsHref(entry.id),
-    text: searchableMarkdown(entry.body)
+    text: searchableMarkdown(entry.body ?? '')
   }))
 }
 
 export async function docsPageContext(currentId: string): Promise<{
   sectionLabel: string
+  sectionHref: string
   previous: CollectionEntry<'docs'> | null
   next: CollectionEntry<'docs'> | null
   related: CollectionEntry<'docs'>[]
@@ -94,11 +171,12 @@ export async function docsPageContext(currentId: string): Promise<{
   const currentIndex = entries.findIndex((entry) => entry.id === currentId)
   const current = currentIndex >= 0 ? entries[currentIndex] : null
   if (!current) {
-    return { sectionLabel: 'Docs', previous: null, next: null, related: [] }
+    return { sectionLabel: 'Docs', sectionHref: '/docs', previous: null, next: null, related: [] }
   }
   const byId = new Map(entries.map((entry) => [entry.id, entry]))
   return {
     sectionLabel: DOC_SECTION_LABEL[current.data.section],
+    sectionHref: docsSectionHref(current.data.section),
     previous: currentIndex > 0 ? entries[currentIndex - 1]! : null,
     next: currentIndex < entries.length - 1 ? entries[currentIndex + 1]! : null,
     related: current.data.related.flatMap((id) => {

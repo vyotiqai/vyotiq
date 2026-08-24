@@ -55,8 +55,7 @@ src/renderer/public/file-icons/
 resources/codeindex/wasm/
 
 # Markdown siblings generated from .md.docx (scripts/sync-docx-md.mjs)
-landing/src/content/docs/**/*.md
-landing/README.md
+# NOTE: landing docs are now .md-source (committed); only resources/marketplace .md stay generated.
 resources/marketplace/**/*.md
 
 # Local agent / editor state (keep rules and skills)
@@ -84,7 +83,6 @@ venv/
 !resources/**/*.docx
 !.cursor/**/*.docx
 !.vyotiq/rules/**/*.docx
-!landing/**/*.docx
 !tests/**/*.docx
 
 # Windows Explorer duplicate copies — after docx un-ignores so they win

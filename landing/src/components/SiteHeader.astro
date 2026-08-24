@@ -4,7 +4,6 @@ import LandingIcon from './LandingIcon.astro'
 import { SITE_PRODUCT } from '../lib/site'
 
 const onDocs = Astro.url.pathname === '/docs' || Astro.url.pathname.startsWith('/docs/')
-const onDocsIndex = Astro.url.pathname === '/docs' || Astro.url.pathname === '/docs/'
 ---
 
 <header class="sticky top-0 z-40 border-b border-border/80 bg-bg/90 backdrop-blur-md">
@@ -26,18 +25,20 @@ const onDocsIndex = Astro.url.pathname === '/docs' || Astro.url.pathname === '/d
           onDocs ? 'text-fg' : 'text-muted'
         ]}
         href="/docs"
-        aria-current={onDocsIndex ? 'page' : undefined}
+        aria-current={onDocs ? 'page' : undefined}
       >
         Docs
       </a>
       <button
         type="button"
-        class="inline-flex size-11 items-center justify-center rounded-md text-muted hover:bg-surface hover:text-fg"
+        class="inline-flex min-h-11 min-w-11 shrink-0 items-center justify-center gap-1.5 rounded-md px-2 text-muted hover:bg-surface hover:text-fg"
         data-theme-toggle
         aria-label="Toggle color theme"
       >
-        <LandingIcon name="sun" size={16} class="dark:hidden" />
-        <LandingIcon name="moon" size={16} class="hidden dark:block" />
+        <LandingIcon name="monitor" size={16} class="hidden" data-theme-icon="system" />
+        <LandingIcon name="sun" size={16} class="hidden" data-theme-icon="light" />
+        <LandingIcon name="moon" size={16} class="hidden" data-theme-icon="dark" />
+        <span class="hidden text-xs sm:inline" data-theme-label>System</span>
       </button>
     </nav>
   </div>
@@ -47,6 +48,18 @@ const onDocsIndex = Astro.url.pathname === '/docs' || Astro.url.pathname === '/d
   const KEY = 'vyotiq-theme'
   const button = document.querySelector<HTMLButtonElement>('[data-theme-toggle]')
   const media = window.matchMedia('(prefers-color-scheme: dark)')
+  const icons = {
+    system: button?.querySelector<HTMLElement>('[data-theme-icon="system"]'),
+    light: button?.querySelector<HTMLElement>('[data-theme-icon="light"]'),
+    dark: button?.querySelector<HTMLElement>('[data-theme-icon="dark"]')
+  }
+  const label = button?.querySelector<HTMLElement>('[data-theme-label]')
+
+  const MODE_LABEL = {
+    system: 'System',
+    light: 'Light',
+    dark: 'Dark'
+  } as const
 
   function storedMode(): 'light' | 'dark' | 'system' {
     const value = localStorage.getItem(KEY)
@@ -59,19 +72,29 @@ const onDocsIndex = Astro.url.pathname === '/docs' || Astro.url.pathname === '/d
     return mode
   }
 
+  function nextMode(mode: 'light' | 'dark' | 'system'): 'light' | 'dark' | 'system' {
+    return mode === 'system' ? 'light' : mode === 'light' ? 'dark' : 'system'
+  }
+
   function apply(): void {
     const mode = storedMode()
     const theme = resolved(mode)
     document.documentElement.setAttribute('data-theme', theme)
-    if (button) {
-      const next = mode === 'system' ? 'light' : mode === 'light' ? 'dark' : 'system'
-      button.setAttribute('aria-label', `Color theme: ${mode}. Click for ${next}.`)
+    for (const [name, icon] of Object.entries(icons)) {
+      if (!icon) continue
+      icon.classList.toggle('hidden', name !== mode)
     }
+    if (button) {
+      const next = nextMode(mode)
+      button.setAttribute('aria-label', `Color theme: ${MODE_LABEL[mode]}. Click for ${MODE_LABEL[next]}.`)
+      button.setAttribute('title', `${MODE_LABEL[mode]} theme`)
+    }
+    if (label) label.textContent = MODE_LABEL[mode]
   }
 
   button?.addEventListener('click', () => {
     const mode = storedMode()
-    const next = mode === 'system' ? 'light' : mode === 'light' ? 'dark' : 'system'
+    const next = nextMode(mode)
     if (next === 'system') localStorage.removeItem(KEY)
     else localStorage.setItem(KEY, next)
     apply()
