@@ -91,12 +91,11 @@ venv/
 * (1).*
 *(1).*
 
-# Not published with the product (must stay after docx un-ignores)
-.cursor/
-.devin/
-.vyotiq/rules/
-docs/
-landing/
-scripts/
+# Local-only editor and internal design notes (must stay after docx un-ignores)
+/.cursor/
+/.devin/
+/.vyotiq/rules/
+/docs/
 .cursorrules
 AGENTS.md
+scripts/remove-coauthors-from-history.sh

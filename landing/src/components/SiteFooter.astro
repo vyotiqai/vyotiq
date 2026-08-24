@@ -1,0 +1,42 @@
+---
+import BrandLockup from './BrandLockup.astro'
+import { SITE_BRAND, SITE_PRODUCT } from '../lib/site'
+
+const year = new Date().getFullYear()
+const onDocs = Astro.url.pathname === '/docs' || Astro.url.pathname.startsWith('/docs/')
+const onDocsIndex = Astro.url.pathname === '/docs' || Astro.url.pathname === '/docs/'
+---
+
+<footer class="border-t border-border">
+  <div class="wrap flex flex-wrap items-center justify-between gap-4 py-8 text-sm text-muted">
+    <p class="flex min-w-0 items-center gap-3">
+      <BrandLockup variant="mark" alt={SITE_BRAND} />
+      <span>© {year} {SITE_BRAND}</span>
+      <span>{SITE_PRODUCT}</span>
+    </p>
+    <nav class="flex flex-wrap items-center gap-x-5 gap-y-2" aria-label="Footer">
+      <a
+        class:list={[
+          'inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg',
+          onDocs && 'text-fg'
+        ]}
+        href="/docs"
+        aria-current={onDocsIndex ? 'page' : undefined}
+      >
+        Docs
+      </a>
+      <a
+        class="inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg"
+        href="/docs/agent/modes"
+      >
+        Modes
+      </a>
+      <a
+        class="inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg"
+        href="/docs/concepts/security"
+      >
+        Security
+      </a>
+    </nav>
+  </div>
+</footer>

@@ -1,0 +1,46 @@
+---
+interface Props {
+  class?: string
+  variant?: 'lockup' | 'mark'
+  alt?: string
+}
+
+const { class: className, variant = 'lockup', alt = '' } = Astro.props
+---
+
+<span class:list={['inline-flex items-center gap-2.5', className]}>
+  <img
+    src="/brand/mark-black.svg"
+    alt={alt}
+    width="28"
+    height="28"
+    class="size-7 dark:hidden"
+  />
+  <img
+    src="/brand/mark-white.svg"
+    alt=""
+    width="28"
+    height="28"
+    class="hidden size-7 dark:block"
+  />
+  {
+    variant === 'lockup' ? (
+      <>
+        <img
+          src="/brand/wordmark-black.svg"
+          alt=""
+          width="73"
+          height="13"
+          class="h-[13px] w-auto dark:hidden"
+        />
+        <img
+          src="/brand/wordmark-white.svg"
+          alt=""
+          width="73"
+          height="13"
+          class="hidden h-[13px] w-auto dark:block"
+        />
+      </>
+    ) : null
+  }
+</span>

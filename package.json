@@ -8,6 +8,7 @@
   },
   "main": "./out/main/index.js",
   "author": "Vyotiq",
+  "license": "MIT",
   "homepage": "https://vyotiq.com",
   "repository": {
     "type": "git",
