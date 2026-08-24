@@ -11,7 +11,7 @@ import {
 } from 'fs'
 import { dirname, join, relative } from 'path'
 import { createHash, randomUUID } from 'crypto'
-import { resolveInsideWorkspace } from '../workspace/safePath'
+import { realpathIfExists, resolveInsideWorkspace } from '../workspace/safePath'
 import { atomicWriteFile, atomicWriteJson } from '@main/storage/atomicWrite'
 import { logger } from '../../shared/logger'
 import { isPlausibleWorkspaceFilePath } from './loopPolicy'
@@ -71,7 +71,7 @@ function normalizeRelPath(rel: string): string {
 function toCheckpointRelPath(workspaceRoot: string, pathArg: string): string {
   try {
     const resolved = resolveInsideWorkspace(workspaceRoot, pathArg)
-    const rel = normalizeRelPath(relative(workspaceRoot, resolved))
+    const rel = normalizeRelPath(relative(realpathIfExists(workspaceRoot), resolved))
     if (rel && !rel.startsWith('..')) return rel
   } catch {
     /* fall through to slash-normalize */

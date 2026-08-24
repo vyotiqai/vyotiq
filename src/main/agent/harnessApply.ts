@@ -12,7 +12,7 @@ import { promisify } from 'util'
 import type { HarnessApplyResult, HarnessPreviewApplyResult } from '../../shared/ipc'
 import { canonicalizeWorkspacePath } from '../../shared/workspacePath'
 import { atomicWriteFile } from '../storage/atomicWrite'
-import { resolveInsideWorkspace } from '../workspace/safePath'
+import { realpathIfExists, resolveInsideWorkspace } from '../workspace/safePath'
 import { WORKSPACE_HARNESS_REL, workspaceHarnessPath, HARNESS_PROPOSALS_REL, HARNESS_BACKUP_REL } from './harness'
 import { sanitizedTerminalEnv } from './tools/terminal'
 
@@ -170,8 +170,9 @@ export function extractProposedHarnessBody(proposalMarkdown: string): string | n
 }
 
 function toWorkspaceRel(workspacePath: string, absolutePath: string): string {
-  const root = canonicalizeWorkspacePath(workspacePath)
-  const rel = relative(root, absolutePath).replace(/\\/g, '/')
+  const root = realpathIfExists(workspacePath)
+  const abs = realpathIfExists(absolutePath)
+  const rel = relative(root, abs).replace(/\\/g, '/')
   if (!rel || rel.startsWith('..')) {
     throw new Error(`Path escapes workspace: ${absolutePath}`)
   }

@@ -16,6 +16,7 @@ import { parseSkillFrontmatter } from './parse'
 import { isSkillMdFilename, resolveSkillMdPath, SKILL_MD } from './paths'
 import { serializeSkillMarkdown } from '../../../shared/utils/skillMarkdown'
 import { normalizeTrigger } from '../../../shared/slashCommands'
+import { realpathIfExists } from '../../workspace/safePath'
 
 export type LocalSkillSource = 'project' | 'personal'
 export type LocalSkillOrigin = 'vyotiq' | 'cursor'
@@ -252,16 +253,16 @@ export function isAllowedLocalSkillPath(
   }
   if (!isSkillMdFilename(real)) return false
 
-  const personal = resolve(personalSkillsRoot())
+  const personal = realpathIfExists(personalSkillsRoot())
   if (isInsideRoot(real, personal)) return true
 
   const ws = workspacePath?.trim()
   if (!ws) return false
   const projectRoots = [
-    resolve(join(ws, '.vyotiq', 'skills')),
-    resolve(join(ws, '.cursor', 'skills'))
+    join(ws, '.vyotiq', 'skills'),
+    join(ws, '.cursor', 'skills')
   ]
-  return projectRoots.some((root) => isInsideRoot(real, root))
+  return projectRoots.some((root) => isInsideRoot(real, realpathIfExists(root)))
 }
 
 function skillSlug(title?: string): string {

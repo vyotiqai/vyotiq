@@ -68,6 +68,13 @@ jobs:
         run: pnpm exec electron-builder --${{ runner.os == 'Windows' && 'win' || runner.os == 'macOS' && 'mac' || 'linux' }} dir --publish never
 
       - name: GUI e2e
+        if: runner.os != 'Linux'
         run: pnpm test:gui-e2e
+        env:
+          VYOTIQ_E2E_FIXTURE: '1'
+
+      - name: GUI e2e
+        if: runner.os == 'Linux'
+        run: xvfb-run --auto-servernum pnpm test:gui-e2e
         env:
           VYOTIQ_E2E_FIXTURE: '1'

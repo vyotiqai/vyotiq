@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { mkdirSync, rmSync, writeFileSync } from 'fs'
+import { mkdirSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -46,7 +46,7 @@ describe('marketplace safePath', () => {
     const root = join(userData, 'marketplace', 'packages', 'demo', '1.0.0')
     mkdirSync(root, { recursive: true })
     writeFileSync(join(root, 'ok.md'), 'x')
-    expect(resolveInsidePackageRoot(root, 'ok.md')).toBe(join(root, 'ok.md'))
+    expect(resolveInsidePackageRoot(root, 'ok.md')).toBe(realpathSync(join(root, 'ok.md')))
     expect(() => resolveInsidePackageRoot(root, '../escape.md')).toThrow(/Unsafe/)
     expect(() => resolveInsidePackageRoot(root, '/etc/passwd')).toThrow(/Unsafe/)
   })

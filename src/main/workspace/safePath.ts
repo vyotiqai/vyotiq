@@ -18,6 +18,26 @@ export function isInsideRoot(resolved: string, realRoot: string): boolean {
   return resolvedKey === rootKey || resolvedKey.startsWith(rootKey + sep)
 }
 
+/** Resolve symlinks for an existing path, or for the longest existing ancestor. */
+export function realpathIfExists(path: string): string {
+  const canonical = canonicalizeWorkspacePath(path)
+  const tail: string[] = []
+  let probe = canonical
+  while (probe && !existsSync(probe)) {
+    const parent = dirname(probe)
+    if (parent === probe) break
+    tail.unshift(basename(probe))
+    probe = parent
+  }
+  if (!existsSync(probe)) return canonical
+  try {
+    const real = realpathSync(probe)
+    return tail.length ? join(real, ...tail) : real
+  } catch {
+    return canonical
+  }
+}
+
 /**
  * Resolve a workspace-relative path and reject symlink escapes.
  * String containment alone is not enough — a symlink inside the workspace can
