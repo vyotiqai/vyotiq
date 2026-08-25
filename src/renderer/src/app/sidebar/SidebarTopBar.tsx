@@ -82,7 +82,8 @@ export function SidebarCollapsedHeader({
   workspaceReady,
   disabledTitle,
   onToggleSidebar,
-  onNewChat
+  onNewChat,
+  onAddWorkspace
 }: {
   isDrawer: boolean
   isCollapsed: boolean
@@ -91,6 +92,7 @@ export function SidebarCollapsedHeader({
   disabledTitle?: string
   onToggleSidebar: () => void
   onNewChat: () => void
+  onAddWorkspace?: () => void
 }) {
   const headerStyle = isDarwin
     ? isCollapsed
@@ -118,17 +120,29 @@ export function SidebarCollapsedHeader({
           />
         </div>
       </div>
-      <div className="app-region-no-drag">
-        <IconButton
-          icon="plus"
-          label="New chat"
-          size="sm"
-          variant="bare"
-          disabled={!workspaceReady}
-          title={!workspaceReady ? disabledTitle : `New chat (${shortcutLabel('newChat')})`}
-          onClick={onNewChat}
-        />
-      </div>
+        <div className="app-region-no-drag">
+          <IconButton
+            icon="plus"
+            label="New chat"
+            size="sm"
+            variant="bare"
+            disabled={!workspaceReady}
+            title={!workspaceReady ? disabledTitle : `New chat (${shortcutLabel('newChat')})`}
+            onClick={onNewChat}
+          />
+        </div>
+        {onAddWorkspace ? (
+          <div className="app-region-no-drag">
+            <IconButton
+              icon="folderPlus"
+              label="Add workspace"
+              size="sm"
+              variant="bare"
+              title="Add workspace"
+              onClick={onAddWorkspace}
+            />
+          </div>
+        ) : null}
     </header>
   )
 }

@@ -136,9 +136,6 @@ const LANDING_YAML_KEYS = [
   'order',
   'type',
   'audience',
-  'owner',
-  'sources',
-  'lastVerified',
   'related'
 ]
 

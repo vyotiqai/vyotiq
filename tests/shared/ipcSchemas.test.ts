@@ -749,6 +749,8 @@ describe('ipc schemas', () => {
     expect(legacy.notifications).toEqual(DEFAULT_NOTIFICATION_SETTINGS)
     expect(parsed.tabAutocomplete).toBe(true)
     expect(legacy.tabAutocomplete).toBe(true)
+    expect(parsed.toolApproval.mcpProtection).toBe(true)
+    expect(legacy.toolApproval.mcpProtection).toBe(true)
     expect(SetSettingsRequestSchema.parse({ telemetryEnabled: true })).toEqual({
       telemetryEnabled: true
     })
@@ -939,6 +941,7 @@ describe('ipc schemas', () => {
       'github'
     )
     expect(SettingsSchema.parse(DEFAULT_SETTINGS).githubClientId).toBe('')
+    expect(SettingsSchema.parse(DEFAULT_SETTINGS).googleMcpClientId).toBe('')
   })
 
   it('parses pty list/create request schemas', async () => {

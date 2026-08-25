@@ -15,11 +15,15 @@ import {
   clearMcpServerSecrets,
   clearMcpAuthToken,
   clearMcpOAuthState,
+  clearMcpOAuthClientSecret,
+  clearGoogleMcpClientSecret,
+  hasGoogleMcpClientSecret,
   getMcpServerSecrets,
   setMcpAuthToken,
   setMcpServerSecrets,
   type McpServerSecrets
 } from './secrets'
+import { isGoogleMcpId } from '../../shared/mcpApps'
 
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
@@ -641,6 +645,10 @@ export function setSettings(
   if (typeof merged.customOpenAiBaseUrl === 'string') {
     merged.customOpenAiBaseUrl = normalizeCustomOpenAiBaseUrl(merged.customOpenAiBaseUrl)
   }
+  if (partial.mcpServers !== undefined) {
+    const hasGoogle = (merged.mcpServers ?? []).some((s) => isGoogleMcpId(s.id))
+    if (!hasGoogle) merged.googleMcpClientId = ''
+  }
   if (partial.provider !== undefined && partial.model === undefined) {
     merged.model = defaultModelFor(partial.provider)
   }
@@ -674,9 +682,17 @@ export function setSettings(
           clearMcpAuthToken(s.id)
           clearMcpOAuthState(s.id)
           clearMcpServerSecrets(s.id)
+          clearMcpOAuthClientSecret(s.id)
         } catch {
           // best-effort orphan cleanup
         }
+      }
+    }
+    if (!(next.mcpServers ?? []).some((s) => isGoogleMcpId(s.id))) {
+      try {
+        if (hasGoogleMcpClientSecret()) clearGoogleMcpClientSecret()
+      } catch {
+        // best-effort
       }
     }
     try {

@@ -8,7 +8,7 @@ import {
   type MarketplaceIndex,
   type MarketplaceInstalledItem
 } from '../../shared/ipc'
-import { clearMcpAuthToken, clearMcpOAuthState, clearMcpServerSecrets } from '../settings/secrets'
+import { clearMcpAuthToken, clearMcpOAuthState, clearMcpOAuthClientSecret, clearMcpServerSecrets } from '../settings/secrets'
 import { notifySkillsChanged } from '../agent/skills/notify'
 import { marketplaceIndexPath, marketplacePackageDir, marketplaceRoot, resolveInstalledPackageRoot } from './paths'
 import { resolveInsidePackageRoot } from './safePath'
@@ -93,6 +93,7 @@ function clearMcpSecrets(serverId: string): void {
   try {
     clearMcpAuthToken(serverId)
     clearMcpOAuthState(serverId)
+    clearMcpOAuthClientSecret(serverId)
     clearMcpServerSecrets(serverId)
   } catch {
     // ignore

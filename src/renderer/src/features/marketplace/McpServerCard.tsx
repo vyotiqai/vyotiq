@@ -9,6 +9,8 @@ import {
   formatMcpToolNameList,
   parseMcpToolNameList
 } from '@shared/utils/mcpToolPolicy'
+import { isGoogleMcpId, isHostedAppMcpId, mcpOAuthFixedRedirectUrl } from '@shared/mcpApps'
+import { copyText } from '@renderer/lib/markdown/copyText'
 import { mcpArgsToText, mcpEnvToText, mcpTextToArgs, mcpTextToEnv } from './mcpText'
 import { mcpStatusClass, mcpStatusLabel } from './mcpStatus'
 
@@ -19,9 +21,11 @@ export function McpServerCard({
   hideEnable,
   hideRemove,
   workspaceEnabled,
+  googleMcpClientId,
   onUpdate,
   onRemove,
-  onAuthChanged
+  onAuthChanged,
+  onOpenConnect
 }: {
   server: McpServer
   status: McpServerStatus | undefined
@@ -32,10 +36,12 @@ export function McpServerCard({
   hideRemove?: boolean
   /** Workspace Force off for this server; keeps status copy aligned with Browse. */
   workspaceEnabled?: boolean
+  googleMcpClientId?: string
   onUpdate: (next: McpServer) => Promise<boolean>
   onRemove: () => void
   /** Called after Bearer/OAuth auth changes so the parent can refresh MCP status. */
   onAuthChanged?: () => void
+  onOpenConnect?: () => void
 }) {
   const transport = server.transport ?? 'stdio'
   const hasStoredToken = status?.hasAuthToken === true
@@ -46,6 +52,10 @@ export function McpServerCard({
   const [envText, setEnvText] = useState(mcpEnvToText(server.env))
   const [bearerToken, setBearerToken] = useState('')
   const [bearerDirty, setBearerDirty] = useState(false)
+  const [oauthClientId, setOauthClientId] = useState(server.oauthClientId ?? '')
+  const [oauthClientSecret, setOauthClientSecret] = useState('')
+  const [oauthSecretDirty, setOauthSecretDirty] = useState(false)
+  const [redirectCopied, setRedirectCopied] = useState(false)
   const [authError, setAuthError] = useState<string | null>(null)
   const [oauthPending, setOauthPending] = useState(false)
   const [allowedText, setAllowedText] = useState(() =>
@@ -73,7 +83,9 @@ export function McpServerCard({
         ? mcpEnvToText(server.headers)
         : mcpEnvToText(headersWithoutAuthorization(server.headers))
     )
+    setOauthClientId(server.oauthClientId ?? '')
     if (!bearerDirty) setBearerToken('')
+    if (!oauthSecretDirty) setOauthClientSecret('')
     setAuthError(null)
   }, [
     server.id,
@@ -85,7 +97,9 @@ export function McpServerCard({
     server.headers,
     server.allowedTools,
     server.deniedTools,
-    bearerDirty
+    server.oauthClientId,
+    bearerDirty,
+    oauthSecretDirty
   ])
 
   const persist = async (patch: Partial<McpServer>): Promise<void> => {
@@ -203,6 +217,41 @@ export function McpServerCard({
     })()
   }
 
+  const commitOauthClientId = (): void => {
+    const trimmed = oauthClientId.trim()
+    const prev = server.oauthClientId ?? ''
+    if (trimmed === prev) return
+    void persist({ oauthClientId: trimmed || undefined })
+  }
+
+  const commitOauthClientSecret = (): void => {
+    if (!oauthSecretDirty) return
+    const trimmed = oauthClientSecret.trim()
+    void (async () => {
+      setAuthError(null)
+      if (!trimmed) {
+        if (status?.hasOAuthClientSecret && !isGoogleMcpId(server.id)) {
+          const res = await window.vyotiq.mcpClearOAuthClientSecret?.(server.id)
+          if (!res?.ok) {
+            setAuthError(res?.error ?? 'Could not clear client secret')
+            return
+          }
+          onAuthChanged?.()
+        }
+        setOauthSecretDirty(false)
+        return
+      }
+      const res = await window.vyotiq.mcpSetOAuthClientSecret?.(server.id, trimmed)
+      if (!res?.ok) {
+        setAuthError(res?.error ?? 'Could not store client secret securely')
+        return
+      }
+      setOauthClientSecret('')
+      setOauthSecretDirty(false)
+      onAuthChanged?.()
+    })()
+  }
+
   const commitHeaders = (): void => {
     if (hasNonBearerAuthorization(server.headers)) {
       const nextHeaders = mcpTextToEnv(headersText)
@@ -224,6 +273,14 @@ export function McpServerCard({
 
   const isStdio = transport === 'stdio'
   const nonBearerAuth = hasNonBearerAuthorization(server.headers)
+  const google = isGoogleMcpId(server.id)
+  const sharedGoogleClientId = google ? (googleMcpClientId ?? '').trim() : ''
+  const clientIdReady = Boolean(oauthClientId.trim() || sharedGoogleClientId)
+  const secretReady = status?.hasOAuthClientSecret === true
+  const googleSignInBlocked = google && (!clientIdReady || !secretReady)
+  const redirectUrl =
+    status?.oauthRedirectUrl ??
+    (google || clientIdReady ? mcpOAuthFixedRedirectUrl() : null)
 
   return (
     <div className="rounded-md border border-border bg-surface px-3 py-2.5 text-xs">
@@ -332,6 +389,49 @@ export function McpServerCard({
                 if (e.key === 'Enter') e.currentTarget.blur()
               }}
             />
+            {isHostedAppMcpId(server.id) && onOpenConnect ? (
+              <Button variant="subtle" disabled={disabled} onClick={onOpenConnect}>
+                Connect
+              </Button>
+            ) : null}
+            <Input
+              className="w-full font-mono"
+              aria-label={`OAuth client ID for ${server.id}`}
+              placeholder={
+                sharedGoogleClientId
+                  ? 'Client ID (shared Google client is set)'
+                  : 'OAuth client ID (optional)'
+              }
+              disabled={disabled}
+              value={oauthClientId}
+              autoComplete="off"
+              onChange={(e) => setOauthClientId(e.target.value)}
+              onBlur={commitOauthClientId}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+              }}
+            />
+            <Input
+              className="w-full font-mono"
+              type="password"
+              autoComplete="off"
+              aria-label={`OAuth client secret for ${server.id}`}
+              placeholder={
+                secretReady
+                  ? 'Client secret stored securely — enter new value to replace'
+                  : 'OAuth client secret (optional, stored in OS secure storage)'
+              }
+              disabled={disabled}
+              value={oauthClientSecret}
+              onChange={(e) => {
+                setOauthClientSecret(e.target.value)
+                setOauthSecretDirty(true)
+              }}
+              onBlur={commitOauthClientSecret}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') e.currentTarget.blur()
+              }}
+            />
             <Input
               className="w-full font-mono"
               type="password"
@@ -339,8 +439,8 @@ export function McpServerCard({
               aria-label={`Bearer token for ${server.id}`}
               placeholder={
                 hasStoredToken
-                  ? 'Bearer token stored securely — enter new value to replace'
-                  : 'Bearer token (optional, stored in OS secure storage)'
+                  ? 'Bearer / PAT stored securely — enter new value to replace'
+                  : 'Bearer token or PAT (optional, stored in OS secure storage)'
               }
               disabled={disabled}
               value={bearerToken}
@@ -359,12 +459,43 @@ export function McpServerCard({
                 to remove it.
               </p>
             ) : null}
+            {redirectUrl ? (
+              <label className="flex flex-col gap-1 text-caption text-secondary">
+                Redirect URI
+                <div className="flex gap-1.5">
+                  <Input
+                    readOnly
+                    className="font-mono"
+                    aria-label={`OAuth redirect URI for ${server.id}`}
+                    value={redirectUrl}
+                  />
+                  <Button
+                    variant="subtle"
+                    disabled={disabled}
+                    onClick={() => {
+                      void copyText(redirectUrl).then((ok) => {
+                        if (!ok) return
+                        setRedirectCopied(true)
+                        window.setTimeout(() => setRedirectCopied(false), 1200)
+                      })
+                    }}
+                  >
+                    {redirectCopied ? 'Copied' : 'Copy'}
+                  </Button>
+                </div>
+              </label>
+            ) : null}
             {authError ? (
               <p className="m-0 text-caption text-danger [overflow-wrap:anywhere]">{authError}</p>
             ) : null}
             <Button
               variant="subtle"
-              disabled={disabled || oauthPending}
+              disabled={disabled || oauthPending || googleSignInBlocked}
+              title={
+                googleSignInBlocked
+                  ? 'Add a Google Cloud client ID and secret before signing in.'
+                  : undefined
+              }
               onClick={() => {
                 void (async () => {
                   setAuthError(null)
@@ -385,8 +516,9 @@ export function McpServerCard({
               {oauthPending ? 'Signing in…' : 'Sign in with OAuth'}
             </Button>
             <p className="m-0 text-caption text-secondary">
-              Opens your browser for Authorization Code + PKCE. Prefer this when the MCP
-              server uses OAuth instead of a static Bearer token.
+              {googleSignInBlocked
+                ? 'Google Sign in stays disabled until a client ID and stored secret exist.'
+                : 'Opens your browser for Authorization Code + PKCE. Prefer this when the MCP server uses OAuth instead of a static Bearer token.'}
             </p>
             {nonBearerAuth ? (
               <p className="m-0 text-caption text-secondary">

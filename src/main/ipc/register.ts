@@ -2,6 +2,7 @@ import { ipcMain, BrowserWindow, shell, nativeTheme, dialog, app } from 'electro
 import { release as osRelease } from 'os'
 import { ZodError } from 'zod'
 import { IPC } from '../../shared/channels'
+import { isGithubMcpId, isGoogleMcpId } from '../../shared/mcpApps'
 import { toolMessageForIpc } from '../../shared/utils/toolResultIpc'
 import {
   ChatStartRequestSchema,
@@ -106,8 +107,12 @@ import {
   MarketplaceUninstallRequestSchema,
   McpDetectRequestSchema,
   McpClearAuthTokenRequestSchema,
+  McpClearGoogleClientSecretRequestSchema,
+  McpClearOAuthClientSecretRequestSchema,
   McpRefreshRequestSchema,
   McpSetAuthTokenRequestSchema,
+  McpSetGoogleClientSecretRequestSchema,
+  McpSetOAuthClientSecretRequestSchema,
   McpStartOAuthRequestSchema,
   McpStatusRequestSchema,
   McpApplyDetectedRequestSchema,
@@ -191,7 +196,7 @@ import { logger, logErrorSummary } from '../../shared/logger'
 import { pickWorkspace } from '@main/workspace/workspace'
 import { resolveInsideWorkspace } from '@main/workspace/safePath'
 import { getSettings, setSettings, setMarketplaceRemoteInstallAcked, redactSettingsForIpc, enqueueSettingsMutation } from '@main/settings/settings'
-import { syncMcpServers, getMcpServerStatus, refreshMcpServers, startMcpOAuth, setMcpStdioWorkspace } from '@main/agent/mcp'
+import { syncMcpServers, getMcpServerStatus, mcpStatusExtras, refreshMcpServers, startMcpOAuth, setMcpStdioWorkspace } from '@main/agent/mcp'
 import { headersWithoutAuthorization } from '../../shared/utils/mcpAuth'
 import {
   browseCatalog,
@@ -241,6 +246,10 @@ import {
   setMcpAuthToken,
   clearMcpAuthToken,
   clearMcpOAuthState,
+  setMcpOAuthClientSecret,
+  clearMcpOAuthClientSecret,
+  setGoogleMcpClientSecret,
+  clearGoogleMcpClientSecret,
   enqueueSecretsMutation
 } from '@main/settings/secrets'
 import { getChatEventDispatcher, setChatEventUiSubscriptions, addChatEventUiSubscription } from './streamBatch'
@@ -363,6 +372,7 @@ import {
 import {
   cancelGithubAuth,
   githubAuthStatus,
+  linkNativeGithubFromMcpToken,
   logoutGithubAuth,
   onGithubAuthStatus,
   startGithubAuth
@@ -2426,7 +2436,7 @@ export function registerIpc(): void {
         ? findWorkspaceSettingsOverride(workspaces, workspacePath)?.marketplaceOverrides ?? null
         : null
       const servers = resolveEffectiveMcpServers(overrides)
-      return ok({ servers: getMcpServerStatus(servers, workspacePath) })
+      return ok({ servers: getMcpServerStatus(servers, workspacePath), ...mcpStatusExtras() })
     } catch (err) {
       return failFrom(err, IPC.mcpStatus)
     }
@@ -2447,7 +2457,10 @@ export function registerIpc(): void {
         ? findWorkspaceSettingsOverride(workspaces, workspacePath)?.marketplaceOverrides ?? null
         : null
       await refreshMcpServers(resolveMcpServersForSessionMap())
-      return ok({ servers: getMcpServerStatus(resolveEffectiveMcpServers(overrides), workspacePath) })
+      return ok({
+        servers: getMcpServerStatus(resolveEffectiveMcpServers(overrides), workspacePath),
+        ...mcpStatusExtras()
+      })
     } catch (err) {
       return failFrom(err, IPC.mcpRefresh)
     }
@@ -2469,6 +2482,17 @@ export function registerIpc(): void {
         setSettings({ mcpServers: nextServers })
       })
       await syncMcpServers(resolveMcpServersForSessionMap())
+      if (isGithubMcpId(serverId)) {
+        try {
+          await linkNativeGithubFromMcpToken(token)
+        } catch (err) {
+          logger.warn('Could not link native GitHub after MCP PAT', {
+            scope: 'mcp',
+            serverId,
+            err
+          })
+        }
+      }
       return ok(true)
     } catch (err) {
       return failFrom(err, IPC.mcpSetAuthToken)
@@ -2500,14 +2524,87 @@ export function registerIpc(): void {
     }
   })
 
+  ipcMain.handle(IPC.mcpSetOAuthClientSecret, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { serverId, secret } = McpSetOAuthClientSecretRequestSchema.parse(raw)
+      await enqueueSecretsMutation(() => {
+        setMcpOAuthClientSecret(serverId, secret)
+        clearMcpOAuthState(serverId)
+      })
+      invalidateMcpResolveCache()
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.mcpSetOAuthClientSecret)
+    }
+  })
+
+  ipcMain.handle(IPC.mcpClearOAuthClientSecret, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { serverId } = McpClearOAuthClientSecretRequestSchema.parse(raw)
+      await enqueueSecretsMutation(() => {
+        clearMcpOAuthClientSecret(serverId)
+        clearMcpOAuthState(serverId)
+      })
+      invalidateMcpResolveCache()
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.mcpClearOAuthClientSecret)
+    }
+  })
+
+  ipcMain.handle(IPC.mcpSetGoogleClientSecret, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const { secret } = McpSetGoogleClientSecretRequestSchema.parse(raw)
+      await enqueueSecretsMutation(() => {
+        setGoogleMcpClientSecret(secret)
+        const settings = getSettings()
+        for (const server of settings.mcpServers ?? []) {
+          if (isGoogleMcpId(server.id)) clearMcpOAuthState(server.id)
+        }
+      })
+      invalidateMcpResolveCache()
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.mcpSetGoogleClientSecret)
+    }
+  })
+
+  ipcMain.handle(IPC.mcpClearGoogleClientSecret, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      McpClearGoogleClientSecretRequestSchema.parse(raw ?? {})
+      await enqueueSecretsMutation(() => {
+        clearGoogleMcpClientSecret()
+        const settings = getSettings()
+        for (const server of settings.mcpServers ?? []) {
+          if (isGoogleMcpId(server.id)) clearMcpOAuthState(server.id)
+        }
+      })
+      invalidateMcpResolveCache()
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.mcpClearGoogleClientSecret)
+    }
+  })
+
   ipcMain.handle(IPC.mcpStartOAuth, async (event, raw) => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      const { serverId } = McpStartOAuthRequestSchema.parse(raw)
-      await startMcpOAuth(serverId)
+      const parsed = McpStartOAuthRequestSchema.parse(raw)
+      await startMcpOAuth(parsed.serverId, {
+        authScope: parsed.authScope,
+        workspacePath: parsed.workspacePath,
+        googleAccess: parsed.googleAccess
+      })
       invalidateMcpResolveCache()
       await syncMcpServers(resolveMcpServersForSessionMap())
-      return ok({ servers: getMcpServerStatus(resolveEffectiveMcpServers()) })
+      return ok({
+        servers: getMcpServerStatus(resolveEffectiveMcpServers()),
+        ...mcpStatusExtras()
+      })
     } catch (err) {
       return failFrom(err, IPC.mcpStartOAuth)
     }
@@ -2617,11 +2714,18 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.marketplaceUninstall, async (event, raw) => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      const { id } = MarketplaceUninstallRequestSchema.parse(raw)
+      const { id, signOutGithub } = MarketplaceUninstallRequestSchema.parse(raw)
       const index = removeInstalledItem(id)
       await syncMarketplaceMcpIntoSettings()
       invalidateMcpResolveCache()
       await syncMcpServers(resolveMcpServersForSessionMap())
+      if (signOutGithub && isGithubMcpId(id)) {
+        try {
+          await logoutGithubAuth()
+        } catch (err) {
+          logger.warn('GitHub logout after MCP uninstall failed', { scope: 'marketplace', id, err })
+        }
+      }
       return ok(index)
     } catch (err) {
       return failFrom(err, IPC.marketplaceUninstall)

@@ -22,7 +22,19 @@ vi.mock('electron', () => ({
   }
 }))
 
-import { clearSecret, secretStatus, setSecret } from '@main/settings/secrets'
+import {
+  clearGoogleMcpClientSecret,
+  clearMcpOAuthClientSecret,
+  clearSecret,
+  getGoogleMcpClientSecret,
+  getMcpOAuthClientSecret,
+  hasGoogleMcpClientSecret,
+  hasMcpOAuthClientSecret,
+  secretStatus,
+  setGoogleMcpClientSecret,
+  setMcpOAuthClientSecret,
+  setSecret
+} from '@main/settings/secrets'
 
 const secretsFile = join(userData, 'secrets.json')
 
@@ -62,5 +74,23 @@ describe('secrets store', () => {
     expect(typeof parsed.openai).toBe('string')
     expect(parsed.openai.length).toBeGreaterThan(0)
     expect(secretStatus().loadError).toBeUndefined()
+  })
+
+  it('stores MCP OAuth client secrets without writing plaintext', () => {
+    setMcpOAuthClientSecret('gmail', 'google-secret')
+    expect(hasMcpOAuthClientSecret('gmail')).toBe(true)
+    expect(getMcpOAuthClientSecret('gmail')).toBe('google-secret')
+    const parsedSecrets = JSON.parse(readFileSync(secretsFile, 'utf8')) as Record<string, string>
+    expect(JSON.stringify(parsedSecrets)).not.toContain('google-secret')
+    clearMcpOAuthClientSecret('gmail')
+    expect(hasMcpOAuthClientSecret('gmail')).toBe(false)
+
+    setGoogleMcpClientSecret('shared-google-secret')
+    expect(hasGoogleMcpClientSecret()).toBe(true)
+    expect(getGoogleMcpClientSecret()).toBe('shared-google-secret')
+    const after = JSON.parse(readFileSync(secretsFile, 'utf8')) as Record<string, string>
+    expect(JSON.stringify(after)).not.toContain('shared-google-secret')
+    clearGoogleMcpClientSecret()
+    expect(hasGoogleMcpClientSecret()).toBe(false)
   })
 })

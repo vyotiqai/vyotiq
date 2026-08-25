@@ -489,71 +489,7 @@ function isRetriablePublicGetError(err: unknown): boolean {
   return /\bHTTP (429|5\d{2})\b/.test(message)
 }
 
-/** Fetch a public URL and return readable text, size- and time-capped. */
-export async function toolWebFetch(
-  rawUrl: string,
-  options: WebFetchOptions = {},
-  signal?: AbortSignal
-): Promise<string> {
-  return runWithNetworkRetry(() => toolWebFetchOnce(rawUrl, options, signal), {
-    signal,
-    maxAttempts: WEB_FETCH_RETRY_ATTEMPTS,
-    isRetriable: isRetriablePublicGetError,
-    circuitKey: circuitKeyHttp(String(rawUrl ?? '').trim())
-  })
-}
 
-async function toolWebFetchOnce(
-  rawUrl: string,
-  options: WebFetchOptions = {},
-  signal?: AbortSignal
-): Promise<string> {
-  const timeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_TIMEOUT_MS)
-  const maxChars = options.maxChars
-
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  const onParentAbort = (): void => controller.abort()
-  signal?.addEventListener('abort', onParentAbort, { once: true })
-
-  let currentUrl: URL | undefined
-  try {
-    currentUrl = await assertPublicUrl(String(rawUrl ?? '').trim())
-    const { response: res, finalUrl } = await fetchWithValidatedRedirects(currentUrl, controller.signal)
-    currentUrl = finalUrl
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status} ${res.statusText} for ${currentUrl.href}`)
-    }
-
-    const contentType = res.headers.get('content-type') ?? ''
-    if (/^(image|audio|video|application\/(octet-stream|pdf|zip))/i.test(contentType)) {
-      throw new Error(`Unsupported content type ${contentType || 'unknown'} for ${currentUrl.href}`)
-    }
-
-    const buffer = await readBody(res)
-    const body = buffer.toString('utf8')
-    const text = /html/i.test(contentType) ? htmlToMarkdown(body) : body.trim()
-    const clipped =
-      maxChars != null && text.length > maxChars ? `${text.slice(0, maxChars)}\n… (truncated)` : text
-    let spaWarning = /html/i.test(contentType) ? spaShellWarning(clipped) : null
-    if (!spaWarning && /html/i.test(contentType) && clipped.trim().length < 120) {
-      spaWarning =
-        'Warning: static fetch produced little or no readable content (the page may be JavaScript-rendered). ' +
-        'Use browser_snapshot, a direct API/file URL, or a terminal download instead.'
-    }
-    const bodyOut = spaWarning ? `${clipped}\n\n${spaWarning}` : clipped
-
-    return [`# ${currentUrl.href}`, '', bodyOut].join('\n')
-  } catch (err) {
-    if (controller.signal.aborted && !signal?.aborted) {
-      throw new Error(`Timed out after ${timeoutMs}ms fetching ${currentUrl?.href ?? rawUrl}`)
-    }
-    throw err
-  } finally {
-    clearTimeout(timer)
-    signal?.removeEventListener('abort', onParentAbort)
-  }
-}
 
 export type PinnedFetchRequest = {
   method?: string

@@ -4,6 +4,7 @@ import { SITE_BRAND, SITE_PRODUCT } from '../lib/site'
 
 const year = new Date().getFullYear()
 const onDocs = Astro.url.pathname === '/docs' || Astro.url.pathname.startsWith('/docs/')
+const onDocsIndex = Astro.url.pathname === '/docs' || Astro.url.pathname === '/docs/'
 ---
 
 <footer class="border-t border-border">
@@ -15,24 +16,12 @@ const onDocs = Astro.url.pathname === '/docs' || Astro.url.pathname.startsWith('
     </p>
     <nav class="flex flex-wrap items-center gap-x-5 gap-y-2" aria-label="Footer">
       <a
-        class="inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg"
-        href="/#overview"
-      >
-        Overview
-      </a>
-      <a
-        class="inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg"
-        href="/#capabilities"
-      >
-        Capabilities
-      </a>
-      <a
         class:list={[
           'inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg',
           onDocs && 'text-fg'
         ]}
         href="/docs"
-        aria-current={onDocs ? 'page' : undefined}
+        aria-current={onDocsIndex ? 'page' : onDocs ? 'true' : undefined}
       >
         Docs
       </a>
@@ -53,6 +42,12 @@ const onDocs = Astro.url.pathname === '/docs' || Astro.url.pathname.startsWith('
         href="/docs/concepts/privacy-data"
       >
         Privacy
+      </a>
+      <a
+        class="inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg"
+        href="/privacy"
+      >
+        Website privacy
       </a>
       <a
         class="inline-flex min-h-11 min-w-11 items-center justify-center hover:text-fg"

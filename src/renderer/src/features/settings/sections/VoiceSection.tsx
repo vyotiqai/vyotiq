@@ -8,13 +8,14 @@ import type {
   SecretProvider
 } from '@shared/ipc'
 import { DEFAULT_DICTATION_SETTINGS } from '@shared/ipc'
-import { DICTATION_LOCAL_CATALOG, isQwen3AsrModelId } from '@shared/dictation'
+import { DICTATION_LOCAL_CATALOG, isQwen3AsrModelId, isQwen3AsrOnnxModelId } from '@shared/dictation'
 import { Button, Input, Menu, type MenuOption } from '@renderer/lib/ui'
 import { DICTATION_ENGINE_OPTIONS, DICTATION_WAVEFORM_STYLE_OPTIONS } from '../constants'
 import { SettingsField, SettingsGroup, SettingsStack } from '../components/SettingsField'
 
 const WHISPER_MODELS = DICTATION_LOCAL_CATALOG.filter((m) => m.backend === 'whisper')
 const QWEN_MODELS = DICTATION_LOCAL_CATALOG.filter((m) => m.backend === 'qwen3-asr')
+const QWEN_ONNX_MODELS = DICTATION_LOCAL_CATALOG.filter((m) => m.backend === 'qwen3-asr-onnx')
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`
@@ -39,6 +40,8 @@ function engineKeyHint(
       return 'Works offline after a model is installed. English only.'
     case 'qwen3-asr':
       return 'Point this at a running vLLM or qwen-asr-serve endpoint in Settings → Voice.'
+    case 'qwen3-asr-onnx':
+      return 'Downloads community ONNX weights and runs on-device via ONNX Runtime. CPU works; GPU optional.'
     default: {
       const _exhaustive: never = engine
       return _exhaustive
@@ -173,6 +176,9 @@ export function VoiceSection({
       ''
     if (engine === 'qwen3-asr' && !isQwen3AsrModelId(localModelId)) {
       localModelId = QWEN_MODELS[0]?.id ?? ''
+    }
+    if (engine === 'qwen3-asr-onnx' && !isQwen3AsrOnnxModelId(localModelId)) {
+      localModelId = QWEN_ONNX_MODELS[0]?.id ?? ''
     }
     if (engine === 'local' && !WHISPER_MODELS.some((m) => m.id === localModelId)) {
       localModelId = runtime?.loadedModelId || runtime?.installed[0]?.id || WHISPER_MODELS[0]?.id || ''
@@ -319,7 +325,7 @@ export function VoiceSection({
                      <Button
                        type="button"
                        variant="subtle"
-                       disabled={form.formLocked || busy || downloading || dictation.engine === 'qwen3-asr'}
+                       disabled={form.formLocked || busy || downloading || dictation.engine === 'qwen3-asr' || dictation.engine === 'qwen3-asr-onnx'}
                        onClick={() => patchLocalModelId(model.id)}
                      >
                        Use {model.label}
@@ -421,7 +427,7 @@ export function VoiceSection({
                      <Button
                        type="button"
                        variant="subtle"
-                       disabled={form.formLocked || busy || dictation.engine === 'local'}
+                       disabled={form.formLocked || busy || dictation.engine === 'local' || dictation.engine === 'qwen3-asr-onnx'}
                        onClick={() => patchLocalModelId(model.id)}
                      >
                        Use {model.label}

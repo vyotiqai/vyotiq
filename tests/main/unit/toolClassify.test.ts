@@ -7,6 +7,8 @@ import {
   isParallelMutationTool,
   isParallelSafeTool,
   isParallelSpawnTool,
+  MAX_PARALLEL_MUTATION_TOOLS,
+  MAX_PARALLEL_READ_TOOLS,
   parallelLimitForBatchClass,
   parallelMutationPathKey,
   stepToolBatchClass
@@ -169,9 +171,9 @@ describe('tool classify', () => {
     expect(stepToolBatchClass('mcp__fs__read_file')).toBe('serial')
   })
 
-  it('does not cap parallel read or mutation batches', () => {
-    expect(parallelLimitForBatchClass('read')).toBe(Number.POSITIVE_INFINITY)
-    expect(parallelLimitForBatchClass('mutation')).toBe(Number.POSITIVE_INFINITY)
+  it('caps parallel read and mutation batches at the configured limits', () => {
+    expect(parallelLimitForBatchClass('read')).toBe(MAX_PARALLEL_READ_TOOLS)
+    expect(parallelLimitForBatchClass('mutation')).toBe(MAX_PARALLEL_MUTATION_TOOLS)
     expect(parallelLimitForBatchClass('spawn')).toBe(Number.POSITIVE_INFINITY)
     expect(parallelLimitForBatchClass('await')).toBe(Number.POSITIVE_INFINITY)
     expect(parallelLimitForBatchClass('serial')).toBe(1)

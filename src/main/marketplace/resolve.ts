@@ -64,7 +64,11 @@ function settingsMcpFingerprint(): string {
         envFp,
         headerFp,
         allowed,
-        denied
+        denied,
+        s.oauthClientId ?? '',
+        s.authScope ?? '',
+        s.authWorkspacePath ?? '',
+        s.googleAccess ?? ''
       ].join(':')
     })
     .join('|')
@@ -182,6 +186,16 @@ export function resolveEffectiveMcpServers(
                 : {}),
               ...(settingsOverlay.deniedTools?.length
                 ? { deniedTools: settingsOverlay.deniedTools }
+                : {}),
+              ...(settingsOverlay.oauthClientId
+                ? { oauthClientId: settingsOverlay.oauthClientId }
+                : {}),
+              ...(settingsOverlay.authScope ? { authScope: settingsOverlay.authScope } : {}),
+              ...(settingsOverlay.authWorkspacePath
+                ? { authWorkspacePath: settingsOverlay.authWorkspacePath }
+                : {}),
+              ...(settingsOverlay.googleAccess
+                ? { googleAccess: settingsOverlay.googleAccess }
                 : {})
             }
           : {})
@@ -244,6 +258,16 @@ export function resolveEffectiveMcpServers(
             : {}),
           ...(settingsOverlay?.deniedTools?.length
             ? { deniedTools: settingsOverlay.deniedTools }
+            : {}),
+          ...(settingsOverlay?.oauthClientId
+            ? { oauthClientId: settingsOverlay.oauthClientId }
+            : {}),
+          ...(settingsOverlay?.authScope ? { authScope: settingsOverlay.authScope } : {}),
+          ...(settingsOverlay?.authWorkspacePath
+            ? { authWorkspacePath: settingsOverlay.authWorkspacePath }
+            : {}),
+          ...(settingsOverlay?.googleAccess
+            ? { googleAccess: settingsOverlay.googleAccess }
             : {}),
           enabled,
           source: 'marketplace',

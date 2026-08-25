@@ -11,7 +11,15 @@ vi.mock('electron', () => ({
   }
 }))
 
-import { McpServerSchema, VyotiqMcpManifestSchema } from '@shared/ipc'
+import { McpServerSchema, VyotiqMcpManifestSchema, McpStartOAuthRequestSchema } from '@shared/ipc'
+import {
+  GITHUB_MCP_ID,
+  GMAIL_MCP_ID,
+  GOOGLE_CALENDAR_MCP_ID,
+  GOOGLE_DRIVE_MCP_ID,
+  HOSTED_APP_MCP_IDS,
+  isHostedAppMcpId
+} from '@shared/mcpApps'
 import { effectiveMarketplaceEnabled } from '@shared/domain/marketplaceEnablement'
 import { mcpServerConfigKey } from '@main/agent/mcp'
 import { parseSkillFrontmatter } from '@main/agent/skills/parse'
@@ -50,6 +58,41 @@ describe('McpServerSchema transport migration', () => {
     })
     expect(parsed.transport).toBe('http')
     expect(parsed.url).toBe('https://example.com/mcp')
+  })
+
+  it('accepts oauth client id and this-workspace auth scope', () => {
+    const parsed = McpServerSchema.parse({
+      id: 'gmail',
+      name: 'Gmail',
+      transport: 'http',
+      url: 'https://gmailmcp.googleapis.com/mcp/v1',
+      enabled: true,
+      oauthClientId: 'google-client.apps.googleusercontent.com',
+      authScope: 'this-workspace',
+      authWorkspacePath: 'C:\\ws'
+    })
+    expect(parsed.oauthClientId).toBe('google-client.apps.googleusercontent.com')
+    expect(parsed.authScope).toBe('this-workspace')
+    expect(parsed.authWorkspacePath).toBe('C:\\ws')
+  })
+
+  it('accepts googleAccess on MCP servers and start-OAuth payload', () => {
+    const parsed = McpServerSchema.parse({
+      id: 'gmail',
+      name: 'Gmail',
+      transport: 'http',
+      url: 'https://gmailmcp.googleapis.com/mcp/v1',
+      enabled: true,
+      googleAccess: 'read'
+    })
+    expect(parsed.googleAccess).toBe('read')
+    expect(
+      McpStartOAuthRequestSchema.parse({
+        serverId: 'gmail',
+        authScope: 'all-workspaces',
+        googleAccess: 'read-write'
+      }).googleAccess
+    ).toBe('read-write')
   })
 })
 
@@ -455,12 +498,46 @@ describe('bundled marketplace catalog', () => {
       'shipping'
     ])
 
+    const hostedUrls: Record<string, string> = {
+      [GITHUB_MCP_ID]: 'https://api.githubcopilot.com/mcp/',
+      [GMAIL_MCP_ID]: 'https://gmailmcp.googleapis.com/mcp/v1',
+      [GOOGLE_DRIVE_MCP_ID]: 'https://drivemcp.googleapis.com/mcp/v1',
+      [GOOGLE_CALENDAR_MCP_ID]: 'https://calendarmcp.googleapis.com/mcp/v1'
+    }
+    const hostedPublishers: Record<string, string> = {
+      [GITHUB_MCP_ID]: 'GitHub',
+      [GMAIL_MCP_ID]: 'Google',
+      [GOOGLE_DRIVE_MCP_ID]: 'Google',
+      [GOOGLE_CALENDAR_MCP_ID]: 'Google'
+    }
+    const infraRank = catalog.packages.find((p) => p.id === 'filesystem')?.featuredRank
+    expect(infraRank).toEqual(expect.any(Number))
+    for (const id of HOSTED_APP_MCP_IDS) {
+      const entry = catalog.packages.find((p) => p.id === id)
+      expect(entry, id).toBeTruthy()
+      expect(entry!.kind).toBe('mcp')
+      expect(entry!.installable).toBe(true)
+      expect(entry!.verified).toBe(true)
+      expect(entry!.publisher).toBe(hostedPublishers[id])
+      expect(entry!.sections).toEqual(['discover', 'featured'])
+      expect(entry!.featuredRank).toBeLessThan(infraRank!)
+    }
+
     for (const entry of catalog.packages) {
       expect(entry.installable).not.toBe(false)
       expect(entry.bundledPath).toBeTruthy()
       const pkgRoot = join(root, 'packages', entry.bundledPath!)
       if (entry.kind === 'mcp') {
-        expect(existsSync(join(pkgRoot, 'vyotiq.mcp.json'))).toBe(true)
+        const manifestPath = join(pkgRoot, 'vyotiq.mcp.json')
+        expect(existsSync(manifestPath)).toBe(true)
+        const manifest = VyotiqMcpManifestSchema.parse(
+          JSON.parse(readFileSync(manifestPath, 'utf8'))
+        )
+        expect(manifest.id).toBe(entry.id)
+        if (isHostedAppMcpId(entry.id)) {
+          expect(manifest.transport).toBe('http')
+          expect(manifest.url).toBe(hostedUrls[entry.id])
+        }
       } else if (entry.kind === 'skill') {
         expect(
           existsSync(join(pkgRoot, 'SKILL.md')) || existsSync(join(pkgRoot, 'skill.md'))

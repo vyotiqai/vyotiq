@@ -48,7 +48,7 @@ export type ToolStepContext = {
   knownPaths?: Set<string>
   /** Run-scoped paths the agent actually changed (scopes git_commit staging). */
   mutationPaths?: Set<string>
-  /** Present only when the workspace opted into tool approval. */
+  /** Present when tool approval is on, or MCP tools protection is on. */
   approval?: ToolApprovalGate
   /** ChatStart invoke that owns this step; scopes interactive cancel. */
   invokeId?: number

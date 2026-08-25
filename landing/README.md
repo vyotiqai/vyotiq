@@ -1,6 +1,6 @@
 # Agent V site
 
-Static site for Agent V (Vyotiq is the company; Agent V is the product). Astro 7 + Tailwind 4. Client JavaScript is limited to theme toggling and documentation controls.
+Static site for Agent V (Vyotiq is the company; Agent V is the product). Astro 7 + Tailwind 4. Client JavaScript is limited to theme toggling, documentation controls, and emphasizing the matching OS package button when GitHub Release artifacts were baked at build time.
 
 ## Local
 
@@ -38,7 +38,7 @@ Copy landing/.env.example to landing/.env to override the canonical site URL:
 
 PUBLIC_SITE_URL=https://vyotiq.com
 
-That is the only landing public env var. There is no PUBLIC_GITHUB_* (or similar) download/release env, and the site does not fetch GitHub releases or render installer CTAs. Homepage download helpers are not wired; do not restore them.
+Optional cookieless analytics uses PUBLIC_ANALYTICS_SRC and PUBLIC_ANALYTICS_DOMAIN. Leave both unset to ship no tracker. pnpm landing:dev and pnpm landing:build run bake:landing-release first on the build machine, never in the browser. That fetch needs network. If GitHub is unreachable, bake keeps landing/src/lib/github-release.json instead of hiding the homepage download buttons.
 
 ## Brand sync
 

@@ -1,6 +1,6 @@
 ---
 title: MCP servers
-description: Add local or remote MCP servers, configure authentication, inspect catalogs, and control workspace use.
+description: Add local or remote MCP servers, configure bearer or OAuth authentication, inspect catalogs, and control workspace use.
 section: customize
 order: 4
 type: guide

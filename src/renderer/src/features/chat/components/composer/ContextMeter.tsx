@@ -495,7 +495,16 @@ export function ContextMeter({
     }
   }
 
-  if (!alignedUsage || alignedUsage.window <= 0) return null
+  if (!alignedUsage || alignedUsage.window <= 0) {
+    return (
+      <span
+        className="text-caption text-muted"
+        title="Context usage will appear once the model reports token counts"
+      >
+        Context: — / —
+      </span>
+    )
+  }
 
   const { budget, overBudget, ratio, displayPct, level } = usageMetrics(alignedUsage)
   const estimate = alignedUsage.source === 'estimate'

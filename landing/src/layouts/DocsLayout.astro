@@ -3,7 +3,7 @@ import BaseLayout from './BaseLayout.astro'
 import LandingIcon from '../components/LandingIcon.astro'
 import SiteFooter from '../components/SiteFooter.astro'
 import SiteHeader from '../components/SiteHeader.astro'
-import { SITE_BRAND, SITE_PRODUCT, SITE_VERSION } from '../lib/site'
+import { SITE_BRAND, SITE_PRODUCT } from '../lib/site'
 import {
   docsEditHref,
   docsFeedbackHref,
@@ -56,6 +56,7 @@ const onIndex = currentId == null && currentSection == null
 const onSection = currentSection != null
 const context = currentId ? await docsPageContext(currentId) : null
 const typeLabel = type ? TYPE_LABEL[type] : null
+const showType = type === 'quickstart' || type === 'guide'
 const quickstartPage = type === 'quickstart' && currentId === 'start/quickstart'
 const pageUrl = new URL(Astro.url.pathname, Astro.site)
 const structuredData = [
@@ -170,11 +171,10 @@ const structuredData = [
         <h1 id="page-title">{title}</h1>
         <p class="doc-lede">{description}</p>
         {
-          !onIndex && (typeLabel || audience) ? (
+          !onIndex && ((showType && typeLabel) || audience) ? (
             <ul class="docs-page-meta">
-              {typeLabel ? <li>{typeLabel}</li> : null}
+              {showType && typeLabel ? <li>{typeLabel}</li> : null}
               {audience ? <li>{audience}</li> : null}
-              <li>Applies to Agent V {SITE_VERSION}</li>
             </ul>
           ) : null
         }
@@ -229,7 +229,6 @@ const structuredData = [
                 {context.related.map((entry) => (
                   <li>
                     <a href={docsHref(entry.id)}>{entry.data.title}</a>
-                    <span> — {entry.data.description}</span>
                   </li>
                 ))}
               </ul>
@@ -303,7 +302,7 @@ const structuredData = [
     <div class="docs-search-header">
       <div>
         <h2 id="docs-search-title">Search documentation</h2>
-        <p>Search page titles, summaries, headings, and content.</p>
+        <p>Search page titles, summaries, and headings.</p>
       </div>
       <button type="button" data-docs-search-close aria-label="Close documentation search">
         <LandingIcon name="x" size={15} />

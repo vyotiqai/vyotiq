@@ -1,0 +1,61 @@
+---
+import LandingIcon from './LandingIcon.astro'
+import { githubRelease, hasReleaseAssets, RELEASES_PAGE } from '../lib/githubRelease'
+
+const platforms = [
+  { id: 'win', label: 'Download for Windows', asset: githubRelease.assets.win },
+  { id: 'mac', label: 'Download for macOS', asset: githubRelease.assets.mac },
+  { id: 'linux', label: 'Download for Linux', asset: githubRelease.assets.linux }
+] as const
+
+const available = platforms.flatMap((platform) =>
+  platform.asset ? [{ id: platform.id, label: platform.label, asset: platform.asset }] : []
+)
+const showPackages = hasReleaseAssets()
+---
+
+<div class="home-installers" data-release-packages={showPackages ? 'true' : 'false'}>
+  {
+    available.map((platform) => (
+      <a
+        class="btn btn-secondary"
+        data-release-platform={platform.id}
+        href={platform.asset.url}
+        rel="noopener noreferrer"
+      >
+        {platform.label}
+      </a>
+    ))
+  }
+  <a class="home-text-link" href={githubRelease.htmlUrl || RELEASES_PAGE}>
+    GitHub Releases
+    <LandingIcon name="arrow-up-right" />
+  </a>
+  <a class="home-text-link" href="/docs">
+    Read the documentation
+    <LandingIcon name="arrow-up-right" />
+  </a>
+</div>
+
+{
+  showPackages ? (
+    <script is:inline>
+      (function () {
+        var ua = navigator.userAgent
+        var platform = ''
+        if (/Windows NT/i.test(ua)) platform = 'win'
+        else if (!/Android/i.test(ua) && /Linux/i.test(ua)) platform = 'linux'
+        else if (/Mac OS X|Macintosh/i.test(ua)) platform = 'mac'
+        if (!platform) return
+        var match = document.querySelector('[data-release-platform="' + platform + '"]')
+        if (!(match instanceof HTMLElement)) return
+        document.querySelectorAll('[data-release-platform]').forEach(function (link) {
+          link.classList.remove('btn-primary')
+          link.classList.add('btn-secondary')
+        })
+        match.classList.remove('btn-secondary')
+        match.classList.add('btn-primary')
+      })()
+    </script>
+  ) : null
+}

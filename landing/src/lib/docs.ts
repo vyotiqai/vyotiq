@@ -132,7 +132,10 @@ function searchableMarkdown(body: string): string {
   return body
     .replace(/^---[\s\S]*?---/, ' ')
     .replace(/```[\s\S]*?```/g, ' ')
-    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .split('\n')
+    .filter((line) => /^#{1,6}\s+\S/.test(line))
+    .map((line) => line.replace(/^#{1,6}\s+/, ''))
+    .join(' ')
     .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
     .replace(/[`*_>#|~-]/g, ' ')
     .replace(/\s+/g, ' ')

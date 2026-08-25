@@ -131,7 +131,7 @@ export async function listSlashCommands(
       listWorkspaceCommands(workspacePath ?? null),
       listRuleCommands(workspacePath ?? null)
     ])
-    const mcp = listMcpCommands(overrides)
+    const mcp = listMcpCommands(overrides, workspacePath ?? null)
     const commands = mergeByTrigger([BUILTIN_COMMANDS, workspace, skills, rules, mcp])
     setSlashListCacheEntry(key, { commands, expiresAt: Date.now() + LIST_TTL_MS })
     return commands
@@ -195,7 +195,7 @@ export async function resolveSlashCommand(
   }
 
   if (id.startsWith('mcp:') || id.startsWith('mcp-server:')) {
-    const result = resolveMcpCommand(id, trailingText, overrides)
+    const result = resolveMcpCommand(id, trailingText, overrides, workspacePath)
     if (result) return result
   }
 

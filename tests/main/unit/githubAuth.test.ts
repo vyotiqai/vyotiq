@@ -75,6 +75,8 @@ import { clearGithubAccessToken, setGithubAccessToken } from '@main/settings/sec
 import {
   githubAuthStatus,
   injectPendingGithubAuthForTests,
+  isGithubCliUsableToken,
+  linkNativeGithubFromMcpToken,
   onGithubAuthStatus,
   parseGithubOAuthBody,
   pollGithubAuthForTests,
@@ -282,5 +284,41 @@ describe('githubAuth helpers', () => {
     const status = await githubAuthStatus()
     expect(status.pending).toBe(true)
     expect(status.error).toBeNull()
+  })
+
+  it('treats classic PATs as gh-usable and Copilot tokens as not', () => {
+    expect(isGithubCliUsableToken('ghp_abc')).toBe(true)
+    expect(isGithubCliUsableToken('github_pat_abc')).toBe(true)
+    expect(isGithubCliUsableToken('gho_abc')).toBe(true)
+    expect(isGithubCliUsableToken('ya29.copilot-opaque')).toBe(false)
+  })
+
+  it('persists a PAT into native gh without starting device flow', async () => {
+    const result = await linkNativeGithubFromMcpToken('ghp_from_mcp')
+    expect(result).toEqual({ linked: true, startedDeviceFlow: false })
+    expect(vi.mocked(setGithubAccessToken)).toHaveBeenCalledWith('ghp_from_mcp')
+    expect(spawnMock).toHaveBeenCalled()
+  })
+
+  it('starts device flow when MCP OAuth token is not gh-usable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            device_code: 'device-1',
+            user_code: 'WXYZ-9876',
+            verification_uri: 'https://github.com/login/device',
+            expires_in: 900,
+            interval: 5
+          }),
+        headers: { get: () => 'application/json' }
+      })
+    )
+    const result = await linkNativeGithubFromMcpToken('copilot-opaque-token')
+    expect(result.startedDeviceFlow).toBe(true)
+    expect(result.linked).toBe(false)
+    expect(openExternalMock).toHaveBeenCalled()
   })
 })

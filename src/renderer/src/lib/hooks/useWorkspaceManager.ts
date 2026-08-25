@@ -37,6 +37,7 @@ import {
   composerAttachmentKey
 } from './composerAttachmentStore'
 import { pushToast } from '@renderer/lib/ui'
+import { focusComposerMessage } from '@renderer/lib/shortcuts'
 import {
   backgroundRunFinishedMessage,
   finishedBackgroundRuns,
@@ -224,6 +225,8 @@ export type WorkspaceUiSlice = {
   composerDraft: string
   composerDraftByRunId: Record<string, string>
   agentMode: AgentInteractionMode
+  /** Whether this workspace's group is expanded in the sidebar (undefined = default). */
+  expanded?: boolean
 }
 
 const DRAFT_SCROLL_KEY = '__draft__'
@@ -382,7 +385,8 @@ function uiStateFromContext(ctx: WorkspaceContext): WorkspaceUiState {
     }),
     composerDraft: ctx.ui.composerDraft,
     composerDraftByRunId: { ...ctx.ui.composerDraftByRunId },
-    agentMode: ctx.ui.agentMode
+    agentMode: ctx.ui.agentMode,
+    expanded: ctx.ui.expanded
   }
 }
 
@@ -414,7 +418,8 @@ function contextFromRegistry(path: string, registry: WorkspacesState): Workspace
       scrollTopByRunId,
       composerDraft: ui.composerDraft,
       composerDraftByRunId: { ...(ui.composerDraftByRunId ?? {}) },
-      agentMode: ui.agentMode ?? 'agent'
+      agentMode: ui.agentMode ?? 'agent',
+      expanded: ui.expanded
     },
     settingsOverride:
       findSettingsOverride(registry.settingsOverridesByPath, path) ?? null
@@ -1291,7 +1296,8 @@ export function useWorkspaceManager(options?: {
             },
             composerDraft,
             composerDraftByRunId,
-            agentMode: existing.ui.agentMode ?? refUi?.agentMode ?? ui.agentMode ?? 'agent'
+            agentMode: existing.ui.agentMode ?? refUi?.agentMode ?? ui.agentMode ?? 'agent',
+            expanded: existing.ui.expanded ?? refUi?.expanded ?? ui.expanded
           },
           settingsOverride: findSettingsOverride(state.settingsOverridesByPath, path)
         }
@@ -1484,6 +1490,32 @@ export function useWorkspaceManager(options?: {
     ? findByWorkspacePath(contexts, activeWorkspace)
     : null
 
+  /** Persisted sidebar expand/collapse per workspace (defaults to active expanded). */
+  const workspaceExpandedByPath = useMemo(() => {
+    const map: Record<string, boolean> = {}
+    for (const [path, ctx] of Object.entries(contexts)) {
+      map[path] =
+        ctx.ui.expanded ??
+        (activeWorkspace != null && workspacePathsEqual(path, activeWorkspace))
+    }
+    return map
+  }, [contexts, activeWorkspace])
+
+  const setWorkspaceExpanded = useCallback(
+    (path: string, expanded: boolean): void => {
+      const ctx = contextsRef.current[path]
+      if (!ctx || ctx.ui.expanded === expanded) return
+      const nextCtx: WorkspaceContext = {
+        ...ctx,
+        ui: { ...ctx.ui, expanded }
+      }
+      contextsRef.current = { ...contextsRef.current, [path]: nextCtx }
+      setContexts((prev) => ({ ...prev, [path]: nextCtx }))
+      schedulePersistUiState(path, nextCtx)
+    },
+    [schedulePersistUiState]
+  )
+
   useEffect(() => {
     if (paneLayoutHydratedRef.current || !activeWorkspace) return
     paneLayoutHydratedRef.current = true
@@ -1637,6 +1669,9 @@ export function useWorkspaceManager(options?: {
   const switchWorkspace = useCallback(
     async (path: string): Promise<void> => {
       if (!window.vyotiq?.setActiveWorkspace) return
+      // Clicking the already-active workspace name is a no-op; skip the IPC
+      // round-trip, registry re-apply, and chat-surface epoch bump.
+      if (activeWorkspace && workspacePathsEqual(activeWorkspace, path)) return
       if (activeWorkspace) flushPersistUiState(activeWorkspace)
       const reqId = ++switchReqIdRef.current
       const res = await window.vyotiq.setActiveWorkspace(path)
@@ -1691,11 +1726,36 @@ export function useWorkspaceManager(options?: {
           })
           void refreshRuns(p)
         }
+        // Mirror switchWorkspace: load the newly active workspace's active run
+        // transcript. Main reuses a persisted activeRunId on re-add, so without
+        // this the chat pane would point at a run with no hydrated transcript.
+        const addedActive = res.data.activePath
+        if (addedActive) {
+          const ctx = contextsRef.current[addedActive]
+          const visibleRunId = ctx?.activeRunId ?? null
+          if (visibleRunId) {
+            const ctrl = ensureController(addedActive, visibleRunId)
+            if (!ctrl.running && !ctrl.pendingRun && ctrl.items.length === 0) {
+              void loadRunTranscript(addedActive, visibleRunId, { allowAutoResume: true })
+            }
+            void ctrl.resumeUiIfNeeded()
+          }
+          setChatSurfaceEpoch((t) => t + 1)
+          setScrollRestoreToken((t) => t + 1)
+          // Fresh workspace (no prior active run) → land on a new chat with the
+          // composer focused, mirroring onNewChat. Re-added workspaces with an
+          // existing active run keep focus on reviewing that run.
+          if (!visibleRunId) {
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => focusComposerMessage())
+            )
+          }
+        }
       } else {
         setWorkspaceError(res.error)
       }
     },
-    [applyRegistry, refreshRuns]
+    [applyRegistry, ensureController, loadRunTranscript, refreshRuns]
   )
 
   const removeWorkspace = useCallback(
@@ -2452,6 +2512,8 @@ export function useWorkspaceManager(options?: {
     switchWorkspace,
     addWorkspace,
     removeWorkspace,
+    workspaceExpandedByPath,
+    setWorkspaceExpanded,
     getRunController,
     loadRunIntoTab,
     openRunTab,

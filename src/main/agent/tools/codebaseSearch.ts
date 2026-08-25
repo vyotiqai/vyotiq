@@ -1,8 +1,12 @@
 import { runCodebaseSearch } from '../codeindex'
 import type { CodebaseSearchMode, CodeIndexEmbedderId } from '../codeindex'
 import { DEFAULT_SEARCH_LIMIT, isHashEmbedderModelId } from '../codeindex/types'
+import { logger } from '../../../shared/logger'
 
 export { DEFAULT_SEARCH_LIMIT as CODEBASE_SEARCH_DEFAULT_LIMIT }
+
+/** Warn once per process when semantic search silently degrades to lexical/hash. */
+let hashFallbackWarned = false
 
 /** Hybrid semantic + lexical codebase search over the local index. */
 export async function toolCodebaseSearch(
@@ -39,6 +43,12 @@ export async function toolCodebaseSearch(
     status.modelId.trim() !== '' &&
     queryModelId !== status.modelId
   const lexicalOnly = hashFallback || queryIndexMismatch
+  if (hashFallback && !hashFallbackWarned) {
+    hashFallbackWarned = true
+    logger.warn('codeindex: semantic embeddings unavailable — results are lexical/hash only', {
+      scope: 'codeindex'
+    })
+  }
   const fallbackNote = hashFallback ? ' · fallback=hash' : queryIndexMismatch ? ' · lexical-only' : ''
   const header = `index: ${status.chunkCount} chunks / ${status.fileCount} files · model=${status.modelId}${fallbackNote} · hits=${hits.length}`
   if (lexicalOnly) {

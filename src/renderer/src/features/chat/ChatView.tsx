@@ -1576,6 +1576,29 @@ export function ChatView({
           </div>
         ) : (
           <>
+            {!dockImmersive && paneCount === 1 && onOpenRunTab && agentSessionTabs.length > 1 ? (
+              <div
+                className="flex h-9 shrink-0 items-center border-b border-border/40 px-2"
+                data-chat-session-tabs
+              >
+                <AgentSessionBar
+                  sessions={agentSessionTabs}
+                  activeId={activeRunId}
+                  onSelect={(runId) => {
+                    closeInstancePane()
+                    onOpenRunTab(runId)
+                  }}
+                  onClose={(id) => {
+                    closeInstancePane()
+                    onCloseRunTab?.(id)
+                  }}
+                  onCreate={() => {
+                    closeInstancePane()
+                    onOpenRunTab(null)
+                  }}
+                />
+              </div>
+            ) : null}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">{agentColumn}</div>
             {activeRightPanel ? (
               <>

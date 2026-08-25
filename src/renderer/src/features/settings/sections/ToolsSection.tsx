@@ -100,6 +100,25 @@ export function ToolsSection({ form }: { form: SettingsFormState }) {
             ) : null}
           </div>
         </SettingsField>
+
+        <SettingsField
+          id="mcp-tools-protection"
+          title="MCP tools protection"
+          hint="Ask before the agent runs tools from connected MCP servers, even when tool approval is off."
+          help="Applies to mcp__* server tools. Built-in MCP catalog tools (list, pin, release) follow tool approval. Off = MCP tools follow the global tool approval mode only."
+        >
+          <Switch
+            size="md"
+            checked={form.toolApproval.mcpProtection !== false}
+            disabled={form.formLocked}
+            label="MCP tools protection"
+            onCheckedChange={(checked) => {
+              void form.runAgentUpdate({
+                toolApproval: { ...form.toolApproval, mcpProtection: checked }
+              })
+            }}
+          />
+        </SettingsField>
       </SettingsGroup>
 
       <SettingsGroup title="Terminal">

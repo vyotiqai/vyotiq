@@ -15,9 +15,10 @@ export type RunTestsResult = { ok: boolean; command: string; content: string }
 /**
  * Resolve what command to run: an explicit (sandboxed) command, a named package
  * script, or the workspace test script. Mirrors how `diagnostics` resolves its
- * command but defaults to the project's test runner.
+ * command but defaults to the project's test runner. Returns null when no
+ * explicit command/script was given and the workspace declares no test script.
  */
-function resolveTestCommand(workspace: string, command?: string, script?: string): string {
+function resolveTestCommand(workspace: string, command?: string, script?: string): string | null {
   const override = (command ?? '').trim()
   if (override) return override
   const scripts = packageScripts(workspace)
@@ -25,7 +26,7 @@ function resolveTestCommand(workspace: string, command?: string, script?: string
   const named = (script ?? '').trim()
   if (named) return `${pm} run ${named}`
   if (scripts.test) return `${pm} run test`
-  return `${pm} test`
+  return null
 }
 
 export async function toolRunTestsAsync(
@@ -33,11 +34,20 @@ export async function toolRunTestsAsync(
   args: Record<string, unknown>,
   signal: AbortSignal
 ): Promise<RunTestsResult> {
-  const command = resolveTestCommand(
+  const resolved = resolveTestCommand(
     workspace,
     typeof args.command === 'string' ? args.command : undefined,
     typeof args.script === 'string' ? args.script : undefined
   )
+  if (!resolved) {
+    return {
+      ok: true,
+      command: '',
+      content:
+        'No test runner detected (no package.json test script); tests skipped. Pass an explicit sandboxed `command` to run project tests.'
+    }
+  }
+  const command = resolved
   if (signal.aborted) throw abortError()
 
   let bin: string

@@ -61,6 +61,14 @@ jobs:
       - name: Build landing site
         run: pnpm landing:build
 
+      - name: Check landing site
+        if: runner.os == 'Linux'
+        run: pnpm landing:check
+
+      - name: Audit landing site
+        if: runner.os == 'Linux'
+        run: pnpm landing:audit
+
       - name: Dependency audit
         run: pnpm audit --audit-level high
 

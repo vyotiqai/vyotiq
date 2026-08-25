@@ -280,6 +280,12 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     section: 'tools'
   },
   {
+    id: 'mcp-tools-protection',
+    title: 'MCP tools protection',
+    keywords: ['mcp', 'approval', 'tools', 'protection', 'servers'],
+    section: 'tools'
+  },
+  {
     id: 'terminal-shell',
     title: 'Terminal shell',
     keywords: ['shell', 'powershell', 'bash', 'cmd', 'terminal'],

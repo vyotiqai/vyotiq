@@ -10,15 +10,27 @@ import type {
   OAuthTokens
 } from '@modelcontextprotocol/sdk/shared/auth.js'
 import {
+  GMAIL_MCP_ID,
+  GOOGLE_ACCESS_READ,
+  GOOGLE_CALENDAR_MCP_ID,
+  GOOGLE_DRIVE_MCP_ID,
+  MCP_OAUTH_CALLBACK_PATH,
+  isGoogleMcpId,
+  mcpOAuthCallbackUrl,
+  mcpOAuthFixedPortBusyMessage,
+  type GoogleMcpAccess,
+  type GoogleMcpId
+} from '../../../shared/mcpApps'
+import {
   clearMcpOAuthState,
   getMcpOAuthState,
   patchMcpOAuthState,
   setMcpOAuthState,
   type McpOAuthStoredState
 } from '../../settings/secrets'
+import type { McpOAuthStaticClient } from './oauthStaticClient'
 import { logger } from '../../../shared/logger'
 
-const CALLBACK_PATH = '/oauth/callback'
 const CALLBACK_TIMEOUT_MS = 5 * 60_000
 
 type PendingAuth = {
@@ -85,18 +97,30 @@ function htmlPage(title: string, body: string): string {
 
 /**
  * Start a one-shot localhost HTTP server to receive the OAuth redirect.
- * Returns the redirect URL (http://127.0.0.1:<port>/oauth/callback).
+ * Random port when `fixedPort` is omitted (GitHub DCR). Fixed port when static
+ * client credentials are present — no silent fallback if that port is taken.
  */
-export async function beginMcpOAuthCallback(serverId: string): Promise<{
+export async function beginMcpOAuthCallback(
+  serverId: string,
+  opts?: { fixedPort?: number }
+): Promise<{
   redirectUrl: string
   waitForCode: () => Promise<string>
 }> {
   cancelMcpOAuthCallback(serverId, new Error('OAuth callback superseded'))
 
+  const requestedPort = opts?.fixedPort
   const server = createServer()
   const listenPort = await new Promise<number>((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, '127.0.0.1', () => {
+    server.once('error', (err) => {
+      const code = (err as NodeJS.ErrnoException).code
+      if (requestedPort != null && code === 'EADDRINUSE') {
+        reject(new Error(mcpOAuthFixedPortBusyMessage(requestedPort)))
+        return
+      }
+      reject(err)
+    })
+    server.listen(requestedPort ?? 0, '127.0.0.1', () => {
       const addr = server.address()
       if (!addr || typeof addr === 'string') {
         reject(new Error('Failed to bind OAuth callback server'))
@@ -106,7 +130,7 @@ export async function beginMcpOAuthCallback(serverId: string): Promise<{
     })
   })
 
-  const redirectUrl = `http://127.0.0.1:${listenPort}${CALLBACK_PATH}`
+  const redirectUrl = mcpOAuthCallbackUrl(listenPort)
 
   let settleCode: ((code: string) => void) | null = null
   let settleErr: ((err: Error) => void) | null = null
@@ -136,7 +160,7 @@ export async function beginMcpOAuthCallback(serverId: string): Promise<{
         return
       }
       const url = new URL(req.url ?? '/', redirectUrl)
-      if (url.pathname !== CALLBACK_PATH) {
+      if (url.pathname !== MCP_OAUTH_CALLBACK_PATH) {
         res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' })
         res.end(htmlPage('Not found', 'Unexpected path.'))
         return
@@ -198,15 +222,52 @@ export type VyotiqMcpOAuthProvider = OAuthClientProvider & {
   readonly redirectUrl: string
 }
 
+export type { McpOAuthStaticClient } from './oauthStaticClient'
+
+/** Documented Gmail/Drive/Calendar MCP consent scopes (Google Workspace MCP servers). */
+const GOOGLE_MCP_READ_SCOPES: Record<GoogleMcpId, readonly string[]> = {
+  [GMAIL_MCP_ID]: ['https://www.googleapis.com/auth/gmail.readonly'],
+  [GOOGLE_DRIVE_MCP_ID]: ['https://www.googleapis.com/auth/drive.readonly'],
+  [GOOGLE_CALENDAR_MCP_ID]: [
+    'https://www.googleapis.com/auth/calendar.calendarlist.readonly',
+    'https://www.googleapis.com/auth/calendar.events.freebusy',
+    'https://www.googleapis.com/auth/calendar.events.readonly'
+  ]
+}
+
+const GOOGLE_MCP_WRITE_SCOPES: Record<GoogleMcpId, readonly string[]> = {
+  [GMAIL_MCP_ID]: ['https://www.googleapis.com/auth/gmail.compose'],
+  [GOOGLE_DRIVE_MCP_ID]: ['https://www.googleapis.com/auth/drive.file'],
+  [GOOGLE_CALENDAR_MCP_ID]: ['https://www.googleapis.com/auth/calendar.events']
+}
+
+/** Space-separated OAuth `scope` for Google MCP, or undefined for non-Google servers. */
+export function googleMcpOAuthScope(
+  serverId: string,
+  googleAccess?: GoogleMcpAccess | null
+): string | undefined {
+  if (!isGoogleMcpId(serverId)) return undefined
+  const read = GOOGLE_MCP_READ_SCOPES[serverId]
+  const write =
+    googleAccess === GOOGLE_ACCESS_READ ? [] : GOOGLE_MCP_WRITE_SCOPES[serverId]
+  return [...read, ...write].join(' ')
+}
+
 /**
  * MCP SDK OAuthClientProvider backed by Electron safeStorage.
  * Uses a localhost redirect URL for the Authorization Code + PKCE flow.
+ * When `staticClient` is set, `clientInformation()` returns it and DCR is skipped.
+ * Google MCP sets `clientMetadata.scope` from `googleAccess` (readonly vs full MCP scopes).
  */
 export function createMcpOAuthProvider(
   serverId: string,
-  redirectUrl: string
+  redirectUrl: string,
+  opts?: { staticClient?: McpOAuthStaticClient; googleAccess?: GoogleMcpAccess }
 ): VyotiqMcpOAuthProvider {
   const read = (): McpOAuthStoredState => getMcpOAuthState(serverId) ?? {}
+  const staticClient = opts?.staticClient
+  const confidential = Boolean(staticClient?.client_secret)
+  const scope = googleMcpOAuthScope(serverId, opts?.googleAccess)
 
   return {
     serverId,
@@ -219,10 +280,17 @@ export function createMcpOAuthProvider(
         redirect_uris: [redirectUrl],
         grant_types: ['authorization_code', 'refresh_token'],
         response_types: ['code'],
-        token_endpoint_auth_method: 'none'
+        token_endpoint_auth_method: confidential ? 'client_secret_post' : 'none',
+        ...(scope ? { scope } : {})
       }
     },
     clientInformation(): OAuthClientInformationMixed | undefined {
+      if (staticClient) {
+        return {
+          client_id: staticClient.client_id,
+          ...(staticClient.client_secret ? { client_secret: staticClient.client_secret } : {})
+        } as OAuthClientInformationMixed
+      }
       const info = read().clientInformation
       return info as OAuthClientInformationMixed | undefined
     },

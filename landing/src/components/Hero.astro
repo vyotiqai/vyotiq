@@ -1,6 +1,6 @@
 ---
 import { SITE_PRODUCT } from '../lib/site'
-import LandingIcon from './LandingIcon.astro'
+import ReleaseInstallers from './ReleaseInstallers.astro'
 ---
 
 <section id="overview" class="home-hero wrap" aria-labelledby="home-title">
@@ -8,17 +8,9 @@ import LandingIcon from './LandingIcon.astro'
     <p class="home-eyebrow">{SITE_PRODUCT}</p>
     <h1 id="home-title">Understand, change, and review real repositories.</h1>
     <p>
-      Work with repository context, editing, terminal, browser, and Git tools in one coding
-      workspace.
+      Open a local repository, pick a configured model, and keep the current run in one window.
     </p>
-    <a class="home-text-link" href="https://github.com/vyotiqai/vyotiq-agent-v/releases/latest">
-      GitHub Releases
-      <LandingIcon name="arrow-up-right" />
-    </a>
-    <a class="home-text-link" href="/docs">
-      Read the documentation
-      <LandingIcon name="arrow-up-right" />
-    </a>
+    <ReleaseInstallers />
   </div>
 </section>
 

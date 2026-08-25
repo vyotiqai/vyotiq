@@ -31,10 +31,21 @@ const LANDING_SOURCE = join(REPO, 'landing', 'src')
 const HOMEPAGE_COMPONENTS = [
   'pages/index.astro',
   'components/Hero.astro',
+  'components/ReleaseInstallers.astro',
   'components/FeatureGrid.astro',
   'components/ProviderMarks.astro',
   'components/SiteHeader.astro',
   'components/SiteFooter.astro'
+] as const
+
+const DOC_SECTIONS = [
+  'start',
+  'agent',
+  'customize',
+  'tools',
+  'concepts',
+  'reference',
+  'troubleshooting'
 ] as const
 
 const SECTION_COUNTS = {
@@ -145,13 +156,14 @@ function themeTokens(css: string, selector: RegExp): Record<string, string> {
 describe('landing docs architecture and truth', () => {
   const files = collectMarkdown(ROOT).sort()
   const ids = new Set(files.map(docsId))
-  const canonicalRoutes = ['/docs', ...files.map((file) => `/docs/${docsId(file)}`)]
 
-  it('ships all 45 canonical docs routes with unique section ordering', () => {
+  it('ships docs index, section landings, and article routes with unique section ordering', () => {
     expect(existsSync(DOCS_INDEX)).toBe(true)
     expect(files).toHaveLength(44)
-    expect(canonicalRoutes).toHaveLength(45)
-    expect(new Set(canonicalRoutes).size).toBe(45)
+    const sectionRoutes = DOC_SECTIONS.map((section) => `/docs/${section}`)
+    const canonicalRoutes = ['/docs', ...sectionRoutes, ...files.map((file) => `/docs/${docsId(file)}`)]
+    expect(canonicalRoutes).toHaveLength(52)
+    expect(new Set(canonicalRoutes).size).toBe(52)
     expect(canonicalRoutes).toContain('/docs')
     expect(canonicalRoutes).toContain('/docs/start/quickstart')
     for (const [section, count] of Object.entries(SECTION_COUNTS)) {
@@ -184,9 +196,6 @@ describe('landing docs architecture and truth', () => {
         scalar(text, 'type')
       )
       expect(scalar(text, 'audience'), `${file} audience`).not.toBe('')
-      expect(scalar(text, 'owner'), `${file} owner`).not.toBe('')
-      expect(scalar(text, 'lastVerified'), `${file} lastVerified`).toMatch(/^\d+\.\d+\.\d+$/)
-      expect(list(text, 'sources').length, `${file} sources`).toBeGreaterThan(0)
       expect(text, `${file} placeholder`).not.toMatch(/\bTODO\s*:|\bTBD\b|\bComing soon\b/i)
       expect((text.match(/^## /gm) ?? []).length, `${file} content depth`).toBeGreaterThanOrEqual(2)
     }
@@ -221,7 +230,7 @@ describe('landing docs architecture and truth', () => {
     const layout = readFileSync(join(REPO, 'landing', 'src', 'layouts', 'DocsLayout.astro'), 'utf8')
     expect(library).toContain('title: entry.data.title')
     expect(library).toContain('description: entry.data.description')
-    expect(library).toContain('searchableMarkdown(entry.body)')
+    expect(library).toContain('searchableMarkdown(entry.body ?? \'\')')
     expect(layout).toContain('data-docs-search-open')
     expect(layout).toContain('data-docs-search-input')
     expect(layout).toContain('event.key.toLowerCase()')
@@ -231,7 +240,7 @@ describe('landing docs architecture and truth', () => {
     expect(layout).toContain('rel="next"')
   })
 
-  it('sets docs chrome aria-current only on the docs index', () => {
+  it('marks Docs as the current site section without claiming every article is the index', () => {
     const header = readFileSync(join(LANDING_SOURCE, 'components', 'SiteHeader.astro'), 'utf8')
     const footer = readFileSync(join(LANDING_SOURCE, 'components', 'SiteFooter.astro'), 'utf8')
     expect(header).toContain(
@@ -240,8 +249,8 @@ describe('landing docs architecture and truth', () => {
     expect(footer).toContain(
       "const onDocsIndex = Astro.url.pathname === '/docs' || Astro.url.pathname === '/docs/'"
     )
-    expect(header).toContain("aria-current={onDocsIndex ? 'page' : undefined}")
-    expect(footer).toContain("aria-current={onDocsIndex ? 'page' : undefined}")
+    expect(header).toContain("aria-current={onDocsIndex ? 'page' : onDocs ? 'true' : undefined}")
+    expect(footer).toContain("aria-current={onDocsIndex ? 'page' : onDocs ? 'true' : undefined}")
     expect(header).not.toContain("aria-current={onDocs ? 'page' : undefined}")
     expect(footer).not.toContain("aria-current={onDocs ? 'page' : undefined}")
   })
@@ -326,7 +335,7 @@ describe('landing docs architecture and truth', () => {
     expect(hero).toContain('id="overview"')
     expect(features).toContain('id="capabilities"')
     const sectionTitles = [
-      'One place to understand, change, and review a repository.',
+      'Files, terminal, browser, and Git stay on the same task.',
       'Choose how the agent works.',
       'Stay oriented as the task grows.',
       'Use the models you configure.',
@@ -374,7 +383,8 @@ describe('landing docs architecture and truth', () => {
 
     expect(hero.match(/<h1\b/g)).toHaveLength(1)
     expect(hero.match(/<p\b/g)).toHaveLength(2)
-    expect(hero.match(/<a\b/g)).toHaveLength(2)
+    expect(hero.match(/<a\b/g) ?? []).toHaveLength(0)
+    expect(hero).toContain('<ReleaseInstallers />')
     expect(hero).toContain('home-eyebrow')
     expect(hero).toContain('{SITE_PRODUCT}')
     expect(hero).not.toContain('{SITE_BRAND} {SITE_PRODUCT}')
@@ -451,9 +461,11 @@ describe('landing docs architecture and truth', () => {
     expect(site).toContain("'Agent V brings")
     expect(layout).toContain('`${SITE_PRODUCT} — ${SITE_TAGLINE}`')
     expect(layout).toContain('const siteName = SITE_PRODUCT')
+    expect(layout).toContain('includeProductSchema')
+    expect(layout).toContain("Astro.url.pathname === '/'")
     expect(docsLayout).toContain('`${title} — ${SITE_PRODUCT}`')
-    expect(docsLayout).toContain('Agent V {lastVerified}')
-    expect(docsLayout).not.toMatch(/<dd>Vyotiq \{lastVerified\}<\/dd>/)
+    expect(docsLayout).not.toContain('lastVerified')
+    expect(docsLayout).not.toMatch(/Vyotiq \{lastVerified\}/)
     expect(llms).toContain('const product = SITE_PRODUCT')
     expect(llms).toContain('# ${product} documentation')
 
@@ -488,14 +500,16 @@ describe('landing docs architecture and truth', () => {
       expect(marketplace).toContain(label)
     }
     expect(install).toContain('https://github.com/vyotiqai/vyotiq-agent-v/releases/latest')
+    expect(install).toContain('download buttons for each installer on the latest GitHub Release')
     expect(install).toContain('`pnpm pack:win`')
     expect(install).toContain('`pnpm pack:mac`')
     expect(install).toContain('`pnpm pack:linux`')
     expect(install).not.toMatch(/the Vyotiq download page/i)
     expect(install).not.toMatch(/\b43 tools\b/i)
     const docsIndex = readFileSync(DOCS_INDEX, 'utf8')
-    expect(docsIndex).toContain('<strong>Install Agent V</strong>')
-    expect(docsIndex).not.toMatch(/<strong>Install Vyotiq<\/strong>/)
+    expect(docsIndex).toContain('docsHref(entry.id)')
+    expect(docsIndex).not.toContain('docs-start-grid')
+    expect(docsIndex).not.toMatch(/Install Vyotiq/)
     const features = readFileSync(join(LANDING_SOURCE, 'components', 'FeatureGrid.astro'), 'utf8')
     expect(features).toContain('Agent V keeps the state')
     expect(features).not.toMatch(/\bVyotiq keeps\b/)
@@ -583,7 +597,6 @@ describe('landing docs architecture and truth', () => {
       ['no telemetry', /\bno telemetry\b/i],
       ['no cloud', /\bno cloud\b/i],
       ['everything local', /\beverything stays local\b/i],
-      ['public installer', /\b(?:public )?(?:installer|download)\b/i],
       ['default provider', /\bdefault provider\b/i],
       ['universal undo', /\b(?:undo|reverse) (?:everything|all)\b/i],
       ['universal compatibility', /\b(?:all|every|universal(?:ly)?) OpenAI-compatible\b/i],
@@ -603,6 +616,12 @@ describe('landing docs architecture and truth', () => {
     expect(source).toContain('optional domain allowlist')
     expect(source).toContain('.vyotiq/memory/')
     expect(source).toContain('separate from memory')
+    expect(source).toContain('GitHub Releases')
+    expect(source).toContain('data-release-platform')
+    expect(source).toContain('Download for Windows')
+    expect(source).toContain('Download for macOS')
+    expect(source).toContain('Download for Linux')
+    expect(source).not.toMatch(/api\.github\.com/)
 
     for (const rel of [
       'components/DownloadSection.astro',
@@ -613,8 +632,32 @@ describe('landing docs architecture and truth', () => {
     ]) {
       expect(existsSync(join(LANDING_SOURCE, rel)), `${rel} should be removed`).toBe(false)
     }
+    expect(existsSync(join(LANDING_SOURCE, 'components', 'ReleaseInstallers.astro'))).toBe(true)
+    expect(existsSync(join(LANDING_SOURCE, 'lib', 'githubRelease.ts'))).toBe(true)
+    expect(existsSync(join(REPO, 'landing', 'scripts', 'bake-github-release.mjs'))).toBe(true)
+    expect(existsSync(join(LANDING_SOURCE, 'lib', 'github-release.json'))).toBe(true)
+    const snapshot = JSON.parse(
+      readFileSync(join(LANDING_SOURCE, 'lib', 'github-release.json'), 'utf8')
+    ) as { assets?: Record<string, { url?: string }> }
+    expect(snapshot.assets?.win?.url).toMatch(
+      /^https:\/\/github\.com\/vyotiqai\/vyotiq-agent-v\/releases\/download\//
+    )
+    expect(snapshot.assets?.mac?.url).toMatch(
+      /^https:\/\/github\.com\/vyotiqai\/vyotiq-agent-v\/releases\/download\//
+    )
+    expect(snapshot.assets?.linux?.url).toMatch(
+      /^https:\/\/github\.com\/vyotiqai\/vyotiq-agent-v\/releases\/download\//
+    )
+    expect(readFileSync(join(REPO, '.gitignore'), 'utf8')).not.toContain(
+      'landing/src/lib/github-release.json'
+    )
+    const bake = readFileSync(join(REPO, 'landing', 'scripts', 'bake-github-release.mjs'), 'utf8')
+    expect(bake).toContain('preferExistingSnapshot')
+    expect(bake).toContain('keeping previously baked')
+    expect(readFileSync(join(REPO, 'electron-builder.yml'), 'utf8')).toContain('releaseType: release')
     expect(existsSync(join(REPO, 'scripts', 'capture-landing-product.mjs'))).toBe(false)
     expect(readFileSync(join(REPO, 'package.json'), 'utf8')).not.toContain('capture:landing')
+    expect(readFileSync(join(REPO, 'package.json'), 'utf8')).not.toContain('PUBLIC_GITHUB_')
   })
 
   it('meets text and boundary contrast thresholds in both themes', () => {
@@ -647,7 +690,57 @@ describe('landing docs architecture and truth', () => {
     const landingReadme = readFileSync(join(REPO, 'landing', 'README.md'), 'utf8')
     expect(landingReadme.replace(/^# .*\n/, '')).not.toMatch(/^\s*---\s*$/m)
     expect(readDoc('agent/modes.md')).toContain('| Need | Mode | Boundary |')
-    expect(readDoc('reference/settings.md')).toMatch(/^- Active model —/m)
+    expect(readDoc('reference/settings.md')).toMatch(/^\| Control \| Options and notes \|/m)
+  })
+
+  it('uses shorter sidebar labels and quickstart step chrome', () => {
+    const library = readFileSync(join(REPO, 'landing', 'src', 'lib', 'docs.ts'), 'utf8')
+    const layout = readFileSync(join(REPO, 'landing', 'src', 'layouts', 'DocsLayout.astro'), 'utf8')
+    const css = readFileSync(join(REPO, 'landing', 'src', 'styles', 'global.css'), 'utf8')
+    const header = readFileSync(join(LANDING_SOURCE, 'components', 'SiteHeader.astro'), 'utf8')
+    const quickstart = readDoc('start/quickstart.md')
+
+    expect(library).toContain('export function docsNavTitle')
+    expect(library).toContain("'start/quickstart': 'Quickstart'")
+    expect(library).toContain('export function docsSectionHref')
+    expect(library).toContain('export function docsEditHref')
+    expect(layout).toContain('docsNavTitle(entry.id, entry.data.title)')
+    expect(layout).toContain("quickstartPage && 'docs-quickstart'")
+    expect(layout).toContain('docs-product-shot')
+    expect(layout).toContain('docsEditHref(currentId)')
+    expect(layout).toContain('docs-heading-anchor')
+    expect(layout).toContain('terms.length > 0 && match.score >= 0')
+    expect(layout).toContain("status.textContent = 'Type to search documentation.'")
+    expect(header).toContain('data-theme-icon="system"')
+    expect(header).toContain('data-theme-label')
+    expect(css).toContain('.doc-prose.docs-quickstart > h2:not(:first-of-type)::before')
+    expect(css).toContain('.docs-heading-anchor')
+    expect(css).toContain('.docs-edit-links')
+    expect(quickstart).toContain('## Open a workspace')
+    expect(quickstart).not.toMatch(/^## 1\./m)
+    expect(existsSync(join(REPO, 'landing', 'src', 'pages', 'docs', '[section]', 'index.astro'))).toBe(
+      true
+    )
+    const sectionIndex = readFileSync(
+      join(REPO, 'landing', 'src', 'pages', 'docs', '[section]', 'index.astro'),
+      'utf8'
+    )
+    expect(sectionIndex).toContain('currentSection={section}')
+    expect(sectionIndex).not.toMatch(/\bdocsNavTitle\b/)
+    expect(library).toContain("return `/docs/${section}`")
+    expect(library).toContain('${id}.md')
+    expect(library).toContain('Docs feedback:')
+    expect(layout).toContain('docs-nav-scroll')
+    expect(layout).toContain("new Set(['Esc', 'Enter', 'Tab'])")
+    expect(css).toContain('.docs-nav-scroll')
+    const background = readDoc('agent/background-runs.md')
+    expect(background).toContain('/docs/reference/settings#tools')
+    expect(background).toContain('Connection lost')
+    expect(background).toContain('Temporarily paused')
+    expect(background).not.toContain('network_interrupted')
+    expect(background).not.toContain('circuit_open')
+    expect(background).toContain('**Stop**')
+    expect(background).toContain('`Continue`')
   })
 
   it('preserves dictation engines and attachment limits from product constants', () => {
@@ -674,6 +767,25 @@ describe('landing docs architecture and truth', () => {
     ]) {
       expect(quickstart).toContain(label)
     }
+  })
+
+  it('keeps compound OpenAI tokens intact and marks first-run controls', () => {
+    const quickstart = readDoc('start/quickstart.md')
+    const settings = readDoc('reference/settings.md')
+    const install = readDoc('start/install.md')
+    expect(quickstart).not.toContain('**OpenAI**-compatible')
+    expect(quickstart).toContain('OpenAI-compatible')
+    expect(quickstart).toContain('```')
+    expect(quickstart).toContain(
+      '[Run, network, and recovery issues](/docs/troubleshooting/runs-network-recovery)'
+    )
+    expect(quickstart).toContain('`http://127.0.0.1:11434`')
+    expect(quickstart).toContain('`Add workspace`')
+    expect(quickstart).toContain('[mode picker](/docs/agent/modes)')
+    expect(quickstart).toContain('Open [Changes](/docs/tools/changes-git)')
+    expect(settings).not.toContain('**Local** rotating logs')
+    expect(settings).toContain('Local rotating logs')
+    expect(install).not.toContain('**Local** Ollama')
   })
 
   it('uses exact Marketplace Manage labels and Packages terminology', () => {
@@ -725,5 +837,116 @@ describe('landing docs architecture and truth', () => {
     for (const text of [marketplace, what, packages]) {
       expect(text).not.toMatch(/\bplugins?\b/i)
     }
+  })
+
+  it('documents bundled GitHub vs Gmail connect, native overlap, Agent mode, and MCP tools protection', () => {
+    const mcp = readDoc('customize/mcp.md')
+    const marketplace = readDoc('customize/marketplace.md')
+    const troubleshooting = readDoc('troubleshooting/marketplace-mcp.md')
+    const redirect = '`http://127.0.0.1:19847/oauth/callback`'
+    for (const [file, text] of [
+      ['customize/mcp.md', mcp],
+      ['customize/marketplace.md', marketplace],
+      ['troubleshooting/marketplace-mcp.md', troubleshooting]
+    ] as const) {
+      expect(text, `${file} Add GitHub`).toContain('Add GitHub')
+      expect(text, `${file} Add Gmail`).toContain('Add Gmail')
+      expect(text, `${file} redirect`).toContain(redirect)
+      expect(text, `${file} Agent mode`).toMatch(/Agent mode/)
+      expect(text, `${file} MCP tools protection`).toContain('MCP tools protection')
+    }
+    expect(mcp).toContain('Native GitHub')
+    expect(mcp).toContain('GitHub MCP')
+    expect(mcp).toContain('gmailmcp')
+    expect(mcp).toMatch(/defaults on/)
+    expect(marketplace).toContain('Discover')
+    expect(troubleshooting).toContain('already in use')
+  })
+
+  it('ships production static files and footer chrome without inventing terms of service', () => {
+    const robots = readFileSync(join(REPO, 'landing', 'public', 'robots.txt'), 'utf8')
+    expect(robots).toContain('Allow: /')
+    expect(robots).toContain('Sitemap: https://vyotiq.com/sitemap-index.xml')
+
+    const security = readFileSync(
+      join(REPO, 'landing', 'public', '.well-known', 'security.txt'),
+      'utf8'
+    )
+    const policy = readFileSync(join(REPO, 'SECURITY.md'), 'utf8')
+    expect(policy).toContain('security@vyotiq.com')
+    expect(policy).toContain('github.com/vyotiqai/vyotiq-agent-v/security/advisories/new')
+    expect(security).toContain(
+      'Contact: https://github.com/vyotiqai/vyotiq-agent-v/security/advisories/new'
+    )
+    expect(security).toContain('Contact: mailto:security@vyotiq.com')
+    expect(security).toContain('Canonical: https://vyotiq.com/.well-known/security.txt')
+    expect(security).toContain(
+      'Policy: https://github.com/vyotiqai/vyotiq-agent-v/blob/main/SECURITY.md'
+    )
+    const expires = Date.parse(security.match(/^Expires:\s*(\S+)/m)?.[1] ?? '')
+    expect(expires).toBeGreaterThan(Date.now())
+    expect(expires).toBeLessThanOrEqual(Date.now() + 366 * 24 * 60 * 60 * 1000)
+
+    const headers = readFileSync(join(REPO, 'landing', 'public', '_headers'), 'utf8')
+    expect(headers).toContain('X-Content-Type-Options: nosniff')
+    expect(headers).toContain('Referrer-Policy: strict-origin-when-cross-origin')
+    expect(headers).toContain('X-Frame-Options: DENY')
+    expect(headers).toContain('Permissions-Policy: camera=(), microphone=(), geolocation=()')
+    expect(headers).not.toMatch(/Content-Security-Policy/i)
+
+    const footer = readFileSync(join(LANDING_SOURCE, 'components', 'SiteFooter.astro'), 'utf8')
+    expect(footer).toContain('href="/docs/concepts/privacy-data"')
+    expect(footer).toContain('href="/privacy"')
+    expect(footer).toContain('href="https://github.com/vyotiqai/vyotiq-agent-v"')
+    expect(footer).toContain('rel="noopener noreferrer"')
+    expect(footer).not.toMatch(/Terms of Service/i)
+    expect(existsSync(join(LANDING_SOURCE, 'pages', 'privacy.astro'))).toBe(true)
+    expect(existsSync(join(LANDING_SOURCE, 'components', 'CookieBanner.astro'))).toBe(false)
+
+    const layout = readFileSync(join(LANDING_SOURCE, 'layouts', 'BaseLayout.astro'), 'utf8')
+    expect(layout).toContain('landingAnalytics')
+    expect(layout).not.toMatch(/plausible\.io|googletagmanager|gtag\(/)
+    expect(layout).toContain('name="referrer"')
+    expect(layout).toContain('strict-origin-when-cross-origin')
+    expect(layout).toContain('og:locale')
+    expect(layout).toContain('twitter:image:alt')
+    expect(layout).toContain('/brand/mark-black.svg')
+    expect(layout).toContain('rel="apple-touch-icon" href="/brand/favicon.png"')
+    expect(layout).not.toContain('rel="icon" href="/brand/favicon.png"')
+
+    const envExample = readFileSync(join(REPO, 'landing', '.env.example'), 'utf8')
+    expect(envExample).toContain('PUBLIC_SITE_URL=https://vyotiq.com')
+    expect(envExample).toContain('PUBLIC_ANALYTICS_SRC')
+    expect(envExample).toContain('PUBLIC_ANALYTICS_DOMAIN')
+    expect(envExample).not.toMatch(/^PUBLIC_ANALYTICS_SRC=/m)
+
+    const landingReadme = readFileSync(join(REPO, 'landing', 'README.md'), 'utf8')
+    expect(landingReadme).toContain('bake:landing-release')
+    expect(landingReadme).toContain('PUBLIC_ANALYTICS_SRC')
+    expect(landingReadme).not.toContain('PUBLIC_GITHUB_')
+
+    const notFound = readFileSync(join(LANDING_SOURCE, 'pages', '404.astro'), 'utf8')
+    expect(notFound).toContain('robots="noindex, nofollow"')
+  })
+
+  it('wires landing check and Ubuntu-only browser audit', () => {
+    const pkg = JSON.parse(readFileSync(join(REPO, 'package.json'), 'utf8')) as {
+      scripts: Record<string, string>
+    }
+    const landingPkg = JSON.parse(
+      readFileSync(join(REPO, 'landing', 'package.json'), 'utf8')
+    ) as { scripts: Record<string, string> }
+    const ci = readFileSync(join(REPO, '.github', 'workflows', 'ci.yml'), 'utf8')
+    expect(landingPkg.scripts.check).toBe('astro check')
+    expect(pkg.scripts['bake:landing-release']).toBe('node landing/scripts/bake-github-release.mjs')
+    expect(pkg.scripts['landing:build']).toContain('bake:landing-release')
+    expect(pkg.scripts['landing:dev']).toContain('bake:landing-release')
+    expect(pkg.scripts['landing:check']).toBe('pnpm --filter @vyotiq/landing check')
+    expect(pkg.scripts['landing:audit']).toBe('node tests/landing/runDocsAudit.mjs')
+    expect(existsSync(join(REPO, 'tests', 'landing', 'runDocsAudit.mjs'))).toBe(true)
+    expect(ci).toContain('pnpm landing:check')
+    expect(ci).toContain('pnpm landing:audit')
+    expect(ci).toMatch(/Check landing site\r?\n\s+if: runner\.os == 'Linux'/)
+    expect(ci).toMatch(/Audit landing site\r?\n\s+if: runner\.os == 'Linux'/)
   })
 })

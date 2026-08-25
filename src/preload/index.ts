@@ -347,7 +347,15 @@ const api: VyotiqApi = {
   mcpSetAuthToken: (serverId, token) =>
     ipcRenderer.invoke(IPC.mcpSetAuthToken, { serverId, token }),
   mcpClearAuthToken: (serverId) => ipcRenderer.invoke(IPC.mcpClearAuthToken, { serverId }),
-  mcpStartOAuth: (serverId) => ipcRenderer.invoke(IPC.mcpStartOAuth, { serverId }),
+  mcpSetOAuthClientSecret: (serverId, secret) =>
+    ipcRenderer.invoke(IPC.mcpSetOAuthClientSecret, { serverId, secret }),
+  mcpClearOAuthClientSecret: (serverId) =>
+    ipcRenderer.invoke(IPC.mcpClearOAuthClientSecret, { serverId }),
+  mcpSetGoogleClientSecret: (secret) =>
+    ipcRenderer.invoke(IPC.mcpSetGoogleClientSecret, { secret }),
+  mcpClearGoogleClientSecret: () => ipcRenderer.invoke(IPC.mcpClearGoogleClientSecret, {}),
+  mcpStartOAuth: (serverId, opts) =>
+    ipcRenderer.invoke(IPC.mcpStartOAuth, { serverId, ...opts }),
   marketplaceListInstalled: () => ipcRenderer.invoke(IPC.marketplaceListInstalled),
   marketplaceBrowse: (payload) => ipcRenderer.invoke(IPC.marketplaceBrowse, payload ?? {}),
   marketplaceRefreshCatalog: () => ipcRenderer.invoke(IPC.marketplaceRefreshCatalog),
@@ -359,7 +367,8 @@ const api: VyotiqApi = {
     ipcRenderer.invoke(IPC.marketplaceScanExternalMcp, payload ?? {}),
   marketplaceImportExternalMcp: (payload) =>
     ipcRenderer.invoke(IPC.marketplaceImportExternalMcp, payload),
-  marketplaceUninstall: (id) => ipcRenderer.invoke(IPC.marketplaceUninstall, { id }),
+  marketplaceUninstall: (id, opts) =>
+    ipcRenderer.invoke(IPC.marketplaceUninstall, { id, ...opts }),
   marketplaceSetEnabled: (id, enabled) =>
     ipcRenderer.invoke(IPC.marketplaceSetEnabled, { id, enabled }),
   marketplacePickLocal: () => ipcRenderer.invoke(IPC.marketplacePickLocal),

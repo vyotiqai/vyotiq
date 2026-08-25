@@ -93,7 +93,9 @@ venv/
 /.cursor/
 /.devin/
 /.vyotiq/rules/
-/docs/
+/docs/**
+!/docs/**/
+!/docs/**/*.docx
 .cursorrules
 AGENTS.md
 scripts/remove-coauthors-from-history.sh

@@ -1453,20 +1453,6 @@ function App() {
     refreshWorkspaceRuns(path)
   }
 
-  const onDeleteRun = async (runId: string): Promise<void> => {
-    if (!activeWorkspace || !window.vyotiq?.deleteRun) return
-    const res = await window.vyotiq.deleteRun(activeWorkspace, runId)
-    if (!res.ok) {
-      setSettingsError(res.error)
-      return
-    }
-    removeOfflineQueueEntriesForRun(activeWorkspace, runId)
-    purgeDeletedRunUi(activeWorkspace, runId)
-    clearOpenInstanceMatching(runId)
-    closeRunTab(runId)
-    refreshActiveRuns()
-  }
-
   const onDeleteRunInWorkspace = async (path: string, runId: string): Promise<void> => {
     if (!window.vyotiq?.deleteRun) return
     const res = await window.vyotiq.deleteRun(path, runId)
@@ -1532,6 +1518,8 @@ function App() {
     onCloseWorkspace,
     onAddWorkspace: onPickWorkspace,
     workspaceHasBackgroundRun,
+    expandedByPath: workspace.workspaceExpandedByPath,
+    onSetWorkspaceExpanded: workspace.setWorkspaceExpanded,
     onSelectRunInWorkspace: (path: string, runId: string) => void onSelectRunInWorkspace(path, runId),
     onRenameRunInWorkspace: (path: string, runId: string, goal: string) =>
       void onRenameRunInWorkspace(path, runId, goal),

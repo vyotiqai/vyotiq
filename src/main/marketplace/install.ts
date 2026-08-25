@@ -321,6 +321,10 @@ export async function syncMarketplaceMcpIntoSettings(): Promise<void> {
         if (prev.env) server.env = sanitizeMcpManifestEnv(prev.env)
         if (prev.url !== undefined) server.url = prev.url
         if (prev.headers) server.headers = prev.headers
+        if (prev.oauthClientId) server.oauthClientId = prev.oauthClientId
+        if (prev.authScope) server.authScope = prev.authScope
+        if (prev.authWorkspacePath) server.authWorkspacePath = prev.authWorkspacePath
+        if (prev.googleAccess) server.googleAccess = prev.googleAccess
       }
       // Repair known-broken uvx launch args (mcp SDK v2 rename) even when settings
       // still hold the pre-pin args from an older install.

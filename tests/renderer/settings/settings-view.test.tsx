@@ -1508,6 +1508,10 @@ describe('settings', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /^Tools$/i }))
     expect(document.querySelector('[data-settings-field="tool-approval"]')).toBeTruthy()
+    expect(document.querySelector('[data-settings-field="mcp-tools-protection"]')).toBeTruthy()
+    expect(screen.getByRole('switch', { name: 'MCP tools protection' }).getAttribute('aria-checked')).toBe(
+      'true'
+    )
     expect(document.querySelector('[data-settings-field="terminal-shell"]')).toBeTruthy()
     expect(document.querySelector('[data-settings-field="browser-domain-allowlist"]')).toBeTruthy()
     expect(document.querySelector('[data-settings-field="search-engine"]')).toBeTruthy()

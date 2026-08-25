@@ -15,6 +15,8 @@ export const WorkspaceUiStateSchema = z.object({
   composerDraftByRunId: z.record(z.string(), z.string()).default({}),
   /** Per-workspace composer Ask / Plan / Agent mode. */
   agentMode: AgentInteractionModeSchema.default('agent'),
+  /** Whether this workspace's group is expanded in the sidebar (persisted). */
+  expanded: z.boolean().optional(),
   /**
    * Monotonic client write generation. Main ignores updates with a lower
    * generation than the last accepted write for that path (out-of-order IPC).

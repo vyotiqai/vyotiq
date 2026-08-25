@@ -1,6 +1,6 @@
 ---
 import DocsLayout from '../../layouts/DocsLayout.astro'
-import { docsHref, groupedDocs } from '../../lib/docs'
+import { docsHref, docsSectionHref, groupedDocs } from '../../lib/docs'
 
 const groups = await groupedDocs()
 ---
@@ -9,28 +9,12 @@ const groups = await groupedDocs()
   title="Docs"
   description="Install Agent V, complete a first useful run, learn each work surface, and recover when something fails."
 >
-  <div class="docs-start-grid">
-    <a href="/docs/start/install">
-      <strong>Install Agent V</strong>
-      <span>Pack an installer from this repository and verify the runtime on Windows, macOS, or Linux.</span>
-    </a>
-    <a href="/docs/start/quickstart">
-      <strong>Run the quickstart</strong>
-      <span>Open a workspace, configure a provider, send a task, and review the result.</span>
-    </a>
-    <a href="/docs/agent/modes">
-      <strong>Work with Agent</strong>
-      <span>Choose Ask, Plan, or Agent and attach the context the task needs.</span>
-    </a>
-    <a href="/docs/troubleshooting/runs-network-recovery">
-      <strong>Fix a problem</strong>
-      <span>Start with symptom-led recovery for runs, providers, tools, Marketplace, indexing, or GitHub.</span>
-    </a>
-  </div>
   {
     groups.map((group) => (
       <section>
-        <h2>{group.label}</h2>
+        <h2>
+          <a href={docsSectionHref(group.section)}>{group.label}</a>
+        </h2>
         <ul class="docs-index-list">
           {group.entries.map((entry) => (
             <li>

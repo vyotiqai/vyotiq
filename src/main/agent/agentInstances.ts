@@ -115,10 +115,6 @@ export function unregisterChildInstance(childRunId: string): void {
   unregisterInlineChildRun(childRunId)
 }
 
-export function getParentRunId(childRunId: string): string | undefined {
-  return childToParent.get(childRunId)
-}
-
 function sendLiveParentInstanceEvent(parentRunId: string, event: AgentEvent): void {
   const liveEmit = parentInstanceEmitters.get(parentRunId)
   if (liveEmit) {

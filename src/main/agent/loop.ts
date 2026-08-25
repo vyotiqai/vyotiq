@@ -175,6 +175,7 @@ import { resolveEffectiveMcpServers, resolveMcpServersForSessionMap, mcpSessionM
 import { buildSkillsSection, loadEnabledSkills, loadPluginRules } from './skills'
 import { beginWriteCheckpoint, finalizeWriteCheckpoint } from './checkpoints'
 import { isMcpToolPermitted } from '../../shared/utils/mcpToolPolicy'
+import { mcpAuthAllowedForWorkspace } from '../../shared/mcpApps'
 import {
   filterToolDefsForMode,
   filterToolDefsForCodeIndex,
@@ -1019,15 +1020,16 @@ export async function* runAgent(input: {
     }
 
     const approvalSettings = settings.toolApproval ?? DEFAULT_SETTINGS.toolApproval
-    // Off is the default, and building a gate then would park nothing — skip it
-    // so the common path never touches the approval machinery.
+    const mcpProtection = approvalSettings.mcpProtection !== false
+    // Skip the gate only when nothing would park: mode off and MCP protection off.
     const approvalGate =
-      approvalSettings.mode === 'off'
+      approvalSettings.mode === 'off' && !mcpProtection
         ? undefined
         : createApprovalGate({
             runId,
             invokeId,
             mode: approvalSettings.mode,
+            mcpProtection,
             workspaceAllowlist: approvalSettings.allowlist,
             autonomousMode: settings.autonomousMode === true,
             // Soft follow-up interrupt must cancel parked approvals, not only hard cancel.
@@ -1229,7 +1231,11 @@ export async function* runAgent(input: {
         )
       }
       const runMcpServers = resolveEffectiveMcpServers(marketplaceOverrides)
-      runEnabledMcpIds = new Set(runMcpServers.filter((s) => s.enabled).map((s) => s.id))
+      runEnabledMcpIds = new Set(
+        runMcpServers
+          .filter((s) => s.enabled && mcpAuthAllowedForWorkspace(s, workspace))
+          .map((s) => s.id)
+      )
       mcpToolPolicies = new Map(
         runMcpServers
           .filter((s) => s.enabled)

@@ -111,7 +111,9 @@ export function parallelMutationPathKey(args: Record<string, unknown>): string |
 export function parallelLimitForBatchClass(cls: StepToolBatchClass): number {
   switch (cls) {
     case 'read':
+      return MAX_PARALLEL_READ_TOOLS
     case 'mutation':
+      return MAX_PARALLEL_MUTATION_TOOLS
     case 'spawn':
     case 'await':
       return Number.POSITIVE_INFINITY

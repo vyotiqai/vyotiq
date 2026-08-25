@@ -36,10 +36,6 @@ export type EnqueueFollowUpResult =
 
 let rejectedRunStarts = 0
 
-export function activeRunCount(): number {
-  return active.size
-}
-
 export function getRejectedRunStarts(): number {
   return rejectedRunStarts
 }

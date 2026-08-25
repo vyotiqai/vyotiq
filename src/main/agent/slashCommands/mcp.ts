@@ -15,6 +15,7 @@ import {
 } from '../mcp'
 import { resolveEffectiveMcpServers } from '../../marketplace/resolve'
 import { hasMcpAuthToken, hasMcpOAuthState } from '../../settings/secrets'
+import { mcpAuthAllowedForWorkspace } from '../../../shared/mcpApps'
 
 function sanitizeTriggerPart(raw: string): string {
   return normalizeTrigger(raw.replace(/__/g, '-'))
@@ -22,10 +23,11 @@ function sanitizeTriggerPart(raw: string): string {
 
 /** List connected MCP tools as slash commands. */
 export function listMcpCommands(
-  marketplaceOverrides?: MarketplaceOverrides | null
+  marketplaceOverrides?: MarketplaceOverrides | null,
+  workspacePath?: string | null
 ): SlashCommandDescriptor[] {
   const servers = resolveEffectiveMcpServers(marketplaceOverrides)
-  const statusById = new Map(getMcpServerStatus(servers).map((s) => [s.id, s]))
+  const statusById = new Map(getMcpServerStatus(servers, workspacePath).map((s) => [s.id, s]))
   const tools = listMcpToolDefinitions()
   const out: SlashCommandDescriptor[] = []
   const seenTriggers = new Set<string>()
@@ -36,6 +38,7 @@ export function listMcpCommands(
     const status = statusById.get(parsed.serverId)
     const server = servers.find((s) => s.id === parsed.serverId)
     if (!server?.enabled) continue
+    if (!mcpAuthAllowedForWorkspace(server, workspacePath)) continue
 
     let availability: SlashCommandDescriptor['availability'] = 'ready'
     if (!status?.connected) {
@@ -71,6 +74,7 @@ export function listMcpCommands(
   // Also surface enabled-but-disconnected servers with no tools listed yet
   for (const server of servers) {
     if (!server.enabled) continue
+    if (!mcpAuthAllowedForWorkspace(server, workspacePath)) continue
     const status = statusById.get(server.id)
     if (status?.connected && status.toolCount > 0) continue
     // Skip if we already have tools for this server
@@ -108,7 +112,8 @@ export function listMcpCommands(
 export function resolveMcpCommand(
   id: string,
   trailingText: string,
-  marketplaceOverrides?: MarketplaceOverrides | null
+  marketplaceOverrides?: MarketplaceOverrides | null,
+  workspacePath?: string | null
 ): SlashCommandResolveResult | null {
   if (id.startsWith('mcp-server:')) {
     const serverId = id.slice('mcp-server:'.length)
@@ -125,7 +130,7 @@ export function resolveMcpCommand(
 
   const servers = resolveEffectiveMcpServers(marketplaceOverrides)
   const server = servers.find((s) => s.id === parsed.serverId)
-  if (!server?.enabled) {
+  if (!server?.enabled || !mcpAuthAllowedForWorkspace(server, workspacePath)) {
     return {
       action: 'client',
       clientAction: 'open_marketplace',
@@ -135,7 +140,7 @@ export function resolveMcpCommand(
 
   const tools = listMcpToolDefinitions()
   const tool = tools.find((t) => t.name === fullName)
-  const status = getMcpServerStatus(servers).find((s) => s.id === parsed.serverId)
+  const status = getMcpServerStatus(servers, workspacePath).find((s) => s.id === parsed.serverId)
   if (!status?.connected || !tool) {
     return {
       action: 'client',

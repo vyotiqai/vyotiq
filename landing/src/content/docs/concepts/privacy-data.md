@@ -15,18 +15,7 @@ Agent V is local-first, not offline-only. The desktop process stores product sta
 
 ## Stored locally
 
-App user data can contain:
-
-- settings and workspace registry;
-- encrypted credential records;
-- per-workspace run transcripts, artifacts, checkpoints, and receipts;
-- notification inbox items;
-- rotating logs and crash diagnostics;
-- installed Marketplace packages;
-- downloaded code-index and Whisper model files;
-- semantic and sparsegrep indexes.
-
-The workspace itself can contain .vyotiq/memory/, .vyotiq/rules/, and .vyotiq/skills/. Those are ordinary project files and can enter version control.
+App and workspace state stay on this machine. [Storage locations](/docs/reference/storage) lists what exists and where. Workspace `.vyotiq/memory/`, `.vyotiq/rules/`, and `.vyotiq/skills/` are ordinary project files and can enter version control.
 
 ## Content sent elsewhere
 
@@ -49,3 +38,7 @@ Inbox items are stored locally when notifications and their category are enabled
 ## Retention and deletion
 
 Windows uninstall does not delete app data automatically. Removing a workspace tab also does not mean all persisted run state was erased. Delete project files, app-data state, downloaded models, indexes, packages, and external-provider data through their own boundaries. See Storage locations before manual cleanup.
+
+## The public website
+
+The public site is a separate surface from this application. Theme storage and optional cookieless analytics for that site are documented on [Website privacy](/privacy).

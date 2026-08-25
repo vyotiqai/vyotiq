@@ -181,6 +181,7 @@ function McpServerRow({
         hideEnable={marketplace}
         hideRemove={marketplace}
         workspaceEnabled={ws}
+        googleMcpClientId={settings.googleMcpClientId}
         onUpdate={async (next) => {
           const updated = settings.mcpServers.map((s) => (s.id === server.id ? next : s))
           return runUpdate({ mcpServers: updated })
@@ -196,6 +197,7 @@ function McpServerRow({
         onAuthChanged={() => {
           void controller.loadMcpStatus(true)
         }}
+        onOpenConnect={() => controller.openConnectWizard(server.id)}
       />
       {activeWorkspacePath && canOverride ? (
         <WorkspaceEnableControls

@@ -11,7 +11,6 @@ export default defineConfig({
   integrations: [sitemap()],
   redirects: {
     '/products/agent-v': '/',
-    '/docs/start': '/docs/start/quickstart',
     '/docs/guides/modes': '/docs/agent/modes',
     '/docs/guides/providers': '/docs/customize/providers',
     '/docs/guides/marketplace': '/docs/customize/marketplace',

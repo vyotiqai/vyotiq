@@ -1415,6 +1415,52 @@ describe('setComposerDraftForPane hot UI', () => {
       'typed on run'
     )
   })
+
+  it('persists workspace expand/collapse state through updateWorkspaceUiState', async () => {
+    const { result } = renderHook(() => useWorkspaceManager())
+
+    await waitFor(() => {
+      expect(result.current.activeWorkspace).toBe('/ws-a')
+    })
+
+    // Default: active workspace expanded, other workspaces collapsed.
+    expect(result.current.workspaceExpandedByPath['/ws-a']).toBe(true)
+    expect(result.current.workspaceExpandedByPath['/ws-b']).toBe(false)
+
+    vi.useFakeTimers()
+
+    act(() => {
+      result.current.setWorkspaceExpanded('/ws-b', true)
+    })
+
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
+
+    expect(window.vyotiq.updateWorkspaceUiState).toHaveBeenCalledWith(
+      '/ws-b',
+      expect.objectContaining({ expanded: true })
+    )
+    expect(result.current.workspaceExpandedByPath['/ws-b']).toBe(true)
+
+    ;(window.vyotiq.updateWorkspaceUiState as ReturnType<typeof vi.fn>).mockClear()
+
+    act(() => {
+      result.current.setWorkspaceExpanded('/ws-a', false)
+    })
+
+    act(() => {
+      vi.advanceTimersByTime(300)
+    })
+
+    expect(window.vyotiq.updateWorkspaceUiState).toHaveBeenCalledWith(
+      '/ws-a',
+      expect.objectContaining({ expanded: false })
+    )
+    expect(result.current.workspaceExpandedByPath['/ws-a']).toBe(false)
+
+    vi.useRealTimers()
+  })
 })
 
 describe('omitRunComposerDraft / migrateLegacyComposerDraftMap', () => {

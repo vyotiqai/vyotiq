@@ -35,9 +35,11 @@ Store stable workspace facts that future tasks need: architecture decisions, ver
 
 A useful pattern is:
 
+```md
 # Memory index
 
 - [release.md](notes/release.md) — verified packaging command and artifact rule
+```
 
 ## Version-control implications
 

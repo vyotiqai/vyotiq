@@ -17,6 +17,9 @@ export type SidebarProps = {
   onSwitchWorkspace?: (path: string) => void
   onCloseWorkspace?: (path: string) => void
   onAddWorkspace?: () => void
+  /** Persisted per-workspace sidebar expand state + mutator. */
+  expandedByPath?: Record<string, boolean>
+  onSetWorkspaceExpanded?: (path: string, expanded: boolean) => void
   workspaceHasBackgroundRun?: (path: string) => boolean
   onSessionQuery: (q: string) => void
   onOpenSettings: () => void

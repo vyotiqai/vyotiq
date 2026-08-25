@@ -10,7 +10,7 @@ related:
   - concepts/privacy-data
 ---
 
-There is no public download page or app store listing. Tagged GitHub Releases publish installers at https://github.com/vyotiqai/vyotiq-agent-v/releases/latest. You run a local pnpm dev session, or you pack an installer from this repository with electron-builder (publish: null, --publish never).
+The Agent V homepage has download buttons for each installer on the latest GitHub Release at https://github.com/vyotiqai/vyotiq-agent-v/releases/latest. There is no app store listing. You can also run a local pnpm dev session, or pack an installer from this repository with electron-builder (publish: null, --publish never).
 
 The packaged product name is Vyotiq. Agent V is the product/agent inside that app. Electron is the packager and runtime, not the product name.
 

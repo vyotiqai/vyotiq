@@ -364,8 +364,3 @@ export function loadPluginRuleBody(rule: LoadedPluginRule): string {
   const raw = readFileSync(rule.absPath, 'utf8').trim()
   return [`# Plugin rule: ${rule.pluginName}`, `Path: ${rule.relPath}`, '', raw].join('\n')
 }
-
-/** @internal for tests — relative path helper */
-export function skillRelFromRoot(skillRoot: string, absPath: string): string {
-  return relative(skillRoot, absPath).replace(/\\/g, '/')
-}

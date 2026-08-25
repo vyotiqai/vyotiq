@@ -8,6 +8,7 @@ import { MarketplaceFeedbackBanner } from './MarketplaceFeedbackBanner'
 import { kindLabel } from './marketplaceLabels'
 import { installedActionLabel, packageActivity } from './packageActivity'
 import type { MarketplaceController } from './useMarketplaceController'
+import { isHostedAppMcpId } from '@shared/mcpApps'
 
 function previewAsContents(entry: MarketplaceCatalogEntry): PackageContents | null {
   const preview = entry.contentsPreview
@@ -36,7 +37,7 @@ export function MarketplaceDetail({
   onBack: () => void
   onOpenManage: () => void
 }) {
-  const { installed, mcpStatusById, workspaceEnabledForId, formLocked, installFromCatalog, feedback, setFeedback } =
+  const { installed, mcpStatusById, workspaceEnabledForId, formLocked, installFromCatalog, feedback, setFeedback, openConnectWizard } =
     controller
   const installedItem = useMemo(
     () => installed.items.find((i) => i.id === entry.id),
@@ -117,6 +118,11 @@ export function MarketplaceDetail({
                 <Button variant="subtle" disabled className={activity.className}>
                   {installedActionLabel(activity)}
                 </Button>
+                {isHostedAppMcpId(entry.id) ? (
+                  <Button variant="subtle" onClick={() => openConnectWizard(entry.id)}>
+                    Connect
+                  </Button>
+                ) : null}
                 <Button variant="subtle" onClick={onOpenManage}>
                   Manage
                 </Button>

@@ -15,8 +15,11 @@ import { sanitizedTerminalEnv } from '../tools/terminal'
 import {
   getMcpAuthToken,
   hasMcpAuthToken,
+  hasMcpOAuthClientSecret,
   hasMcpOAuthState,
   hasStoredMcpOAuthBlob,
+  hasGoogleMcpClientSecret,
+  getMcpOAuthState,
   setMcpAuthToken,
   clearMcpOAuthState
 } from '../../settings/secrets'
@@ -32,6 +35,22 @@ import {
   cancelMcpOAuthCallback,
   createMcpOAuthProvider
 } from './oauth'
+import {
+  mcpOAuthCallbackListenOpts,
+  resolveMcpOAuthStaticClient
+} from './oauthStaticClient'
+import { linkNativeGithubFromMcpToken } from '../../git/githubAuth'
+import {
+  isGithubMcpId,
+  isGoogleMcpId,
+  isHostedAppMcpId,
+  isThisWorkspaceMcpAuth,
+  mcpAuthAllowedForWorkspace,
+  mcpOAuthFixedRedirectUrl,
+  MCP_AUTH_SCOPE_THIS,
+  type GoogleMcpAccess,
+  type McpAuthScope
+} from '../../../shared/mcpApps'
 import { resolveEffectiveMcpServers } from '../../marketplace/resolve'
 import { sanitizeMcpManifestEnv } from '../../marketplace/sanitizeMcpEnv'
 import {
@@ -43,6 +62,7 @@ import {
 } from './uvxCompat'
 import { isGitRepo } from '../../git/git'
 import { readWorkspacesState } from '../../workspace/workspaces'
+import { workspacePathsEqual } from '../../../shared/workspacePath'
 import { listActiveRuns } from '../runRegistry'
 import { AppError, formatError, isAbortError, mcpConnectErrorCode } from '../../../shared/errors'
 import { assertPublicUrl } from '../tools/webFetch'
@@ -97,12 +117,39 @@ function resolveStdioWorkspacePath(workspacePath?: string | null): string | null
 }
 
 function sessionMapKey(
-  server: Pick<McpServer, 'id' | 'transport'>,
+  server: Pick<McpServer, 'id' | 'transport' | 'authScope' | 'authWorkspacePath'>,
   workspacePath?: string | null
 ): string {
-  if (!isStdioTransport(server.transport)) return server.id
-  const wp = resolveStdioWorkspacePath(workspacePath)
-  return wp ? mcpStdioSessionKey(server.id, wp) : server.id
+  if (isStdioTransport(server.transport)) {
+    const wp = resolveStdioWorkspacePath(workspacePath)
+    return wp ? mcpStdioSessionKey(server.id, wp) : server.id
+  }
+  if (isThisWorkspaceMcpAuth(server)) {
+    const bound = server.authWorkspacePath?.trim()
+    if (bound) return mcpStdioSessionKey(server.id, bound)
+  }
+  return server.id
+}
+
+export const MCP_SIGN_IN_REQUIRED = 'Sign in required'
+
+export function isMcpSignInRequiredError(message: string | null | undefined): boolean {
+  if (!message) return false
+  return /sign in required/i.test(message)
+}
+
+function quietMcpConnectSkip(message: string | null | undefined): boolean {
+  return isGitMcpNotARepoError(message) || isMcpSignInRequiredError(message)
+}
+
+function remoteSyncWorkspacePath(
+  server: McpServer,
+  openWorkspaces: string[]
+): string | null {
+  if (!isThisWorkspaceMcpAuth(server)) return null
+  const bound = server.authWorkspacePath?.trim()
+  if (!bound) return null
+  return openWorkspaces.some((wp) => workspacePathsEqual(wp, bound)) ? bound : null
 }
 
 /** Workspace paths that should keep stdio MCP sessions (active runs + open workspaces). */
@@ -272,6 +319,18 @@ function resolveSessionForServer(
   serverId: string,
   workspacePath?: string | null
 ): { key: string; session: McpSession } | null {
+  try {
+    const cfg = resolveEffectiveMcpServers().find((s) => s.id === serverId)
+    if (cfg && isThisWorkspaceMcpAuth(cfg)) {
+      if (!mcpAuthAllowedForWorkspace(cfg, workspacePath)) return null
+      const bound = cfg.authWorkspacePath!.trim()
+      const key = mcpStdioSessionKey(serverId, bound)
+      const session = sessions.get(key)
+      return session ? { key, session } : null
+    }
+  } catch {
+    // Settings/marketplace unavailable — fall through to session-map lookup.
+  }
   const explicit = workspacePath?.trim() || null
   const wp = resolveStdioWorkspacePath(workspacePath)
   if (wp) {
@@ -381,13 +440,29 @@ function sortedRecordEntries(record?: Record<string, string>): Array<[string, st
 
 /** Stable fingerprint of connection-relevant MCP server fields. */
 export function mcpServerConfigKey(
-  server: Pick<McpServer, 'transport' | 'command' | 'args' | 'env' | 'url' | 'headers'> & {
+  server: Pick<
+    McpServer,
+    | 'transport'
+    | 'command'
+    | 'args'
+    | 'env'
+    | 'url'
+    | 'headers'
+    | 'oauthClientId'
+    | 'authScope'
+    | 'authWorkspacePath'
+    | 'googleAccess'
+  > & {
     id?: string
   },
   workspacePath?: string | null
 ): string {
   const transport = server.transport ?? 'stdio'
   const stdioWorkspace = transport === 'stdio' ? resolveStdioWorkspacePath(workspacePath) : null
+  const authWorkspace =
+    transport !== 'stdio' && isThisWorkspaceMcpAuth(server)
+      ? server.authWorkspacePath?.trim() ?? ''
+      : stdioWorkspace ?? ''
   // Auth secrets only apply to remote transports; skip for stdio (also keeps unit tests
   // that don't mock Electron from touching safeStorage).
   const authPresent =
@@ -404,12 +479,16 @@ export function mcpServerConfigKey(
     // Fingerprint the launch args we actually use so repairing `--with mcp<2`
     // in settings does not thrash reconnects against older stored args.
     args: launchArgs,
-    cwd: transport === 'stdio' ? stdioWorkspace ?? '' : '',
+    cwd: transport === 'stdio' ? stdioWorkspace ?? '' : authWorkspace,
     env: sortedRecordEntries(server.env),
     url: server.url ?? '',
     // Never fingerprint secret token values — only presence + non-auth headers.
     headers: sortedRecordEntries(headersWithoutAuthorization(server.headers)),
-    authPresent
+    authPresent,
+    oauthClientId: server.oauthClientId ?? '',
+    authScope: server.authScope ?? '',
+    authWorkspacePath: server.authWorkspacePath ?? '',
+    googleAccess: server.googleAccess ?? ''
   })
 }
 
@@ -418,9 +497,13 @@ export function mcpServerConfigKey(
  * Bearer token from OS secure storage (wins over any leftover Authorization).
  */
 export function resolveMcpRequestHeaders(
-  server: Pick<McpServer, 'id' | 'headers'>
+  server: Pick<McpServer, 'id' | 'headers' | 'authScope' | 'authWorkspacePath'>,
+  workspacePath?: string | null
 ): Record<string, string> | undefined {
   const base = headersWithoutAuthorization(server.headers)
+  if (!mcpAuthAllowedForWorkspace(server, workspacePath)) {
+    return base && Object.keys(base).length > 0 ? base : undefined
+  }
   const token = getMcpAuthToken(server.id)
   if (token) return withBearerToken(base, token)
   return base && Object.keys(base).length > 0 ? base : undefined
@@ -461,6 +544,9 @@ function findSessionForStatus(
   server: McpServer,
   workspacePath?: string | null
 ): { session?: McpSession; error?: string } {
+  if (isThisWorkspaceMcpAuth(server) && !mcpAuthAllowedForWorkspace(server, workspacePath)) {
+    return {}
+  }
   const key = sessionMapKey(server, workspacePath)
   const session = sessions.get(key)
   if (session) {
@@ -500,16 +586,50 @@ export function getMcpServerStatus(
 ): McpServerStatus[] {
   return servers.map((server) => {
     const { session, error } = findSessionForStatus(server, workspacePath)
+    const authVisible = mcpAuthAllowedForWorkspace(server, workspacePath)
+    const staticClient = (() => {
+      try {
+        return resolveMcpOAuthStaticClient(server)
+      } catch {
+        return undefined
+      }
+    })()
+    const hasPerServerSecret = (() => {
+      try {
+        return hasMcpOAuthClientSecret(server.id)
+      } catch {
+        return false
+      }
+    })()
+    const hasSharedGoogleSecret =
+      isGoogleMcpId(server.id) &&
+      (() => {
+        try {
+          return hasGoogleMcpClientSecret()
+        } catch {
+          return false
+        }
+      })()
     return {
       id: server.id,
       name: server.name,
       enabled: server.enabled,
-      connected: Boolean(session),
-      toolCount: session?.tools.length ?? 0,
-      hasAuthToken: hasMcpAuthToken(server.id) || hasMcpOAuthState(server.id),
-      ...(error ? { error } : {})
+      connected: authVisible && Boolean(session),
+      toolCount: authVisible ? (session?.tools.length ?? 0) : 0,
+      hasAuthToken: authVisible && (hasMcpAuthToken(server.id) || hasMcpOAuthState(server.id)),
+      hasOAuthClientSecret: hasPerServerSecret || hasSharedGoogleSecret,
+      ...(staticClient ? { oauthRedirectUrl: mcpOAuthFixedRedirectUrl() } : {}),
+      ...(error && authVisible ? { error } : {})
     }
   })
+}
+
+export function mcpStatusExtras(): { hasGoogleMcpClientSecret: boolean } {
+  try {
+    return { hasGoogleMcpClientSecret: hasGoogleMcpClientSecret() }
+  } catch {
+    return { hasGoogleMcpClientSecret: false }
+  }
 }
 
 export async function refreshMcpServers(servers: McpServer[]): Promise<McpServerStatus[]> {
@@ -571,7 +691,7 @@ async function createTransport(
     })
   }
 
-  const headers = resolveMcpRequestHeaders(server)
+  const headers = resolveMcpRequestHeaders(server, opts?.workspacePath)
   const requestInit = headers ? { headers } : undefined
 
   if (transport === 'http') {
@@ -597,11 +717,16 @@ async function closePendingConnection(connection: PendingMcpConnection): Promise
 async function connectWithOptionalOAuth(
   server: McpServer,
   track: (connection: PendingMcpConnection) => void,
-  workspacePath?: string | null
+  workspacePath?: string | null,
+  opts?: { interactiveOAuth?: boolean }
 ): Promise<{
   client: Client
   transport: Transport
 }> {
+  if (!mcpAuthAllowedForWorkspace(server, workspacePath)) {
+    throw new Error(MCP_SIGN_IN_REQUIRED)
+  }
+
   const transportKind = server.transport ?? 'stdio'
   if (transportKind === 'stdio' || hasMcpAuthToken(server.id)) {
     const transport = await createTransport(server, { workspacePath })
@@ -611,12 +736,31 @@ async function connectWithOptionalOAuth(
     return { client, transport }
   }
 
-  // Prefer stored OAuth tokens via authProvider; otherwise try unauthenticated first.
-  if (hasMcpOAuthState(server.id)) {
-    return connectRemoteWithOAuth(server, track)
+  const interactive = opts?.interactiveOAuth === true
+  const hostedUnconnected =
+    isHostedAppMcpId(server.id) && !hasMcpOAuthState(server.id) && !hasMcpAuthToken(server.id)
+
+  if (hostedUnconnected && !interactive) {
+    throw new Error(MCP_SIGN_IN_REQUIRED)
   }
 
-  const transport = await createTransport(server)
+  if (isGoogleMcpId(server.id) && interactive) {
+    const staticClient = resolveMcpOAuthStaticClient(server)
+    if (!staticClient?.client_id || !staticClient.client_secret) {
+      throw new Error('Add a Google Cloud OAuth client ID and secret before signing in.')
+    }
+  }
+
+  // Prefer stored OAuth tokens via authProvider; otherwise try unauthenticated first.
+  if (hasMcpOAuthState(server.id) && !interactive) {
+    return connectRemoteWithOAuth(server, track, workspacePath, { interactive: false })
+  }
+
+  if (interactive) {
+    return connectRemoteWithOAuth(server, track, workspacePath, { interactive: true })
+  }
+
+  const transport = await createTransport(server, { workspacePath })
   const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
   const connection = { client, transport }
   track(connection)
@@ -625,25 +769,49 @@ async function connectWithOptionalOAuth(
     return connection
   } catch (err) {
     if (!(err instanceof UnauthorizedError)) throw err
+    if (isHostedAppMcpId(server.id)) {
+      await closePendingConnection(connection)
+      throw new Error(MCP_SIGN_IN_REQUIRED)
+    }
     await closePendingConnection(connection)
     logger.info('MCP server requires OAuth — starting browser flow', {
       scope: 'mcp',
       serverId: server.id
     })
-    return connectRemoteWithOAuth(server, track)
+    return connectRemoteWithOAuth(server, track, workspacePath, { interactive: true })
+  }
+}
+
+async function maybeLinkNativeGithubAfterMcpAuth(serverId: string): Promise<void> {
+  if (!isGithubMcpId(serverId)) return
+  try {
+    const token =
+      getMcpAuthToken(serverId) || getMcpOAuthState(serverId)?.tokens?.access_token || ''
+    await linkNativeGithubFromMcpToken(token)
+  } catch (err) {
+    logger.warn('Could not link native GitHub after MCP auth', { scope: 'mcp', serverId, err })
   }
 }
 
 async function connectRemoteWithOAuth(
   server: McpServer,
-  track: (connection: PendingMcpConnection) => void
+  track: (connection: PendingMcpConnection) => void,
+  workspacePath?: string | null,
+  opts?: { interactive: boolean }
 ): Promise<{
   client: Client
   transport: Transport
 }> {
-  const { redirectUrl, waitForCode } = await beginMcpOAuthCallback(server.id)
-  const authProvider = createMcpOAuthProvider(server.id, redirectUrl)
-  const transport = await createTransport(server, { authProvider })
+  const staticClient = resolveMcpOAuthStaticClient(server)
+  const { redirectUrl, waitForCode } = await beginMcpOAuthCallback(
+    server.id,
+    mcpOAuthCallbackListenOpts(staticClient)
+  )
+  const authProvider = createMcpOAuthProvider(server.id, redirectUrl, {
+    staticClient,
+    googleAccess: server.googleAccess
+  })
+  const transport = await createTransport(server, { authProvider, workspacePath })
   const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
   track({ client, transport })
 
@@ -662,6 +830,16 @@ async function connectRemoteWithOAuth(
       throw err
     }
 
+    if (!opts?.interactive && isHostedAppMcpId(server.id)) {
+      cancelMcpOAuthCallback(server.id)
+      try {
+        await client.close()
+      } catch {
+        // ignore
+      }
+      throw new Error(MCP_SIGN_IN_REQUIRED)
+    }
+
     logger.info('MCP OAuth required — waiting for browser callback', {
       scope: 'mcp',
       serverId: server.id
@@ -678,10 +856,11 @@ async function connectRemoteWithOAuth(
       } catch {
         // ignore
       }
-      const transport2 = await createTransport(server, { authProvider })
+      const transport2 = await createTransport(server, { authProvider, workspacePath })
       const client2 = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
       track({ client: client2, transport: transport2 })
       await client2.connect(transport2)
+      await maybeLinkNativeGithubAfterMcpAuth(server.id)
       return { client: client2, transport: transport2 }
     } catch (oauthErr) {
       cancelMcpOAuthCallback(server.id)
@@ -697,7 +876,8 @@ async function connectRemoteWithOAuth(
 
 export async function connectMcpServer(
   server: McpServer,
-  workspacePath?: string | null
+  workspacePath?: string | null,
+  opts?: { interactiveOAuth?: boolean }
 ): Promise<void> {
   const key = sessionMapKey(server, workspacePath)
   if (sessions.has(key)) return
@@ -715,7 +895,12 @@ export async function connectMcpServer(
     let connected: { client: Client; transport: Transport }
     try {
       connected = await Promise.race([
-        connectWithOptionalOAuth(server, (connection) => pending.add(connection), workspacePath),
+        connectWithOptionalOAuth(
+          server,
+          (connection) => pending.add(connection),
+          workspacePath,
+          opts
+        ),
         new Promise<never>((_, reject) => {
           connectAbort.addEventListener(
             'abort',
@@ -800,10 +985,48 @@ export async function connectMcpServer(
   }
 }
 
+export type StartMcpOAuthOpts = {
+  authScope?: McpAuthScope
+  workspacePath?: string | null
+  googleAccess?: GoogleMcpAccess
+}
+
+async function persistMcpOAuthConnectOpts(
+  serverId: string,
+  opts: StartMcpOAuthOpts
+): Promise<void> {
+  if (!opts.authScope && !opts.googleAccess) return
+  await enqueueSettingsMutation(() => {
+    const settings = getSettings()
+    const nextServers = (settings.mcpServers ?? []).map((s) => {
+      if (s.id !== serverId) return s
+      const next: McpServer = { ...s }
+      if (opts.authScope) {
+        next.authScope = opts.authScope
+        if (opts.authScope === MCP_AUTH_SCOPE_THIS) {
+          const wp = opts.workspacePath?.trim()
+          if (!wp) {
+            throw new Error('This-workspace connect needs an open workspace.')
+          }
+          next.authWorkspacePath = wp
+        } else {
+          delete next.authWorkspacePath
+        }
+      }
+      if (opts.googleAccess && isGoogleMcpId(serverId)) {
+        next.googleAccess = opts.googleAccess
+      }
+      return next
+    })
+    setSettings({ mcpServers: nextServers })
+  })
+}
+
 /** Force re-auth for a remote MCP server (clears OAuth tokens and reconnects). */
-export async function startMcpOAuth(serverId: string): Promise<void> {
+export async function startMcpOAuth(serverId: string, opts?: StartMcpOAuthOpts): Promise<void> {
   const id = serverId.trim()
   if (!id) throw new Error('MCP server id is required')
+  if (opts) await persistMcpOAuthConnectOpts(id, opts)
   clearMcpOAuthState(id)
   await disconnectMcpServer(id)
   const servers = resolveEffectiveMcpServers()
@@ -813,7 +1036,10 @@ export async function startMcpOAuth(serverId: string): Promise<void> {
     throw new Error('OAuth is only supported for HTTP/SSE MCP servers')
   }
   if (!server.enabled) throw new Error('Enable the MCP server before starting OAuth')
-  await connectMcpServer(server)
+  const wp = isThisWorkspaceMcpAuth(server)
+    ? server.authWorkspacePath?.trim() || getMcpStdioWorkspace()
+    : null
+  await connectMcpServer(server, wp, { interactiveOAuth: true })
 }
 
 export async function disconnectMcpServer(serverId: string): Promise<void> {
@@ -854,12 +1080,14 @@ export async function syncMcpServers(
       if (!server.enabled) continue
       const keysToCheck = isStdioTransport(server.transport)
         ? stdioWorkspaces.map((wp) => sessionMapKey(server, wp))
-        : [server.id]
+        : isThisWorkspaceMcpAuth(server)
+          ? [sessionMapKey(server, remoteSyncWorkspacePath(server, stdioWorkspaces))]
+          : [server.id]
       for (const key of keysToCheck) {
         if (sessions.has(key)) continue
         if (!connectErrors.has(key) && !connectErrors.has(server.id)) continue
         const err = connectErrors.get(key) ?? connectErrors.get(server.id)
-        if (isGitMcpNotARepoError(err)) continue
+        if (quietMcpConnectSkip(err)) continue
         resetCircuit(circuitKeyMcpConnect(key))
         resetCircuit(circuitKeyMcpConnect(server.id))
         connectConfigByKey.delete(key)
@@ -871,11 +1099,13 @@ export async function syncMcpServers(
         if (!s.enabled) return false
         const keys = isStdioTransport(s.transport)
           ? stdioWorkspaces.map((wp) => sessionMapKey(s, wp))
-          : [s.id]
+          : isThisWorkspaceMcpAuth(s)
+            ? [sessionMapKey(s, remoteSyncWorkspacePath(s, stdioWorkspaces))]
+            : [s.id]
         return keys.some((key) => {
           if (sessions.has(key)) return false
           const err = connectErrors.get(key) ?? connectErrors.get(s.id)
-          return Boolean(err) && !isGitMcpNotARepoError(err)
+          return Boolean(err) && !quietMcpConnectSkip(err)
         })
       })
     ) {
@@ -892,6 +1122,10 @@ export async function syncMcpServers(
       for (const wp of stdioWorkspaces) {
         fpParts.push(`${s.id}@${wp}:1:${mcpServerConfigKey(s, wp)}`)
       }
+    } else if (isThisWorkspaceMcpAuth(s)) {
+      const wp = remoteSyncWorkspacePath(s, stdioWorkspaces)
+      if (wp) fpParts.push(`${s.id}@${wp}:1:${mcpServerConfigKey(s, wp)}`)
+      else fpParts.push(`${s.id}:bound-closed`)
     } else {
       fpParts.push(`${s.id}:1:${mcpServerConfigKey(s)}`)
     }
@@ -955,6 +1189,9 @@ async function syncMcpServersUnlocked(
   for (const server of enabled) {
     if (isStdioTransport(server.transport)) {
       for (const wp of stdioWorkspaces) neededKeys.add(sessionMapKey(server, wp))
+    } else if (isThisWorkspaceMcpAuth(server)) {
+      const wp = remoteSyncWorkspacePath(server, stdioWorkspaces)
+      if (wp) neededKeys.add(sessionMapKey(server, wp))
     } else {
       neededKeys.add(server.id)
     }
@@ -1019,6 +1256,7 @@ async function syncMcpServersUnlocked(
       const code = mcpConnectErrorCode(err)
       connectErrors.set(key, message)
       recordCircuitFailure(circuitKeyMcpConnect(key), MCP_CONNECT_CIRCUIT_POLICY)
+      if (quietMcpConnectSkip(message)) return
       const logged = new AppError(message, {
         code,
         severity: 'warn',
@@ -1041,6 +1279,9 @@ async function syncMcpServersUnlocked(
       for (const wp of stdioWorkspaces) {
         await syncOne(server, wp)
       }
+    } else if (isThisWorkspaceMcpAuth(server)) {
+      const wp = remoteSyncWorkspacePath(server, stdioWorkspaces)
+      if (wp) await syncOne(server, wp)
     } else {
       await syncOne(server, null)
     }

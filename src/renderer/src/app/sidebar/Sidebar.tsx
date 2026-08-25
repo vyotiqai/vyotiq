@@ -2,7 +2,7 @@ import { cn, NavItem } from '@renderer/lib/ui'
 import { shortcutLabel } from '@renderer/lib/shortcuts'
 import { useDockImmersive } from '@renderer/lib/hooks/dockImmersiveStore'
 import { useWorkspaceHotUi } from '@renderer/lib/hooks/workspaceHotUiStore'
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   SIDEBAR_CONTAINER,
   SIDEBAR_PAD_X,
@@ -50,7 +50,10 @@ export function Sidebar({
   onToggleSidebar,
   collapsed = false,
   widthPx,
-  variant = 'desktop'
+  variant = 'desktop',
+  /** Persisted per-workspace expand state + mutator (falls back to local when absent). */
+  expandedByPath: expandedByPathProp,
+  onSetWorkspaceExpanded
 }: SidebarProps) {
   const workspaceReady = Boolean(hasWorkspace)
   const needsWorkspaceLabel = 'Open a workspace first'
@@ -60,18 +63,16 @@ export function Sidebar({
   const dockImmersive = useDockImmersive()
   const hotUi = useWorkspaceHotUi(activePath)
   const sessionQuery = activePath ? hotUi.sessionQuery : sessionQueryProp
-  const [expandedByPath, setExpandedByPath] = useState<Record<string, boolean>>({})
 
-  useEffect(() => {
-    if (!openPaths?.length) return
-    setExpandedByPath((prev) => {
-      const next: Record<string, boolean> = {}
-      for (const path of openPaths) {
-        next[path] = prev[path] ?? path === activePath
-      }
-      return next
-    })
-  }, [activePath, openPaths])
+  const [expandedByPathLocal, setExpandedByPathLocal] = useState<Record<string, boolean>>({})
+  const expandedByPath = expandedByPathProp ?? expandedByPathLocal
+  const setExpanded = useCallback(
+    (path: string, expanded: boolean): void => {
+      if (onSetWorkspaceExpanded) onSetWorkspaceExpanded(path, expanded)
+      else setExpandedByPathLocal((prev) => ({ ...prev, [path]: expanded }))
+    },
+    [onSetWorkspaceExpanded]
+  )
 
   const { filteredRuns, workspaceGroups } = useSidebarChats({
     openPaths: openPaths ?? [],
@@ -146,6 +147,7 @@ export function Sidebar({
             onNewChat()
             afterNav()
           }}
+          onAddWorkspace={onAddWorkspace}
         />
       ) : (
         <SidebarTopBar
@@ -178,10 +180,10 @@ export function Sidebar({
             filteredRunsCount={filteredRuns.length}
             workspaceGroups={workspaceGroups}
             onToggleWorkspace={(path) =>
-              setExpandedByPath((prev) => ({ ...prev, [path]: !(prev[path] ?? false) }))
+              setExpanded(path, !(expandedByPath[path] ?? false))
             }
             onSwitchWorkspace={(path) => {
-              setExpandedByPath((prev) => ({ ...prev, [path]: true }))
+              setExpanded(path, true)
               onSwitchWorkspace?.(path)
             }}
             onCloseWorkspace={(path) => onCloseWorkspace?.(path)}
@@ -190,7 +192,7 @@ export function Sidebar({
             workspaceHasBackgroundRun={(path) => workspaceHasBackgroundRun?.(path) ?? false}
             onDismissRunsError={(path) => onDismissRunsError?.(path)}
             onSelectRun={(path, runId) => {
-              setExpandedByPath((prev) => ({ ...prev, [path]: true }))
+              setExpanded(path, true)
               onSelectRunInWorkspace?.(path, runId)
               onOpenChat()
               afterNav()

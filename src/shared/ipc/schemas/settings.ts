@@ -79,7 +79,17 @@ export const McpServerSchema = z.preprocess(
       enabled: z.boolean().default(true),
       source: z.enum(['manual', 'marketplace']).optional(),
       packageId: z.string().optional(),
-      packageVersion: z.string().optional()
+      packageVersion: z.string().optional(),
+      /** Non-secret OAuth client ID when the server does not use DCR. */
+      oauthClientId: z.string().min(1).optional(),
+      /**
+       * Where stored OAuth/PAT credentials may be used.
+       * `this-workspace` requires `authWorkspacePath` and never leaks to other workspaces.
+       */
+      authScope: z.enum(['all-workspaces', 'this-workspace']).optional(),
+      authWorkspacePath: z.string().min(1).optional(),
+      /** Google hosted MCP: readonly vs full documented MCP scopes. */
+      googleAccess: z.enum(['read', 'read-write']).optional()
     })
     .superRefine((val, ctx) => {
       if (val.transport === 'stdio' && !(val.command ?? '').trim()) {
@@ -166,11 +176,20 @@ export const DEFAULT_NOTIFICATION_SETTINGS: NotificationSettings = {
 export const ToolApprovalSettingsSchema = z.object({
   mode: ToolApprovalModeSchema.default('off'),
   /** Tool names the user chose to always allow, persisted per workspace. */
-  allowlist: z.array(z.string()).default([])
+  allowlist: z.array(z.string()).default([]),
+  /**
+   * When true, MCP server tools (`mcp__*`) require approval even if `mode` is off.
+   * Built-in MCP meta tools (list/pin/release) follow `mode` only. Default on.
+   */
+  mcpProtection: z.boolean().default(true)
 })
 export type ToolApprovalSettings = z.infer<typeof ToolApprovalSettingsSchema>
 
-export const DEFAULT_TOOL_APPROVAL: ToolApprovalSettings = { mode: 'off', allowlist: [] }
+export const DEFAULT_TOOL_APPROVAL: ToolApprovalSettings = {
+  mode: 'off',
+  allowlist: [],
+  mcpProtection: true
+}
 
 export const CodeIndexEmbedderSchema = z.enum(['mdenseon', 'lfm2', 'ollama', 'hash'])
 export type CodeIndexEmbedderSetting = z.infer<typeof CodeIndexEmbedderSchema>
@@ -264,14 +283,16 @@ export const CodeIndexReindexRequestSchema = z.object({
 })
 export type CodeIndexReindexRequest = z.infer<typeof CodeIndexReindexRequestSchema>
 
-export const DictationEngineSchema = z.enum(['openai', 'openrouter', 'local', 'qwen3-asr'])
+export const DictationEngineSchema = z.enum(['openai', 'openrouter', 'local', 'qwen3-asr', 'qwen3-asr-onnx'])
 export type DictationEngine = z.infer<typeof DictationEngineSchema>
 
 export const DictationLocalModelIdSchema = z.enum([
   'whisper-tiny.en',
   'whisper-small.en',
   'qwen3-asr-0.6b',
-  'qwen3-asr-1.7b'
+  'qwen3-asr-1.7b',
+  'qwen3-asr-onnx-0.6b',
+  'qwen3-asr-onnx-1.7b'
 ])
 export type DictationLocalModelId = z.infer<typeof DictationLocalModelIdSchema>
 
@@ -421,6 +442,11 @@ export const SettingsSchema = z.object({
    * Empty falls back to `VYOTIQ_GITHUB_CLIENT_ID` env.
    */
   githubClientId: z.string().default(''),
+  /**
+   * Shared Google Cloud OAuth client ID for Gmail/Drive/Calendar MCP.
+   * Non-secret. Client secret lives in OS secure storage, never settings.json.
+   */
+  googleMcpClientId: z.string().default(''),
   marketplace: MarketplaceSettingsSchema.default(DEFAULT_MARKETPLACE_SETTINGS),
   /** Local codebase semantic index (codebase_search). */
   codeIndex: CodeIndexSettingsSchema.default(DEFAULT_CODE_INDEX_SETTINGS),
@@ -490,6 +516,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoResumeInterruptedRuns: false,
   autoCheckUpdates: true,
   githubClientId: '',
+  googleMcpClientId: '',
   marketplace: DEFAULT_MARKETPLACE_SETTINGS,
   codeIndex: DEFAULT_CODE_INDEX_SETTINGS,
   dictation: DEFAULT_DICTATION_SETTINGS,

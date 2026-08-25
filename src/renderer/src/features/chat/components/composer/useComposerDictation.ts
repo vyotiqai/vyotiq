@@ -545,7 +545,7 @@ export function useComposerDictation(opts: {
       const mime = blob.type || mimeRef.current.split(';')[0] || 'audio/webm'
       const engine = engineRef.current
       let pcm16k: string | undefined
-      if (engine === 'local') {
+      if (engine === 'local' || engine === 'qwen3-asr-onnx') {
         pcm16k = await blobToPcm16kBase64(blob)
       }
       if (sessionGenRef.current !== gen) return

@@ -174,6 +174,7 @@ function InstalledMarketplaceItem({
             hideEnable
             hideRemove
             workspaceEnabled={ws}
+            googleMcpClientId={settings.googleMcpClientId}
             onUpdate={async (next) => {
               const updated = settings.mcpServers.map((s) => (s.id === linked.id ? next : s))
               return runUpdate({ mcpServers: updated })
@@ -182,6 +183,7 @@ function InstalledMarketplaceItem({
             onAuthChanged={() => {
               void controller.loadMcpStatus(true)
             }}
+            onOpenConnect={() => controller.openConnectWizard(linked.id)}
           />
         </div>
       ) : null}
@@ -212,6 +214,7 @@ function InstalledMarketplaceItem({
                   hideEnable
                   hideRemove
                   workspaceEnabled={nestedWs}
+                  googleMcpClientId={settings.googleMcpClientId}
                   onUpdate={async (next) => {
                     const others = settings.mcpServers.filter((s) => s.id !== nestedId)
                     return runUpdate({ mcpServers: [...others, next] })
@@ -220,6 +223,7 @@ function InstalledMarketplaceItem({
                   onAuthChanged={() => {
                     void controller.loadMcpStatus(true)
                   }}
+                  onOpenConnect={() => controller.openConnectWizard(nestedId)}
                 />
                 {activeWorkspacePath && canOverride ? (
                   <WorkspaceEnableControls

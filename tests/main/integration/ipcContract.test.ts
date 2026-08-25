@@ -172,6 +172,10 @@ const VYOTIQ_INVOKE_MAP: Record<
   mcpRefresh: IPC.mcpRefresh,
   mcpSetAuthToken: IPC.mcpSetAuthToken,
   mcpClearAuthToken: IPC.mcpClearAuthToken,
+  mcpSetOAuthClientSecret: IPC.mcpSetOAuthClientSecret,
+  mcpClearOAuthClientSecret: IPC.mcpClearOAuthClientSecret,
+  mcpSetGoogleClientSecret: IPC.mcpSetGoogleClientSecret,
+  mcpClearGoogleClientSecret: IPC.mcpClearGoogleClientSecret,
   mcpStartOAuth: IPC.mcpStartOAuth,
   marketplaceListInstalled: IPC.marketplaceListInstalled,
   marketplaceBrowse: IPC.marketplaceBrowse,
@@ -283,7 +287,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(173)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(177)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {

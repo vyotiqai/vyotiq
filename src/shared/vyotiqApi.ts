@@ -429,7 +429,18 @@ export interface VyotiqApi {
   mcpRefresh: (payload?: { workspacePath?: string | null }) => Promise<IpcResult<McpStatusResult>>
   mcpSetAuthToken: (serverId: string, token: string) => Promise<IpcResult<true>>
   mcpClearAuthToken: (serverId: string) => Promise<IpcResult<true>>
-  mcpStartOAuth: (serverId: string) => Promise<IpcResult<McpStatusResult>>
+  mcpStartOAuth: (
+    serverId: string,
+    opts?: {
+      authScope?: 'all-workspaces' | 'this-workspace'
+      workspacePath?: string
+      googleAccess?: 'read' | 'read-write'
+    }
+  ) => Promise<IpcResult<McpStatusResult>>
+  mcpSetOAuthClientSecret: (serverId: string, secret: string) => Promise<IpcResult<true>>
+  mcpClearOAuthClientSecret: (serverId: string) => Promise<IpcResult<true>>
+  mcpSetGoogleClientSecret: (secret: string) => Promise<IpcResult<true>>
+  mcpClearGoogleClientSecret: () => Promise<IpcResult<true>>
   marketplaceListInstalled: () => Promise<IpcResult<MarketplaceIndex>>
   marketplaceBrowse: (
     payload?: MarketplaceBrowseRequest
@@ -452,7 +463,10 @@ export interface VyotiqApi {
   marketplaceImportExternalMcp: (
     payload: McpImportExternalRequest
   ) => Promise<IpcResult<McpImportExternalResult>>
-  marketplaceUninstall: (id: string) => Promise<IpcResult<MarketplaceIndex>>
+  marketplaceUninstall: (
+    id: string,
+    opts?: { signOutGithub?: boolean }
+  ) => Promise<IpcResult<MarketplaceIndex>>
   marketplaceSetEnabled: (
     id: string,
     enabled: boolean

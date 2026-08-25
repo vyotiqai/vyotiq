@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css'
+import { landingAnalytics } from '../lib/analytics'
 import {
   SITE_BRAND,
   SITE_DESCRIPTION,
@@ -11,30 +12,36 @@ interface Props {
   title?: string
   description?: string
   structuredData?: Record<string, unknown>[]
+  robots?: string
 }
 
 const {
   title = `${SITE_PRODUCT} — ${SITE_TAGLINE}`,
   description = SITE_DESCRIPTION,
-  structuredData = []
+  structuredData = [],
+  robots
 } = Astro.props
 const canonical = new URL(Astro.url.pathname, Astro.site)
 const ogImage = new URL('/brand/og.png', Astro.site)
 const siteName = SITE_PRODUCT
+const analytics = landingAnalytics()
 
-const schema: Record<string, unknown> = {
-  '@context': 'https://schema.org',
-  '@type': 'SoftwareApplication',
-  name: siteName,
-  description: SITE_DESCRIPTION,
-  applicationCategory: 'DeveloperApplication',
-  operatingSystem: 'Windows, macOS, Linux',
-  brand: {
-    '@type': 'Brand',
-    name: SITE_BRAND
-  },
-  url: canonical.href
-}
+const includeProductSchema = Astro.url.pathname === '/'
+const schema: Record<string, unknown> | null = includeProductSchema
+  ? {
+      '@context': 'https://schema.org',
+      '@type': 'SoftwareApplication',
+      name: siteName,
+      description: SITE_DESCRIPTION,
+      applicationCategory: 'DeveloperApplication',
+      operatingSystem: 'Windows, macOS, Linux',
+      brand: {
+        '@type': 'Brand',
+        name: SITE_BRAND
+      },
+      url: canonical.href
+    }
+  : null
 ---
 
 <!doctype html>
@@ -44,14 +51,17 @@ const schema: Record<string, unknown> = {
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title}</title>
     <meta name="description" content={description} />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    {robots ? <meta name="robots" content={robots} /> : null}
     <link rel="canonical" href={canonical.href} />
     <link rel="alternate" hreflang="en" href={canonical.href} />
     <link rel="alternate" hreflang="x-default" href={canonical.href} />
-    <link rel="icon" href="/brand/favicon.png" type="image/png" sizes="1024x1024" />
+    <link rel="icon" href="/brand/mark-black.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="/brand/favicon.png" />
     <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
     <meta name="theme-color" content="#EBECEB" media="(prefers-color-scheme: light)" />
     <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
     <meta property="og:site_name" content={siteName} />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
@@ -61,7 +71,8 @@ const schema: Record<string, unknown> = {
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImage.href} />
-    <script is:inline type="application/ld+json" set:html={JSON.stringify(schema)} />
+    <meta name="twitter:image:alt" content={siteName} />
+    {schema ? <script is:inline type="application/ld+json" set:html={JSON.stringify(schema)} /> : null}
     {
       structuredData.map((entry) => (
         <script is:inline type="application/ld+json" set:html={JSON.stringify(entry)} />
@@ -85,6 +96,11 @@ const schema: Record<string, unknown> = {
         }
       })()
     </script>
+    {
+      analytics ? (
+        <script is:inline defer src={analytics.src} data-domain={analytics.domain} />
+      ) : null
+    }
   </head>
   <body class="min-h-dvh bg-bg text-fg antialiased">
     <a

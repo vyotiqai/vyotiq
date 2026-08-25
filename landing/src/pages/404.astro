@@ -6,7 +6,11 @@ import SiteHeader from '../components/SiteHeader.astro'
 import { SITE_PRODUCT } from '../lib/site'
 ---
 
-<BaseLayout title={`Page not found — ${SITE_PRODUCT}`} description="That URL is not a page on this site.">
+<BaseLayout
+  title={`Page not found — ${SITE_PRODUCT}`}
+  description="That URL is not a page on this site."
+  robots="noindex, nofollow"
+>
   <SiteHeader />
   <main id="main-content" class="wrap flex items-center py-16 md:py-24" tabindex="-1">
     <div class="max-w-2xl">

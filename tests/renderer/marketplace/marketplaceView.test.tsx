@@ -688,4 +688,97 @@ describe('MarketplaceView', () => {
     fireEvent.keyDown(search, { key: 'Escape' })
     expect(onClose).toHaveBeenCalledTimes(1)
   })
+
+  it('renders Discover above Featured and does not duplicate ids', async () => {
+    // @ts-expect-error test bridge
+    window.vyotiq.marketplaceBrowse = vi.fn(async () => ({
+      ok: true as const,
+      data: {
+        packages: [
+          {
+            id: 'github',
+            name: 'GitHub',
+            version: '1.0.0',
+            description: 'Official hosted GitHub MCP.',
+            kind: 'mcp' as const,
+            source: 'bundled' as const,
+            sections: ['discover', 'featured'] as const,
+            category: 'developer',
+            featuredRank: 1,
+            publisher: 'GitHub',
+            installable: true,
+            bundledPath: 'github'
+          },
+          {
+            id: 'gmail',
+            name: 'Gmail',
+            version: '1.0.0',
+            description: 'Official hosted Gmail MCP.',
+            kind: 'mcp' as const,
+            source: 'bundled' as const,
+            sections: ['discover', 'featured'] as const,
+            category: 'productivity',
+            featuredRank: 2,
+            publisher: 'Google',
+            installable: true,
+            bundledPath: 'gmail'
+          },
+          {
+            id: 'filesystem',
+            name: 'Filesystem',
+            version: '1.0.0',
+            description: 'MCP filesystem',
+            kind: 'mcp' as const,
+            source: 'bundled' as const,
+            sections: ['featured'] as const,
+            category: 'infrastructure',
+            featuredRank: 5,
+            publisher: 'Model Context Protocol',
+            installable: true,
+            bundledPath: 'filesystem'
+          },
+          {
+            id: 'fetch',
+            name: 'Fetch',
+            version: '1.0.0',
+            description: 'Fetch MCP',
+            kind: 'mcp' as const,
+            source: 'bundled' as const,
+            category: 'infrastructure',
+            publisher: 'Model Context Protocol',
+            installable: true,
+            bundledPath: 'fetch'
+          }
+        ]
+      }
+    }))
+    // @ts-expect-error test bridge
+    window.vyotiq.marketplaceListInstalled = vi.fn(async () => ({
+      ok: true as const,
+      data: { schemaVersion: 1 as const, items: [] }
+    }))
+
+    render(
+      <MarketplaceView settings={baseSettings} onUpdate={vi.fn(async () => ({ ok: true as const }))} />
+    )
+    expect(await screen.findByRole('heading', { name: /^Discover$/i })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /^Featured$/i })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /^Infrastructure$/i })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: /^Developer$/i })).toBeNull()
+    expect(screen.queryByRole('heading', { name: /^Productivity$/i })).toBeNull()
+    expect(screen.getAllByText('GitHub').length).toBe(1)
+    expect(screen.getAllByText('Gmail').length).toBe(1)
+    const discover = screen.getByRole('heading', { name: /^Discover$/i }).closest('section')
+    expect(discover?.textContent).toContain('GitHub')
+    expect(discover?.textContent).toContain('Gmail')
+    expect(within(discover!).getAllByRole('button', { name: /^Add$/i }).length).toBe(2)
+    const featured = screen.getByRole('heading', { name: /^Featured$/i }).closest('section')
+    expect(featured?.textContent).toContain('Filesystem')
+    expect(featured?.textContent).not.toContain('GitHub')
+    expect(featured?.textContent).not.toContain('Gmail')
+    const infra = screen.getByRole('heading', { name: /^Infrastructure$/i }).closest('section')
+    expect(infra?.textContent).toContain('Fetch')
+    expect(infra?.textContent).not.toContain('Filesystem')
+    expect(within(infra!).getByRole('button', { name: /^Add$/i })).toBeTruthy()
+  })
 })

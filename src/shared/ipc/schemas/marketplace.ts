@@ -290,7 +290,9 @@ export const MarketplaceSetEnabledRequestSchema = z.object({
 export type MarketplaceSetEnabledRequest = z.infer<typeof MarketplaceSetEnabledRequestSchema>
 
 export const MarketplaceUninstallRequestSchema = z.object({
-  id: z.string().min(1)
+  id: z.string().min(1),
+  /** When uninstalling GitHub MCP, also run native GitHub logout. Default false. */
+  signOutGithub: z.boolean().optional()
 })
 export type MarketplaceUninstallRequest = z.infer<typeof MarketplaceUninstallRequestSchema>
 

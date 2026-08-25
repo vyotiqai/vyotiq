@@ -14,6 +14,9 @@ type SecretsFile = Record<string, string>
 
 const MCP_AUTH_PREFIX = 'mcp-auth:'
 const MCP_OAUTH_PREFIX = 'mcp-oauth:'
+const MCP_OAUTH_CLIENT_PREFIX = 'mcp-oauth-client:'
+/** Shared Google Cloud OAuth client secret for Gmail/Drive/Calendar MCP. */
+const GOOGLE_MCP_CLIENT_SECRET_KEY = 'google-mcp:client_secret'
 /** Single-app GitHub user access token (device OAuth). */
 const GITHUB_TOKEN_KEY = 'github:access_token'
 
@@ -27,6 +30,10 @@ function mcpAuthKey(serverId: string): string {
 
 function mcpOauthKey(serverId: string): string {
   return `${MCP_OAUTH_PREFIX}${serverId}`
+}
+
+function mcpOAuthClientSecretKey(serverId: string): string {
+  return `${MCP_OAUTH_CLIENT_PREFIX}${serverId}`
 }
 
 let secretsFileLoadError = false
@@ -287,6 +294,11 @@ export function moveMcpAuthToken(fromId: string, toId: string): void {
     setMcpOAuthState(to, oauth)
     clearMcpOAuthState(from)
   }
+  const clientSecret = getMcpOAuthClientSecret(from)
+  if (clientSecret) {
+    setMcpOAuthClientSecret(to, clientSecret)
+    clearMcpOAuthClientSecret(from)
+  }
 }
 
 /** Persisted OAuth session for a remote MCP server (tokens + PKCE + client info). */
@@ -350,6 +362,73 @@ export function patchMcpOAuthState(
   const next: McpOAuthStoredState = { ...prev, ...patch }
   setMcpOAuthState(serverId, next)
   return next
+}
+
+/** Store a static OAuth client secret for an MCP server id (OS encrypted). */
+export function setMcpOAuthClientSecret(serverId: string, secret: string): void {
+  const id = serverId.trim()
+  if (!id) throw new Error('MCP server id is required')
+  const trimmed = secret.trim()
+  if (!trimmed) throw new Error('OAuth client secret cannot be empty')
+  const data = readMutableSecretsFile()
+  data[mcpOAuthClientSecretKey(id)] = encryptBlob(trimmed)
+  writeFile(data)
+  logger.info('MCP OAuth client secret saved', { scope: 'secrets', serverId: id })
+}
+
+export function clearMcpOAuthClientSecret(serverId: string): void {
+  const id = serverId.trim()
+  if (!id) return
+  const data = readMutableSecretsFile()
+  const key = mcpOAuthClientSecretKey(id)
+  if (!(key in data)) return
+  delete data[key]
+  writeFile(data)
+  logger.info('MCP OAuth client secret cleared', { scope: 'secrets', serverId: id })
+}
+
+export function getMcpOAuthClientSecret(serverId: string): string | null {
+  const id = serverId.trim()
+  if (!id) return null
+  const encrypted = readFile()[mcpOAuthClientSecretKey(id)]
+  if (!encrypted) return null
+  return decryptBlob(encrypted)
+}
+
+export function hasMcpOAuthClientSecret(serverId: string): boolean {
+  const id = serverId.trim()
+  if (!id) return false
+  const encrypted = readFile()[mcpOAuthClientSecretKey(id)]
+  return typeof encrypted === 'string' && encrypted.length > 0
+}
+
+/** Shared Google Cloud OAuth client secret (OS encrypted, never settings.json). */
+export function setGoogleMcpClientSecret(secret: string): void {
+  const trimmed = secret.trim()
+  if (!trimmed) throw new Error('Google MCP client secret cannot be empty')
+  const data = readMutableSecretsFile()
+  data[GOOGLE_MCP_CLIENT_SECRET_KEY] = encryptBlob(trimmed)
+  writeFile(data)
+  logger.info('Google MCP client secret saved', { scope: 'secrets' })
+}
+
+export function clearGoogleMcpClientSecret(): void {
+  const data = readMutableSecretsFile()
+  if (!(GOOGLE_MCP_CLIENT_SECRET_KEY in data)) return
+  delete data[GOOGLE_MCP_CLIENT_SECRET_KEY]
+  writeFile(data)
+  logger.info('Google MCP client secret cleared', { scope: 'secrets' })
+}
+
+export function getGoogleMcpClientSecret(): string | null {
+  const encrypted = readFile()[GOOGLE_MCP_CLIENT_SECRET_KEY]
+  if (!encrypted) return null
+  return decryptBlob(encrypted)
+}
+
+export function hasGoogleMcpClientSecret(): boolean {
+  const encrypted = readFile()[GOOGLE_MCP_CLIENT_SECRET_KEY]
+  return typeof encrypted === 'string' && encrypted.length > 0
 }
 
 /** Persist GitHub device-OAuth access token (OS encrypted). */

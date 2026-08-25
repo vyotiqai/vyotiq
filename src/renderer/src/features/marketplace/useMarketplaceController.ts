@@ -19,6 +19,7 @@ import {
   type MarketplaceOverrideKind
 } from '@shared/domain/marketplaceEnablement'
 import { findByWorkspacePath } from '@shared/workspacePathMatch'
+import { GITHUB_MCP_ID, isHostedAppMcpId } from '@shared/mcpApps'
 import { indexMcpStatusById } from './mcpStatus'
 
 export type MarketplaceFeedback = { kind: 'success' | 'error' | 'warning'; text: string }
@@ -78,6 +79,8 @@ export function useMarketplaceController({
   }, [])
   const [mcpStatus, setMcpStatus] = useState<McpServerStatus[]>([])
   const [mcpStatusLoading, setMcpStatusLoading] = useState(false)
+  const [hasGoogleMcpClientSecret, setHasGoogleMcpClientSecret] = useState(false)
+  const [connectWizardId, setConnectWizardId] = useState<string | null>(null)
   const mcpStatusReqIdRef = useRef(0)
   const reloadReqIdRef = useRef(0)
 
@@ -118,7 +121,10 @@ export function useMarketplaceController({
           ? await window.vyotiq.mcpRefresh(payload)
           : await window.vyotiq.mcpStatus(payload)
       if (reqId !== mcpStatusReqIdRef.current) return
-      if (res.ok) setMcpStatus(res.data.servers)
+      if (res.ok) {
+        setMcpStatus(res.data.servers)
+        setHasGoogleMcpClientSecret(res.data.hasGoogleMcpClientSecret === true)
+      }
       else {
         setFeedback({
           kind: 'error',
@@ -251,9 +257,12 @@ export function useMarketplaceController({
               ? ' Warning: Bearer token could not be stored in OS secure storage — configure auth under Installed.'
               : ' Bearer token stored in OS secure storage.'
         }
+        const hosted = isHostedAppMcpId(item.id)
         setFeedbackIfCurrent(epoch, {
           kind: authTokenStored === false ? 'error' : 'success',
-          text: `Installed ${item.name} (${item.kind}) — enabled by default; tools load into the agent when connected.${tokenHint}`
+          text: hosted
+            ? `Installed ${item.name} — sign in to connect.`
+            : `Installed ${item.name} (${item.kind}) — enabled by default; tools load into the agent when connected.${tokenHint}`
         })
         await reload()
         await onReloadSettings?.()
@@ -279,24 +288,25 @@ export function useMarketplaceController({
   const installFromCatalog = useCallback(
     async (entry: MarketplaceCatalogEntry): Promise<boolean> => {
       if (entry.installable === false) return false
-      if (entry.bundledPath) {
-        return runInstall(
-          {
-            source: 'bundled',
-            target: entry.bundledPath,
-            kind: entry.kind
-          },
-          { busyTargetId: entry.id }
-        )
-      }
-      return runInstall(
-        {
-          source: 'registry',
-          target: entry.id,
-          kind: entry.kind
-        },
-        { busyTargetId: entry.id }
-      )
+      const ok = entry.bundledPath
+        ? await runInstall(
+            {
+              source: 'bundled',
+              target: entry.bundledPath,
+              kind: entry.kind
+            },
+            { busyTargetId: entry.id }
+          )
+        : await runInstall(
+            {
+              source: 'registry',
+              target: entry.id,
+              kind: entry.kind
+            },
+            { busyTargetId: entry.id }
+          )
+      if (ok && isHostedAppMcpId(entry.id)) setConnectWizardId(entry.id)
+      return ok
     },
     [runInstall]
   )
@@ -339,10 +349,15 @@ export function useMarketplaceController({
       if (!window.confirm('Uninstall this package? Auth secrets for its MCP servers will be cleared.')) {
         return
       }
+      const signOutGithub =
+        id === GITHUB_MCP_ID &&
+        window.confirm(
+          'Also sign out of GitHub in Settings?\n\nCancel keeps GitHub signed in.'
+        )
       beginBusy()
       const epoch = ++feedbackSeqRef.current
       try {
-        const res = await window.vyotiq.marketplaceUninstall(id)
+        const res = await window.vyotiq.marketplaceUninstall(id, { signOutGithub })
         if (!res.ok) {
           setFeedback({ kind: 'error', text: res.error })
           return
@@ -508,6 +523,10 @@ export function useMarketplaceController({
     setFeedback,
     mcpStatusById,
     mcpStatusLoading,
+    hasGoogleMcpClientSecret,
+    connectWizardId,
+    openConnectWizard: setConnectWizardId,
+    closeConnectWizard: () => setConnectWizardId(null),
     workspaceEnabledForId,
     loadMcpStatus,
     runUpdate,

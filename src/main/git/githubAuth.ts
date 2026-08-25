@@ -208,10 +208,10 @@ async function ghAuthTokenAvailable(): Promise<boolean> {
   }
 }
 
-function persistTokenToGhCli(token: string): void {
-  void (async () => {
+function persistTokenToGhCli(token: string): Promise<boolean> {
+  return (async () => {
     const executable = await resolveGhExecutable()
-    if (!executable) return
+    if (!executable) return false
     await new Promise<void>((resolve, reject) => {
       const child = spawn(
         executable,
@@ -244,12 +244,42 @@ function persistTokenToGhCli(token: string): void {
       child.stdin?.end()
     })
     await emitGithubAuthStatus()
+    return true
   })().catch((err) => {
     logger.warn('Could not store token in GitHub CLI credential store', {
       scope: 'github-auth',
       err
     })
+    return false
   })
+}
+
+/** Classic / fine-grained PAT and GitHub user OAuth tokens that `gh` accepts. */
+export function isGithubCliUsableToken(token: string): boolean {
+  return /^(ghp_|gho_|ghu_|ghs_|github_pat_)/.test(token.trim())
+}
+
+/**
+ * After GitHub MCP OAuth or PAT: persist a gh-usable token, or start device flow
+ * when Copilot MCP issued a token `gh` cannot use.
+ */
+export async function linkNativeGithubFromMcpToken(token: string): Promise<{
+  linked: boolean
+  startedDeviceFlow: boolean
+}> {
+  const trimmed = token.trim()
+  if (isGithubCliUsableToken(trimmed)) {
+    setGithubAccessToken(trimmed)
+    await persistTokenToGhCli(trimmed)
+    await emitGithubAuthStatus()
+    return { linked: true, startedDeviceFlow: false }
+  }
+  const status = await githubAuthStatus()
+  if (status.ghAuthenticated) {
+    return { linked: true, startedDeviceFlow: false }
+  }
+  await startGithubAuth()
+  return { linked: false, startedDeviceFlow: true }
 }
 
 export async function githubAuthStatus(): Promise<GithubAuthStatus> {
@@ -334,7 +364,7 @@ function failPending(message: string): void {
 
 async function completeWithAccessToken(accessToken: string): Promise<void> {
   setGithubAccessToken(accessToken)
-  persistTokenToGhCli(accessToken)
+  void persistTokenToGhCli(accessToken)
   cancelGithubAuth()
   logger.info('GitHub device OAuth succeeded', { scope: 'github-auth' })
   await emitGithubAuthStatus()

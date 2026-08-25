@@ -9,6 +9,7 @@ import { isAbortError } from '../../shared/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
 import { scrubString } from '../../shared/utils/scrub'
+import { isMcpServerToolName } from '../../shared/mcpApps'
 import { BUILTIN_TOOL_NAMES, canonicalizeAgentToolName } from './schemas/tools'
 import { isApprovalExemptTool } from './tools/classify'
 import { ASK_SAFE_BUILTIN } from './tools/modePolicy'
@@ -101,12 +102,14 @@ export function isToolGated(
   mode: ToolApprovalMode,
   sessionAllowlist: ReadonlySet<string>,
   workspaceAllowlist: readonly string[],
-  argsJson?: string
+  argsJson?: string,
+  opts?: { mcpProtection?: boolean }
 ): boolean {
-  if (mode === 'off') return false
   const canonical = canonicalizeAgentToolName(name)
   if (sessionAllowlist.has(canonical) || sessionAllowlist.has(name)) return false
   if (workspaceAllowlist.includes(canonical) || workspaceAllowlist.includes(name)) return false
+  const mcpProtection = opts?.mcpProtection !== false
+  if (mode === 'off') return mcpProtection && isMcpServerToolName(canonical)
   if (mode === 'all') return true
   let args: Record<string, unknown> | undefined
   if (argsJson) {
@@ -174,6 +177,11 @@ export type ApprovalGateOptions = {
   /** ChatStart invoke that owns this gate; scopes cancelPendingApprovals. */
   invokeId?: number
   mode: ToolApprovalMode
+  /**
+   * When true (default), MCP server tools (`mcp__*`) stay gated even if `mode` is off.
+   * Built-in MCP meta tools follow `mode` only.
+   */
+  mcpProtection?: boolean
   workspaceAllowlist: readonly string[]
   signal: AbortSignal
   /** When true, auto-approve gated tools except high-risk (delete, terminal, edits). */
@@ -272,7 +280,11 @@ export function createApprovalGate(options: ApprovalGateOptions): ToolApprovalGa
   return {
     async authorize(call): Promise<AuthorizeResult> {
       const name = canonicalizeAgentToolName(call.name)
-      if (!isToolGated(name, options.mode, sessionAllowlist, workspaceAllowlist, call.arguments)) {
+      if (
+        !isToolGated(name, options.mode, sessionAllowlist, workspaceAllowlist, call.arguments, {
+          mcpProtection: options.mcpProtection
+        })
+      ) {
         return { allowed: true }
       }
 

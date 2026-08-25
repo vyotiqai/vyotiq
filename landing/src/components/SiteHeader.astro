@@ -4,6 +4,7 @@ import LandingIcon from './LandingIcon.astro'
 import { SITE_PRODUCT } from '../lib/site'
 
 const onDocs = Astro.url.pathname === '/docs' || Astro.url.pathname.startsWith('/docs/')
+const onDocsIndex = Astro.url.pathname === '/docs' || Astro.url.pathname === '/docs/'
 ---
 
 <header class="sticky top-0 z-40 border-b border-border/80 bg-bg/90 backdrop-blur-md">
@@ -25,7 +26,7 @@ const onDocs = Astro.url.pathname === '/docs' || Astro.url.pathname.startsWith('
           onDocs ? 'text-fg' : 'text-muted'
         ]}
         href="/docs"
-        aria-current={onDocs ? 'page' : undefined}
+        aria-current={onDocsIndex ? 'page' : onDocs ? 'true' : undefined}
       >
         Docs
       </a>

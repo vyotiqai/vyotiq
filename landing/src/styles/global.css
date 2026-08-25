@@ -171,6 +171,16 @@ a:focus-visible {
   opacity: 0.9;
 }
 
+.btn-secondary {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg);
+}
+
+.btn-secondary:hover {
+  border-color: var(--fg);
+}
+
 /* Homepage */
 .home-hero {
   padding-block: clamp(4.5rem, 10vw, 8.5rem) clamp(4rem, 8vw, 7rem);
@@ -243,6 +253,18 @@ a:focus-visible {
 .home-text-link:hover {
   gap: 0.75rem;
   text-decoration-color: var(--fg);
+}
+
+.home-installers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1.25rem;
+  margin-top: 1.5rem;
+}
+
+.home-installers .home-text-link {
+  margin-top: 0;
 }
 
 .home-sections {
@@ -1021,11 +1043,8 @@ a:focus-visible {
 }
 
 .docs-search-button {
-  flex-shrink: 0;
-}
-
-.docs-search-button {
   display: flex;
+  flex-shrink: 0;
   width: 100%;
   min-height: 2.75rem;
   align-items: center;
@@ -1132,35 +1151,6 @@ a:focus-visible {
   line-height: 1.4;
 }
 
-.docs-start-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr));
-  gap: 1rem;
-  margin-bottom: 2.5rem;
-}
-
-.docs-start-grid a {
-  display: flex;
-  min-height: 9rem;
-  flex-direction: column;
-  gap: 0.625rem;
-  padding: 1.25rem;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  background: var(--surface);
-  text-decoration: none;
-}
-
-.docs-start-grid a:hover {
-  border-color: var(--muted);
-}
-
-.docs-start-grid strong {
-  font-size: 1rem;
-  line-height: 1.4;
-}
-
-.docs-start-grid span,
 .docs-index-list span {
   color: var(--muted);
   font-size: 0.875rem;

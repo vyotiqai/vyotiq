@@ -9,6 +9,7 @@ import { useMarketplaceController } from './useMarketplaceController'
 import { MarketplaceHome } from './MarketplaceHome'
 import { MarketplaceDetail } from './MarketplaceDetail'
 import { MarketplaceManage } from './MarketplaceManage'
+import { ConnectMcpWizard } from './ConnectMcpWizard'
 
 const SECTION_TABS = ['browse', 'manage'] as const
 type SectionTab = (typeof SECTION_TABS)[number]
@@ -296,6 +297,26 @@ export function MarketplaceView({
           ) : null}
         </div>
       </div>
+      {controller.connectWizardId ? (
+        <ConnectMcpWizard
+          serverId={controller.connectWizardId}
+          serverName={
+            settings.mcpServers.find((s) => s.id === controller.connectWizardId)?.name ??
+            controller.catalog.find((e) => e.id === controller.connectWizardId)?.name ??
+            controller.connectWizardId
+          }
+          settings={settings}
+          status={controller.mcpStatusById.get(controller.connectWizardId)}
+          hasGoogleMcpClientSecret={controller.hasGoogleMcpClientSecret}
+          activeWorkspacePath={activeWorkspacePath}
+          onUpdate={onUpdate}
+          onReloadSettings={onReloadSettings}
+          onClose={controller.closeConnectWizard}
+          onConnected={() => {
+            void controller.loadMcpStatus(true)
+          }}
+        />
+      ) : null}
     </div>
   )
 }

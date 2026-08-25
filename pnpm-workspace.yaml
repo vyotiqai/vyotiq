@@ -20,6 +20,12 @@ peerDependencyRules:
     eslint: '10'
     react: '19'
 
+# @astrojs/check still needs the TypeScript 6 language-service API; the app stays on 7.
+packageExtensions:
+  '@astrojs/check':
+    dependencies:
+      typescript: 6.0.3
+
 overrides:
   '@sentry/core': 10.67.0
   adm-zip: '>=0.6.0'

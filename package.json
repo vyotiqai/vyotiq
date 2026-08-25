@@ -42,8 +42,11 @@
     "sync:file-icons": "node scripts/sync-file-icons.mjs",
     "sync:codeindex-wasm": "node scripts/sync-codeindex-wasm.mjs",
     "sync:landing-brand": "node scripts/sync-landing-brand.mjs",
-    "landing:dev": "pnpm sync:brand && pnpm sync:landing-brand && pnpm --filter @vyotiq/landing dev",
-    "landing:build": "pnpm sync:brand && pnpm sync:landing-brand && pnpm --filter @vyotiq/landing build",
+    "bake:landing-release": "node landing/scripts/bake-github-release.mjs",
+    "landing:dev": "pnpm sync:brand && pnpm sync:landing-brand && pnpm bake:landing-release && pnpm --filter @vyotiq/landing dev",
+    "landing:build": "pnpm sync:brand && pnpm sync:landing-brand && pnpm bake:landing-release && pnpm --filter @vyotiq/landing build",
+    "landing:check": "pnpm --filter @vyotiq/landing check",
+    "landing:audit": "node tests/landing/runDocsAudit.mjs",
     "postinstall": "node node_modules/electron/install.js && (electron-builder install-app-deps || node -e \"console.warn('[vyotiq] native module rebuild failed — node-pty will use pipe fallback if unavailable')\") && node scripts/sync-file-icons.mjs && node scripts/sync-codeindex-wasm.mjs && node scripts/sync-harness.mjs && node scripts/sync-docx-md.mjs && node scripts/generate-precision-mono-brand.mjs"
   },
   "dependencies": {

@@ -51,15 +51,11 @@ See [Providers](/docs/customize/providers). **Active provider**, API keys, `Refr
 
 ## Indexing
 
-See Codebase search and indexing. Enable codebase index, Embedder (LightOn dense (mDenseOn / ONNX), Ollama, **Local** hash), Auto-download model, Ollama embedding model, Index status, Reindex workspace.
+See [Codebase search and indexing](/docs/tools/indexing). Enable codebase index, embedder, auto-download, Ollama embedding model, index status, reindex workspace.
 
 ## Voice
 
-| Control | Options and notes |
-| --- | --- |
-| Dictation engine: **OpenAI**, **OpenRouter**, **Local**. **OpenAI** and **OpenRouter** use gpt-transcribe and need that provider’s key in Providers. **Local** runs Whisper on this machine (English). **Local** stays disabled until a Whisper model is installed. Install does not switch the engine by itself. Engine is read on each mic stop | no restart. |
-| Waveform: Bars, Dots, Line, Mirror | listening visualizer in the composer. Does not change transcription. |
-| **Local** models | Whisper Tiny (Fast, English, ~41 MB) and Whisper Small (Recommended, English, ~249 MB). Buttons: Install Whisper Tiny, Install Whisper Small, Unload Whisper Tiny, Unload Whisper Small, Delete Whisper Tiny cache, Delete Whisper Small cache. The mic does not require an **OpenAI** key. |
+See [Voice dictation](/docs/tools/voice-dictation). Dictation engine, waveform, and Local Whisper install, unload, and cache delete.
 
 ## Tools
 

@@ -76,6 +76,7 @@ function PackageCard({
   formLocked,
   installing,
   showAdd,
+  variant = 'default',
   onOpen,
   onAdd
 }: {
@@ -86,6 +87,7 @@ function PackageCard({
   /** True only for the package currently being installed. */
   installing?: boolean
   showAdd?: boolean
+  variant?: 'default' | 'discover'
   onOpen: () => void
   onAdd?: () => void
 }) {
@@ -93,12 +95,16 @@ function PackageCard({
   const installed = activity.kind !== 'available' && activity.kind !== 'coming-soon'
   const locked = Boolean(formLocked)
   const showInstalling = Boolean(installing)
+  const discover = variant === 'discover'
+  const iconSize = discover ? 56 : 40
 
   return (
     <div
       data-marketplace-card
+      data-marketplace-card-variant={variant}
       className={cn(
-        'flex items-start gap-3 rounded-lg border border-border bg-surface px-3 py-3',
+        'flex items-start gap-3 rounded-lg border border-border bg-surface',
+        discover ? 'px-4 py-4' : 'px-3 py-3',
         selected && CARD_SELECTED
       )}
     >
@@ -114,13 +120,22 @@ function PackageCard({
           'border-0 bg-transparent p-0 hover:bg-transparent'
         )}
       >
-        <PackageIcon name={entry.name} iconUrl={entry.iconUrl} size={40} />
+        <PackageIcon name={entry.name} iconUrl={entry.iconUrl} size={iconSize} />
         <div className="min-w-0 flex-1">
-          <p className="m-0 truncate text-sm font-medium text-fg" title={entry.name}>
+          <p
+            className={cn(
+              'm-0 truncate font-medium text-fg',
+              discover ? 'text-base' : 'text-sm'
+            )}
+            title={entry.name}
+          >
             {entry.name}
           </p>
           <p
-            className="m-0 mt-0.5 line-clamp-2 text-xs text-secondary"
+            className={cn(
+              'm-0 mt-0.5 text-xs text-secondary',
+              discover ? 'line-clamp-3' : 'line-clamp-2'
+            )}
             title={entry.description || undefined}
           >
             {entry.description || '—'}
@@ -180,7 +195,10 @@ function CategorySection({
   mcpStatusById,
   workspaceEnabledForId,
   selectedEntryId,
-  onOpen
+  formLocked,
+  busyTargetId,
+  onOpen,
+  onAdd
 }: {
   category: string
   entries: MarketplaceCatalogEntry[]
@@ -188,7 +206,10 @@ function CategorySection({
   mcpStatusById: Map<string, McpServerStatus>
   workspaceEnabledForId: MarketplaceController['workspaceEnabledForId']
   selectedEntryId: string | null
+  formLocked: boolean
+  busyTargetId: string | null
   onOpen: (entry: MarketplaceCatalogEntry) => void
+  onAdd: (entry: MarketplaceCatalogEntry) => void
 }) {
   const [expanded, setExpanded] = useState(false)
   const visible = expanded ? entries : entries.slice(0, CATEGORY_INITIAL_VISIBLE)
@@ -220,7 +241,11 @@ function CategorySection({
               workspaceEnabledForId(marketplaceOverrideKind(entry.kind), entry.id)
             )}
             selected={selectedEntryId === entry.id}
+            formLocked={formLocked}
+            installing={busyTargetId === entry.id}
+            showAdd
             onOpen={() => onOpen(entry)}
+            onAdd={() => onAdd(entry)}
           />
         ))}
       </div>
@@ -284,12 +309,27 @@ export function MarketplaceHome({
     return entries
   }, [installed.items, catalogById, kindFilter, query])
 
+  const discover = useMemo(
+    () =>
+      catalog
+        .filter((e) => e.sections?.includes('discover') && !installedById.has(e.id))
+        .sort((a, b) => (a.featuredRank ?? 999) - (b.featuredRank ?? 999)),
+    [catalog, installedById]
+  )
+
+  const discoverIds = useMemo(() => new Set(discover.map((e) => e.id)), [discover])
+
   const featured = useMemo(
     () =>
       catalog
-        .filter((e) => e.sections?.includes('featured') && !installedById.has(e.id))
+        .filter(
+          (e) =>
+            e.sections?.includes('featured') &&
+            !installedById.has(e.id) &&
+            !discoverIds.has(e.id)
+        )
         .sort((a, b) => (a.featuredRank ?? 999) - (b.featuredRank ?? 999)),
-    [catalog, installedById]
+    [catalog, discoverIds, installedById]
   )
 
   const featuredIds = useMemo(() => new Set(featured.map((e) => e.id)), [featured])
@@ -297,18 +337,25 @@ export function MarketplaceHome({
   const byCategory = useMemo(() => {
     const map = new Map<string, MarketplaceCatalogEntry[]>()
     for (const entry of catalog) {
-      if (installedById.has(entry.id) || featuredIds.has(entry.id)) continue
+      if (installedById.has(entry.id) || discoverIds.has(entry.id) || featuredIds.has(entry.id)) {
+        continue
+      }
       const key = entry.category?.trim() || 'other'
       const list = map.get(key) ?? []
       list.push(entry)
       map.set(key, list)
     }
-    return [...map.entries()].sort(([a], [b]) => a.localeCompare(b))
-  }, [catalog, featuredIds, installedById])
+    return [...map.entries()]
+      .filter(([, entries]) => entries.length > 0)
+      .sort(([a], [b]) => a.localeCompare(b))
+  }, [catalog, discoverIds, featuredIds, installedById])
 
   const filteredEmpty = Boolean(query.trim()) || kindFilter !== 'all'
   const hasBrowseContent =
-    installedEntries.length > 0 || featured.length > 0 || byCategory.length > 0
+    installedEntries.length > 0 ||
+    discover.length > 0 ||
+    featured.length > 0 ||
+    byCategory.length > 0
 
   return (
     <div className="flex flex-col gap-5">
@@ -407,6 +454,33 @@ export function MarketplaceHome({
             </section>
           ) : null}
 
+          {discover.length > 0 ? (
+            <section className="flex flex-col gap-2" data-marketplace-row="discover">
+              <h2 className="m-0 text-sm font-medium text-fg">Discover</h2>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {discover.map((entry) => (
+                  <PackageCard
+                    key={`${entry.source}-${entry.id}`}
+                    entry={entry}
+                    variant="discover"
+                    activity={activityFor(
+                      entry,
+                      installedById,
+                      mcpStatusById,
+                      workspaceEnabledForId(marketplaceOverrideKind(entry.kind), entry.id)
+                    )}
+                    selected={selectedEntryId === entry.id}
+                    formLocked={formLocked}
+                    installing={busyTargetId === entry.id}
+                    showAdd
+                    onOpen={() => onOpenDetail(entry)}
+                    onAdd={() => void installFromCatalog(entry)}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
+
           {featured.length > 0 ? (
             <section className="flex flex-col gap-2">
               <h2 className="m-0 text-sm font-medium text-fg">Featured</h2>
@@ -442,7 +516,10 @@ export function MarketplaceHome({
               mcpStatusById={mcpStatusById}
               workspaceEnabledForId={workspaceEnabledForId}
               selectedEntryId={selectedEntryId}
+              formLocked={formLocked}
+              busyTargetId={busyTargetId}
               onOpen={onOpenDetail}
+              onAdd={(entry) => void installFromCatalog(entry)}
             />
           ))}
         </>

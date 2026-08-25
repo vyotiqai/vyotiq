@@ -54,6 +54,8 @@ function AppShellInner({
   onCloseWorkspace,
   onAddWorkspace,
   workspaceHasBackgroundRun,
+  expandedByPath,
+  onSetWorkspaceExpanded,
   running,
   onChatStop,
   onCloseChat,
@@ -83,6 +85,9 @@ function AppShellInner({
   onSwitchWorkspace?: (path: string) => void
   onCloseWorkspace?: (path: string) => void
   onAddWorkspace?: () => void
+  /** Persisted per-workspace sidebar expand state + mutator. */
+  expandedByPath?: Record<string, boolean>
+  onSetWorkspaceExpanded?: (path: string, expanded: boolean) => void
   workspaceHasBackgroundRun?: (path: string) => boolean
   /** When true, Escape may stop the active run (after other Esc handlers). */
   running?: boolean
@@ -274,6 +279,8 @@ function AppShellInner({
     onCloseWorkspace,
     onAddWorkspace,
     workspaceHasBackgroundRun,
+    expandedByPath,
+    onSetWorkspaceExpanded,
     onSessionQuery,
     onOpenSettings,
     onOpenNotificationSettings,

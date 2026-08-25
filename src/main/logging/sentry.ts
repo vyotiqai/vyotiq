@@ -18,10 +18,6 @@ export function isSentryBuildConfigured(): boolean {
   return Boolean(resolveDsn())
 }
 
-export function isSentryActive(): boolean {
-  return active
-}
-
 function workspaceCountTag(): number {
   try {
     return getWorkspaces().openPaths.length

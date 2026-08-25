@@ -8,7 +8,16 @@ import { chromium } from '@playwright/test'
 
 const repo = process.cwd()
 const contentRoot = join(repo, 'landing', 'src', 'content', 'docs')
-const baseUrl = process.env.DOCS_BASE_URL ?? 'http://localhost:4321'
+const baseUrl = process.env.DOCS_BASE_URL ?? 'http://127.0.0.1:4321'
+const DOC_SECTIONS = [
+  'start',
+  'agent',
+  'customize',
+  'tools',
+  'concepts',
+  'reference',
+  'troubleshooting'
+]
 
 function markdownRoutes(dir, prefix = '') {
   const routes = []
@@ -66,9 +75,14 @@ function rgb(value) {
   return channels
 }
 
-const docRoutes = ['/docs', ...markdownRoutes(contentRoot).sort()]
-if (docRoutes.length !== 45) {
-  throw new Error(`Expected 45 canonical docs routes, found ${docRoutes.length}`)
+const articleRoutes = markdownRoutes(contentRoot).sort()
+const docRoutes = [
+  '/docs',
+  ...DOC_SECTIONS.map((section) => `/docs/${section}`),
+  ...articleRoutes
+]
+if (docRoutes.length !== 52) {
+  throw new Error(`Expected 52 canonical docs routes, found ${docRoutes.length}`)
 }
 
 const viewports = [
@@ -127,7 +141,7 @@ async function checkTargets(page, selector, label) {
 
 async function checkTypography(page, label) {
   const wrongFont = await page
-    .locator('h1, h2, h3, button, nav, a, p, .docs-start-grid')
+    .locator('h1, h2, h3, button, nav, a, p, .docs-index-list')
     .evaluateAll((elements) =>
       elements
         .map((element) => ({
@@ -186,17 +200,25 @@ async function checkDocsRoute(page, route, viewport) {
     canonical: document.querySelector('link[rel="canonical"]')?.getAttribute('href'),
     alternate: document.querySelector('link[hreflang="en"]')?.getAttribute('href'),
     socialTitle: document.querySelector('meta[property="og:title"]')?.getAttribute('content'),
-    schemaCount: document.querySelectorAll('script[type="application/ld+json"]').length
+    schemas: [...document.querySelectorAll('script[type="application/ld+json"]')].map(
+      (node) => node.textContent ?? ''
+    )
   }))
+  const onDocsIndex = route === '/docs' || route === '/docs/'
+  const schemaCount = metadata.schemas.length
+  const minSchema = onDocsIndex ? 1 : 2
   if (
     !metadata.title ||
     !metadata.description ||
     !metadata.canonical ||
     !metadata.alternate ||
     !metadata.socialTitle ||
-    metadata.schemaCount < 2
+    schemaCount < minSchema
   ) {
     fail(`${viewport} ${route}: incomplete metadata or structured data`)
+  }
+  if (metadata.schemas.some((text) => text.includes('SoftwareApplication'))) {
+    fail(`${viewport} ${route}: SoftwareApplication JSON-LD should only appear on the homepage`)
   }
 
   await checkNoOverflow(page, `${viewport} ${route}`)
@@ -207,7 +229,6 @@ async function checkDocsRoute(page, route, viewport) {
   const footerCurrent = page.locator('footer a[href="/docs"][aria-current="page"]')
   const headerCount = await headerCurrent.count()
   const footerCount = await footerCurrent.count()
-  const onDocsIndex = route === '/docs' || route === '/docs/'
   if (onDocsIndex) {
     if (headerCount !== 1 || footerCount !== 1) {
       fail(`${viewport} ${route}: docs chrome lacks current state`)
@@ -256,13 +277,25 @@ function watchRuntime(page, label) {
       new URL(sourceUrl).pathname === '/not-a-real-page' &&
       message.text().includes('Failed to load resource') &&
       message.text().includes('404')
-    if (message.type() === 'error' && !expectedMissingPage) {
+    const expectedMissingFavicon =
+      new URL(sourceUrl).pathname === '/favicon.ico' &&
+      message.text().includes('Failed to load resource') &&
+      message.text().includes('404')
+    const expectedAbortedNav = message.text().includes('net::ERR_ABORTED')
+    if (
+      message.type() === 'error' &&
+      !expectedMissingPage &&
+      !expectedMissingFavicon &&
+      !expectedAbortedNav
+    ) {
       fail(`${label}: console error ${message.text()} (${sourceUrl})`)
     }
   })
   page.on('pageerror', (error) => fail(`${label}: page error ${error.message}`))
   page.on('requestfailed', (request) => {
-    fail(`${label}: network failure ${request.method()} ${request.url()} ${request.failure()?.errorText ?? ''}`)
+    const errorText = request.failure()?.errorText ?? ''
+    if (errorText.includes('ERR_ABORTED')) return
+    fail(`${label}: network failure ${request.method()} ${request.url()} ${errorText}`)
   })
 }
 
@@ -308,12 +341,71 @@ async function checkHomepage(page, viewport) {
   if (
     heroStructure.headings !== 1 ||
     heroStructure.paragraphs !== 2 ||
-    heroStructure.links !== 1 ||
+    heroStructure.links < 2 ||
     !heroStructure.text.includes('Agent V') ||
     heroStructure.text.includes('Vyotiq Agent V') ||
     /Desktop|Electron/.test(heroStructure.text)
   ) {
     fail(`${viewport} homepage: hero is not concise ${JSON.stringify(heroStructure)}`)
+  }
+  const heroLinks = await page.locator('#overview a').evaluateAll((anchors) =>
+    anchors.map((anchor) => ({
+      href: anchor.getAttribute('href') ?? '',
+      text: (anchor.textContent ?? '').replace(/\s+/g, ' ').trim()
+    }))
+  )
+  if (!heroLinks.some((link) => link.href.includes('github.com/vyotiqai/vyotiq-agent-v/releases'))) {
+    fail(`${viewport} homepage: hero missing GitHub Releases`)
+  }
+  if (!heroLinks.some((link) => link.href === '/docs')) {
+    fail(`${viewport} homepage: hero missing Docs`)
+  }
+  const packageLinks = await page.locator('#overview [data-release-platform]').evaluateAll((anchors) =>
+    anchors.map((anchor) => ({
+      platform: anchor.getAttribute('data-release-platform') ?? '',
+      href: anchor.getAttribute('href') ?? '',
+      text: (anchor.textContent ?? '').replace(/\s+/g, ' ').trim()
+    }))
+  )
+  if (packageLinks.length === 0) {
+    fail(`${viewport} homepage: missing installer download buttons`)
+  }
+  for (const id of ['win', 'mac', 'linux']) {
+    if (!packageLinks.some((link) => link.platform === id)) {
+      fail(`${viewport} homepage: missing ${id} installer button`)
+    }
+  }
+  const expectedLabels = {
+    win: 'Download for Windows',
+    mac: 'Download for macOS',
+    linux: 'Download for Linux'
+  }
+  for (const link of packageLinks) {
+    if (!/^https:\/\/github\.com\/vyotiqai\/vyotiq-agent-v\/releases\/download\//.test(link.href)) {
+      fail(`${viewport} homepage: package link is not a GitHub asset ${JSON.stringify(link)}`)
+    }
+    const expected = expectedLabels[link.platform]
+    if (expected && link.text !== expected) {
+      fail(`${viewport} homepage: package label mismatch ${JSON.stringify(link)}`)
+    }
+    const probe = await page.request.fetch(link.href, {
+      method: 'HEAD',
+      maxRedirects: 5,
+      timeout: 20000
+    })
+    if (![200, 206, 302, 303, 307, 308].includes(probe.status())) {
+      const ranged = await page.request.fetch(link.href, {
+        method: 'GET',
+        headers: { Range: 'bytes=0-0' },
+        maxRedirects: 5,
+        timeout: 20000
+      })
+      if (![200, 206, 302, 303, 307, 308].includes(ranged.status())) {
+        fail(
+          `${viewport} homepage: ${link.platform} download HTTP ${probe.status()}/${ranged.status()} ${link.href}`
+        )
+      }
+    }
   }
   const metadata = await page.evaluate(() => ({
     title: document.title,
@@ -348,6 +440,12 @@ async function checkHomepage(page, viewport) {
   if (!metadata.footerText.includes('Vyotiq') || !/\bAgent V\b/.test(metadata.footerText)) {
     fail(`${viewport} homepage: footer missing company or Agent V product text`)
   }
+  const jsonLd = await page.evaluate(() =>
+    [...document.querySelectorAll('script[type="application/ld+json"]')].map((node) => node.textContent ?? '')
+  )
+  if (!jsonLd.some((text) => text.includes('SoftwareApplication'))) {
+    fail(`${viewport} homepage: missing SoftwareApplication JSON-LD`)
+  }
   await checkTypography(page, `${viewport} homepage`)
   const providerMarks = page.locator('.provider-list .provider-mark svg')
   if ((await providerMarks.count()) !== 10) {
@@ -362,7 +460,16 @@ async function checkHomepage(page, viewport) {
   const chromeLinks = await page.locator('header a, footer a').evaluateAll((anchors) =>
     anchors.map((anchor) => anchor.getAttribute('href'))
   )
-  for (const href of ['/', '/#overview', '/#capabilities', '/docs', '/docs/agent/modes', '/docs/concepts/security']) {
+  for (const href of [
+    '/',
+    '/#overview',
+    '/#capabilities',
+    '/docs',
+    '/docs/agent/modes',
+    '/docs/concepts/security',
+    '/docs/concepts/privacy-data',
+    '/privacy'
+  ]) {
     if (!chromeLinks.includes(href)) fail(`${viewport} homepage: missing chrome link ${href}`)
   }
   const docsHrefs = await page.locator('main a[href^="/docs"]').evaluateAll((anchors) =>
@@ -437,17 +544,12 @@ try {
   await page.screenshot({ path: screenshots.darkMobile })
 
   await goto(page, '/docs')
-  const cards = await page.locator('.docs-start-grid a').evaluateAll((elements) =>
-    elements.map((element) => {
-      const rect = element.getBoundingClientRect()
-      return { width: rect.width, height: rect.height, top: rect.top, left: rect.left }
-    })
-  )
-  if (cards.length !== 4 || cards.some((card) => card.width < 200 || card.height < 140)) {
-    fail(`docs index: invalid start card geometry ${JSON.stringify(cards)}`)
-  }
+  const catalog = await page.locator('.docs-index-list a').count()
+  if (catalog < 40) fail(`docs index: expected catalog links, found ${catalog}`)
 
   await goto(page, '/not-a-real-page', '404 screenshot', 404)
+  const robots = await page.locator('meta[name="robots"]').getAttribute('content')
+  if (robots !== 'noindex, nofollow') fail(`404 robots is ${robots}`)
   const footerGeometry = await page.evaluate(() => {
     const footer = document.querySelector('footer')?.getBoundingClientRect()
     return { bottom: footer?.bottom ?? 0, viewport: window.innerHeight, scrollHeight: document.documentElement.scrollHeight }
@@ -473,12 +575,23 @@ try {
   await input.fill('MCP OAuth')
   const resultText = await page.locator('[data-docs-search-results]').innerText()
   if (!resultText.includes('MCP servers')) fail('Search did not return MCP servers')
-  await page.locator('[data-docs-search-results] a').filter({ hasText: 'MCP servers' }).first().click()
+  const mcpResult = page.locator('[data-docs-search-results] a[href="/docs/customize/mcp"]')
+  if ((await mcpResult.count()) === 0) {
+    fail('Search did not return the MCP servers page')
+  } else {
+    await Promise.all([
+      page.waitForURL((url) => url.pathname === '/docs/customize/mcp', { timeout: 8000 }),
+      mcpResult.first().click({ force: true })
+    ]).catch((error) => {
+      fail(`Search MCP navigation failed: ${error instanceof Error ? error.message : error}`)
+    })
+  }
   if (new URL(page.url()).pathname !== '/docs/customize/mcp') fail('Search result did not navigate')
-  await page.goBack({ waitUntil: 'domcontentloaded' })
+  await goto(page, '/docs/start/quickstart')
   await page.keyboard.press('Control+K')
   await page.keyboard.press('Escape')
-  if (await dialog.evaluate((element) => element.open)) fail('Escape did not close search')
+  const searchDialog = page.locator('[data-docs-search-dialog]')
+  if (await searchDialog.evaluate((element) => element.open)) fail('Escape did not close search')
 
   await page.evaluate(() => localStorage.setItem('vyotiq-theme', 'light'))
   await page.reload({ waitUntil: 'domcontentloaded' })
@@ -545,7 +658,6 @@ try {
   }
   for (const [oldRoute, target] of [
     ['/products/agent-v', '/'],
-    ['/docs/start', '/docs/start/quickstart'],
     ['/docs/guides/modes', '/docs/agent/modes'],
     ['/docs/guides/providers', '/docs/customize/providers'],
     ['/docs/guides/marketplace', '/docs/customize/marketplace'],
@@ -579,11 +691,44 @@ try {
   }
   await goto(page, '/docs/start/install')
   const installText = await page.locator('main').innerText()
-  if (!installText.includes('pnpm pack:win') || /the Vyotiq download page/i.test(installText)) {
-    fail('install page is not pack-from-source')
+  if (
+    !installText.includes('pnpm pack:win') ||
+    !installText.includes('download buttons for each installer') ||
+    /the Vyotiq download page/i.test(installText)
+  ) {
+    fail('install page missing homepage downloads or pack-from-source')
   }
+  await goto(page, '/privacy')
+  const privacyHeading = await page.locator('main h1').innerText()
+  const privacyText = await page.locator('main').innerText()
+  if (!privacyHeading.includes('Website privacy')) fail('privacy page missing heading')
+  if (!privacyText.includes('vyotiq-theme') || !privacyText.includes('does not load an analytics script')) {
+    fail('privacy page missing website storage or analytics copy')
+  }
+  if (/the Vyotiq download page/i.test(privacyText)) fail('privacy page used retired download copy')
   const sitemap = await page.request.get(`${baseUrl}/sitemap-index.xml`)
   if (!sitemap.ok()) fail(`sitemap-index.xml: HTTP ${sitemap.status()}`)
+  const robotsTxt = await page.request.get(`${baseUrl}/robots.txt`)
+  const robotsBody = await robotsTxt.text()
+  if (
+    !robotsTxt.ok() ||
+    !robotsBody.includes('Allow: /') ||
+    !robotsBody.includes('Sitemap: https://vyotiq.com/sitemap-index.xml')
+  ) {
+    fail('robots.txt incomplete')
+  }
+  const securityTxt = await page.request.get(`${baseUrl}/.well-known/security.txt`)
+  const securityBody = await securityTxt.text()
+  if (
+    !securityTxt.ok() ||
+    !securityBody.includes('Contact: https://github.com/vyotiqai/vyotiq-agent-v/security/advisories/new') ||
+    !securityBody.includes('Contact: mailto:security@vyotiq.com') ||
+    !securityBody.includes('Canonical: https://vyotiq.com/.well-known/security.txt') ||
+    !securityBody.includes('Policy: https://github.com/vyotiqai/vyotiq-agent-v/blob/main/SECURITY.md') ||
+    !/^Expires:/m.test(securityBody)
+  ) {
+    fail('security.txt incomplete')
+  }
   await context.close()
 
   const noScriptContext = await browser.newContext({

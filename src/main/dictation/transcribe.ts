@@ -222,6 +222,8 @@ export async function transcribeDictation(
       return transcribeLocalDictation(request, signal)
     case 'qwen3-asr':
       return transcribeQwen3Asr(request, signal)
+    case 'qwen3-asr-onnx':
+      return transcribeLocalDictation(request, signal)
     default: {
       const _exhaustive: never = engine
       return _exhaustive

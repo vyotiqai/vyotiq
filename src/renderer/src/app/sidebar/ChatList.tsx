@@ -439,8 +439,12 @@ export function ChatList({
                         />
                       ))}
                     </div>
-                  ) : workspace.filteredRuns.length === 0 && !globalSearchEmpty ? (
-                    <p className={cn(SIDEBAR_INDENT, 'py-1 text-xs text-secondary')}>No chats yet</p>
+                  ) : workspace.filteredRuns.length === 0 ? (
+                    globalSearchEmpty ? null : (
+                      <p className={cn(SIDEBAR_INDENT, 'py-1 text-xs text-secondary')}>
+                        {searchActive ? 'No matching chats' : 'No chats yet'}
+                      </p>
+                    )
                   ) : workspace.filteredRuns.length > 0 ? (
                     <div className={cn(SIDEBAR_INDENT, 'flex flex-col gap-2')}>
                       {workspace.groupedRuns.map((group) => (

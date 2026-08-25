@@ -31,9 +31,14 @@ jobs:
             artifact: Vyotiq-linux-x64-appimage
           - name: macOS-arm64
             os: macos-latest
-            builder_args: --mac
+            builder_args: --mac --arm64
             artifacts: dist-package/*.dmg
             artifact: Vyotiq-macos-arm64-dmg
+          - name: macOS-x64
+            os: macos-latest
+            builder_args: --mac --x64
+            artifacts: dist-package/*.dmg
+            artifact: Vyotiq-macos-x64-dmg
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -68,7 +73,7 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: pnpm exec electron-builder ${{ matrix.builder_args }} --publish always ${{ (matrix.name == 'macOS-arm64' && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '') && '--config.mac.notarize=true' || '' }}
+        run: pnpm exec electron-builder ${{ matrix.builder_args }} --publish always ${{ (matrix.name == 'macOS-arm64' || matrix.name == 'macOS-x64') && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' && '--config.mac.notarize=true' || '' }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

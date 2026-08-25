@@ -2,6 +2,82 @@
   "schemaVersion": 1,
   "packages": [
     {
+      "id": "github",
+      "name": "GitHub",
+      "version": "1.0.0",
+      "description": "Official hosted GitHub MCP. Repos, search, Actions, and GitHub API tools.",
+      "kind": "mcp",
+      "bundledPath": "github",
+      "source": "bundled",
+      "publisher": "GitHub",
+      "verified": true,
+      "sections": [
+        "discover",
+        "featured"
+      ],
+      "category": "developer",
+      "featuredRank": 1,
+      "iconPath": "icons/github.svg",
+      "installable": true
+    },
+    {
+      "id": "gmail",
+      "name": "Gmail",
+      "version": "1.0.0",
+      "description": "Official hosted Gmail MCP. Search, read, and draft email.",
+      "kind": "mcp",
+      "bundledPath": "gmail",
+      "source": "bundled",
+      "publisher": "Google",
+      "verified": true,
+      "sections": [
+        "discover",
+        "featured"
+      ],
+      "category": "productivity",
+      "featuredRank": 2,
+      "iconPath": "icons/gmail.svg",
+      "installable": true
+    },
+    {
+      "id": "google-drive",
+      "name": "Google Drive",
+      "version": "1.0.0",
+      "description": "Official hosted Google Drive MCP. Search, read, and manage Drive files.",
+      "kind": "mcp",
+      "bundledPath": "google-drive",
+      "source": "bundled",
+      "publisher": "Google",
+      "verified": true,
+      "sections": [
+        "discover",
+        "featured"
+      ],
+      "category": "productivity",
+      "featuredRank": 3,
+      "iconPath": "icons/google-drive.svg",
+      "installable": true
+    },
+    {
+      "id": "google-calendar",
+      "name": "Google Calendar",
+      "version": "1.0.0",
+      "description": "Official hosted Google Calendar MCP. List, read, and manage calendar events.",
+      "kind": "mcp",
+      "bundledPath": "google-calendar",
+      "source": "bundled",
+      "publisher": "Google",
+      "verified": true,
+      "sections": [
+        "discover",
+        "featured"
+      ],
+      "category": "productivity",
+      "featuredRank": 4,
+      "iconPath": "icons/google-calendar.svg",
+      "installable": true
+    },
+    {
       "id": "filesystem",
       "name": "Filesystem",
       "version": "1.0.0",
@@ -15,7 +91,7 @@
         "featured"
       ],
       "category": "infrastructure",
-      "featuredRank": 1,
+      "featuredRank": 5,
       "iconPath": "icons/filesystem.svg",
       "installable": true
     },
@@ -33,7 +109,7 @@
         "featured"
       ],
       "category": "infrastructure",
-      "featuredRank": 2,
+      "featuredRank": 6,
       "iconPath": "icons/memory.svg",
       "installable": true
     },
@@ -51,7 +127,7 @@
         "featured"
       ],
       "category": "infrastructure",
-      "featuredRank": 3,
+      "featuredRank": 7,
       "iconPath": "icons/sequential-thinking.svg",
       "installable": true
     },
@@ -69,7 +145,7 @@
         "featured"
       ],
       "category": "infrastructure",
-      "featuredRank": 4,
+      "featuredRank": 8,
       "iconPath": "icons/fetch.svg",
       "installable": true
     },
@@ -87,7 +163,7 @@
         "featured"
       ],
       "category": "infrastructure",
-      "featuredRank": 5,
+      "featuredRank": 9,
       "iconPath": "icons/git.svg",
       "installable": true
     },
@@ -105,7 +181,7 @@
         "featured"
       ],
       "category": "infrastructure",
-      "featuredRank": 6,
+      "featuredRank": 10,
       "iconPath": "icons/time.svg",
       "installable": true
     },
@@ -122,7 +198,7 @@
         "featured"
       ],
       "category": "skills",
-      "featuredRank": 7,
+      "featuredRank": 11,
       "installable": true
     },
     {
@@ -138,7 +214,7 @@
         "featured"
       ],
       "category": "skills",
-      "featuredRank": 8,
+      "featuredRank": 12,
       "installable": true
     },
     {
@@ -154,7 +230,7 @@
         "featured"
       ],
       "category": "skills",
-      "featuredRank": 9,
+      "featuredRank": 13,
       "installable": true
     },
     {
@@ -170,7 +246,7 @@
         "featured"
       ],
       "category": "skills",
-      "featuredRank": 10,
+      "featuredRank": 14,
       "installable": true
     },
     {
@@ -186,7 +262,7 @@
         "featured"
       ],
       "category": "skills",
-      "featuredRank": 11,
+      "featuredRank": 15,
       "installable": true
     },
     {
@@ -215,7 +291,7 @@
         "featured"
       ],
       "category": "plugins",
-      "featuredRank": 12,
+      "featuredRank": 16,
       "installable": true
     },
     {
@@ -232,7 +308,7 @@
         "featured"
       ],
       "category": "plugins",
-      "featuredRank": 13,
+      "featuredRank": 17,
       "installable": true
     },
     {
@@ -249,7 +325,7 @@
         "featured"
       ],
       "category": "plugins",
-      "featuredRank": 14,
+      "featuredRank": 18,
       "installable": true
     },
     {
@@ -266,7 +342,7 @@
         "featured"
       ],
       "category": "plugins",
-      "featuredRank": 15,
+      "featuredRank": 19,
       "installable": true
     }
   ]

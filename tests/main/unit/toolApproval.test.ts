@@ -18,7 +18,7 @@ const WRITE = { id: 'c2', name: 'edit', arguments: '{"path":"a.ts","contents":"x
 describe('isToolGated', () => {
   const none = new Set<string>()
 
-  it('never gates when approval is off', () => {
+  it('never gates builtin tools when approval is off', () => {
     expect(isToolGated('edit', 'off', none, [])).toBe(false)
   })
 
@@ -34,6 +34,36 @@ describe('isToolGated', () => {
   it('skips tools on either allowlist', () => {
     expect(isToolGated('edit', 'all', new Set(['edit']), [])).toBe(false)
     expect(isToolGated('edit', 'all', none, ['edit'])).toBe(false)
+  })
+
+  it('gates MCP server tools when mode is off and protection is on', () => {
+    expect(isToolGated('mcp__gmail__send', 'off', none, [])).toBe(true)
+    expect(
+      isToolGated('mcp__gmail__send', 'off', none, [], undefined, { mcpProtection: true })
+    ).toBe(true)
+  })
+
+  it('does not gate builtin MCP meta tools when mode is off', () => {
+    for (const name of ['mcp_list_tools', 'request_mcp_tools', 'release_mcp_tools']) {
+      expect(isToolGated(name, 'off', none, [])).toBe(false)
+    }
+  })
+
+  it('lets MCP server tools follow global mode when protection is off', () => {
+    expect(
+      isToolGated('mcp__gmail__send', 'off', none, [], undefined, { mcpProtection: false })
+    ).toBe(false)
+    expect(
+      isToolGated('mcp__gmail__send', 'mutating', none, [], undefined, { mcpProtection: false })
+    ).toBe(true)
+    expect(isToolGated('read', 'mutating', none, [], undefined, { mcpProtection: false })).toBe(
+      false
+    )
+  })
+
+  it('skips allowlisted MCP tools even when protection is on', () => {
+    expect(isToolGated('mcp__gmail__send', 'off', new Set(['mcp__gmail__send']), [])).toBe(false)
+    expect(isToolGated('mcp__gmail__send', 'off', none, ['mcp__gmail__send'])).toBe(false)
   })
 })
 
@@ -345,6 +375,50 @@ describe('createApprovalGate', () => {
     await Promise.resolve()
     expect(asked).toBe(1)
     expect(await pending).toEqual({ allowed: true })
+  })
+
+  it('asks for MCP server tools when mode is off and mcpProtection is on', async () => {
+    let asked = 0
+    const gate = createApprovalGate({
+      runId: 'run-mcp-prot',
+      mode: 'off',
+      mcpProtection: true,
+      workspaceAllowlist: [],
+      signal: new AbortController().signal,
+      ask: async () => {
+        asked += 1
+        return 'once'
+      }
+    })
+    expect(await gate.authorize(READ)).toEqual({ allowed: true })
+    expect(asked).toBe(0)
+    expect(
+      await gate.authorize({ id: 'c-mcp', name: 'mcp__gmail__send', arguments: '{}' })
+    ).toEqual({ allowed: true })
+    expect(asked).toBe(1)
+    expect(
+      await gate.authorize({ id: 'c-meta', name: 'mcp_list_tools', arguments: '{}' })
+    ).toEqual({ allowed: true })
+    expect(asked).toBe(1)
+  })
+
+  it('lets MCP server tools through when mode is off and mcpProtection is off', async () => {
+    let asked = 0
+    const gate = createApprovalGate({
+      runId: 'run-mcp-off',
+      mode: 'off',
+      mcpProtection: false,
+      workspaceAllowlist: [],
+      signal: new AbortController().signal,
+      ask: async () => {
+        asked += 1
+        return 'once'
+      }
+    })
+    expect(
+      await gate.authorize({ id: 'c-mcp', name: 'mcp__gmail__send', arguments: '{}' })
+    ).toEqual({ allowed: true })
+    expect(asked).toBe(0)
   })
 
   it('does not auto-approve gated MCP tools in autonomous mode', async () => {
