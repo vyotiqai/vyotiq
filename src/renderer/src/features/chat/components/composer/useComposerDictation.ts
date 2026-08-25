@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   MAX_DICTATION_BYTES,
   MAX_DICTATION_MS,
+  MAX_LOCAL_AUDIO_BYTES,
   MAX_LOCAL_DICTATION_MS,
   type DictationEngine,
   type DictationWaveformStyle,
@@ -17,8 +18,12 @@ import {
 
 export type DictationPhase = 'idle' | 'checking' | 'recording' | 'transcribing'
 
-/** Auto-stop headroom so a final timeslice rarely exceeds OpenAI's 25 MB hard limit. */
-const SIZE_STOP_BYTES = MAX_DICTATION_BYTES - 256 * 1024
+/** Auto-stop headroom so a final timeslice rarely exceeds the engine's byte limit. */
+function sizeStopBytes(engine: DictationEngine): number {
+  const cap =
+    engine === 'local' || engine === 'qwen3-asr-onnx' ? MAX_LOCAL_AUDIO_BYTES : MAX_DICTATION_BYTES
+  return cap - 256 * 1024
+}
 
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -105,8 +110,8 @@ async function blobToPcm16kBase64(blob: Blob): Promise<string> {
     const mono = mixToMono(decoded)
     const resampled = resampleLinear(mono, decoded.sampleRate, 16000)
     const int16 = floatToInt16(resampled)
-    if (int16.byteLength > MAX_DICTATION_BYTES) {
-      throw new Error('Recording is too large to transcribe (25 MB limit)')
+    if (int16.byteLength > MAX_LOCAL_AUDIO_BYTES) {
+      throw new Error('Recording is too large to transcribe (local limit reached)')
     }
     const copy = new Int16Array(int16)
     return blobToBase64(new Blob([copy.buffer], { type: 'application/octet-stream' }))
@@ -543,8 +548,12 @@ export function useComposerDictation(opts: {
       goIdle()
       return
     }
-    if (blob.size > MAX_DICTATION_BYTES) {
-      publishError('Recording is too large to transcribe (25 MB limit)')
+    const byteCap =
+      engineRef.current === 'local' || engineRef.current === 'qwen3-asr-onnx'
+        ? MAX_LOCAL_AUDIO_BYTES
+        : MAX_DICTATION_BYTES
+    if (blob.size > byteCap) {
+      publishError('Recording is too large to transcribe (limit reached)')
       goIdle()
       return
     }
@@ -652,7 +661,10 @@ export function useComposerDictation(opts: {
         if (ev.data.size <= 0) return
         chunksRef.current.push(ev.data)
         bytesRef.current += ev.data.size
-        if (bytesRef.current >= SIZE_STOP_BYTES && phaseRef.current === 'recording') {
+        if (
+          bytesRef.current >= sizeStopBytes(engineRef.current) &&
+          phaseRef.current === 'recording'
+        ) {
           queueMicrotask(() => {
             if (phaseRef.current === 'recording' && sessionGenRef.current === gen) {
               finishRef.current()

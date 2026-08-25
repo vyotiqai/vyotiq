@@ -2,7 +2,7 @@ import { existsSync, readdirSync, rmSync, statSync } from 'fs'
 import { join } from 'path'
 import {
   DEFAULT_SETTINGS,
-  MAX_DICTATION_BYTES,
+  MAX_LOCAL_AUDIO_BYTES,
   type DictationLocalModelId,
   type DictationRuntimeStatus,
   type DictationTranscribeRequest,
@@ -328,8 +328,8 @@ function assertPcm16kBase64(b64: string): void {
   if (bytes.byteLength === 0) {
     throw new Error('Dictation audio is empty')
   }
-  if (bytes.byteLength > MAX_DICTATION_BYTES) {
-    throw new Error(`Dictation audio exceeds ${MAX_DICTATION_BYTES} bytes`)
+  if (bytes.byteLength > MAX_LOCAL_AUDIO_BYTES) {
+    throw new Error(`Dictation audio exceeds ${MAX_LOCAL_AUDIO_BYTES} bytes`)
   }
   if (bytes.byteLength % 2 !== 0) {
     throw new Error('Invalid dictation PCM length')

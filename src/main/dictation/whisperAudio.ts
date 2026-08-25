@@ -6,8 +6,19 @@
  */
 
 export type WhisperAsrFn = (
-  audio: Float32Array
+  audio: Float32Array,
+  options?: Record<string, unknown>
 ) => Promise<{ text?: string } | Array<{ text?: string }>>
+
+/**
+ * Whisper's positional window is 30 s. Without chunking, transformers.js
+ * silently keeps only the first 30 s of audio. Always chunk with a 5 s stride
+ * so arbitrarily long dictation is transcribed in full.
+ */
+export const WHISPER_ASR_OPTIONS = {
+  chunk_length_s: 30,
+  stride_length_s: 5
+} as const
 
 function isBufferJson(value: unknown): value is { type: 'Buffer'; data: number[] } {
   if (value == null || typeof value !== 'object') return false
@@ -86,7 +97,7 @@ export function transcriptText(raw: { text?: string } | Array<{ text?: string }>
 /** sampling_rate is 16 kHz (Whisper). Do not pass a `{ raw }` object to the pipeline. */
 export async function invokeWhisperAsr(asr: WhisperAsrFn, pcm: unknown): Promise<string> {
   const audio = pcmPayloadToFloat32(pcm)
-  const raw = await asr(audio)
+  const raw = await asr(audio, { ...WHISPER_ASR_OPTIONS })
   const text = transcriptText(raw)
   if (!text) throw new Error('Dictation returned empty transcript')
   return text

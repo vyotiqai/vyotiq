@@ -109,6 +109,25 @@ describe('whisper Float32 PCM for Transformers.js', () => {
       pcmPayloadToFloat32({ raw: new Float32Array([0, 0.5]), sampling_rate: 16000 })
     ).toThrow(/pcm16k/)
   })
+
+  it('passes chunk_length_s/stride_length_s so long audio is never truncated at 30s', async () => {
+    const asr = vi.fn(async (_audio: unknown, options?: Record<string, unknown>) => {
+      expect(options).toMatchObject({ chunk_length_s: 30, stride_length_s: 5 })
+      return { text: 'full transcript' }
+    })
+    const text = await invokeWhisperAsr(asr, int16Base64())
+    expect(text).toBe('full transcript')
+    expect(asr).toHaveBeenCalledWith(
+      expect.any(Float32Array),
+      expect.objectContaining({ chunk_length_s: 30, stride_length_s: 5 })
+    )
+  })
+
+  it('concatenates chunked Whisper output (array of { text })', async () => {
+    const asr = vi.fn(async () => [{ text: 'first' }, { text: 'second part' }])
+    const text = await invokeWhisperAsr(asr, int16Base64())
+    expect(text).toBe('first second part')
+  })
 })
 
 describe('DictationUtilityClient transcribe wire shape', () => {

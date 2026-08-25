@@ -153,6 +153,9 @@ export async function transcribeQwen3AsrOnnxCore(
 ): Promise<Qwen3AsrOnnxResult> {
   const { runners, config } = opts
   const wav = pcm16kBase64ToFloat32(opts.pcm16k)
+  if (wav.length === 0) {
+    throw new Error('Qwen3-ASR received empty audio')
+  }
   const mel = computeQwenLogMel(wav, config.mel)
   const audioFeatures = await runners.encodeMel(mel)
   const outputDim = config.encoder.output_dim
@@ -176,7 +179,11 @@ export async function transcribeQwen3AsrOnnxCore(
   let next = argmaxLast(initOut.logits, config.decoder.vocab_size)
   const generated: number[] = [next]
   const stopIds = new Set<number>([...config.special_tokens.eos_token_ids, config.special_tokens.pad_token_id])
-  const maxTokens = opts.maxNewTokens ?? Math.max(16, Math.floor(wav.length / 16000) * 13)
+  // Generous per-second token budget so verbose / fast / token-dense speech is
+  // never truncated. The greedy loop still stops at EOS; this is only a safety
+  // ceiling, and `opts.maxNewTokens` can override it for tests.
+  const SECONDS = Math.max(1, Math.floor(wav.length / 16000))
+  const maxTokens = opts.maxNewTokens ?? Math.min(32768, Math.max(64, SECONDS * 20))
   let pos = promptIds.length
   let guard = 0
   while (guard < maxTokens && !stopIds.has(next)) {

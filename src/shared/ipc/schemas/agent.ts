@@ -1199,25 +1199,45 @@ export const ExtractAttachmentResultSchema = z.object({
 })
 export type ExtractAttachmentResult = z.infer<typeof ExtractAttachmentResultSchema>
 
-/** OpenAI Transcriptions API hard limit (25 MiB). */
+/**
+ * Cloud audio payload (compressed) hard limit — matches the OpenAI / OpenRouter
+ * Transcriptions API 25 MiB limit. Cloud callers are rejected at upload time
+ * (`transcribe.ts`) once decoded bytes exceed this.
+ */
 export const MAX_DICTATION_BYTES = 25 * 1024 * 1024
 /** Base64 of `MAX_DICTATION_BYTES`, rejected before main allocates the buffer. */
 export const MAX_DICTATION_DATA_CHARS = Math.ceil(MAX_DICTATION_BYTES * (4 / 3)) + 128
-/** UX auto-stop: OpenAI ~1500s duration limit. */
-export const MAX_DICTATION_MS = 25 * 60 * 1000
-export const MAX_LOCAL_DICTATION_MS =
-  Math.floor((MAX_DICTATION_BYTES / (16_000 * 2)) * 1000) - 1000
+
+/**
+ * Local engines do not upload and process audio on-device, so they are not
+ * bound by the 25 MiB cloud limit. Allow long recordings (up to ~60 min of
+ * 16 kHz mono Int16 PCM ≈ 115 MiB) so dictation never silently truncates.
+ */
+export const MAX_LOCAL_AUDIO_BYTES = 120 * 1024 * 1024
+export const MAX_LOCAL_AUDIO_DATA_CHARS = Math.ceil(MAX_LOCAL_AUDIO_BYTES * (4 / 3)) + 128
+
+/**
+ * UX auto-stop. Local engines chunk/process the whole clip, so we let them run
+ * up to an hour. Cloud engines share the same generous window; their true
+ * ceiling is the 25 MiB byte guard checked at upload time, not a duration cap.
+ */
+export const MAX_DICTATION_MS = 60 * 60 * 1000
+export const MAX_LOCAL_DICTATION_MS = 60 * 60 * 1000
 
 export const DictationTranscribeRequestSchema = z.object({
   requestId: z.string().min(1).max(100).optional(),
   mime: z.string().max(200).default('audio/webm'),
-  /** Base64 of the recording bytes, capped at `MAX_DICTATION_BYTES` once decoded. */
-  data: z.string().min(1).max(MAX_DICTATION_DATA_CHARS),
+  /**
+   * Base64 of the recording bytes. Cloud callers stay under `MAX_DICTATION_BYTES`
+   * (OpenAI limit, enforced in `transcribe.ts`); local callers may be larger and
+   * are bounded by `MAX_LOCAL_AUDIO_BYTES` in `local.ts`.
+   */
+  data: z.string().min(1).max(MAX_LOCAL_AUDIO_DATA_CHARS),
   /**
    * Optional 16 kHz mono little-endian Int16 PCM (base64). Required when
    * `settings.dictation.engine === 'local'`. Cloud callers omit it.
    */
-  pcm16k: z.string().min(1).max(MAX_DICTATION_DATA_CHARS).optional()
+  pcm16k: z.string().min(1).max(MAX_LOCAL_AUDIO_DATA_CHARS).optional()
 })
 export type DictationTranscribeRequest = z.infer<typeof DictationTranscribeRequestSchema>
 
