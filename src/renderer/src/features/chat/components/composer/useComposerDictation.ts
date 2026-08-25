@@ -668,7 +668,9 @@ export function useComposerDictation(opts: {
         if (phaseRef.current === 'recording' && sessionGenRef.current === gen) {
           void finishAndTranscribe()
         }
-      }, ready.ctx.engine === 'local' ? MAX_LOCAL_DICTATION_MS : MAX_DICTATION_MS)
+        }, ready.ctx.engine === 'local' || ready.ctx.engine === 'qwen3-asr-onnx'
+          ? MAX_LOCAL_DICTATION_MS
+          : MAX_DICTATION_MS)
     } catch (err) {
       if (sessionGenRef.current !== gen) return
       stopTracks()
