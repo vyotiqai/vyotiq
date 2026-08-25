@@ -24,8 +24,8 @@ export const AGENT_DOCK_TAB: DockTabItem = {
 
 /**
  * Cursor-style horizontal tabs above the active right dock panel.
- * Immersive / titlebar-embedded: panel tabs + session chrome, then spacer, then
- * quick-launch icons / expand — session + never sits beside quick launch.
+ * Immersive / titlebar-embedded: panel tabs, then spacer, then
+ * quick-launch icons / expand — sessions never sit beside quick launch.
  */
 export function DockTabBar({
   active,
@@ -37,7 +37,6 @@ export function DockTabBar({
   onToggleExpanded,
   variant = 'dock',
   terminalSessionBarHostRef,
-  agentSessionBarHostRef,
   embeddedInTitleBar = false,
   className
 }: {
@@ -51,15 +50,13 @@ export function DockTabBar({
   variant?: 'dock' | 'immersive'
   /** Host for {@link TerminalSessionBar} when the terminal panel is active. */
   terminalSessionBarHostRef?: RefObject<HTMLDivElement | null>
-  /** Host for {@link AgentSessionBar} when immersive Agent is focused. */
-  agentSessionBarHostRef?: RefObject<HTMLDivElement | null>
   /** Side-dock tabs portaled into the title bar — fill host height, no second border. */
   embeddedInTitleBar?: boolean
   className?: string
 }) {
   const immersive = variant === 'immersive'
   const inTitleBar = immersive || embeddedInTitleBar
-  const hasSessionChrome = Boolean(agentSessionBarHostRef || terminalSessionBarHostRef)
+  const hasSessionChrome = Boolean(terminalSessionBarHostRef)
   /** Push quick-launch / expand away from session + (side-dock strip and immersive titlebar). */
   const separateActions = inTitleBar || hasSessionChrome
 
@@ -92,23 +89,6 @@ export function DockTabBar({
       data-dock-tab-variant={variant}
       data-dock-embedded={embeddedInTitleBar ? '1' : undefined}
     >
-      {/* Agent sessions lead (replace Agent chip). Outside panel tablist. */}
-      {agentSessionBarHostRef ? (
-        <>
-          <div
-            ref={agentSessionBarHostRef}
-            className={cn(
-              'inline-flex min-w-0 max-w-[min(100%,11rem)] shrink items-center overflow-hidden',
-              inTitleBar && 'app-region-no-drag'
-            )}
-            data-agent-session-bar-host="1"
-          />
-          {tabs.length > 0 ? (
-            <span className="mx-0.5 h-4 w-px shrink-0 bg-border/40" aria-hidden />
-          ) : null}
-        </>
-      ) : null}
-
       <div
         className={cn(
           'flex min-w-0 flex-row items-center gap-1',

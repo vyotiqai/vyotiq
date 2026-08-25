@@ -15,6 +15,8 @@ const run: RunSummary = {
   updatedAt: Date.now()
 }
 
+const noop = () => {}
+
 describe('ChatRow drag', () => {
   it('marks open vs focused session rows for multi-pane sidebar', () => {
     const { rerender } = render(
@@ -23,9 +25,9 @@ describe('ChatRow drag', () => {
         workspacePath="/ws/home"
         active
         focused={false}
-        onSelect={() => {}}
-        onRename={() => {}}
-        onDelete={() => {}}
+        onSelectRun={noop}
+        onRenameRun={noop}
+        onDeleteRun={noop}
       />
     )
     const row = screen.getByTitle('List files')
@@ -38,9 +40,9 @@ describe('ChatRow drag', () => {
         workspacePath="/ws/home"
         active
         focused
-        onSelect={() => {}}
-        onRename={() => {}}
-        onDelete={() => {}}
+        onSelectRun={noop}
+        onRenameRun={noop}
+        onDeleteRun={noop}
       />
     )
     expect(screen.getByTitle('List files').getAttribute('data-session-focused')).toBe('1')
@@ -52,9 +54,9 @@ describe('ChatRow drag', () => {
         run={run}
         workspacePath="/ws/home"
         active={false}
-        onSelect={() => {}}
-        onRename={() => {}}
-        onDelete={() => {}}
+        onSelectRun={noop}
+        onRenameRun={noop}
+        onDeleteRun={noop}
       />
     )
     const row = screen.getByTitle('List files')
@@ -83,9 +85,9 @@ describe('ChatRow drag', () => {
         workspacePath="/ws/home"
         active={false}
         nested
-        onSelect={() => {}}
-        onRename={() => {}}
-        onDelete={() => {}}
+        onSelectRun={noop}
+        onRenameRun={noop}
+        onDeleteRun={noop}
       />
     )
     const row = screen.getByTitle('Instance · List files')
@@ -107,9 +109,9 @@ describe('ChatRow drag', () => {
         run={run}
         workspacePath="/ws/home"
         active={false}
-        onSelect={() => {}}
-        onRename={() => {}}
-        onDelete={() => {}}
+        onSelectRun={noop}
+        onRenameRun={noop}
+        onDeleteRun={noop}
       />
     )
     fireEvent.click(screen.getByRole('button', { name: 'Rename List files' }))
@@ -124,9 +126,9 @@ describe('ChatRow drag', () => {
         run={run}
         workspacePath="/ws/home"
         active={false}
-        onSelect={() => {}}
-        onRename={() => {}}
-        onDelete={() => {}}
+        onSelectRun={noop}
+        onRenameRun={noop}
+        onDeleteRun={noop}
       />
     )
     fireEvent.doubleClick(screen.getByTitle('List files'))

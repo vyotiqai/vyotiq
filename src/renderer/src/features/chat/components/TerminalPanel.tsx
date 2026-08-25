@@ -58,12 +58,37 @@ function PtySessionView({
     const el = hostRef.current
     if (!el) return undefined
 
+    // screenReaderMode builds a parallel DOM mirror on every write — expensive.
+    // Default follows real assistive-tech detection; users can force on/off.
+    let srPref: 'auto' | 'on' | 'off' = 'auto'
+    let atDetected = false
+    const applyScreenReaderMode = (): void => {
+      if (term.options) term.options.screenReaderMode = srPref === 'on' || (srPref === 'auto' && atDetected)
+    }
+
     const term = new Terminal({
       convertEol: true,
       fontFamily: readCssColor('--vy-font-mono', '"JetBrains Mono", ui-monospace, monospace'),
       fontSize: 12,
       theme: readTerminalTheme(),
       screenReaderMode: true
+    })
+    applyScreenReaderMode()
+    void window.vyotiq?.getSettings?.().then((res) => {
+      if (!res.ok) return
+      const pref = res.data.terminalScreenReader ?? 'auto'
+      if (pref === 'on' || pref === 'off') srPref = pref
+      applyScreenReaderMode()
+    })
+    const unsubA11y = window.vyotiq?.onAccessibilitySupportChanged?.(({ enabled }) => {
+      atDetected = enabled
+      applyScreenReaderMode()
+    })
+    void window.vyotiq?.getAccessibilitySupportState?.().then((res) => {
+      if (res.ok) {
+        atDetected = res.data.enabled
+        applyScreenReaderMode()
+      }
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -118,6 +143,16 @@ function PtySessionView({
       }
     }
 
+    // Coalesce resize storms: at most one fit()+ptyResize IPC per animation frame.
+    let fitFrame = 0
+    const scheduleFit = (): void => {
+      if (fitFrame) return
+      fitFrame = requestAnimationFrame(() => {
+        fitFrame = 0
+        applyFit()
+      })
+    }
+
     const onData = term.onData((data) => {
       void window.vyotiq?.ptyWrite?.(sessionId, data, workspacePath)
     })
@@ -128,7 +163,7 @@ function PtySessionView({
     })
 
     const ro =
-      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => applyFit()) : null
+      typeof ResizeObserver !== 'undefined' ? new ResizeObserver(() => scheduleFit()) : null
     ro?.observe(el)
 
     const themeObserver = new MutationObserver(() => {
@@ -149,6 +184,8 @@ function PtySessionView({
       onData.dispose()
       unsubData?.()
       unsubExit?.()
+      unsubA11y?.()
+      if (fitFrame) cancelAnimationFrame(fitFrame)
       ro?.disconnect()
       themeObserver.disconnect()
       termRef.current = null

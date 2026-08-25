@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AppShell } from './AppShell'
 import { ChatView } from '../features/chat/ChatView'
 import { SessionChatColumn } from '../features/chat/SessionChatColumn'
 import type { ChatPane } from '@renderer/lib/chat/chatPaneLayout'
 import type { PaneRenderOptions } from '../features/chat/ChatPaneHost'
-import { SettingsView, type SettingsSection } from '../features/settings'
-import { MarketplaceView } from '../features/marketplace'
+import type { SettingsSection } from '../features/settings'
 import { useAppearance } from '@renderer/lib/hooks/useAppearance'
 import { useCustomSkinCss } from '@renderer/lib/hooks/useCustomSkinCss'
 import { pickAppearanceSettings, stepFontScale, DEFAULT_FONT_SCALE } from '@shared/appearance'
@@ -50,6 +49,26 @@ import {
 import { mergeLiveInstanceRuns } from './mergeLiveInstanceRuns'
 import type { SlashClientHandlers } from '../features/chat/components/composer/slashCommandExecute'
 import type { ChatStreamController } from '@renderer/lib/hooks/createChatStreamController'
+
+/** Full-screen secondary views are code-split; they parse on first open, not at boot. */
+const SettingsView = lazy(() =>
+  import('../features/settings').then((m) => ({ default: m.SettingsView }))
+)
+const MarketplaceView = lazy(() =>
+  import('../features/marketplace').then((m) => ({ default: m.MarketplaceView }))
+)
+
+function ViewSuspenseFallback() {
+  return (
+    <div className="min-h-0 min-w-0 flex-1 overflow-hidden p-6" aria-busy="true">
+      <div className="mx-auto flex w-full max-w-2xl flex-col gap-3 animate-pulse">
+        <div className="h-4 w-2/5 rounded bg-surface" />
+        <div className="h-4 w-3/5 rounded bg-surface" />
+        <div className="h-4 w-1/3 rounded bg-surface" />
+      </div>
+    </div>
+  )
+}
 
 /** Sent as a visible user turn when resuming a run that was cut short. */
 const CONTINUE_PROMPT = 'Continue from where you stopped.'
@@ -827,6 +846,15 @@ function App() {
     )
   }, [chat.writeCheckpoint])
 
+  const writeConflictedPaths = useMemo(() => {
+    const files = chat.writeCheckpoint?.files
+    if (!files?.length) return undefined
+    const set = new Set(
+      files.filter((f) => f.conflicted).map((f) => normalizeRelPath(f.path))
+    )
+    return set.size > 0 ? set : undefined
+  }, [chat.writeCheckpoint])
+
   const writeCheckpointFiles = useMemo(() => {
     const files = chat.writeCheckpoint?.files
     if (!files?.length || chat.writeCheckpoint?.undone) return undefined
@@ -1214,18 +1242,8 @@ function App() {
       return (
         <SessionChatColumn
           items={snap.items}
-          itemsStore={{
-            subscribeItems: snap.subscribeItems,
-            getItemsRevision: snap.getItemsRevision,
-            getItems: snap.getItems
-          }}
-          metaStore={{
-            subscribeMeta: snap.subscribeMeta,
-            getMetaRevision: snap.getMetaRevision,
-            getContextUsage: snap.getContextUsage,
-            getTurnUsage: snap.getTurnUsage,
-            getCostHint: snap.getCostHint
-          }}
+          itemsStore={snap.itemsStore}
+          metaStore={snap.metaStore}
           running={snap.running}
           invokeId={snap.invokeId}
           pendingRun={snap.pendingRun}
@@ -1588,7 +1606,8 @@ function App() {
     >
       {view === 'settings' ? (
         <ErrorBoundary title="Settings couldn't render" resetKey={settingsSection}>
-          <SettingsView
+          <Suspense fallback={<ViewSuspenseFallback />}>
+            <SettingsView
             settings={settings}
             secrets={secrets}
             encryptionAvailable={encryptionAvailable}
@@ -1631,15 +1650,17 @@ function App() {
                 trigger?.focus()
                 trigger?.click()
               }, 80)
-            }}
-          />
+              }}
+            />
+          </Suspense>
         </ErrorBoundary>
       ) : view === 'marketplace' ? (
         <ErrorBoundary
           title="Marketplace couldn't render"
           resetKey={`${marketplaceFocusServerId ?? ''}:${marketplaceFocusSkillPath ?? ''}:${marketplaceFocusRulePath ?? ''}:marketplace`}
         >
-          <MarketplaceView
+          <Suspense fallback={<ViewSuspenseFallback />}>
+            <MarketplaceView
             settings={settings}
             onUpdate={update}
             onReloadSettings={refresh}
@@ -1654,23 +1675,14 @@ function App() {
             onFocusRuleConsumed={() => setMarketplaceFocusRulePath(null)}
             onClose={() => setView('chat')}
           />
+          </Suspense>
         </ErrorBoundary>
       ) : (
         <ErrorBoundary title="Chat couldn't render" resetKey={chatSurfaceEpoch}>
           <ChatView
             items={chat.items}
-            itemsStore={{
-              subscribeItems: chat.subscribeItems,
-              getItemsRevision: chat.getItemsRevision,
-              getItems: chat.getItems
-            }}
-            metaStore={{
-              subscribeMeta: chat.subscribeMeta,
-              getMetaRevision: chat.getMetaRevision,
-              getContextUsage: chat.getContextUsage,
-              getTurnUsage: chat.getTurnUsage,
-              getCostHint: chat.getCostHint
-            }}
+            itemsStore={chat.itemsStore}
+            metaStore={chat.metaStore}
             running={chat.running}
             invokeId={chat.invokeId}
             pendingRun={chat.pendingRun}
@@ -1763,6 +1775,7 @@ function App() {
             onUndoWrites={onUndoWrites}
             writeFileResolutions={writeFileResolutions}
             writeResolvablePaths={writeResolvablePaths}
+            writeConflictedPaths={writeConflictedPaths}
             writeCheckpointFiles={writeCheckpointFiles}
             onKeepWriteFile={onKeepWriteFile}
             onDiscardWriteFile={onDiscardWriteFile}
@@ -1770,10 +1783,6 @@ function App() {
             multiPane={multiPaneConfig}
             onPaneCapacityChange={setPaneCapacityContext}
             paneCount={paneLayout?.panes.length ?? 1}
-            openRunIds={agentSessionContext?.openRunIds ?? []}
-            runs={agentSessionContext?.runs ?? []}
-            onOpenRunTab={openRunTab}
-            onCloseRunTab={closeRunTab}
             agentInstances={chat.agentInstances}
             openInstanceRunId={focusedOpenInstance}
             onOpenInstanceRunIdChange={(id) =>

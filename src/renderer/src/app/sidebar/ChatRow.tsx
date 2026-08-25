@@ -51,9 +51,9 @@ export const ChatRow = memo(function ChatRow({
   focused,
   nested = false,
   titleOverride,
-  onSelect,
-  onRename,
-  onDelete,
+  onSelectRun,
+  onRenameRun,
+  onDeleteRun,
   tabIndex,
   rowRef,
   onNavKeyDown
@@ -66,9 +66,9 @@ export const ChatRow = memo(function ChatRow({
   nested?: boolean
   /** Precomputed label (sibling-disambiguated instance titles). */
   titleOverride?: string
-  onSelect: () => void
-  onRename: (goal: string) => void
-  onDelete: () => void
+  onSelectRun: (workspacePath: string, runId: string) => void
+  onRenameRun: (workspacePath: string, runId: string, goal: string) => void
+  onDeleteRun: (workspacePath: string, runId: string) => void
   tabIndex?: number
   rowRef?: RefCallback<HTMLElement>
   onNavKeyDown?: (event: KeyboardEvent<HTMLButtonElement>) => void
@@ -90,6 +90,11 @@ export const ChatRow = memo(function ChatRow({
   useEffect(() => {
     if (!renaming) setDraft(run.goal ?? '')
   }, [run.goal, renaming])
+
+  // Stable per-row closures live here so parents can pass memo-safe handler refs.
+  const onSelect = (): void => onSelectRun(workspacePath, run.runId)
+  const onRename = (goal: string): void => onRenameRun(workspacePath, run.runId, goal)
+  const onDelete = (): void => onDeleteRun(workspacePath, run.runId)
 
   const commitRename = (): void => {
     if (renameCancelledRef.current) {

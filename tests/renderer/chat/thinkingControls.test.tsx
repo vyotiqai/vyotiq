@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ThinkingControls, modelShowsThinkingControls } from '@renderer/features/chat/components/composer/ThinkingControls'
 import type { EffectiveChatSettings } from '@shared/effectiveSettings'
+import { seedModelsFor } from '@shared/providers'
 
 afterEach(() => {
   cleanup()
@@ -545,6 +546,75 @@ describe('ThinkingControls', () => {
     expect(onChatSettingsChange).toHaveBeenCalledWith({
       thinkingEnabled: true,
       thinkingEffort: 'high'
+    })
+  })
+
+  describe('OpenCode Go (opencode)', () => {
+    const goMeta = new Map(seedModelsFor('opencode').map((m) => [m.id, m]))
+    const goSettings: EffectiveChatSettings = {
+      ...chatSettings,
+      provider: 'opencode',
+      model: 'longcat-2.0'
+    }
+
+    it('shows the toggle for every seeded Go model via catalog meta', () => {
+      for (const id of goMeta.keys()) {
+        expect(modelShowsThinkingControls('opencode', id, goMeta.get(id)!)).toBe(true)
+      }
+    })
+
+    it('shows the toggle even while catalog meta is still loading', () => {
+      for (const id of goMeta.keys()) {
+        expect(modelShowsThinkingControls('opencode', id, null)).toBe(true)
+      }
+    })
+
+    it('renders the chat-transport ladder Off/Low/Medium/High and wraps high to Off', () => {
+      const onChatSettingsChange = vi.fn()
+      const meta = goMeta.get('longcat-2.0')
+      // medium advances to high…
+      render(
+        <ThinkingControls
+          provider="opencode"
+          model="longcat-2.0"
+          modelMeta={meta}
+          chatSettings={{ ...goSettings, thinkingEnabled: true, thinkingEffort: 'medium' }}
+          onChatSettingsChange={onChatSettingsChange}
+        />
+      )
+      fireEvent.click(thinkingButton())
+      expect(onChatSettingsChange).toHaveBeenCalledWith({
+        thinkingEnabled: true,
+        thinkingEffort: 'high'
+      })
+      cleanup()
+      // …and high wraps to Off — no xhigh/max on the chat-completions transport.
+      const onWrap = vi.fn()
+      render(
+        <ThinkingControls
+          provider="opencode"
+          model="longcat-2.0"
+          modelMeta={meta}
+          chatSettings={{ ...goSettings, thinkingEnabled: true, thinkingEffort: 'high' }}
+          onChatSettingsChange={onWrap}
+        />
+      )
+      fireEvent.click(thinkingButton())
+      expect(onWrap).toHaveBeenCalledWith({ thinkingEnabled: false })
+    })
+
+    it('renders the messages-transport ladder including max for MiniMax', () => {
+      render(
+        <ThinkingControls
+          provider="opencode"
+          model="minimax-m3"
+          modelMeta={goMeta.get('minimax-m3')}
+          chatSettings={{ ...goSettings, model: 'minimax-m3', thinkingEffort: 'max' }}
+          onChatSettingsChange={vi.fn()}
+        />
+      )
+      expect(thinkingButton()).toBeTruthy()
+      expect(screen.getByRole('button', { name: /Thinking Max/i })).toBeTruthy()
     })
   })
 })

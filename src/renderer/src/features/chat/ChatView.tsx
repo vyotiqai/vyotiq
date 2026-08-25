@@ -1,23 +1,18 @@
 import type { Ref } from 'react'
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { MessageList } from './components/MessageList'
 import { AgentBrowserPanel } from './components/AgentBrowserPanel'
-import { FilesPanel, type WorkspaceFileOpenRequest } from './components/FilesPanel'
+import type { WorkspaceFileOpenRequest } from './components/FilesPanel'
 import { ChangesPanel } from './components/ChangesPanel'
 import { PlanPanel } from './components/PlanPanel'
-import { PrPanel } from './components/PrPanel'
 import { ChatSideRail } from './components/ChatSideRail'
 import { DockTabBar, AGENT_DOCK_TAB, defaultDockTab } from './components/DockTabBar'
-import { AgentSessionBar, type AgentSessionTab } from './components/AgentSessionBar'
-import { TerminalPanel } from './components/TerminalPanel'
 import { isPlanDraftReady } from './utils/planDraft'
 import { Composer } from './components/composer'
 import { RunSessionProvider } from './RunSessionContext'
 import { AgentInstancePane } from './components/AgentInstancePane'
-import { ChatStartWork } from './components/ChatStartWork'
 import { ChatTranscriptStage } from './components/ChatTranscriptStage'
-import { formatStartWorkDraft, formatStartWorkLabel } from './utils/chatStartWork'
 import { useInlineInstanceUi } from './hooks/useInlineInstanceUi'
 import {
   type AgentInstanceUiState
@@ -34,7 +29,6 @@ import type {
   ChatMessage,
   ProviderId,
   PtySessionInfo,
-  RunSummary,
   ToolApprovalDecision,
   WorkspaceEditorRecoveryLoadResult
 } from '@shared/ipc'
@@ -78,6 +72,19 @@ import type { PaneCapacityContext } from '@renderer/lib/hooks/useWorkspaceManage
 import type { ChatPane, PaneDropZone } from '@renderer/lib/chat/chatPaneLayout'
 
 export type { ChatItemsStore, ChatMetaStore } from './chatStores'
+
+/** Heavy dock panels are code-split: xterm/CodeMirror/PR tooling parse on first open. */
+const FilesPanel = lazy(() =>
+  import('./components/FilesPanel').then((m) => ({ default: m.FilesPanel }))
+)
+const TerminalPanel = lazy(() =>
+  import('./components/TerminalPanel').then((m) => ({ default: m.TerminalPanel }))
+)
+const PrPanel = lazy(() => import('./components/PrPanel').then((m) => ({ default: m.PrPanel })))
+
+function DockPanelSuspenseFallback() {
+  return <div className="min-h-0 min-w-0 flex-1 animate-pulse bg-surface/40" aria-busy="true" />
+}
 
 const MemoComposer = memo(Composer)
 
@@ -236,6 +243,7 @@ export function ChatView({
   operationalError,
   hasWorkspace,
   workspacePath,
+  writeConflictedPaths,
   tabAutocompleteEnabled = true,
   provider,
   model,
@@ -297,10 +305,6 @@ export function ChatView({
   multiPane = null,
   paneCount: paneCountProp = 1,
   onPaneCapacityChange,
-  openRunIds = [],
-  runs = [],
-  onOpenRunTab,
-  onCloseRunTab,
   agentInstances,
   openInstanceRunId: openInstanceRunIdProp = null,
   onOpenInstanceRunIdChange,
@@ -404,6 +408,7 @@ export function ChatView({
   onUndoWrites?: () => void | Promise<unknown>
   writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
   writeResolvablePaths?: ReadonlySet<string>
+  writeConflictedPaths?: ReadonlySet<string> | undefined
   writeCheckpointFiles?: ReadonlyArray<{
     path: string
     action: 'created' | 'modified' | 'deleted'
@@ -429,11 +434,6 @@ export function ChatView({
   } | null
   paneCount?: number
   onPaneCapacityChange?: (ctx: PaneCapacityContext) => void
-  /** Open agent session tabs (immersive AgentSessionBar). */
-  openRunIds?: string[]
-  runs?: RunSummary[]
-  onOpenRunTab?: (runId: string | null) => void
-  onCloseRunTab?: (runId: string) => void
   agentInstances?: Record<string, AgentInstanceUiState>
   /** Controlled open instance sub-session (sidebar / parent shared). */
   openInstanceRunId?: string | null
@@ -608,20 +608,6 @@ export function ChatView({
     undefined,
     flushDirtyFiles
   )
-  const startWork = useMemo(() => {
-    if (!onComposerDraftChange || !gitChrome.ready) return null
-    const status = gitChrome.status
-    if (status == null || status.fileCount <= 0) return null
-    const label = formatStartWorkLabel(status.files, status.fileCount)
-    const draft = formatStartWorkDraft(status.files, status.fileCount)
-    if (!label || !draft) return null
-    return { label, draft }
-  }, [gitChrome.ready, gitChrome.status, onComposerDraftChange])
-  const fillStartWorkDraft = useCallback(() => {
-    if (!startWork) return
-    onComposerDraftChange?.(startWork.draft)
-  }, [onComposerDraftChange, startWork])
-  const showStartWork = startWork != null && !hasItems && !transcriptLoading
   const notifyGitMutated = useCallback(() => {
     gitChrome.refresh()
     bumpGitRevision()
@@ -928,8 +914,10 @@ export function ChatView({
   // writes (poll) and when `running` flips. Terminal / Browser / Changes open
   // only via side rail, dock tabs, ChangeSummary, or GitChrome — never on agent
   // activity (agent terminal output stays in the transcript).
+  // While the plan dock is already mounted, PlanPanel owns the plan.md polling;
+  // this effect then stops so the artifact is never fetched twice per tick.
   useEffect(() => {
-    if (!workspacePath || !activeRunId || agentMode !== 'plan') {
+    if (!workspacePath || !activeRunId || agentMode !== 'plan' || mountedPanels.includes('plan')) {
       return
     }
     let cancelled = false
@@ -950,7 +938,7 @@ export function ChatView({
       cancelled = true
       window.clearInterval(id)
     }
-  }, [workspacePath, activeRunId, agentMode, running, tryAutoOpenPanel])
+  }, [workspacePath, activeRunId, agentMode, running, mountedPanels, tryAutoOpenPanel])
 
   // Prefetch recovery once so FilesPanel can hydrate from the same result when
   // it auto-opens, without issuing a second recovery load.
@@ -987,55 +975,9 @@ export function ChatView({
     : activeRightPanel
 
   const terminalSessionBarHostRef = useRef<HTMLDivElement>(null)
-  const agentSessionBarHostRef = useRef<HTMLDivElement>(null)
-  const [agentSessionBarHost, setAgentSessionBarHost] = useState<HTMLDivElement | null>(null)
   const [terminalSessions, setTerminalSessions] = useState<PtySessionInfo[]>([])
-  const showAgentSessionChrome = dockImmersive && immersiveTab === 'agent' && onOpenRunTab != null
   const showTerminalSessionChrome =
     mountedPanels.includes('terminal') && visiblePanelId === 'terminal'
-
-  useLayoutEffect(() => {
-    if (!showAgentSessionChrome) {
-      setAgentSessionBarHost(null)
-      return
-    }
-    let cancelled = false
-    const attach = (): void => {
-      if (cancelled) return
-      const host = agentSessionBarHostRef.current
-      if (host) {
-        setAgentSessionBarHost(host)
-        return
-      }
-      requestAnimationFrame(attach)
-    }
-    attach()
-    return () => {
-      cancelled = true
-    }
-  }, [showAgentSessionChrome, titleBarHost])
-
-  const agentSessionTabs = useMemo((): AgentSessionTab[] => {
-    const byId = new Map(runs.map((r) => [r.runId, r]))
-    const tabs: AgentSessionTab[] = openRunIds.map((id) => {
-      const run = byId.get(id)
-      const goal = run?.goal?.trim()
-      return { id, title: goal || 'Chat', closable: true, running: run?.status === 'running' }
-    })
-    if (activeRunId == null) {
-      tabs.push({ id: null, title: 'New chat', closable: false })
-    } else if (!openRunIds.includes(activeRunId)) {
-      const run = byId.get(activeRunId)
-      const goal = run?.goal?.trim()
-      tabs.push({
-        id: activeRunId,
-        title: goal || 'Chat',
-        closable: true,
-        running: run?.status === 'running'
-      })
-    }
-    return tabs
-  }, [openRunIds, runs, activeRunId])
 
   const tabItems = useMemo(() => {
     const items = dockTabs.map((id) => defaultDockTab(id, id === 'pr' ? prNumber : null))
@@ -1044,10 +986,7 @@ export function ChatView({
     }
     return items
   }, [dockTabs, prNumber, visiblePanelId, terminalSessions.length])
-  const immersiveTabItems = useMemo(
-    () => (showAgentSessionChrome ? tabItems : [AGENT_DOCK_TAB, ...tabItems]),
-    [showAgentSessionChrome, tabItems]
-  )
+  const immersiveTabItems = useMemo(() => [AGENT_DOCK_TAB, ...tabItems], [tabItems])
   // Pad only while the floating side rail is mounted (hidden when a side dock
   // is open or in immersive unified-tabs mode).
   const agentSideRailPad = !dockImmersive && activeRightPanel == null
@@ -1276,14 +1215,6 @@ export function ChatView({
                 inert={editing ? true : undefined}
                 aria-hidden={editing || undefined}
               >
-                {showStartWork && startWork ? (
-                  <ChatStartWork
-                    align="start"
-                    className="px-4"
-                    label={startWork.label}
-                    onFill={fillStartWorkDraft}
-                  />
-                ) : null}
                 <MemoComposer
                   key={`composer:${surfaceKey}`}
                   {...composerProps}
@@ -1312,18 +1243,20 @@ export function ChatView({
           aria-hidden={visiblePanelId !== 'files'}
           inert={visiblePanelId !== 'files' ? true : undefined}
         >
-          <FilesPanel
-            workspacePath={workspacePath}
-            active={visiblePanelId === 'files'}
-            tabAutocompleteEnabled={tabAutocompleteEnabled}
-            gitRevision={gitRevision}
-            onGitMutated={notifyGitMutated}
-            onFlushReady={registerFilesFlush}
-            openPath={requestedFilePath}
-            onOpenPathHandled={handleWorkspaceFileOpened}
-            recoveryData={filesRecoveryData}
-            onRecoveryDataConsumed={handleFilesRecoveryConsumed}
-          />
+          <Suspense fallback={<DockPanelSuspenseFallback />}>
+            <FilesPanel
+              workspacePath={workspacePath}
+              active={visiblePanelId === 'files'}
+              tabAutocompleteEnabled={tabAutocompleteEnabled}
+              gitRevision={gitRevision}
+              onGitMutated={notifyGitMutated}
+              onFlushReady={registerFilesFlush}
+              openPath={requestedFilePath}
+              onOpenPathHandled={handleWorkspaceFileOpened}
+              recoveryData={filesRecoveryData}
+              onRecoveryDataConsumed={handleFilesRecoveryConsumed}
+            />
+          </Suspense>
         </div>
       ) : null}
       {mountedPanels.includes('browser') ? (
@@ -1358,12 +1291,14 @@ export function ChatView({
           aria-hidden={visiblePanelId !== 'terminal'}
           inert={visiblePanelId !== 'terminal' ? true : undefined}
         >
-          <TerminalPanel
-            workspacePath={workspacePath}
-            visible={visiblePanelId === 'terminal'}
-            sessionBarHostRef={terminalSessionBarHostRef}
-            onSessionsChange={setTerminalSessions}
-          />
+          <Suspense fallback={<DockPanelSuspenseFallback />}>
+            <TerminalPanel
+              workspacePath={workspacePath}
+              visible={visiblePanelId === 'terminal'}
+              sessionBarHostRef={terminalSessionBarHostRef}
+              onSessionsChange={setTerminalSessions}
+            />
+          </Suspense>
         </div>
       ) : null}
       {mountedPanels.includes('changes') ? (
@@ -1388,6 +1323,7 @@ export function ChatView({
             onViewPr={() => setRightPanel('pr')}
             writeFileResolutions={writeFileResolutions}
             resolvablePaths={writeResolvablePaths}
+            conflictedPaths={writeConflictedPaths}
             writeCheckpointFiles={writeCheckpointFiles}
             canResolve={canUndoWrites}
             resolveBusy={undoBusy}
@@ -1414,14 +1350,16 @@ export function ChatView({
           aria-hidden={visiblePanelId !== 'pr'}
           inert={visiblePanelId !== 'pr' ? true : undefined}
         >
-          <PrPanel
-            workspacePath={workspacePath}
-            gitRevision={gitRevision}
-            onOpenFile={openWorkspaceFile}
-            onPrMeta={handlePrMeta}
-            onUnlink={() => closeDockTab('pr')}
-            active={visiblePanelId === 'pr'}
-          />
+          <Suspense fallback={<DockPanelSuspenseFallback />}>
+            <PrPanel
+              workspacePath={workspacePath}
+              gitRevision={gitRevision}
+              onOpenFile={openWorkspaceFile}
+              onPrMeta={handlePrMeta}
+              onUnlink={() => closeDockTab('pr')}
+              active={visiblePanelId === 'pr'}
+            />
+          </Suspense>
         </div>
       ) : null}
       {mountedPanels.includes('plan') ? (
@@ -1464,35 +1402,11 @@ export function ChatView({
               onOpenPanel={(id) => setRightPanel(id)}
               expanded
               onToggleExpanded={toggleDockExpanded}
-              agentSessionBarHostRef={
-                showAgentSessionChrome ? agentSessionBarHostRef : undefined
-              }
               terminalSessionBarHostRef={
                 showTerminalSessionChrome ? terminalSessionBarHostRef : undefined
               }
             />,
             titleBarHost
-          )
-        : null}
-      {showAgentSessionChrome && agentSessionBarHost && onOpenRunTab
-        ? createPortal(
-            <AgentSessionBar
-              sessions={agentSessionTabs}
-              activeId={activeRunId}
-              onSelect={(runId) => {
-                closeInstancePane()
-                onOpenRunTab(runId)
-              }}
-              onClose={(id) => {
-                closeInstancePane()
-                onCloseRunTab?.(id)
-              }}
-              onCreate={() => {
-                closeInstancePane()
-                onOpenRunTab(null)
-              }}
-            />,
-            agentSessionBarHost
           )
         : null}
       {dockSideTitleBar && titleBarHost
@@ -1550,9 +1464,6 @@ export function ChatView({
                 onOpenPanel={(id) => setRightPanel(id)}
                 expanded
                 onToggleExpanded={toggleDockExpanded}
-                agentSessionBarHostRef={
-                  showAgentSessionChrome ? agentSessionBarHostRef : undefined
-                }
                 terminalSessionBarHostRef={
                   showTerminalSessionChrome ? terminalSessionBarHostRef : undefined
                 }
@@ -1576,29 +1487,6 @@ export function ChatView({
           </div>
         ) : (
           <>
-            {!dockImmersive && paneCount === 1 && onOpenRunTab && agentSessionTabs.length > 1 ? (
-              <div
-                className="flex h-9 shrink-0 items-center border-b border-border/40 px-2"
-                data-chat-session-tabs
-              >
-                <AgentSessionBar
-                  sessions={agentSessionTabs}
-                  activeId={activeRunId}
-                  onSelect={(runId) => {
-                    closeInstancePane()
-                    onOpenRunTab(runId)
-                  }}
-                  onClose={(id) => {
-                    closeInstancePane()
-                    onCloseRunTab?.(id)
-                  }}
-                  onCreate={() => {
-                    closeInstancePane()
-                    onOpenRunTab(null)
-                  }}
-                />
-              </div>
-            ) : null}
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">{agentColumn}</div>
             {activeRightPanel ? (
               <>

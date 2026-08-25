@@ -19,6 +19,7 @@ vi.mock('@xterm/xterm', () => ({
   Terminal: class {
     cols = 80
     rows = 24
+    options: Record<string, unknown> = {}
     handler: ((event: KeyboardEvent) => boolean) | null = null
     selection = false
     constructor() {

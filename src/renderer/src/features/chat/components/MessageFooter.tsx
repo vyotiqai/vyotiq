@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { Tooltip, cn } from '@renderer/lib/ui'
 import { copyText } from '@renderer/lib/markdown/copyText'
+import { useSharedNow } from '@renderer/lib/hooks/useSharedNow'
 import { buildFooterStats } from '../utils/messageFooterStats'
 import type { StepUsageTotals } from '@shared/utils/runTelemetry'
 
@@ -35,14 +36,7 @@ export function MessageFooter({
 }) {
   const [copied, setCopied] = useState(false)
   const [copyError, setCopyError] = useState(false)
-  const [nowMs, setNowMs] = useState(() => Date.now())
-
-  useEffect(() => {
-    if (omitReceipt || omitDuration || !active || startedAt == null) return undefined
-    setNowMs(Date.now())
-    const interval = window.setInterval(() => setNowMs(Date.now()), 1000)
-    return () => window.clearInterval(interval)
-  }, [omitReceipt, omitDuration, active, startedAt])
+  const nowMs = useSharedNow(!omitReceipt && !omitDuration && active && startedAt != null)
 
   const stats = useMemo(
     () =>

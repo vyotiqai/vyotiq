@@ -18,6 +18,8 @@ afterEach(() => {
   cleanup()
 })
 
+const noop = () => {}
+
 describe('ChatRow keyboard delete', () => {
   it('opens the inline delete confirm on Delete from a focused row', () => {
     const onDelete = vi.fn()
@@ -26,9 +28,9 @@ describe('ChatRow keyboard delete', () => {
         run={run}
         workspacePath="/ws/home"
         active={false}
-        onSelect={() => {}}
-        onRename={() => {}}
-        onDelete={onDelete}
+        onSelectRun={noop}
+        onRenameRun={noop}
+        onDeleteRun={onDelete}
       />
     )
     const row = screen.getByTitle('List files')
@@ -45,9 +47,9 @@ describe('ChatRow keyboard delete', () => {
         run={run}
         workspacePath="/ws/home"
         active={false}
-        onSelect={() => {}}
-        onRename={() => {}}
-        onDelete={onDelete}
+        onSelectRun={noop}
+        onRenameRun={noop}
+        onDeleteRun={onDelete}
       />
     )
     const row = screen.getByTitle('List files')
@@ -60,7 +62,7 @@ describe('ChatRow keyboard delete', () => {
 
     fireEvent.keyDown(row, { key: 'Delete' })
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete List files' }))
-    expect(onDelete).toHaveBeenCalledWith()
+    expect(onDelete).toHaveBeenCalledWith('/ws/home', 'run-1')
   })
 
   it('does not intercept Delete while renaming', () => {
@@ -69,9 +71,9 @@ describe('ChatRow keyboard delete', () => {
         run={run}
         workspacePath="/ws/home"
         active={false}
-        onSelect={() => {}}
-        onRename={() => {}}
-        onDelete={() => {}}
+        onSelectRun={noop}
+        onRenameRun={noop}
+        onDeleteRun={noop}
       />
     )
     fireEvent.doubleClick(screen.getByTitle('List files'))

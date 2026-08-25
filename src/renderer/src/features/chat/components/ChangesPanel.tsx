@@ -142,6 +142,7 @@ export function ChangesPanel({
   onViewPr,
   writeFileResolutions,
   resolvablePaths,
+  conflictedPaths,
   canResolve,
   resolveBusy,
   resolveBlockedReason,
@@ -166,6 +167,7 @@ export function ChangesPanel({
   onViewPr?: () => void
   writeFileResolutions?: ReadonlyMap<string, 'kept' | 'discarded' | undefined>
   resolvablePaths?: ReadonlySet<string>
+  conflictedPaths?: ReadonlySet<string> | undefined
   canResolve?: boolean
   resolveBusy?: boolean
   resolveBlockedReason?: string | null
@@ -1173,6 +1175,7 @@ export function ChangesPanel({
                 fileDiffs={agentDiffs}
                 fileResolutions={writeFileResolutions}
                 resolvablePaths={resolvablePaths}
+                conflictedPaths={conflictedPaths}
                 canResolve={canResolve}
                 resolveBusy={Boolean(resolveBusy || chrome.busy)}
                 resolveBlockedReason={
@@ -1424,6 +1427,7 @@ export function ChangesPanel({
                   fileDiffs={sessionAgentDiffs}
                   fileResolutions={writeFileResolutions}
                   resolvablePaths={resolvablePaths}
+                  conflictedPaths={conflictedPaths}
                   canResolve={canResolve}
                   resolveBusy={Boolean(resolveBusy || chrome.busy)}
                   resolveBlockedReason={

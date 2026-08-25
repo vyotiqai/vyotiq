@@ -57,6 +57,7 @@ export const ChangeSummary = memo(function ChangeSummary({
   fileDiffs,
   fileResolutions,
   resolvablePaths,
+  conflictedPaths,
   canResolve = false,
   resolveBusy = false,
   resolveBlockedReason = null,
@@ -81,6 +82,8 @@ export const ChangeSummary = memo(function ChangeSummary({
    * here — session-wide older edits stay list-only.
    */
   resolvablePaths?: ReadonlySet<string>
+  /** Paths the agent wrote but the user edited afterward — revert is unavailable. */
+  conflictedPaths?: ReadonlySet<string> | undefined
   canResolve?: boolean
   resolveBusy?: boolean
   /** When set, Keep/Discard stay visible but disabled (e.g. mid-run). */
@@ -255,7 +258,8 @@ export const ChangeSummary = memo(function ChangeSummary({
           const lines = fileDiffs?.get(norm) ?? fileDiffs?.get(file.path)
           const expanded = expandedPaths.has(file.path)
           const canExpand = Boolean(lines && lines.length > 0) || file.removed > 0
-          const showResolve = canResolve && isResolvablePath(file.path)
+          const conflicted = Boolean(conflictedPaths?.has(norm) ?? conflictedPaths?.has(file.path))
+          const showResolve = canResolve && isResolvablePath(file.path) && !conflicted
 
           return (
             <li key={file.path} className="min-w-0 [&+&]:border-t [&+&]:border-border/60">
@@ -286,7 +290,14 @@ export const ChangeSummary = memo(function ChangeSummary({
                   {file.added > 0 ? <span className="text-success">+{file.added}</span> : null}
                   {file.removed > 0 ? <span className="text-danger">-{file.removed}</span> : null}
                   <FileActionBadge action={file.action} />
-                  {resolution === 'kept' ? (
+                  {conflicted ? (
+                    <span
+                      className="text-2xs text-warning"
+                      title="This file was edited after the agent wrote it, so it can't be auto-reverted. Restore it manually if needed."
+                    >
+                      Edited since
+                    </span>
+                  ) : resolution === 'kept' ? (
                     <span className="text-tertiary">Kept</span>
                   ) : resolution === 'discarded' ? (
                     <span className="text-tertiary">Discarded</span>

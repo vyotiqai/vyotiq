@@ -1,8 +1,9 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useMemo } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { Tooltip, cn } from '@renderer/lib/ui'
 import { DISCLOSURE_CHEVRON, DISCLOSURE_ROW } from '@renderer/lib/utils/layout'
 import { formatElapsed } from '@shared/utils/timeFormat'
+import { useSharedNow } from '@renderer/lib/hooks/useSharedNow'
 import type { StepUsageTotals } from '@shared/utils/runTelemetry'
 import type { TurnSpan } from '../utils/transcriptRows'
 import { turnSummaryActiveLabel } from '../utils/runActivity'
@@ -30,14 +31,7 @@ export const TurnSummary = memo(function TurnSummary({
 }) {
   const { startedAt, endedAt, active, activity } = span
   const terminalStatus = span.status ?? (span.failed ? 'error' : 'done')
-  const [now, setNow] = useState(() => Date.now())
-
-  useEffect(() => {
-    if (!active || startedAt == null) return undefined
-    setNow(Date.now())
-    const interval = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(interval)
-  }, [active, startedAt])
+  const now = useSharedNow(active && startedAt != null)
 
   const turnElapsedMs =
     startedAt == null ? null : active ? now - startedAt : endedAt == null ? null : endedAt - startedAt

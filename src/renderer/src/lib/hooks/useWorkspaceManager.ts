@@ -99,6 +99,94 @@ async function restorePendingApprovals(
     controller.handleApprovalRequest(request)
   }
 }
+
+/**
+ * Stable per-controller external-store accessors. Snapshots are rebuilt every
+ * render, but these bound methods must keep a stable identity so
+ * useSyncExternalStore consumers do not resubscribe on every render.
+ */
+type ChatStoreBundle = Pick<
+  ChatStreamController,
+  'subscribeItems' | 'getItemsRevision' | 'subscribeMeta' | 'getMetaRevision'
+> & {
+  getItems: () => ChatStreamController['items']
+  getContextUsage: () => ChatStreamController['contextUsage']
+  getTurnUsage: () => ChatStreamController['turnUsage']
+  getCostHint: () => ChatStreamController['costHint']
+  itemsStore: {
+    subscribeItems: (listener: () => void) => () => void
+    getItemsRevision: () => number
+    getItems: () => ChatStreamController['items']
+  }
+  metaStore: {
+    subscribeMeta: (listener: () => void) => () => void
+    getMetaRevision: () => number
+    getContextUsage: () => ChatStreamController['contextUsage']
+    getTurnUsage: () => ChatStreamController['turnUsage']
+    getCostHint: () => string | null
+  }
+}
+
+const chatStoreBundles = new WeakMap<ChatStreamController, ChatStoreBundle>()
+
+/** Stable no-op stores for the no-active-controller snapshot. */
+const EMPTY_CHAT_STORE: ChatStoreBundle = {
+  subscribeItems: () => () => {},
+  getItemsRevision: () => 0,
+  getItems: () => [] as ChatStreamController['items'],
+  subscribeMeta: () => () => {},
+  getMetaRevision: () => 0,
+  getContextUsage: () => null,
+  getTurnUsage: () => [] as ChatStreamController['turnUsage'],
+  getCostHint: () => null,
+  itemsStore: {
+    subscribeItems: () => () => {},
+    getItemsRevision: () => 0,
+    getItems: () => [] as ChatStreamController['items']
+  },
+  metaStore: {
+    subscribeMeta: () => () => {},
+    getMetaRevision: () => 0,
+    getContextUsage: () => null,
+    getTurnUsage: () => [] as ChatStreamController['turnUsage'],
+    getCostHint: () => null
+  }
+}
+
+function chatStoresFor(controller: ChatStreamController): ChatStoreBundle {
+  let bundle = chatStoreBundles.get(controller)
+  if (!bundle) {
+    const subscribeItems = controller.subscribeItems.bind(controller)
+    const getItemsRevision = controller.getItemsRevision.bind(controller)
+    const getItems = (): ChatStreamController['items'] => controller.items
+    const subscribeMeta = controller.subscribeMeta.bind(controller)
+    const getMetaRevision = controller.getMetaRevision.bind(controller)
+    const getContextUsage = controller.getContextUsage.bind(controller)
+    const getTurnUsage = controller.getTurnUsage.bind(controller)
+    const getCostHint = controller.getCostHint.bind(controller)
+    bundle = {
+      subscribeItems,
+      getItemsRevision,
+      getItems,
+      subscribeMeta,
+      getMetaRevision,
+      getContextUsage,
+      getTurnUsage,
+      getCostHint,
+      itemsStore: { subscribeItems, getItemsRevision, getItems },
+      metaStore: {
+        subscribeMeta,
+        getMetaRevision,
+        getContextUsage,
+        getTurnUsage,
+        getCostHint
+      }
+    }
+    chatStoreBundles.set(controller, bundle)
+  }
+  return bundle
+}
+
 const ORPHAN_SYNC_DEBOUNCE_MS = 600
 const OPEN_RUN_TAB_LIMIT = 4
 /** Cap orphan IPC buffers for runIds not yet mapped to a controller. */
@@ -2318,14 +2406,16 @@ export function useWorkspaceManager(options?: {
         writeCheckpoint: activeController.writeCheckpoint,
         pendingFollowUps: activeController.pendingFollowUps,
         agentInstances: activeController.agentInstances,
-        subscribeItems: activeController.subscribeItems.bind(activeController),
-        getItemsRevision: activeController.getItemsRevision.bind(activeController),
-        getItems: () => activeController.items,
-        subscribeMeta: activeController.subscribeMeta.bind(activeController),
-        getMetaRevision: activeController.getMetaRevision.bind(activeController),
-        getContextUsage: activeController.getContextUsage.bind(activeController),
-        getTurnUsage: activeController.getTurnUsage.bind(activeController),
-        getCostHint: activeController.getCostHint.bind(activeController)
+        subscribeItems: chatStoresFor(activeController).subscribeItems,
+        getItemsRevision: chatStoresFor(activeController).getItemsRevision,
+        getItems: chatStoresFor(activeController).getItems,
+        subscribeMeta: chatStoresFor(activeController).subscribeMeta,
+        getMetaRevision: chatStoresFor(activeController).getMetaRevision,
+        getContextUsage: chatStoresFor(activeController).getContextUsage,
+        getTurnUsage: chatStoresFor(activeController).getTurnUsage,
+        getCostHint: chatStoresFor(activeController).getCostHint,
+        itemsStore: chatStoresFor(activeController).itemsStore,
+        metaStore: chatStoresFor(activeController).metaStore
       }
     : {
         items: [] as ChatStreamController['items'],
@@ -2350,14 +2440,16 @@ export function useWorkspaceManager(options?: {
         writeCheckpoint: null as ChatStreamController['writeCheckpoint'],
         pendingFollowUps: [] as ChatStreamController['pendingFollowUps'],
         agentInstances: {} as ChatStreamController['agentInstances'],
-        subscribeItems: (_listener: () => void) => () => {},
-        getItemsRevision: () => 0,
-        getItems: () => [] as ChatStreamController['items'],
-        subscribeMeta: (_listener: () => void) => () => {},
-        getMetaRevision: () => 0,
-        getContextUsage: () => null,
-        getTurnUsage: () => [] as ChatStreamController['turnUsage'],
-        getCostHint: () => null
+        subscribeItems: EMPTY_CHAT_STORE.subscribeItems,
+        getItemsRevision: EMPTY_CHAT_STORE.getItemsRevision,
+        getItems: EMPTY_CHAT_STORE.getItems,
+        subscribeMeta: EMPTY_CHAT_STORE.subscribeMeta,
+        getMetaRevision: EMPTY_CHAT_STORE.getMetaRevision,
+        getContextUsage: EMPTY_CHAT_STORE.getContextUsage,
+        getTurnUsage: EMPTY_CHAT_STORE.getTurnUsage,
+        getCostHint: EMPTY_CHAT_STORE.getCostHint,
+        itemsStore: EMPTY_CHAT_STORE.itemsStore,
+        metaStore: EMPTY_CHAT_STORE.metaStore
       }
 
   const collapsedTurns = useMemo(
@@ -2460,14 +2552,16 @@ export function useWorkspaceManager(options?: {
         writeCheckpoint: ctrl.writeCheckpoint,
         pendingFollowUps: ctrl.pendingFollowUps,
         agentInstances: ctrl.agentInstances,
-        subscribeItems: ctrl.subscribeItems.bind(ctrl),
-        getItemsRevision: ctrl.getItemsRevision.bind(ctrl),
-        getItems: () => ctrl.items,
-        subscribeMeta: ctrl.subscribeMeta.bind(ctrl),
-        getMetaRevision: ctrl.getMetaRevision.bind(ctrl),
-        getContextUsage: ctrl.getContextUsage.bind(ctrl),
-        getTurnUsage: ctrl.getTurnUsage.bind(ctrl),
-        getCostHint: ctrl.getCostHint.bind(ctrl)
+        subscribeItems: chatStoresFor(ctrl).subscribeItems,
+        getItemsRevision: chatStoresFor(ctrl).getItemsRevision,
+        getItems: chatStoresFor(ctrl).getItems,
+        subscribeMeta: chatStoresFor(ctrl).subscribeMeta,
+        getMetaRevision: chatStoresFor(ctrl).getMetaRevision,
+        getContextUsage: chatStoresFor(ctrl).getContextUsage,
+        getTurnUsage: chatStoresFor(ctrl).getTurnUsage,
+        getCostHint: chatStoresFor(ctrl).getCostHint,
+        itemsStore: chatStoresFor(ctrl).itemsStore,
+        metaStore: chatStoresFor(ctrl).metaStore
       }
     },
     [ensureController]

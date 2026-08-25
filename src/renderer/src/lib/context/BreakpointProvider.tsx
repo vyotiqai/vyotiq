@@ -1,4 +1,4 @@
-import { createContext, useContext, type ReactNode } from 'react'
+import { createContext, useContext, useMemo, type ReactNode } from 'react'
 import { LG_BREAKPOINT } from '@renderer/lib/utils/breakpoints'
 import { useMediaQuery } from '@renderer/lib/hooks/useMediaQuery'
 
@@ -10,9 +10,8 @@ const BreakpointContext = createContext<BreakpointContextValue>({ isDesktop: tru
 
 export function BreakpointProvider({ children }: { children: ReactNode }) {
   const isDesktop = useMediaQuery(LG_BREAKPOINT, true)
-  return (
-    <BreakpointContext.Provider value={{ isDesktop }}>{children}</BreakpointContext.Provider>
-  )
+  const value = useMemo(() => ({ isDesktop }), [isDesktop])
+  return <BreakpointContext.Provider value={value}>{children}</BreakpointContext.Provider>
 }
 
 export function useIsDesktop(): boolean {

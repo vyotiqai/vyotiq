@@ -359,6 +359,15 @@ function sameFileVersion(
   return left != null && left.sha256 === right.sha256 && left.size === right.size
 }
 
+/** Cheap probe comparison: stat fields only — no hash, no content transfer needed. */
+function versionMatchesStat(
+  left: FileTab['version'],
+  size: number,
+  mtimeMs: number
+): boolean {
+  return left != null && left.size === size && left.mtimeMs === mtimeMs
+}
+
 function sameFileContent(tab: FileTab, data: WorkspaceFileReadResult): boolean {
   return (
     tab.kind === data.kind &&
@@ -1440,6 +1449,22 @@ export function FilesPanel({
     if (!operation || !watchedTabId || !window.vyotiq?.workspaceFileRead) return
     const current = getFileSession(operation.path).tabs.find((tab) => tab.id === watchedTabId)
     if (!current || saveStatesRef.current[current.id] === 'saving') return
+    // Cheap stat probe first — only pay for a full content transfer when it changed.
+    const statApi = window.vyotiq.workspaceFileStat
+    if (statApi) {
+      let stat: Awaited<ReturnType<typeof statApi>> | null = null
+      try {
+        stat = await statApi({ workspacePath: operation.path, path: current.path })
+      } catch {
+        return
+      }
+      if (!isCurrentWorkspaceOperation(operation)) return
+      const probed = getFileSession(operation.path).tabs.find((tab) => tab.id === current.id)
+      if (!probed || probed.revision !== current.revision) return
+      if (stat.ok && stat.data.exists && versionMatchesStat(probed.version, stat.data.size, stat.data.mtimeMs)) {
+        return
+      }
+    }
     let result: Awaited<ReturnType<typeof window.vyotiq.workspaceFileRead>>
     try {
       result = await window.vyotiq.workspaceFileRead({

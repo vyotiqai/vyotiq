@@ -100,9 +100,6 @@ importers:
       gpt-tokenizer:
         specifier: ^3.4.0
         version: 3.4.0
-      lucide-react:
-        specifier: ^1.27.0
-        version: 1.28.0(react@19.2.8)
       material-icon-theme:
         specifier: ^5.37.0
         version: 5.37.0

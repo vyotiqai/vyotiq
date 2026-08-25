@@ -787,6 +787,8 @@ export type WriteCheckpointFileState = {
   action: 'created' | 'modified' | 'deleted'
   undoable: boolean
   resolved?: 'kept' | 'discarded'
+  /** Revert refused because the file was edited after the agent wrote it. */
+  conflicted?: boolean
 }
 
 export type WriteCheckpointState = {
@@ -4112,16 +4114,19 @@ export function createChatStreamController(
     checkpointId: string
     kept: string[]
     discarded: string[]
+    conflicted?: string[]
     fullyResolved: boolean
   }): void => {
     if (disposed) return
     const current = state.writeCheckpoint
-    if (!current || current.checkpointId !== result.checkpointId) return
+    if (!current) return
     const kept = new Set(result.kept)
     const discarded = new Set(result.discarded)
+    const conflicted = new Set(result.conflicted ?? [])
     const files = current.files.map((f) => {
-      if (kept.has(f.path)) return { ...f, resolved: 'kept' as const }
-      if (discarded.has(f.path)) return { ...f, resolved: 'discarded' as const }
+      if (kept.has(f.path)) return { ...f, resolved: 'kept' as const, conflicted: undefined }
+      if (discarded.has(f.path)) return { ...f, resolved: 'discarded' as const, conflicted: undefined }
+      if (conflicted.has(f.path)) return { ...f, conflicted: true as const }
       return f
     })
     patch({

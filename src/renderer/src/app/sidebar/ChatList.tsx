@@ -130,9 +130,9 @@ function FoldableInstanceChildren({
                 focused={childSelected}
                 nested
                 titleOverride={titles.get(child.runId)}
-                onSelect={() => onSelectRun(workspacePath, child.runId)}
-                onRename={(goal) => onRenameRun(workspacePath, child.runId, goal)}
-                onDelete={() => onDeleteRun(workspacePath, child.runId)}
+                onSelectRun={onSelectRun}
+                onRenameRun={onRenameRun}
+                onDeleteRun={onDeleteRun}
                 tabIndex={navIndex >= 0 ? tabIndexFor(navIndex) : undefined}
                 rowRef={navIndex >= 0 ? setOptionRef(navIndex) : undefined}
                 onNavKeyDown={onNavKeyDown}
@@ -342,10 +342,17 @@ export function ChatList({
     orientation: 'vertical'
   })
 
+  /** O(1) nav lookups — sessionRows scans were quadratic per keystroke/render. */
+  const navIndexByKey = useMemo(() => {
+    const map = new Map<string, number>()
+    sessionRows.forEach((row, index) => {
+      map.set(`${row.workspacePath}\u0000${row.runId}`, index)
+    })
+    return map
+  }, [sessionRows])
+
   const navIndexOf = (workspacePath: string, runId: string): number =>
-    sessionRows.findIndex(
-      (row) => row.workspacePath === workspacePath && row.runId === runId
-    )
+    navIndexByKey.get(`${workspacePath}\u0000${runId}`) ?? -1
 
   return (
     <div
@@ -484,9 +491,9 @@ export function ChatList({
                                     workspacePath={workspace.path}
                                     active={parentOpen}
                                     focused={parentFocused}
-                                    onSelect={() => onSelectRun(workspace.path, run.runId)}
-                                    onRename={(goal) => onRenameRun(workspace.path, run.runId, goal)}
-                                    onDelete={() => onDeleteRun(workspace.path, run.runId)}
+                                    onSelectRun={onSelectRun}
+                                    onRenameRun={onRenameRun}
+                                    onDeleteRun={onDeleteRun}
                                     tabIndex={
                                       parentNavIndex >= 0 ? tabIndexFor(parentNavIndex) : undefined
                                     }

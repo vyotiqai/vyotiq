@@ -16,8 +16,6 @@ import type { ChatStreamController } from '@renderer/lib/hooks/createChatStreamC
 import { Composer } from './components/composer'
 import { useChatLiveItems, useGitRevision, useHasChatItems } from './components/ChatStreamLeaves'
 import { useGitChrome } from './components/GitChrome'
-import { ChatStartWork } from './components/ChatStartWork'
-import { formatStartWorkDraft, formatStartWorkLabel } from './utils/chatStartWork'
 import { RunSessionProvider } from './RunSessionContext'
 import { MessageList } from './components/MessageList'
 import { AgentInstancePane } from './components/AgentInstancePane'
@@ -237,20 +235,6 @@ export function SessionChatColumn({
   const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
   const [gitRevision, bumpGitRevision] = useGitRevision(workspacePath, running, liveItems)
   const gitChrome = useGitChrome(workspacePath, gitRevision, Boolean(workspacePath))
-  const startWork = useMemo(() => {
-    if (!onComposerDraftChange || !gitChrome.ready) return null
-    const status = gitChrome.status
-    if (status == null || status.fileCount <= 0) return null
-    const label = formatStartWorkLabel(status.files, status.fileCount)
-    const draft = formatStartWorkDraft(status.files, status.fileCount)
-    if (!label || !draft) return null
-    return { label, draft }
-  }, [gitChrome.ready, gitChrome.status, onComposerDraftChange])
-  const fillStartWorkDraft = useCallback(() => {
-    if (!startWork) return
-    onComposerDraftChange?.(startWork.draft)
-  }, [onComposerDraftChange, startWork])
-  const showStartWork = startWork != null && !hasItems && !transcriptLoading
 
   const {
     editingUserMessageIndex,
@@ -458,14 +442,6 @@ export function SessionChatColumn({
                   inert={editing ? true : undefined}
                   aria-hidden={editing || undefined}
                 >
-                  {showStartWork && startWork ? (
-                    <ChatStartWork
-                      align="start"
-                      className="px-4"
-                      label={startWork.label}
-                      onFill={fillStartWorkDraft}
-                    />
-                  ) : null}
                   <MemoComposer
                     key={`composer:${surfaceKey}`}
                     {...composerProps}

@@ -8,7 +8,6 @@ import {
   DockTabBar,
   type DockTabItem
 } from '@renderer/features/chat/components/DockTabBar'
-import { AgentSessionBar } from '@renderer/features/chat/components/AgentSessionBar'
 import { TerminalSessionBar } from '@renderer/features/chat/components/TerminalSessionBar'
 import type { PtySessionInfo } from '@shared/ipc'
 
@@ -80,26 +79,6 @@ describe('middle-click tab close', () => {
     expect(event.defaultPrevented).toBe(true)
   })
 
-  it('closes a closable agent session tab but not the new-chat tab', () => {
-    const onClose = vi.fn()
-    render(
-      <AgentSessionBar
-        sessions={[
-          { id: 'run-1', title: 'Working chat', closable: true },
-          { id: null, title: 'New chat', closable: false }
-        ]}
-        activeId="run-1"
-        onSelect={() => {}}
-        onClose={onClose}
-        onCreate={() => {}}
-      />
-    )
-    auxClick(tabShell('Working chat'), 1)
-    expect(onClose).toHaveBeenCalledWith('run-1')
-    auxClick(tabShell('New chat'), 1)
-    expect(onClose).toHaveBeenCalledTimes(1)
-  })
-
   it('kills a terminal session tab on middle-click', () => {
     const onKill = vi.fn()
     const session: PtySessionInfo = {
@@ -122,32 +101,5 @@ describe('middle-click tab close', () => {
     )
     auxClick(tabShell('cmd'), 1)
     expect(onKill).toHaveBeenCalledWith('sess-1')
-  })
-})
-
-describe('agent session running indicator', () => {
-  it('marks a running session tab with the pulsing status dot', () => {
-    render(
-      <AgentSessionBar
-        sessions={[
-          { id: 'run-1', title: 'Refactoring auth', closable: true, running: true },
-          { id: 'run-2', title: 'Idle chat', closable: true },
-          { id: null, title: 'New chat', closable: false }
-        ]}
-        activeId="run-1"
-        onSelect={() => {}}
-        onClose={() => {}}
-        onCreate={() => {}}
-      />
-    )
-    const runningTab = screen.getByRole('tab', { name: /refactoring auth/i })
-    const dot = runningTab.querySelector('span.bg-fg')
-    expect(dot?.className).toMatch(/motion-safe:animate-pulse/)
-    expect(dot?.getAttribute('title')).toBe('Running')
-    expect(dot?.textContent).toContain('Running')
-
-    const idleTab = screen.getByRole('tab', { name: /idle chat/i })
-    expect(idleTab.querySelector('span.bg-fg')).toBeNull()
-    expect(screen.getByRole('tab', { name: /new chat/i }).querySelector('span.bg-fg')).toBeNull()
   })
 })
