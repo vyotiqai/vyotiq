@@ -164,6 +164,29 @@ export function ProviderKeyAccordion({
                       onCommit={ollamaUrl.onCommit}
                     />
                   ) : null}
+                  {id === 'opencode' ? (
+                    <div className="flex flex-col gap-1">
+                      <p className="m-0 text-xs leading-snug text-secondary">
+                        OpenCode Go is a $10/month subscription. Subscribe, then paste the API key shown in the console.
+                      </p>
+                      <div className="flex flex-wrap items-center gap-3">
+                        <button
+                          type="button"
+                          className="text-xs text-secondary underline hover:text-fg-strong"
+                          onClick={() => window.vyotiq.shellOpenExternal('https://opencode.ai/go')}
+                        >
+                          Subscribe — $10/mo
+                        </button>
+                        <button
+                          type="button"
+                          className="text-xs text-secondary underline hover:text-fg-strong"
+                          onClick={() => window.vyotiq.shellOpenExternal('https://opencode.ai/auth')}
+                        >
+                          Get API key
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
                   <Input
                     id="apikey"
                     className="w-full"

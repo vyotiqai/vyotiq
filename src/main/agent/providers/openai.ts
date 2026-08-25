@@ -1280,6 +1280,13 @@ export function buildOpenAiCompatBody(
     } else if (providerId === 'mistral') {
       // Mistral docs: reasoning_effort on chat completions (ThinkChunk in content).
       body.reasoning_effort = normalizeEffortForMistral(effort)
+    } else if (providerId === 'opencode') {
+      // Go's chat/completions mount is a generic OpenAI-compatible gateway:
+      // widest-overlap reasoning_effort (+ include_reasoning), same as custom.
+      body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(effort, 'xai')
+      if (req.thinking.display !== 'omitted') {
+        body.include_reasoning = true
+      }
     }
   } else if (req.thinking?.enabled === false && providerId === 'ollama') {
     const gptOss = isOllamaGptOssModel(req.model)

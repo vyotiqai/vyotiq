@@ -9,6 +9,7 @@ import {
   type ThinkingMode
 } from '../ipc/schemas/providers'
 import { normalizeModelIdForHeuristics } from './serviceTier'
+import { opencodeGoTransportFor } from './opencodeGoModels'
 
 export {
   ThinkingApiSchema,
@@ -279,6 +280,10 @@ export function modelSupportsThinking(id: string, providerId?: ProviderId): bool
     case 'xai':
     case undefined:
       return sharedThinkingModelMatch(id)
+    case 'opencode':
+      // The models.dev `opencode-go` registry marks every Go model
+      // reasoning-capable (`reasoning: true`, all 29 entries).
+      return true
     default: {
       const _exhaustive: never = providerId
       void _exhaustive
@@ -310,6 +315,13 @@ export function thinkingApiFor(
     case 'ollama':
     case 'custom':
       return 'chat_completions'
+    case 'opencode': {
+      // Each Go model uses the thinking surface of its routed endpoint.
+      const transport = opencodeGoTransportFor(id)
+      if (transport === 'responses') return 'responses'
+      if (transport === 'messages') return 'messages'
+      return 'chat_completions'
+    }
     default: {
       const _exhaustive: never = providerId
       void _exhaustive

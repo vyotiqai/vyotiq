@@ -136,6 +136,10 @@ const LANDING_YAML_KEYS = [
   'order',
   'type',
   'audience',
+  // Parsed so Word-flattened leftovers do not glue onto audience; never emitted.
+  'owner',
+  'sources',
+  'lastVerified',
   'related'
 ]
 
@@ -187,7 +191,8 @@ function wrapLandingInline(text) {
     'openrouter',
     'xai',
     'mistral',
-    'custom'
+    'custom',
+    'opencode'
   ])
   let next = String(text ?? '').replace(/[\u00a0\u200b]/g, ' ').replace(/\s+/g, ' ').trim()
   next = next.replaceAll(
@@ -244,7 +249,7 @@ function wrapLandingInline(text) {
   next = next.replace(/\bcircuit_open\b/g, 'Temporarily paused')
   if (providerIds.has(next)) return `\`${next}\``
   next = next.replace(
-    /(?<!`)\b(openai|anthropic|gemini|ollama|deepseek|groq|openrouter|xai|mistral)\b(?!`)/g,
+    /(?<!`)\b(openai|anthropic|gemini|ollama|deepseek|groq|openrouter|xai|mistral|opencode)\b(?!`)/g,
     '`$1`'
   )
   const emDash = next.match(/^([A-Za-z][A-Za-z0-9_]*)( — [\s\S]+)$/)

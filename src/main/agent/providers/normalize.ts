@@ -9,6 +9,10 @@ import {
   OLLAMA_THINKING_EFFORTS
 } from '../../../shared/reasoning'
 import { inferSupportedServiceTiers } from '../../../shared/domain/serviceTier'
+import {
+  opencodeGoTransportFor,
+  opencodeGoEffortsFor
+} from '../../../shared/domain/opencodeGoModels'
 
 const NON_CHAT =
   /embed|embedding|tts|whisper|dall-e|dalle|imagen|veo|imagine|moderation|transcribe|realtime|audio|video|coding\.|computer-use/i
@@ -394,6 +398,14 @@ function providerThinkingDefaults(
       supportedThinkingEfforts = ['minimal', 'low', 'medium', 'high', 'xhigh']
       thinkingDefaultEffort = 'high'
       break
+    case 'opencode': {
+      // Effort ladder follows each model's routed endpoint protocol.
+      const transport = opencodeGoTransportFor(id)
+      thinkingMode = 'effort'
+      thinkingCanDisable = true
+      supportedThinkingEfforts = opencodeGoEffortsFor(transport)
+      break
+    }
     default:
       thinkingMode = 'effort'
   }

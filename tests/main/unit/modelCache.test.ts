@@ -50,7 +50,7 @@ describe('modelCache disk', () => {
     const firstSavedAt = JSON.parse(readFileSync(disk, 'utf8')).entries[deepseek].savedAt as number
     // Force an older stamp so a refresh would be observable.
     const raw = JSON.parse(readFileSync(disk, 'utf8')) as {
-      version: 2
+      version: 3
       entries: Record<string, { models: ModelInfo[]; savedAt: number }>
     }
     raw.entries[deepseek]!.savedAt = firstSavedAt - 60_000
@@ -83,7 +83,7 @@ describe('modelCache disk', () => {
     writeFileSync(
       disk,
       JSON.stringify({
-        version: 2,
+        version: 3,
         entries: {
           [legacyKey]: { models: sample, savedAt: Date.now() }
         }
@@ -112,7 +112,7 @@ describe('modelCache disk', () => {
     writeFileSync(
       disk,
       JSON.stringify({
-        version: 2,
+        version: 3,
         entries: {
           [legacyKey]: { models: legacyModels, savedAt: now - 2_000 },
           [canonicalKey]: { models: canonicalModels, savedAt: now - 1_000 }
@@ -138,7 +138,7 @@ describe('modelCache disk', () => {
     writeFileSync(
       disk,
       JSON.stringify({
-        version: 2,
+        version: 3,
         entries: {
           [freshKey]: { models: sample, savedAt: now },
           [staleKey]: {
@@ -170,6 +170,36 @@ describe('modelCache disk', () => {
             models: [
               {
                 id: 'glm-5.2',
+                inputModalities: ['text'],
+                outputModalities: ['text'],
+                supportsTools: true,
+                supportsVision: false,
+                supportsThinking: false,
+                contextWindow: 128_000
+              }
+            ],
+            savedAt: Date.now()
+          }
+        }
+      })
+    )
+    setModelCacheDiskPathForTests(disk)
+    expect(getCachedModels(key)).toBeNull()
+  })
+
+  it('ignores v2 disk catalogs that hardcoded opencode supportsThinking to false', () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-model-cache-'))
+    const disk = join(dir, 'model-catalog-cache.json')
+    const key = modelCacheKey('opencode', undefined, 'sk-test')
+    writeFileSync(
+      disk,
+      JSON.stringify({
+        version: 2,
+        entries: {
+          [key]: {
+            models: [
+              {
+                id: 'longcat-2.0',
                 inputModalities: ['text'],
                 outputModalities: ['text'],
                 supportsTools: true,

@@ -2,6 +2,11 @@ import type { ModelInfo, ProviderId } from '../ipc/schemas/providers'
 import type { SecretProvider } from '../ipc/types/secrets'
 import { knownContextWindow } from './modelContextWindows'
 import {
+  withOpenCodeGoMeta,
+  opencodeGoEffortsFor,
+  opencodeGoTransportFor
+} from './opencodeGoModels'
+import {
   modelSupportsThinking,
   thinkingApiFor,
   ollamaThinkingHeuristicFields
@@ -23,7 +28,32 @@ const SEED_MODEL_IDS: Record<ProviderId, string[]> = {
   openrouter: ['openrouter/auto'],
   xai: ['grok-4-latest'],
   mistral: ['mistral-large-latest'],
-  custom: ['gpt-oss-120b', 'llama3.2', 'qwen2.5']
+  custom: ['gpt-oss-120b', 'llama3.2', 'qwen2.5'],
+  opencode: [
+    'kimi-k3',
+    'kimi-k2.7-code',
+    'kimi-k2.6',
+    'glm-5.3',
+    'glm-5.2',
+    'glm-5.1',
+    'longcat-2.0',
+    'deepseek-v4-pro',
+    'deepseek-v4-flash',
+    'deepseek-v4-flash-vision-exp',
+    'mimo-v2.5',
+    'mimo-v2.5-pro',
+    'hy3',
+    'ox-alpha-free',
+    'grok-4.5',
+    'gpt-5.6-luna',
+    'muse-spark-1.2-contributor',
+    'minimax-m3',
+    'minimax-m2.7',
+    'qwen3.8-max',
+    'qwen3.7-max',
+    'qwen3.7-plus',
+    'qwen3.6-plus'
+  ]
 }
 
 function seedModelInfo(id: string, providerId: ProviderId): ModelInfo {
@@ -34,7 +64,8 @@ function seedModelInfo(id: string, providerId: ProviderId): ModelInfo {
     (providerId === 'ollama' || providerId === 'custom') && supportsThinking
       ? ollamaThinkingHeuristicFields(id)
       : undefined
-  return {
+  const goTransport = providerId === 'opencode' ? opencodeGoTransportFor(id) : undefined
+  const merged = withOpenCodeGoMeta({
     id,
     displayName: id,
     inputModalities: supportsVision ? ['text', 'image'] : ['text'],
@@ -45,9 +76,22 @@ function seedModelInfo(id: string, providerId: ProviderId): ModelInfo {
       providerId === 'ollama' ? /json|qwen|llama|deepseek/i.test(id) : true,
     supportsThinking,
     thinkingApi: supportsThinking ? thinkingApiFor(id, providerId) : undefined,
+    // Registry-derived ladder so seeds match the live catalog UI exactly.
+    ...(goTransport && supportsThinking
+      ? {
+          thinkingMode: 'effort' as const,
+          thinkingCanDisable: true,
+          supportedThinkingEfforts: opencodeGoEffortsFor(goTransport)
+        }
+      : {}),
     ...(ollamaThinking ?? {}),
-    contextWindow: known ?? (providerId === 'ollama' ? 32_768 : 128_000),
+    // Registry values are authoritative for Go — keep the generic known table out of the merge.
+    contextWindow: goTransport ? undefined : known,
     isPlaceholder: true
+  })
+  return {
+    ...merged,
+    contextWindow: merged.contextWindow ?? known ?? (providerId === 'ollama' ? 32_768 : 128_000)
   }
 }
 
@@ -61,7 +105,8 @@ export const PROVIDER_DEFAULTS: ProviderDefault[] = [
   { id: 'openrouter', label: 'OpenRouter', models: SEED_MODEL_IDS.openrouter },
   { id: 'xai', label: 'xAI', models: SEED_MODEL_IDS.xai },
   { id: 'mistral', label: 'Mistral', models: SEED_MODEL_IDS.mistral },
-  { id: 'custom', label: 'Custom OpenAI-compatible', models: SEED_MODEL_IDS.custom }
+  { id: 'custom', label: 'Custom OpenAI-compatible', models: SEED_MODEL_IDS.custom },
+  { id: 'opencode', label: 'OpenCode Go', models: SEED_MODEL_IDS.opencode }
 ]
 
 export function seedModelsFor(provider: ProviderId): ModelInfo[] {

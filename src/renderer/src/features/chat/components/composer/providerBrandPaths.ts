@@ -23,6 +23,8 @@ import Nvidia from '@lobehub/icons/es/Nvidia/components/Mono'
 import { COLOR_PRIMARY as NvidiaColor } from '@lobehub/icons/es/Nvidia/style'
 import Ollama from '@lobehub/icons/es/Ollama/components/Mono'
 import { COLOR_PRIMARY as OllamaColor } from '@lobehub/icons/es/Ollama/style'
+import OpenCode from '@lobehub/icons/es/OpenCode/components/Mono'
+import { COLOR_PRIMARY as OpenCodeColor } from '@lobehub/icons/es/OpenCode/style'
 import OpenAI from '@lobehub/icons/es/OpenAI/components/Mono'
 import { COLOR_PRIMARY as OpenAIColor } from '@lobehub/icons/es/OpenAI/style'
 import OpenRouter from '@lobehub/icons/es/OpenRouter/components/Mono'
@@ -58,6 +60,7 @@ export const PROVIDER_BRAND_DATA = {
   mistral: { Component: Mistral, colorPrimary: MistralColor },
   nvidia: { Component: Nvidia, colorPrimary: NvidiaColor },
   ollama: { Component: Ollama, colorPrimary: OllamaColor },
+  opencode: { Component: OpenCode, colorPrimary: OpenCodeColor },
   openai: { Component: OpenAI, colorPrimary: OpenAIColor },
   openrouter: { Component: OpenRouter, colorPrimary: OpenRouterColor },
   perplexity: { Component: Perplexity, colorPrimary: PerplexityColor },

@@ -51,9 +51,9 @@ Project paths with spaces are fine when using prebuilds; if a source rebuild fai
 2. `pnpm dev` → pick a workspace → send a message.
 3. Confirm tool rows (`read` / `search` / `memory_*` / …), streaming text, and Stop cancels the run.
 
-## Providers (10)
+## Providers (11)
 
-OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI · Mistral · Custom (OpenAI-compatible)
+OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI · Mistral · OpenCode Go · Custom (OpenAI-compatible)
 
 - **Ollama:** Local daemon by default (no key). Saving an Ollama API key automatically uses Ollama Cloud (`https://ollama.com`).
 - **Custom:** Any OpenAI-compatible `/v1` host (Cerebras, Fireworks, Together, vLLM, …). Set the base URL in Settings; local hosts need no key.

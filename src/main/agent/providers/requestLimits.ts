@@ -8,7 +8,10 @@ const OPENAI_COMPAT_PROVIDERS = new Set<ProviderId>([
   'deepseek',
   'openrouter',
   'ollama',
-  'custom'
+  'custom',
+  // Go's /chat/completions mount is an OpenAI-compat subscription gateway;
+  // registry output ceilings must not be reserved against max_tokens.
+  'opencode'
 ])
 
 /**

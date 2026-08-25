@@ -258,9 +258,10 @@ async function postAnthropicMessages(
   baseHeaders: Record<string, string>,
   betas: string[],
   body: Record<string, unknown>,
-  signal: AbortSignal
+  signal: AbortSignal,
+  messagesUrl = 'https://api.anthropic.com/v1/messages'
 ): Promise<Response> {
-  const url = 'https://api.anthropic.com/v1/messages'
+  const url = messagesUrl
   type Attempt = { headers: Record<string, string>; body: Record<string, unknown> }
   const attempts: Attempt[] = []
   const betaStr = betas.join(',')
@@ -362,6 +363,20 @@ function applySampling(body: Record<string, unknown>, req: ProviderChatRequest):
   if (req.stop && req.stop.length > 0) body.stop_sequences = req.stop.slice(0, 4)
 }
 
+/** OpenAI-compatible-style entry point that posts to a caller-supplied Messages URL. */
+export function streamAnthropicMessages(
+  req: ProviderChatRequest,
+  messagesUrl = 'https://api.anthropic.com/v1/messages'
+): AsyncGenerator<StreamChunk> {
+  // LlmProvider.streamChat is typed with a single argument; anthropic's implementation
+  // accepts an optional messages URL that callers (e.g. OpenCode Go) supply.
+  const stream = anthropicProvider.streamChat as (
+    req: ProviderChatRequest,
+    messagesUrl?: string
+  ) => AsyncGenerator<StreamChunk>
+  return stream(req, messagesUrl)
+}
+
 export const anthropicProvider: LlmProvider = {
   id: 'anthropic',
   async listModels(req: ListModelsRequest): Promise<ModelInfo[]> {
@@ -422,7 +437,10 @@ export const anthropicProvider: LlmProvider = {
     }
     return out
   },
-  async *streamChat(req: ProviderChatRequest): AsyncGenerator<StreamChunk> {
+  async *streamChat(
+    req: ProviderChatRequest,
+    messagesUrl = 'https://api.anthropic.com/v1/messages'
+  ): AsyncGenerator<StreamChunk> {
     if (!req.apiKey) {
       yield { type: 'error', error: 'Anthropic API key not set' }
       return
@@ -518,7 +536,7 @@ export const anthropicProvider: LlmProvider = {
 
     let res: Response
     try {
-      res = await postAnthropicMessages(baseHeaders, betas, body, req.signal)
+      res = await postAnthropicMessages(baseHeaders, betas, body, req.signal, messagesUrl)
     } catch (err) {
       if (req.signal.aborted) throw err
       yield providerFetchFailureChunk('anthropic', err)

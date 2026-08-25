@@ -27,6 +27,7 @@ const BRANDS = [
   ['mistral', 'Mistral'],
   ['nvidia', 'Nvidia'],
   ['ollama', 'Ollama'],
+  ['opencode', 'OpenCode'],
   ['openai', 'OpenAI'],
   ['openrouter', 'OpenRouter'],
   ['perplexity', 'Perplexity'],

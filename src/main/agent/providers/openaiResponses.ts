@@ -259,7 +259,8 @@ function toResponsesTools(
 
 /** Stream chat via OpenAI Responses API for reasoning models. */
 export async function* streamOpenAiResponses(
-  req: ProviderChatRequest
+  req: ProviderChatRequest,
+  responsesUrl = 'https://api.openai.com/v1/responses'
 ): AsyncGenerator<StreamChunk> {
   if (!req.apiKey) {
     yield { type: 'error', error: 'OpenAI API key not set' }
@@ -333,7 +334,7 @@ export async function* streamOpenAiResponses(
   let res: Response
   try {
     res = await fetchWithRetry(
-      'https://api.openai.com/v1/responses',
+      responsesUrl,
       {
         method: 'POST',
         headers: {

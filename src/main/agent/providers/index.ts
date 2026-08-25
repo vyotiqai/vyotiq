@@ -27,6 +27,7 @@ import {
   openrouterProvider,
   xaiProvider
 } from './openai'
+import { opencodeProvider } from './opencode'
 import type { ListModelsRequest, LlmProvider } from './types'
 
 const providers: Record<ProviderId, LlmProvider> = {
@@ -39,12 +40,16 @@ const providers: Record<ProviderId, LlmProvider> = {
   openrouter: openrouterProvider,
   xai: xaiProvider,
   mistral: mistralProvider,
-  custom: customProvider
+  custom: customProvider,
+  opencode: opencodeProvider
 }
 
 export function getProvider(id: ProviderId): LlmProvider {
   return providers[id]
 }
+
+/** Providers whose model catalog endpoint is public (no API key required). */
+export const PUBLIC_CATALOG_PROVIDERS: ReadonlySet<ProviderId> = new Set<ProviderId>(['opencode'])
 
 /** Map catalog failures into provider-aware, actionable warnings. */
 export function catalogWarningMessage(provider: ProviderId, err: unknown): string {
@@ -195,7 +200,12 @@ async function listProviderModelsUncached(
   key: string,
   generation: number
 ): Promise<{ models: ModelInfo[]; warning?: string }> {
-  if (providerNeedsKey(input.provider, input.baseUrl) && !input.apiKey?.trim()) {
+  // OpenCode Go publishes its catalog without auth (verified: GET /v1/models →
+  // HTTP 200 unauthenticated), so fetch it even before a key is saved. Chat
+  // still requires a key via providerNeedsKey/preflight.
+  const catalogNeedsKey =
+    providerNeedsKey(input.provider, input.baseUrl) && !PUBLIC_CATALOG_PROVIDERS.has(input.provider)
+  if (catalogNeedsKey && !input.apiKey?.trim()) {
     const seeds = seedModelsFor(input.provider)
     return {
       models: await applyOllamaSelectedShow(

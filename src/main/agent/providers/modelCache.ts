@@ -13,8 +13,10 @@ type CacheEntry = {
   diskSavedAt: number
 }
 
-/** Bump when catalog semantics change (e.g. Ollama thinking unknown ≠ false). */
-const DISK_CACHE_VERSION = 2 as const
+/** Bump when catalog semantics change (e.g. Ollama thinking unknown ≠ false).
+ *  v3: OpenCode Go rows gained registry context/output/modalities and
+ *  transport-aware thinking fields; v2 rows hardcode supportsThinking:false. */
+const DISK_CACHE_VERSION = 3 as const
 
 type DiskFile = {
   version: typeof DISK_CACHE_VERSION
