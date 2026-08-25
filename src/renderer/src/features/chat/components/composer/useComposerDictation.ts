@@ -7,7 +7,7 @@ import {
   type DictationWaveformStyle,
   type SecretProvider
 } from '@shared/ipc'
-import { DICTATION_LOCAL_CATALOG, isQwen3AsrModelId } from '@shared/dictation'
+import { DICTATION_LOCAL_CATALOG, isQwen3AsrModelId, isQwen3AsrOnnxModelId } from '@shared/dictation'
 import { isEditableShortcutTarget, matchShortcut } from '@renderer/lib/shortcuts'
 import { prefersReducedMotion } from '@renderer/lib/utils/motion'
 import {
@@ -154,7 +154,8 @@ export function formatDictationEngineHint(
       const entry = DICTATION_LOCAL_CATALOG.find((m) => m.id === localModelId)
       return entry ? `Local · ${entry.label}` : 'Local'
     }
-    case 'qwen3-asr': {
+    case 'qwen3-asr':
+    case 'qwen3-asr-onnx': {
       const entry = DICTATION_LOCAL_CATALOG.find((m) => m.id === localModelId)
       return entry ? `Qwen3-ASR · ${entry.label}` : 'Qwen3-ASR'
     }
@@ -177,6 +178,7 @@ function classifyErrorAction(
       return null
     case 'local':
     case 'qwen3-asr':
+    case 'qwen3-asr-onnx':
       return 'voice'
     default: {
       const _exhaustive: never = engine
@@ -268,6 +270,16 @@ async function preflightDictation(
         return {
           ok: false,
           message: 'Select a Qwen3-ASR model in Settings → Voice',
+          settingsSection: 'voice'
+        }
+      }
+      return { ok: true, ctx }
+    }
+    case 'qwen3-asr-onnx': {
+      if (!isQwen3AsrOnnxModelId(ctx.localModelId)) {
+        return {
+          ok: false,
+          message: 'Install a Qwen3-ASR (on-device) model in Settings → Voice',
           settingsSection: 'voice'
         }
       }

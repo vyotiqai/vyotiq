@@ -443,6 +443,96 @@ export function VoiceSection({
           )
         })}
       </SettingsGroup>
+
+      <SettingsGroup title="Qwen3-ASR (on-device)">
+        {QWEN_ONNX_MODELS.map((model) => {
+          const inst = runtime?.installed.find((m) => m.id === model.id)
+          const installed = inst != null
+          const loaded = inst?.loaded === true
+          const inUse = installed && dictation.localModelId === model.id
+          const statusLabel = cardStatusLabel(model.id, runtime)
+          const fieldId = `dictation-${model.id}`
+          return (
+            <SettingsField
+              key={model.id}
+              id={fieldId}
+              title={model.label}
+              hint={`${model.roleLabel} · ${model.language} · ${model.approxDownloadLabel}`}
+              help={`${model.ramHint} Select a model, then record — the app downloads the community ONNX weights on first use.`}
+              wide
+            >
+              <div className="flex w-full flex-col gap-2">
+                <p className="m-0 text-xs text-secondary">
+                  {statusLabel}
+                  {installed && inst.bytesOnDisk > 0
+                    ? ` · ${formatBytes(inst.bytesOnDisk)} on disk`
+                    : ''}
+                  {inUse ? ' · In use' : ''}
+                </p>
+                <VoiceProgressBar status={runtime} modelId={model.id} />
+                {runtime?.phase === 'error' && runtime.activeModelId === model.id && runtime.error ? (
+                  <p className="m-0 text-xs text-danger" role="alert">
+                    {runtime.error}
+                  </p>
+                ) : null}
+                <div className="flex flex-wrap gap-2">
+                  {!installed ? (
+                    <Button
+                      type="button"
+                      variant="subtle"
+                      disabled={form.formLocked || busy || downloading}
+                      onClick={() =>
+                        runModelAction(() => window.vyotiq.dictationInstall({ modelId: model.id }))
+                      }
+                    >
+                      Install {model.label}
+                    </Button>
+                  ) : null}
+                  {installed && !inUse ? (
+                    <Button
+                      type="button"
+                      variant="subtle"
+                      disabled={
+                        form.formLocked ||
+                        busy ||
+                        downloading ||
+                        dictation.engine !== 'qwen3-asr-onnx'
+                      }
+                      onClick={() => patchLocalModelId(model.id)}
+                    >
+                      Use {model.label}
+                    </Button>
+                  ) : null}
+                  {loaded ? (
+                    <Button
+                      type="button"
+                      variant="subtle"
+                      disabled={form.formLocked || busy || downloading}
+                      onClick={() => runModelAction(() => window.vyotiq.dictationUnload())}
+                    >
+                      Unload {model.label}
+                    </Button>
+                  ) : null}
+                  {installed ? (
+                    <Button
+                      type="button"
+                      variant="danger"
+                      disabled={form.formLocked || busy || downloading}
+                      onClick={() =>
+                        runModelAction(() =>
+                          window.vyotiq.dictationDeleteCache({ modelId: model.id })
+                        )
+                      }
+                    >
+                      Delete {model.label} cache
+                    </Button>
+                  ) : null}
+                </div>
+              </div>
+            </SettingsField>
+          )
+        })}
+      </SettingsGroup>
     </SettingsStack>
   )
 }
