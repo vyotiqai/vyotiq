@@ -29,6 +29,8 @@ Windows and Linux use Ctrl; macOS uses ⌘. Shift chords use Ctrl+Shift or ⌘�
 | Dictation | Ctrl+M | ⌘M |
 | Cycle Ask / Plan / Agent | Ctrl+. | ⌘. |
 | Close chat tab | Ctrl+W | ⌘W |
+| Find in files | Ctrl+Shift+F | ⌘⇧F |
+| Command palette | Ctrl+Shift+P | ⌘⇧P |
 
 Cycle mode allows Shift (previous mode).
 

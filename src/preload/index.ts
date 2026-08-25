@@ -15,6 +15,7 @@ import {
   NotificationActionSchema
 } from '../shared/ipc'
 import type { VyotiqApi } from '../shared/vyotiqApi'
+import type { IpcResult } from '../shared/ipc'
 
 export type { HostPlatform, VyotiqApi } from '../shared/vyotiqApi'
 
@@ -36,6 +37,20 @@ const api: VyotiqApi = {
     ipcRenderer.invoke(IPC.workspacesSetSettingsOverride, { path, override }),
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
   setSettings: (partial) => ipcRenderer.invoke(IPC.setSettings, partial),
+  getAccessibilitySupportState: () =>
+    ipcRenderer.invoke(IPC.accessibilitySupportState) as Promise<
+      IpcResult<{ enabled: boolean }>
+    >,
+  onAccessibilitySupportChanged: (
+    listener: (payload: { enabled: boolean }) => void
+  ): (() => void) => {
+    const wrapped = (_event: IpcRendererEvent, payload: { enabled: boolean }): void =>
+      listener(payload)
+    ipcRenderer.on(IPC.accessibilitySupportChanged, wrapped)
+    return () => {
+      ipcRenderer.removeListener(IPC.accessibilitySupportChanged, wrapped)
+    }
+  },
   setSecret: (provider, key) => ipcRenderer.invoke(IPC.setSecret, { provider, key }),
   clearSecret: (provider) => ipcRenderer.invoke(IPC.clearSecret, { provider }),
   secretStatus: () => ipcRenderer.invoke(IPC.secretStatus),
@@ -464,6 +479,7 @@ const api: VyotiqApi = {
   workspaceReadImage: (payload) => ipcRenderer.invoke(IPC.workspaceReadImage, payload),
   workspaceFileList: (payload) => ipcRenderer.invoke(IPC.workspaceFileList, payload),
   workspaceFileRead: (payload) => ipcRenderer.invoke(IPC.workspaceFileRead, payload),
+  workspaceFileStat: (payload) => ipcRenderer.invoke(IPC.workspaceFileStat, payload),
   workspaceFileSave: (payload) => ipcRenderer.invoke(IPC.workspaceFileSave, payload),
   workspaceFileCreate: (payload) => ipcRenderer.invoke(IPC.workspaceFileCreate, payload),
   workspaceFileMove: (payload) => ipcRenderer.invoke(IPC.workspaceFileMove, payload),

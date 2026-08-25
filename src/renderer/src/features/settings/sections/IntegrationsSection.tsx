@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Input, Switch } from '@renderer/lib/ui'
+import { Input } from '@renderer/lib/ui'
 import type { SettingsFormState } from '../hooks/useSettingsForm'
 import { SettingsField, SettingsGroup, SettingsStack } from '../components/SettingsField'
 
@@ -45,25 +45,6 @@ export function IntegrationsSection({ form }: { form: SettingsFormState }) {
                 e.preventDefault()
                 ;(e.target as HTMLInputElement).blur()
               }
-            }}
-          />
-        </SettingsField>
-      </SettingsGroup>
-
-      <SettingsGroup title="Harness">
-        <SettingsField
-          id="harness-rewriter"
-          title="LLM harness proposal rewriter"
-          hint="Experimental. Default off (rule-based notes only)."
-          help="When on, /harness-review may rewrite the proposed default.md body via the configured model. Apply stays human-confirm + vitest gate."
-        >
-          <Switch
-            size="md"
-            checked={form.settings.harnessProposalRewriter ?? false}
-            disabled={form.formLocked}
-            label="LLM harness proposal rewriter"
-            onCheckedChange={(checked) => {
-              void form.runUpdate({ harnessProposalRewriter: checked })
             }}
           />
         </SettingsField>

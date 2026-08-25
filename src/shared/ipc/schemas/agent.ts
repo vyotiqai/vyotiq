@@ -760,6 +760,7 @@ export const ResolveWritesResultSchema = z.object({
   kept: z.array(z.string()),
   discarded: z.array(z.string()),
   skipped: z.array(z.string()),
+  conflicted: z.array(z.string()),
   fullyResolved: z.boolean()
 })
 export type ResolveWritesResult = z.infer<typeof ResolveWritesResultSchema>
@@ -864,6 +865,8 @@ export const RunReceiptSchema = z.object({
   runId: z.string().min(1),
   status: z.enum(['running', 'cancelled', 'error', 'done']),
   step: z.number().int().min(0),
+  /** Longest run of back-to-back failed tool calls in message order (weakness signal). */
+  maxConsecutiveToolFailures: z.number().int().min(0).optional(),
   /** ChatStart invoke that produced this receipt (aligns with status.invokeId). */
   invokeId: z.number().int().min(1).optional(),
   goal: z.string().optional(),

@@ -27,6 +27,7 @@ const VYOTIQ_INVOKE_MAP: Record<
     | 'onNotificationActivate'
     | 'onAppearanceCustomCssChanged'
     | 'onUpdaterStatus'
+    | 'onAccessibilitySupportChanged'
     | 'updateWorkspaceUiStateSync'
     | 'respondWorkspaceEditorFlush'
   >,
@@ -40,6 +41,7 @@ const VYOTIQ_INVOKE_MAP: Record<
   updateWorkspaceUiState: IPC.workspacesUpdateUiState,
   setWorkspaceSettingsOverride: IPC.workspacesSetSettingsOverride,
   getSettings: IPC.getSettings,
+  getAccessibilitySupportState: IPC.accessibilitySupportState,
   setSettings: IPC.setSettings,
   setSecret: IPC.setSecret,
   clearSecret: IPC.clearSecret,
@@ -131,6 +133,7 @@ const VYOTIQ_INVOKE_MAP: Record<
   workspaceReadImage: IPC.workspaceReadImage,
   workspaceFileList: IPC.workspaceFileList,
   workspaceFileRead: IPC.workspaceFileRead,
+  workspaceFileStat: IPC.workspaceFileStat,
   workspaceFileSave: IPC.workspaceFileSave,
   workspaceFileCreate: IPC.workspaceFileCreate,
   workspaceFileMove: IPC.workspaceFileMove,
@@ -234,7 +237,8 @@ const PUSH_CHANNELS = new Set<string>([
   IPC.notificationsChanged,
   IPC.notificationsActivate,
   IPC.appearanceCustomCssChanged,
-  IPC.updaterStatusEvent
+  IPC.updaterStatusEvent,
+  IPC.accessibilitySupportChanged
 ])
 
 const VYOTIQ_SYNC_SEND_MAP: Record<'updateWorkspaceUiStateSync', string> = {
@@ -258,7 +262,8 @@ const VYOTIQ_PUSH_MAP: Record<
   | 'onNotificationsChanged'
   | 'onNotificationActivate'
   | 'onAppearanceCustomCssChanged'
-  | 'onUpdaterStatus',
+  | 'onUpdaterStatus'
+  | 'onAccessibilitySupportChanged',
   string
 > = {
   onChatEvent: IPC.chatEvent,
@@ -277,7 +282,8 @@ const VYOTIQ_PUSH_MAP: Record<
   onNotificationsChanged: IPC.notificationsChanged,
   onNotificationActivate: IPC.notificationsActivate,
   onAppearanceCustomCssChanged: IPC.appearanceCustomCssChanged,
-  onUpdaterStatus: IPC.updaterStatusEvent
+  onUpdaterStatus: IPC.updaterStatusEvent,
+  onAccessibilitySupportChanged: IPC.accessibilitySupportChanged
 }
 
 describe('main/renderer IPC contract', () => {
@@ -287,7 +293,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(177)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(179)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {
@@ -296,7 +302,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(true)
     }
-    expect(Object.keys(VYOTIQ_PUSH_MAP)).toHaveLength(17)
+    expect(Object.keys(VYOTIQ_PUSH_MAP)).toHaveLength(18)
   })
 
   it('accounts for every IPC channel as invoke or push', () => {
@@ -307,9 +313,8 @@ describe('main/renderer IPC contract', () => {
       ...PRELOAD_INTERNAL_INVOKE_CHANNELS,
       ...EVENT_CHANNELS
     ])
-    for (const channel of Object.values(IPC)) {
-      expect(accounted.has(channel)).toBe(true)
-    }
+    const missing = Object.values(IPC).filter((channel) => !accounted.has(channel))
+    expect(missing).toEqual([])
     expect(accounted.size).toBe(Object.values(IPC).length)
   })
 

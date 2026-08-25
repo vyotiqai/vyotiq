@@ -20,7 +20,12 @@ const PARALLEL_SAFE_BUILTIN = new Set([
 ])
 
 /** Single-file writes that may overlap when normalized paths are disjoint. */
-const PARALLEL_MUTATION_BUILTIN = new Set(['edit', 'str_replace'])
+const PARALLEL_MUTATION_BUILTIN = new Set([
+  'edit',
+  'str_replace',
+  'edit_notebook',
+  'memory_write'
+])
 
 /**
  * Tools that skip approval in `mutating` mode.
@@ -71,7 +76,7 @@ export function isParallelSafeTool(name: string): boolean {
   return PARALLEL_SAFE_BUILTIN.has(name)
 }
 
-/** `edit` / `str_replace` only. `multi_edit` and `delete` stay serial. */
+/** `edit` / `str_replace` / `edit_notebook` / `memory_write`. `multi_edit` and `delete` stay serial. */
 export function isParallelMutationTool(name: string): boolean {
   return PARALLEL_MUTATION_BUILTIN.has(name)
 }
@@ -98,10 +103,17 @@ export function stepToolBatchClass(
 
 /**
  * Normalized relative path used to keep same-file mutations serial.
+ * Notebooks use `target_notebook`; others use `path` / `file` / `filepath` / `filename`.
  * Missing/empty path → undefined (caller must run that call as a singleton).
  */
-export function parallelMutationPathKey(args: Record<string, unknown>): string | undefined {
-  const raw = readPathArg(args)
+export function parallelMutationPathKey(
+  args: Record<string, unknown>,
+  name?: string
+): string | undefined {
+  const raw =
+    name === 'edit_notebook' && typeof args.target_notebook === 'string'
+      ? args.target_notebook
+      : readPathArg(args)
   if (!raw) return undefined
   const normalized = raw.replace(/\\/g, '/').replace(/^\.\/+/, '').replace(/\/+$/, '').trim()
   if (!normalized || normalized === '.') return undefined

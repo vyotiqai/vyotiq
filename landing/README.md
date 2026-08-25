@@ -38,7 +38,7 @@ Copy landing/.env.example to landing/.env to override the canonical site URL:
 
 PUBLIC_SITE_URL=https://vyotiq.com
 
-Optional cookieless analytics uses PUBLIC_ANALYTICS_SRC and PUBLIC_ANALYTICS_DOMAIN. Leave both unset to ship no tracker. pnpm landing:dev and pnpm landing:build run bake:landing-release first on the build machine, never in the browser. That fetch needs network. If GitHub is unreachable, bake keeps landing/src/lib/github-release.json instead of hiding the homepage download buttons.
+Optional cookieless analytics uses PUBLIC_ANALYTICS_SRC and PUBLIC_ANALYTICS_DOMAIN. Leave both unset to ship no tracker. pnpm landing:dev and pnpm landing:build run bake:landing-release first on the build machine, never in the browser.
 
 ## Brand sync
 

@@ -688,7 +688,7 @@ describe('settings', () => {
       />
     )
     fireEvent.click(screen.getByRole('button', { name: /^Providers$/i }))
-    expect(screen.getByText(/1\/10 saved/i)).toBeTruthy()
+    expect(screen.getByText(/1\/11 saved/i)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Refresh models' }))
     expect(
       await screen.findByText(/seed models for Ollama.*Cannot reach Ollama/i)
@@ -1627,7 +1627,7 @@ describe('settings', () => {
     ).toBeTruthy()
   })
 
-  it('Integrations section owns GitHub client ID and harness rewriter', () => {
+  it('Integrations section owns GitHub client ID', () => {
     render(
       <SettingsView
         settings={baseSettings}
@@ -1640,7 +1640,6 @@ describe('settings', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: /^Integrations$/i }))
     expect(document.querySelector('[data-settings-field="github-client-id"]')).toBeTruthy()
-    expect(document.querySelector('[data-settings-field="harness-rewriter"]')).toBeTruthy()
   })
 
   it('Shortcuts section lists keyboard chords', () => {

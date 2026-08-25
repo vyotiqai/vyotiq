@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'fs'
+import { readFileSync, statSync, promises as fsp } from 'fs'
 import { extname, join } from 'path'
 import { assertInsideWorkspace } from '../../../shared/workspacePath'
 import {
@@ -35,30 +35,26 @@ function compile(pattern: string, caseSensitive: boolean): RegExp {
   return compileUserRegex(pattern, caseSensitive ? undefined : 'i')
 }
 
+type GrepHitState = { out: string[]; matchCount: number; truncated: boolean }
+
+function shouldSkipGrepFile(file: WalkedFile, includeRegex: RegExp | null): boolean {
+  if (includeRegex && !includeRegex.test(file.rel)) return true
+  if (!TEXT_EXTS.has(extname(file.full).toLowerCase())) return true
+  return false
+}
+
 /**
- * Scan one file for matches. Kept synchronous so both the async tool and the
- * sync test helper share the exact same output format.
+ * Scan one file's text for matches. Shared by the async tool path and the
+ * sync test helper so output format stays identical (`rel:line:…`).
  */
-function grepOneFile(
-  file: WalkedFile,
+function grepFileText(
+  rel: string,
+  text: string,
   regex: RegExp,
   maxResults: number,
   contextLines: number,
-  includeRegex: RegExp | null,
-  state: { out: string[]; matchCount: number; truncated: boolean }
+  state: GrepHitState
 ): void {
-  const { full, rel } = file
-  if (includeRegex && !includeRegex.test(rel)) return
-  if (!TEXT_EXTS.has(extname(full).toLowerCase())) return
-
-  let text: string
-  try {
-    statSync(full)
-    text = readFileSync(full, 'utf8')
-  } catch {
-    return
-  }
-
   if (!regex.test(text)) return
 
   const lines = text.split('\n')
@@ -85,6 +81,45 @@ function grepOneFile(
   }
 }
 
+/** Sync file read — used only by `grepFilesForTest`. */
+function grepOneFile(
+  file: WalkedFile,
+  regex: RegExp,
+  maxResults: number,
+  contextLines: number,
+  includeRegex: RegExp | null,
+  state: GrepHitState
+): void {
+  if (shouldSkipGrepFile(file, includeRegex)) return
+  let text: string
+  try {
+    statSync(file.full)
+    text = readFileSync(file.full, 'utf8')
+  } catch {
+    return
+  }
+  grepFileText(file.rel, text, regex, maxResults, contextLines, state)
+}
+
+async function grepOneFileAsync(
+  file: WalkedFile,
+  regex: RegExp,
+  maxResults: number,
+  contextLines: number,
+  includeRegex: RegExp | null,
+  state: GrepHitState
+): Promise<void> {
+  if (shouldSkipGrepFile(file, includeRegex)) return
+  let text: string
+  try {
+    await fsp.stat(file.full)
+    text = await fsp.readFile(file.full, 'utf8')
+  } catch {
+    return
+  }
+  grepFileText(file.rel, text, regex, maxResults, contextLines, state)
+}
+
 /**
  * Scan the candidate set, yielding to the event loop every `YIELD_EVERY_FILES`.
  */
@@ -104,7 +139,7 @@ async function formatGrepHitsAsync(
       throwIfAborted(signal)
       await yieldToEventLoop()
     }
-    grepOneFile(files[i]!, regex, maxResults, contextLines, includeRegex, state)
+    await grepOneFileAsync(files[i]!, regex, maxResults, contextLines, includeRegex, state)
   }
   return state
 }

@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { GitStatusResult } from '@shared/ipc'
 
-const readGitStatus = vi.hoisted(() =>
-  vi.fn(async (_cwd: string): Promise<GitStatusResult> => ({
+function okMainStatus(): GitStatusResult {
+  return {
     kind: 'ok',
     status: {
       branch: 'main',
@@ -14,11 +14,19 @@ const readGitStatus = vi.hoisted(() =>
       hasRemote: false,
       hasCommits: true
     }
-  }))
-)
+  }
+}
+
+const readGitStatus = vi.hoisted(() => vi.fn())
+
+function resetReadGitStatusMock(): void {
+  readGitStatus.mockReset()
+  readGitStatus.mockResolvedValue(okMainStatus())
+}
 
 vi.mock('@main/git/git', () => ({
-  readGitStatus
+  readGitStatus,
+  readGitDiff: vi.fn()
 }))
 
 import {
@@ -26,11 +34,12 @@ import {
   readGitStatusCached,
   resetGitStatusCacheForTests
 } from '@main/git/gitStatusCache'
+import { toolGitStatusAsync } from '@main/agent/tools/gitHelpers'
 
 describe('gitStatusCache', () => {
   beforeEach(() => {
     resetGitStatusCacheForTests()
-    readGitStatus.mockClear()
+    resetReadGitStatusMock()
   })
 
   afterEach(() => {
@@ -105,6 +114,31 @@ describe('gitStatusCache', () => {
       kind: 'ok',
       status: { branch: 'fresh' }
     })
+    expect(readGitStatus).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('toolGitStatusAsync cache coalesce', () => {
+  beforeEach(() => {
+    resetGitStatusCacheForTests()
+    resetReadGitStatusMock()
+  })
+
+  afterEach(() => {
+    resetGitStatusCacheForTests()
+  })
+
+  it('coalesces overlapping agent git_status and refetches after invalidate', async () => {
+    const [a, b] = await Promise.all([
+      toolGitStatusAsync('C:/repo'),
+      toolGitStatusAsync('C:/repo')
+    ])
+    expect(a).toContain('branch: main')
+    expect(b).toContain('branch: main')
+    expect(readGitStatus).toHaveBeenCalledTimes(1)
+
+    invalidateGitStatusCache('C:/repo')
+    await toolGitStatusAsync('C:/repo')
     expect(readGitStatus).toHaveBeenCalledTimes(2)
   })
 })

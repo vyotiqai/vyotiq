@@ -210,7 +210,7 @@ describe('write checkpoints', () => {
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('changed\n')
   })
 
-  it('auto-keeps prior unresolved checkpoint when a newer write turn finalizes', () => {
+  it('keeps prior unresolved checkpoint revertible when a newer write turn finalizes', () => {
     const first = beginWriteCheckpoint(runDir, workspace)
     first.recordPrior('a.txt', 'write')
     writeFileSync(join(workspace, 'a.txt'), 'turn1\n', 'utf8')
@@ -224,19 +224,32 @@ describe('write checkpoints', () => {
     const meta2 = finalizeWriteCheckpoint(runDir)
     expect(meta2).not.toBeNull()
 
-    // Prior turn is no longer actionable.
+    // Older turn stays unresolved (still revertible) — not auto-kept.
+    expect(getWriteCheckpointMeta(runDir, meta1!.id)?.resolved).not.toBe(true)
+
+    // Per-file discard resolves the path within its own (older) checkpoint even
+    // without an explicit checkpointId.
+    const discarded = resolveWrites(runDir, workspace, {
+      action: 'discard',
+      paths: ['a.txt']
+    })
+    expect(discarded.discarded).toEqual(['a.txt'])
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('hello\n')
+    // The newer turn is untouched.
+    expect(readFileSync(join(workspace, 'b.txt'), 'utf8')).toBe('turn2\n')
+
+    // Explicitly targeting the older checkpoint now throws (already resolved).
     expect(() =>
       resolveWrites(runDir, workspace, { checkpointId: meta1!.id, action: 'discard' })
     ).toThrow(/already resolved/)
-    // Disk from turn 1 remains (auto-keep, not discard).
-    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('turn1\n')
-    // Latest turn still actionable.
-    const discarded = resolveWrites(runDir, workspace, {
+
+    // Latest turn still actionable on its own.
+    const discarded2 = resolveWrites(runDir, workspace, {
       checkpointId: meta2!.id,
       action: 'discard',
       paths: ['b.txt']
     })
-    expect(discarded.discarded).toEqual(['b.txt'])
+    expect(discarded2.discarded).toEqual(['b.txt'])
     expect(readFileSync(join(workspace, 'b.txt'), 'utf8')).toBe('seed\n')
   })
 
@@ -257,8 +270,9 @@ describe('write checkpoints', () => {
     const meta2 = finalizeWriteCheckpoint(runDir)
     expect(meta2?.anchorUserMessageIndex).toBe(2)
 
-    // Auto-keep made meta1 non-undoable via resolveWrites; rewind still restores.
-    expect(getWriteCheckpointMeta(runDir, meta1!.id)?.resolved).toBe(true)
+    // meta1 stays unresolved (not auto-kept) so it remains individually revertible;
+    // rewind still restores it when asked.
+    expect(getWriteCheckpointMeta(runDir, meta1!.id)?.resolved).not.toBe(true)
 
     const result = rewindWritesFrom(runDir, workspace, 2)
     expect(result.checkpointIds).toEqual([meta2!.id])
@@ -420,5 +434,84 @@ describe('write checkpoints', () => {
     expect(undone.restored.sort()).toEqual(['tree/sub/nested.txt', 'tree/top.txt'])
     expect(readFileSync(join(workspace, 'tree', 'top.txt'), 'utf8')).toBe('t')
     expect(readFileSync(join(workspace, 'tree', 'sub', 'nested.txt'), 'utf8')).toBe('n')
+  })
+
+  it('restores a modified file that was deleted after the agent write', () => {
+    const cp = beginWriteCheckpoint(runDir, workspace)
+    cp.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'agent\n', 'utf8')
+    const meta = finalizeWriteCheckpoint(runDir)
+
+    // Simulate the user (or another tool) deleting the modified file.
+    rmSync(join(workspace, 'a.txt'), { force: true })
+    expect(existsSync(join(workspace, 'a.txt'))).toBe(false)
+
+    const undone = undoWrites(runDir, workspace, meta!.id)
+    expect(undone.restored).toEqual(['a.txt'])
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('hello\n')
+  })
+
+  it('resolves a path within its own (newest) checkpoint without a checkpointId', () => {
+    const first = beginWriteCheckpoint(runDir, workspace)
+    first.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 't1\n', 'utf8')
+    const meta1 = finalizeWriteCheckpoint(runDir)
+
+    const second = beginWriteCheckpoint(runDir, workspace)
+    second.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 't2\n', 'utf8')
+    const meta2 = finalizeWriteCheckpoint(runDir)
+
+    // Discard the newest change (turn 2) without an explicit checkpointId.
+    const discarded = resolveWrites(runDir, workspace, { action: 'discard', paths: ['a.txt'] })
+    expect(discarded.discarded).toEqual(['a.txt'])
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('t1\n')
+
+    // Turn 1 checkpoint is still unresolved and individually revertible.
+    expect(getWriteCheckpointMeta(runDir, meta1!.id)?.resolved).not.toBe(true)
+
+    // Discard again resolves the older turn, restoring the original content.
+    const discarded2 = resolveWrites(runDir, workspace, { action: 'discard', paths: ['a.txt'] })
+    expect(discarded2.discarded).toEqual(['a.txt'])
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('hello\n')
+  })
+
+  it('reports a conflict instead of a false discard when the user edited a created file', () => {
+    const cp = beginWriteCheckpoint(runDir, workspace)
+    cp.recordPrior('new.txt', 'write')
+    writeFileSync(join(workspace, 'new.txt'), 'agent\n', 'utf8')
+    const meta = finalizeWriteCheckpoint(runDir)
+    // User edits the agent-created file after the write.
+    writeFileSync(join(workspace, 'new.txt'), 'user-edit\n', 'utf8')
+
+    const result = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'discard',
+      paths: ['new.txt']
+    })
+    expect(result.discarded).toEqual([])
+    expect(result.conflicted).toEqual(['new.txt'])
+    // The file is preserved with the user's content.
+    expect(readFileSync(join(workspace, 'new.txt'), 'utf8')).toBe('user-edit\n')
+    // The checkpoint stays unresolved so the UI can surface the conflict.
+    const disk = getWriteCheckpointMeta(runDir, meta!.id)
+    expect(disk?.files.find((f) => f.path === 'new.txt')?.resolved).toBeUndefined()
+  })
+
+  it('reports a conflict for a modified file edited after the agent write', () => {
+    const cp = beginWriteCheckpoint(runDir, workspace)
+    cp.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'agent\n', 'utf8')
+    const meta = finalizeWriteCheckpoint(runDir)
+    writeFileSync(join(workspace, 'a.txt'), 'user-edit\n', 'utf8')
+
+    const result = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'discard',
+      paths: ['a.txt']
+    })
+    expect(result.discarded).toEqual([])
+    expect(result.conflicted).toEqual(['a.txt'])
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('user-edit\n')
   })
 })

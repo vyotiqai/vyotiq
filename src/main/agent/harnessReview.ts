@@ -156,6 +156,10 @@ export function summarizeWeaknesses(
   for (const { runId, receipt } of receipts) {
     toolCallTotal += receipt.toolStats.totalCalls
     toolFailTotal += receipt.toolStats.failed
+    if ((receipt.maxConsecutiveToolFailures ?? 0) >= 3) {
+      highFailureStreaks++
+      highFailureRuns.add(runId)
+    }
     for (const cluster of receipt.failureClusters) {
       failureCounts.set(cluster.key, (failureCounts.get(cluster.key) ?? 0) + cluster.count)
       addRunSource(failureRuns, cluster.key, runId)
@@ -275,7 +279,7 @@ export function summarizeWeaknesses(
 export function buildProposalMarkdown(
   workspacePath: string,
   summary: WeaknessSummary,
-  opts?: { llmAssisted?: boolean; proposedBody?: string }
+  opts?: { proposedBody?: string }
 ): string {
   let proposedBody: string
   if (opts?.proposedBody?.trim()) {
@@ -310,9 +314,8 @@ export function buildProposalMarkdown(
         ])
 
   const evalList = HARNESS_EVAL_TESTS.map((f) => `- \`${f}\``).join('\n')
-  const disclaimer = opts?.llmAssisted
-    ? '_LLM-assisted proposal — human confirm still required; not unsupervised Self-Harness._'
-    : '_Heuristic receipt mining + human confirm — not unsupervised Self-Harness._'
+  const disclaimer =
+    '_Heuristic receipt mining + human confirm — not unsupervised Self-Harness._'
 
   const canApply = workspaceHasEditableHarness(workspacePath)
   const howToApply = canApply
@@ -376,7 +379,7 @@ export function buildProposalMarkdown(
 export function writeHarnessProposal(
   workspacePath: string,
   summary: WeaknessSummary,
-  opts?: { llmAssisted?: boolean; proposedBody?: string }
+  opts?: { proposedBody?: string }
 ): { proposalPath: string; relativePath: string } {
   const dirAbs = resolveInsideWorkspace(workspacePath, HARNESS_PROPOSALS_REL)
   mkdirSync(dirAbs, { recursive: true })
@@ -393,10 +396,7 @@ export function writeHarnessProposal(
 /** Mine receipts and write a workspace-visible proposal markdown. */
 export async function runHarnessReview(
   workspacePath: string,
-  opts?: { limit?: number; rewriteBody?: (input: {
-    currentHarness: string
-    summary: WeaknessSummary
-  }) => Promise<{ body: string; usedLlm: boolean }> }
+  opts?: { limit?: number }
 ): Promise<HarnessReviewResult> {
   const receipts = collectRecentReceipts(workspacePath, opts)
   const summary = summarizeWeaknesses(receipts)
@@ -423,28 +423,7 @@ export async function runHarnessReview(
     )
   }
 
-  let proposedBody: string | undefined
-  let llmAssisted = false
-  const hasHarnessOwnedEvidence = summary.evidenceBuckets.some(
-    (bucket) => bucket.component === 'system_prompt'
-  )
-  if (opts?.rewriteBody && hasHarnessOwnedEvidence && workspaceHasEditableHarness(workspacePath)) {
-    try {
-      const current = readFileSync(workspaceHarnessPath(workspacePath), 'utf8')
-      const rewritten = await opts.rewriteBody({ currentHarness: current, summary })
-      if (rewritten.usedLlm && rewritten.body.trim()) {
-        proposedBody = rewritten.body.trim()
-        llmAssisted = true
-      }
-    } catch {
-      // fall back to rule-based body
-    }
-  }
-
-  const written = writeHarnessProposal(workspacePath, summary, {
-    llmAssisted,
-    proposedBody
-  })
+  const written = writeHarnessProposal(workspacePath, summary)
   return {
     proposalPath: written.proposalPath,
     relativePath: written.relativePath,

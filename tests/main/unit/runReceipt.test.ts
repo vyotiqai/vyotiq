@@ -113,7 +113,53 @@ describe('runReceipt', () => {
       outputTokens: 20
     })
     expect(receipt.compactionCount).toBe(1)
+    expect(receipt.maxConsecutiveToolFailures).toBe(1)
     expect(RunReceiptSchema.parse(receipt).runId).toBe('run-1')
+  })
+
+  it('measures the longest consecutive failed-tool-call run', () => {
+    const messages: ChatMessage[] = [
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          { id: 'f1', name: 'edit', arguments: '{"path":"a.ts"}' },
+          { id: 'f2', name: 'edit', arguments: '{"path":"b.ts"}' },
+          { id: 'f3', name: 'edit', arguments: '{"path":"c.ts"}' },
+          { id: 'r1', name: 'read', arguments: '{"path":"d.ts"}' }
+        ]
+      },
+      { role: 'tool', toolCallId: 'f1', toolName: 'edit', ok: false, content: 'boom 1' },
+      { role: 'tool', toolCallId: 'f2', toolName: 'edit', ok: false, content: 'boom 2' },
+      { role: 'tool', toolCallId: 'f3', toolName: 'edit', ok: false, content: 'boom 3' },
+      { role: 'tool', toolCallId: 'r1', toolName: 'read', ok: true, content: 'ok' }
+    ]
+    const receipt = buildRunReceipt({
+      runId: 'streaks',
+      status: { status: 'error', step: 2, updatedAt: new Date().toISOString() },
+      messages,
+      events: [],
+      contract: ''
+    })
+    expect(receipt.toolStats.failed).toBe(3)
+    expect(receipt.maxConsecutiveToolFailures).toBe(3)
+
+    // No failures → field omitted entirely (additive optional).
+    const clean = buildRunReceipt({
+      runId: 'clean',
+      status: { status: 'done', step: 1, updatedAt: new Date().toISOString() },
+      messages: [
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 'r2', name: 'read', arguments: '{"path":"a.ts"}' }]
+        },
+        { role: 'tool', toolCallId: 'r2', toolName: 'read', ok: true, content: 'ok' }
+      ],
+      events: [],
+      contract: ''
+    })
+    expect(clean).not.toHaveProperty('maxConsecutiveToolFailures')
   })
 
   it('extracts wroteFiles from CheckpointFileEntry objects', () => {

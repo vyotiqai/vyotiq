@@ -42,6 +42,7 @@ import {
   type WorkspaceFileReadResult,
   type WorkspaceFileSaveRequest,
   type WorkspaceFileSaveResult,
+  type WorkspaceFileStatResult,
   type WorkspaceFileVersion
 } from '../../shared/ipc'
 import {
@@ -824,27 +825,26 @@ async function listWorkspaceDirectoryUnsafe(
   }
   const root = workspaceRoot(request.workspacePath)
   const relDir = normalizeRelativePath(request.path, true)
-  const prepared = entries
-    .map((entry) => {
-      const childRel = relDir ? `${relDir}/${entry.name}` : entry.name
-      const childPath = displayPath(root, childRel)
-      try {
-        return { entry, stats: lstatSync(childPath) }
-      } catch {
-        return { entry, stats: null }
-      }
-    })
-    .sort((a, b) => {
-      const aDir = a.stats?.isDirectory() ? 0 : a.stats?.isSymbolicLink() ? 1 : 2
-      const bDir = b.stats?.isDirectory() ? 0 : b.stats?.isSymbolicLink() ? 1 : 2
-      return aDir - bDir || a.entry.name.localeCompare(b.entry.name)
-    })
-  const start = Math.min(request.offset, prepared.length)
-  const page = prepared.slice(start, start + Math.min(request.limit, WORKSPACE_FILE_LIST_PAGE_MAX))
+  // Sort from Dirent types (free) instead of stat-ing all 10k entries; only
+  // the returned page (≤200) pays an lstat for size/mtime details.
+  const dirRank = (entry: Dirent): number =>
+    entry.isDirectory() ? 0 : entry.isSymbolicLink() ? 1 : 2
+  const ordered = [...entries].sort(
+    (a, b) => dirRank(a) - dirRank(b) || a.name.localeCompare(b.name)
+  )
+  const start = Math.min(request.offset, ordered.length)
+  const page = ordered.slice(start, start + Math.min(request.limit, WORKSPACE_FILE_LIST_PAGE_MAX))
   return {
     path: relDir,
-    entries: page.map(({ entry, stats }) => {
+    entries: page.map((entry) => {
       const childRel = relDir ? `${relDir}/${entry.name}` : entry.name
+      const childPath = displayPath(root, childRel)
+      let stats: Stats | null = null
+      try {
+        stats = lstatSync(childPath)
+      } catch {
+        stats = null
+      }
       return stats
         ? entryFor(request.workspacePath, childRel, entry.name, stats)
         : {
@@ -857,8 +857,8 @@ async function listWorkspaceDirectoryUnsafe(
             symlinkTargetInsideWorkspace: null
           }
     }),
-    total: prepared.length,
-    nextOffset: start + page.length < prepared.length ? start + page.length : null,
+    total: ordered.length,
+    nextOffset: start + page.length < ordered.length ? start + page.length : null,
     truncated
   }
 }
@@ -931,6 +931,35 @@ export async function readWorkspaceFile(
   return withWorkspaceMutation(workspacePath, normalized, () =>
     readWorkspaceFileUnsafe(workspacePath, normalized)
   )
+}
+
+/** Stat-only change probe for open editor tabs — same path safety as reads, zero content IO. */
+export async function statWorkspaceFile(
+  workspacePath: string,
+  relPath: string
+): Promise<WorkspaceFileStatResult> {
+  const normalized = normalizeRelativePath(relPath)
+  return withWorkspaceMutation(workspacePath, normalized, async () => {
+    assertNoSymlinkPath(workspacePath, normalized)
+    let found: ExistingPath | null = null
+    try {
+      found = existingPath(workspacePath, normalized)
+    } catch (err) {
+      if (!(err instanceof WorkspaceFileError) || err.code !== 'FILE_NOT_FOUND') throw err
+    }
+    if (!found) {
+      return { path: normalized, exists: false, size: 0, mtimeMs: 0 }
+    }
+    if (found.link && !found.linkInside) {
+      throw new WorkspaceFileError('SYMLINK_ESCAPE', `Path escapes workspace: ${normalized}`)
+    }
+    return {
+      path: normalized,
+      exists: true,
+      size: found.stats.size,
+      mtimeMs: found.stats.mtimeMs
+    }
+  })
 }
 
 /** Bound-handle attachment read — revalidates the opened object against a symlink swap. */

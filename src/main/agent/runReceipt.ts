@@ -79,6 +79,24 @@ function failureClustersFromMessages(
     .slice(0, cap)
 }
 
+/** Longest run of back-to-back failed tool calls in message order (weakness signal). */
+export function maxConsecutiveToolFailuresFromMessages(
+  messages: readonly SeedToolMessage[]
+): number {
+  let max = 0
+  let current = 0
+  for (const msg of messages) {
+    if (msg.role !== 'tool' || !msg.toolName) continue
+    if (msg.ok === false) {
+      current++
+      if (current > max) max = current
+    } else {
+      current = 0
+    }
+  }
+  return max
+}
+
 function unreadEditPathsFromMessages(messages: readonly SeedToolMessage[]): string[] {
   const known = new Set<string>()
   const unread = new Set<string>()
@@ -258,6 +276,9 @@ export function buildRunReceipt(input: {
     compactionCount: compactionCountFromEvents(input.events),
     toolStats: toolStatsFromMessages(input.messages),
     failureClusters: failureClustersFromMessages(input.messages),
+    ...(maxConsecutiveToolFailuresFromMessages(input.messages) > 0
+      ? { maxConsecutiveToolFailures: maxConsecutiveToolFailuresFromMessages(input.messages) }
+      : {}),
     unreadEditPaths: unreadEditPathsFromMessages(input.messages),
     wroteFiles: wroteFilesFromEvents(input.events),
     diagnostics: countDiagnosticsCalls(input.messages),

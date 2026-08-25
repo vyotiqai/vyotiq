@@ -109,6 +109,7 @@ import {
   startWatch
 } from '../workspaceMutationWatch'
 import { resolveInsideWorkspace } from '@main/workspace/safePath'
+import { withWorkspaceMutation } from '@main/workspace/mutationQueue'
 import { clearWorkspaceSnapshotCache } from '../context/workspaceSnapshot'
 import { commitPaths } from '@main/git/git'
 import {
@@ -463,14 +464,14 @@ function formatMcpPromptLines(entries: Awaited<ReturnType<typeof listMcpPrompts>
 }
 
 export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
-  read: (workspace, args, signal) => {
+  read: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const path = requirePathArg('read', args)
     const offset = typeof args.offset === 'number' ? args.offset : undefined
     const limit = typeof args.limit === 'number' ? args.limit : undefined
     const startLine = typeof args.startLine === 'number' ? args.startLine : undefined
     const endLine = typeof args.endLine === 'number' ? args.endLine : undefined
-    const content = toolRead(workspace, path, { offset, limit, startLine, endLine })
+    const content = await toolRead(workspace, path, { offset, limit, startLine, endLine })
     throwIfAborted(signal)
     return toolOk('read', path, content)
   },
@@ -1425,6 +1426,11 @@ export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       const blockUntilMs = sessionId
         ? resolveSessionPollBlockUntilMs(args)
         : resolveNewCommandBlockUntilMs(args)
+      // A foreground new command (no explicit ceiling / no background request)
+      // should wait for completion and be hard-killed at the ceiling if it
+      // never finishes, rather than silently left running. Explicit windows or
+      // polls keep the soft-timeout (leave-running, pollable session) behavior.
+      const defaultWait = args.timeoutMs == null && args.block_until_ms == null
       const watchCtx: CheckpointWatchContext = {
         runDir: context.runDir,
         skipWriteCheckpoint: context.skipWriteCheckpoint
@@ -1451,6 +1457,7 @@ export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
               shell,
               pattern,
               blockUntilMs,
+              killOnTimeout: defaultWait,
               onOutput
             })
           )
@@ -1492,11 +1499,14 @@ export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const content = toolMemoryRead(workspace, path)
     return toolOk('memory_read', path, content)
   },
-  memory_write: (workspace, args, signal) => {
+  memory_write: async (workspace, args, signal) => {
     throwIfAborted(signal)
     const path = requirePathArg('memory_write', args)
     const contents = readString(args, 'contents') ?? readString(args, 'content') ?? ''
-    const content = toolMemoryWrite(workspace, path, contents)
+    const relUnderWorkspace = `.vyotiq/memory/${path.trim().replace(/^[/\\]+/, '').replace(/\\/g, '/')}`
+    const content = await withWorkspaceMutation(workspace, relUnderWorkspace, () =>
+      toolMemoryWrite(workspace, path, contents)
+    )
     clearWorkspaceSnapshotCache(workspace)
     return toolOk('memory_write', path, content)
   },

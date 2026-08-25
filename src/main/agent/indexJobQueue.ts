@@ -308,6 +308,10 @@ export function indexJobQueuePendingCountForTests(): number {
   return pending.length
 }
 
+export function indexJobQueuePendingInteractiveCountForTests(): number {
+  return pending.filter((job) => job.priority === 'interactive').length
+}
+
 export function indexJobQueueIsBusyForTests(): boolean {
   return pumping || pending.length > 0 || activeJob != null
 }

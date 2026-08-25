@@ -30,9 +30,36 @@ export type WorkspaceDiff = {
   deleted: string[]
 }
 
-const SNAPSHOT_BLOB_MAX_BYTES = 1_048_576
+const SNAPSHOT_BLOB_FILE_MAX_BYTES = 8 * 1024 * 1024
+/** Only small, source-sized files get revert blobs; everything else is hash-only. */
+/** Bound total snapshot disk usage so a huge opaque run can't fill the drive. */
+const SNAPSHOT_BLOB_TOTAL_MAX_BYTES = 64 * 1024 * 1024
+/** Files above this size are never content-hashed — mtime/size diff only. */
+const SNAPSHOT_HASH_MAX_BYTES = 32 * 1024 * 1024
 const SNAPSHOT_FILE_CAP = 5_000
 const YIELD_EVERY_DIRS = 64
+
+/**
+ * Dependency/cache directories that dominate snapshot cost (the venv-heavy
+ * "~17 GB disk I/O per terminal-heavy run" case) but whose mutations the
+ * write-checkpoint system cannot meaningfully restore anyway. Layered on top
+ * of the shared walk ignore list without changing agent search semantics.
+ */
+const SNAPSHOT_SKIP_DIRS = new Set([
+  '.venv',
+  'venv',
+  'env',
+  '.tox',
+  'site-packages',
+  '__pycache__',
+  '.gradle',
+  '.m2',
+  '.cargo',
+  '.cache',
+  '.nox',
+  '.pixi',
+  'target'
+])
 
 function normalizeRel(rel: string): string {
   return rel.replace(/\\/g, '/')
@@ -70,6 +97,7 @@ async function walkWorkspace(
     for (const entry of entries) {
       if (out.length >= cap) break
       if (IGNORED_DIRS.has(entry.name)) continue
+      if (SNAPSHOT_SKIP_DIRS.has(entry.name)) continue
       if (entry.isSymbolicLink()) continue
       const full = join(next.dir, entry.name)
       const childRel = normalizeRel(next.relDir ? `${next.relDir}/${entry.name}` : entry.name)
@@ -107,19 +135,27 @@ export async function startWatch(workspaceRoot: string): Promise<WorkspaceSnapsh
   await mkdir(blobDir, { recursive: true })
   const files = new Map<string, WorkspaceFileFingerprint>()
   const walked = await walkWorkspace(workspaceRoot, SNAPSHOT_FILE_CAP)
+  let totalBlobBytes = 0
   for (const fp of walked) {
     let blobPath: string | undefined
     let contentHash: string | undefined
-    if (fp.size <= SNAPSHOT_BLOB_MAX_BYTES) {
+    if (
+      fp.size <= SNAPSHOT_BLOB_FILE_MAX_BYTES &&
+      totalBlobBytes + fp.size <= SNAPSHOT_BLOB_TOTAL_MAX_BYTES
+    ) {
       try {
         const dest = join(blobDir, ...fp.rel.split('/'))
         await mkdir(dirname(dest), { recursive: true })
         await copyFile(fp.full, dest)
         blobPath = dest
+        totalBlobBytes += fp.size
       } catch {
         blobPath = undefined
       }
-    } else {
+    }
+    // Larger files are hash-only (change detected, not directly revertible);
+    // anything beyond SNAPSHOT_HASH_MAX_BYTES is mtime/size diffed only.
+    if (!blobPath && fp.size <= SNAPSHOT_HASH_MAX_BYTES) {
       contentHash = await hashFile(fp.full)
     }
     files.set(fp.rel, { ...fp, blobPath, contentHash })
@@ -144,7 +180,7 @@ export async function diffSince(snapshot: WorkspaceSnapshot): Promise<WorkspaceD
       modified.push(rel)
       continue
     }
-    if (before.contentHash && now.size <= SNAPSHOT_BLOB_MAX_BYTES) {
+    if (before.contentHash && now.size <= SNAPSHOT_HASH_MAX_BYTES) {
       // Only re-hash files small enough to hash cheaply. Larger files are only
       // reported as modified when mtime/size changes — bounding per-diff CPU/IO
       // during the agent loop (content-hash edits without size change are rare).

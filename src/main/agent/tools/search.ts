@@ -1,5 +1,5 @@
 import { assertInsideWorkspace } from '../../../shared/workspacePath'
-import { readFileSync, statSync } from 'fs'
+import { promises as fsp } from 'fs'
 import { extname } from 'path'
 import {
   collectWorkspaceFilesPage,
@@ -20,16 +20,16 @@ export const SEARCH_SCAN_CAP = 5000
 export const SEARCH_MAX_FILE_BYTES = 256 * 1024
 export const SEARCH_DEFAULT_MAX_RESULTS = 40
 
-function contentHit(
+async function contentHit(
   file: string,
   rel: string,
   q: string,
   pattern: RegExp,
   regex: boolean
-): string | null {
+): Promise<string | null> {
   try {
-    statSync(file)
-    const text = readFileSync(file, 'utf8')
+    await fsp.stat(file)
+    const text = await fsp.readFile(file, 'utf8')
     if (regex) {
       const match = pattern.exec(text)
       if (!match) return null
@@ -132,7 +132,7 @@ export async function toolSearch(
       const { full: file, rel } = contentFiles[i]!
       const ext = extname(file).toLowerCase()
       if (!TEXT_EXTS.has(ext)) continue
-      const hit = contentHit(file, rel, q, pattern, regex)
+      const hit = await contentHit(file, rel, q, pattern, regex)
       if (hit) hits.push(hit)
     }
   }

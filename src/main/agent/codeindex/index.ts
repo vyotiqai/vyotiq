@@ -1,3 +1,4 @@
+import { existsSync } from 'fs'
 import { isAbortError } from '../../../shared/errors'
 import {
   createLocalHashEmbedder,
@@ -725,13 +726,39 @@ export async function ensureCodeIndexSynced(
 }
 
 function schedulePostSearchWarm(workspaceRoot: string): void {
-  // Full code+sparse warm after this interactive job releases the queue.
+  // Full code+sparse warm after search returns (queued or ready-utility fast path).
   // Dynamic import avoids a load-time cycle (workspaceIndex imports this module).
   void import('../workspaceIndex')
     .then((m) => {
       m.warmWorkspaceIndexes(workspaceRoot)
     })
     .catch(() => undefined)
+}
+
+type CodebaseSearchResult = {
+  hits: CodebaseSearchHit[]
+  status: IndexStatus
+  formatted: string
+  queryModelId: string
+}
+
+function formatCodebaseSearchResult(
+  hits: CodebaseSearchHit[],
+  status: IndexStatus,
+  queryModelId: string
+): CodebaseSearchResult {
+  const formatted =
+    hits.length > 0
+      ? formatSearchHits(hits)
+      : status.ready
+        ? formatSearchHits(hits)
+        : [
+            formatSearchHits(hits),
+            'Codebase index is still warming — results may be incomplete. Retry shortly or pass refresh:true.'
+          ]
+            .filter(Boolean)
+            .join('\n')
+  return { hits, status, formatted, queryModelId }
 }
 
 export async function runCodebaseSearch(
@@ -745,122 +772,147 @@ export async function runCodebaseSearch(
     embedderId?: CodeIndexEmbedderId
     refresh?: boolean
   } = {}
-): Promise<{
-  hits: CodebaseSearchHit[]
-  status: IndexStatus
-  formatted: string
-  queryModelId: string
-}> {
+): Promise<CodebaseSearchResult> {
   const ws = await import('../workspaceIndex')
   const searchSignal = ws.workspaceIndexSearchSignal(workspaceRoot, opts.signal)
   let skipWarm = false
-  const result = await enqueueIndexJob({
-    priority: 'interactive',
-    signal: searchSignal,
-    run: () =>
-      withWorkspaceLock(workspaceRoot, async () => {
-        const disabledResult = {
-          hits: [] as CodebaseSearchHit[],
-          status: {
-            ready: false,
-            modelId: '',
-            fileCount: 0,
-            chunkCount: 0,
-            lastIndexedAt: null
-          },
-          formatted: 'Codebase index is disabled (Settings → Indexing).',
-          queryModelId: ''
-        }
-        // refresh=true forces a sync in this slot. Otherwise serve whatever is
-        // already indexed and enqueue a warm sync after we release the queue —
-        // a cold full sync inside interactive would starve every later search.
-        if (opts.refresh === true) {
-          const { entry, disabled } = await ensureCodeIndexSyncedUnlocked(workspaceRoot, {
-            signal: searchSignal,
-            preferOllama: opts.preferOllama,
-            embedderId: opts.embedderId,
-            force: true
-          })
-          if (disabled || !entry) {
-            skipWarm = true
-            return disabledResult
-          }
-          const { hits, status } = await runCodeIndexSearch(workspaceRoot, entry, query, {
-            limit: opts.limit,
-            mode: opts.mode,
-            signal: searchSignal
-          })
-          return {
-            hits,
-            status,
-            formatted: formatSearchHits(hits),
-            queryModelId: entry.embedder.modelId
-          }
-        }
 
-        const settings = readCodeIndexSettings()
-        if (!settings.enabled && opts.preferOllama == null && opts.embedderId == null) {
-          skipWarm = true
-          return disabledResult
-        }
-
-        const { embedder } = await resolveEmbedder({
-          preferOllama: opts.preferOllama,
-          embedderId: opts.embedderId
-        })
-        const useUtility = canUseIndexSyncUtility()
-        const entry = useUtility
-          ? makeCacheEntry(workspaceRoot, embedder, null, embedder.modelId)
-          : await getOrOpenCodeIndex(workspaceRoot, {
-              embedder,
+  const runQueuedInteractiveSearch = (): Promise<CodebaseSearchResult> =>
+    enqueueIndexJob({
+      priority: 'interactive',
+      signal: searchSignal,
+      run: () =>
+        withWorkspaceLock(workspaceRoot, async () => {
+          const disabledResult: CodebaseSearchResult = {
+            hits: [],
+            status: {
+              ready: false,
+              modelId: '',
+              fileCount: 0,
+              chunkCount: 0,
+              lastIndexedAt: null
+            },
+            formatted: 'Codebase index is disabled (Settings → Indexing).',
+            queryModelId: ''
+          }
+          // refresh=true forces a sync in this slot. Otherwise serve whatever is
+          // already indexed and enqueue a warm sync after we release the queue —
+          // a cold full sync inside interactive would starve every later search.
+          if (opts.refresh === true) {
+            const { entry, disabled } = await ensureCodeIndexSyncedUnlocked(workspaceRoot, {
               signal: searchSignal,
               preferOllama: opts.preferOllama,
-              embedderId: opts.embedderId
+              embedderId: opts.embedderId,
+              force: true
             })
-        if (useUtility) closeCodeIndex(workspaceRoot)
-
-        const { hits, status } = await runCodeIndexSearch(workspaceRoot, entry, query, {
-          limit: opts.limit,
-          mode: opts.mode,
-          signal: searchSignal
-        })
-        if (!status.ready && status.chunkCount === 0) {
-          const { sync, entry: syncedEntry } = await ensureCodeIndexSyncedUnlocked(workspaceRoot, {
-            signal: searchSignal,
-            preferOllama: opts.preferOllama,
-            embedderId: opts.embedderId,
-            force: true
-          })
-          if (sync) {
-            const searchEntry = syncedEntry ?? entry
-            const retried = await runCodeIndexSearch(workspaceRoot, searchEntry, query, {
+            if (disabled || !entry) {
+              skipWarm = true
+              return disabledResult
+            }
+            const { hits, status } = await runCodeIndexSearch(workspaceRoot, entry, query, {
               limit: opts.limit,
               mode: opts.mode,
               signal: searchSignal
             })
             return {
-              hits: retried.hits,
-              status: retried.status,
-              formatted: formatSearchHits(retried.hits),
-              queryModelId: searchEntry.embedder.modelId
+              hits,
+              status,
+              formatted: formatSearchHits(hits),
+              queryModelId: entry.embedder.modelId
             }
           }
-        }
 
-        const formatted =
-          hits.length > 0
-            ? formatSearchHits(hits)
-            : status.ready
-              ? formatSearchHits(hits)
-              : [
-                  formatSearchHits(hits),
-                  'Codebase index is still warming — results may be incomplete. Retry shortly or pass refresh:true.'
-                ]
-                  .filter(Boolean)
-                  .join('\n')
-        return { hits, status, formatted, queryModelId: entry.embedder.modelId }
+          const settings = readCodeIndexSettings()
+          if (!settings.enabled && opts.preferOllama == null && opts.embedderId == null) {
+            skipWarm = true
+            return disabledResult
+          }
+
+          const { embedder } = await resolveEmbedder({
+            preferOllama: opts.preferOllama,
+            embedderId: opts.embedderId
+          })
+          const useUtility = canUseIndexSyncUtility()
+          const entry = useUtility
+            ? makeCacheEntry(workspaceRoot, embedder, null, embedder.modelId)
+            : await getOrOpenCodeIndex(workspaceRoot, {
+                embedder,
+                signal: searchSignal,
+                preferOllama: opts.preferOllama,
+                embedderId: opts.embedderId
+              })
+          if (useUtility) closeCodeIndex(workspaceRoot)
+
+          const { hits, status } = await runCodeIndexSearch(workspaceRoot, entry, query, {
+            limit: opts.limit,
+            mode: opts.mode,
+            signal: searchSignal
+          })
+          if (!status.ready && status.chunkCount === 0) {
+            const { sync, entry: syncedEntry } = await ensureCodeIndexSyncedUnlocked(workspaceRoot, {
+              signal: searchSignal,
+              preferOllama: opts.preferOllama,
+              embedderId: opts.embedderId,
+              force: true
+            })
+            if (sync) {
+              const searchEntry = syncedEntry ?? entry
+              const retried = await runCodeIndexSearch(workspaceRoot, searchEntry, query, {
+                limit: opts.limit,
+                mode: opts.mode,
+                signal: searchSignal
+              })
+              return {
+                hits: retried.hits,
+                status: retried.status,
+                formatted: formatSearchHits(retried.hits),
+                queryModelId: searchEntry.embedder.modelId
+              }
+            }
+          }
+
+          return formatCodebaseSearchResult(hits, status, entry.embedder.modelId)
+        })
+    })
+
+  const indexingOn =
+    readCodeIndexSettings().enabled || opts.preferOllama != null || opts.embedderId != null
+  // Ready utility search is a READ_OPS handle off the write chain; skip the
+  // global concurrency-1 slot so parallel codebase_search calls can overlap.
+  // refresh / disabled / missing DB / empty cold store stay queued.
+  if (
+    opts.refresh !== true &&
+    indexingOn &&
+    canUseIndexSearchUtility() &&
+    existsSync(codeindexDbPath(workspaceRoot))
+  ) {
+    try {
+      const { embedder } = await resolveEmbedder({
+        preferOllama: opts.preferOllama,
+        embedderId: opts.embedderId
       })
-  })
+      const entry = makeCacheEntry(workspaceRoot, embedder, null, embedder.modelId)
+      closeCodeIndex(workspaceRoot)
+      const { hits, status } = await runCodeIndexSearch(workspaceRoot, entry, query, {
+        limit: opts.limit,
+        mode: opts.mode,
+        signal: searchSignal
+      })
+      if (status.ready || status.chunkCount !== 0) {
+        const result = formatCodebaseSearchResult(hits, status, entry.embedder.modelId)
+        if (!skipWarm) {
+          schedulePostSearchWarm(workspaceRoot)
+        }
+        return result
+      }
+      // !ready && chunkCount === 0: cold sync stays inside enqueueIndexJob.
+    } catch (err) {
+      if (isAbortError(err) || searchSignal.aborted) throw err
+      // busy/locked/missing store — same queued path as today, no extra retry.
+    }
+  }
+
+  const result = await runQueuedInteractiveSearch()
   if (!skipWarm) {
     schedulePostSearchWarm(workspaceRoot)
   }

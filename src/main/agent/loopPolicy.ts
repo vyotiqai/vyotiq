@@ -6,9 +6,6 @@ import { readPathArg } from './tools/argAccess'
 import { searchHitPathsFromResult } from './tools/search'
 import { loopHintForRetainedDecisions } from './context/retainedDecisions'
 
-/** Stop the run after this many consecutive steps with a failed tool call. */
-export const MAX_CONSECUTIVE_TOOL_FAILURE_STEPS = 8
-
 /** Stop the run when the same tool call(s) (name + args) repeats this many steps in a row. */
 export const MAX_IDENTICAL_STEP_STREAK = 3
 

@@ -416,15 +416,17 @@ export const SettingsSchema = z.object({
   /** Shell used by the terminal tool. `auto` prefers PowerShell on Windows when available. */
   terminalShell: TerminalShellSchema.default('auto'),
   /**
+   * Terminal screen-reader mode. `auto` follows OS assistive-tech detection
+   * (Chromium reports it via accessibility-support-changed); `on`/`off` force
+   * it. xterm screenReaderMode maintains a parallel DOM per write, so forcing
+   * it on without a screen reader costs significant CPU on chatty output.
+   */
+  terminalScreenReader: z.enum(['auto', 'on', 'off']).default('auto'),
+  /**
    * Optional override for the diagnostics tool typecheck command.
    * Empty = auto-detect from package.json scripts / tsc.
    */
   diagnosticsCommand: z.string().default(''),
-  /**
-   * When true, `/harness-review` may one-shot rewrite the proposed harness body via the LLM.
-   * Default off — rule-based notes-append only. Apply stays human-gated.
-   */
-  harnessProposalRewriter: z.boolean().default(false),
   /**
    * When true, the agent may call `switch_mode` mid-run as the task phase changes.
    * When false, only the user changes mode (composer picker or slash). Default off.
@@ -510,8 +512,8 @@ export const DEFAULT_SETTINGS: Settings = {
   browserDomainAllowlist: [],
   toolApprovalOnboardingDone: false,
   terminalShell: 'auto',
+  terminalScreenReader: 'auto',
   diagnosticsCommand: '',
-  harnessProposalRewriter: false,
   autoModeSwitch: false,
   autoResumeInterruptedRuns: false,
   autoCheckUpdates: true,

@@ -44,9 +44,14 @@ describe('statusWriteQueue', () => {
     vi.useRealTimers()
   })
 
-  it('flushes step ticks immediately', async () => {
+  it('coalesces step ticks behind the debounce window', async () => {
     enqueueStatusPatch(dir, { step: 1, status: 'running' })
     enqueueStatusPatch(dir, { step: 2, status: 'running' })
+    const beforeFlush = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as {
+      step: number
+    }
+    expect(beforeFlush.step).toBe(0)
+
     await flushStatusWrites(dir)
 
     const afterSteps = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as { step: number }

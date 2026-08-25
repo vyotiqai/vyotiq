@@ -193,7 +193,7 @@ describe('ipc schemas', () => {
     ]) {
       expect(ProviderIdSchema.parse(id)).toBe(id)
     }
-    expect(PROVIDER_DEFAULTS).toHaveLength(10)
+    expect(PROVIDER_DEFAULTS).toHaveLength(11)
     expect(ListModelsRequestSchema.parse({ provider: 'groq' }).provider).toBe('groq')
     expect(ListModelsRequestSchema.parse({ provider: 'ollama', model: 'glm-5.2' }).model).toBe(
       'glm-5.2'
@@ -201,8 +201,8 @@ describe('ipc schemas', () => {
     expect(IPC.listModels).toBe('models:list')
   })
 
-  it('lists ten secret providers including ollama and custom', () => {
-    expect(SECRET_PROVIDERS).toHaveLength(10)
+  it('lists eleven secret providers including ollama and custom', () => {
+    expect(SECRET_PROVIDERS).toHaveLength(11)
     expect(SECRET_PROVIDERS).toContain('ollama')
     expect(SECRET_PROVIDERS).toContain('custom')
     expect(SecretProviderSchema.safeParse('ollama').success).toBe(true)

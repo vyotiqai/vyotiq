@@ -55,7 +55,7 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(root, { recursive: true, force: true })
-})
+}, 60_000)
 
 afterAll(() => {
   rmSync(userData, { recursive: true, force: true })

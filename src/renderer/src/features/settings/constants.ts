@@ -39,6 +39,12 @@ export const TERMINAL_SHELL_OPTIONS = [
   { value: 'bash', label: 'Bash' }
 ]
 
+export const TERMINAL_SCREEN_READER_OPTIONS = [
+  { value: 'auto', label: 'Auto (detect screen reader)' },
+  { value: 'on', label: 'Always on' },
+  { value: 'off', label: 'Off' }
+]
+
 export const ACTIVE_PROVIDER_OPTIONS = PROVIDER_DEFAULTS.map((p) => ({
   value: p.id,
   label: p.label

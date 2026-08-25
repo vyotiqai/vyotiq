@@ -1,13 +1,5 @@
 import { resolveInsideWorkspace } from '../../workspace/safePath'
-import {
-  closeSync,
-  existsSync,
-  openSync,
-  readFileSync,
-  readSync,
-  readdirSync,
-  statSync
-} from 'fs'
+import { existsSync, readdirSync, statSync, promises as fsp } from 'fs'
 import { basename, dirname, join } from 'path'
 
 const SUGGEST_CAP = 8
@@ -20,8 +12,8 @@ export type ReadOptions = {
   endLine?: number
 }
 
-function listDirectoryEntries(resolved: string, relPath: string): string {
-  const entries = readdirSync(resolved, { withFileTypes: true }).map(
+async function listDirectoryEntries(resolved: string, relPath: string): Promise<string> {
+  const entries = (await fsp.readdir(resolved, { withFileTypes: true })).map(
     (e) => `${e.isDirectory() ? '[dir]' : '[file]'} ${e.name}`
   )
   return [
@@ -114,11 +106,11 @@ export function missingPathHint(workspaceRoot: string, relPath: string): string 
   return formatMissingFileHint(workspaceRoot, relPath)
 }
 
-export function toolRead(
+export async function toolRead(
   workspaceRoot: string,
   pathArg: string,
   options: ReadOptions = {}
-): string {
+): Promise<string> {
   const resolved = resolveInsideWorkspace(workspaceRoot, pathArg)
   if (!existsSync(resolved)) {
     throw new Error(formatMissingFileHint(workspaceRoot, pathArg))
@@ -142,32 +134,32 @@ export function toolRead(
     return readByteRange(resolved, pathArg, st.size, offset, limit)
   }
 
-  const buf = readFileSync(resolved)
+  const buf = await fsp.readFile(resolved)
   return decodeTextBuffer(buf, pathArg)
 }
 
 /**
  * Read a byte window without loading the whole file.
  */
-function readByteRange(
+async function readByteRange(
   resolved: string,
   pathArg: string,
   size: number,
   offset: number,
   limit: number | undefined
-): string {
+): Promise<string> {
   if (offset > size) {
     throw new Error(`offset ${offset} is past the end of ${pathArg} (${size} bytes).`)
   }
   const remaining = Math.max(0, size - offset)
   const want = limit === undefined ? remaining : Math.min(Math.max(0, limit), remaining)
   const buf = Buffer.alloc(want)
-  const fd = openSync(resolved, 'r')
+  const fh = await fsp.open(resolved, 'r')
   let read: number
   try {
-    read = want > 0 ? readSync(fd, buf, 0, want, offset) : 0
+    read = want > 0 ? (await fh.read(buf, 0, want, offset)).bytesRead : 0
   } finally {
-    closeSync(fd)
+    await fh.close()
   }
   const slice = buf.subarray(0, read)
   // A window starting mid-file has no BOM to inspect; only offset 0 can be UTF-16.
@@ -215,22 +207,22 @@ function splitCompleteLines(
  * Stream an inclusive, 1-based line range without loading the whole file into a string.
  * The header names the range actually returned.
  */
-function readLineRange(
+async function readLineRange(
   resolved: string,
   pathArg: string,
   size: number,
   options: ReadOptions
-): string {
+): Promise<string> {
   const startRaw = Math.max(1, Math.trunc(options.startLine ?? 1))
   const endRaw =
     options.endLine == null ? Number.POSITIVE_INFINITY : Math.trunc(options.endLine)
   const start = Number.isFinite(endRaw) && endRaw < startRaw ? Math.max(1, endRaw) : startRaw
   const endLimit = Number.isFinite(endRaw) && endRaw < startRaw ? startRaw : endRaw
 
-  const fd = openSync(resolved, 'r')
+  const fh = await fsp.open(resolved, 'r')
   try {
     const peek = Buffer.alloc(Math.min(4, size))
-    const peeked = size > 0 ? readSync(fd, peek, 0, peek.length, 0) : 0
+    const peeked = size > 0 ? (await fh.read(peek, 0, peek.length, 0)).bytesRead : 0
     const { encoding, skip } = detectLineEncoding(peek.subarray(0, peeked))
     const unit = encoding === 'utf8' ? 1 : 2
 
@@ -247,7 +239,7 @@ function readLineRange(
       const aligned = unit === 1 ? want : want - (want % 2)
       if (aligned <= 0) break
       const buf = Buffer.alloc(aligned)
-      const n = readSync(fd, buf, 0, aligned, offset)
+      const n = (await fh.read(buf, 0, aligned, offset)).bytesRead
       if (n <= 0) break
       offset += n
       let chunk = Buffer.concat([leftoverBytes, buf.subarray(0, n)])
@@ -300,6 +292,6 @@ function readLineRange(
     const actualEnd = Math.min(endLimit, total)
     return `--- lines ${start}-${actualEnd} of ${total} ---\n` + collected.join('\n')
   } finally {
-    closeSync(fd)
+    await fh.close()
   }
 }

@@ -11,6 +11,7 @@ import {
   resolveOrtIntraOpThreads
 } from '../agent/codeindex/ortSessionOptions'
 import { dictationCatalogEntry } from '../../shared/dictation'
+import type { Tensor as OrtTensor } from 'onnxruntime-node'
 import type { Qwen3AsrOnnxConfig, Qwen3AsrRunners } from './qwen3AsrOrt'
 
 function fp16ToFp32(value: number): number {
@@ -45,10 +46,11 @@ function loadEmbeddings(dir: string, vocabSize: number, hiddenSize: number): Flo
 
 function pickOutput(
   results: Record<string, { data: Float32Array; dims: number[] }>,
-  patterns: RegExp[]
+  patterns: RegExp | RegExp[]
 ): { data: Float32Array; dims: number[] } {
+  const list = Array.isArray(patterns) ? patterns : [patterns]
   for (const key of Object.keys(results)) {
-    if (patterns.some((p) => p.test(key))) return results[key]!
+    if (list.some((p) => p.test(key))) return results[key]!
   }
   const first = Object.values(results)[0]
   if (!first) throw new Error('Qwen3-ASR ONNX graph returned no outputs')
@@ -73,7 +75,7 @@ export async function createQwen3AsrOnnxRunnersFromOrt(modelDir: string): Promis
 async function buildRunners(modelDir: string): Promise<Qwen3AsrRunners> {
   const intra = resolveOrtIntraOpThreads(undefined, 'utility')
   applyOrtThreadEnvHints(intra)
-  const ort = (await import('onnxruntime-web')) as typeof import('onnxruntime-web')
+  const ort = (await import('onnxruntime-node')) as typeof import('onnxruntime-node')
   const transformers = await import('@huggingface/transformers')
 
   const configPath = join(modelDir, 'config.json')
@@ -103,7 +105,7 @@ async function buildRunners(modelDir: string): Promise<Qwen3AsrRunners> {
     async encodeMel(mel) {
       const t = new ort.Tensor('float32', mel, [1, config.mel.n_mels, mel.length / config.mel.n_mels])
       const res = await encoder.run({ mel: t })
-      const out = pickOutput(res as Record<string, { data: Float32Array; dims: number[] }>, /audio_features|logits/)
+      const out = pickOutput(res as unknown as Record<string, { data: Float32Array; dims: number[] }>, /audio_features|logits/)
       return out.data
     },
     async decoderInit(inputIds, audioFeatures, audioOffset) {
@@ -114,7 +116,7 @@ async function buildRunners(modelDir: string): Promise<Qwen3AsrRunners> {
         audio_offset: new ort.Tensor('int64', toBigInt64([audioOffset]), [])
       }
       const res = await decoderInit.run(feeds)
-      const r = res as Record<string, { data: Float32Array; dims: number[] }>
+      const r = res as unknown as Record<string, { data: Float32Array; dims: number[] }>
       return {
         logits: pickOutput(r, /logits/).data,
         pastKeys: res[pickOutputName(res, /past_keys|key/i)]!,
@@ -125,11 +127,11 @@ async function buildRunners(modelDir: string): Promise<Qwen3AsrRunners> {
       const feeds = {
         input_embeds: new ort.Tensor('float32', inputEmbeds, [1, 1, hidden]),
         position_ids: new ort.Tensor('int64', toBigInt64([positionId]), [1, 1]),
-        past_keys: pastKeys as unknown as ort.Tensor,
-        past_values: pastValues as unknown as ort.Tensor
+        past_keys: pastKeys as unknown as OrtTensor,
+        past_values: pastValues as unknown as OrtTensor
       }
       const res = await decoderStep.run(feeds)
-      const r = res as Record<string, { data: Float32Array; dims: number[] }>
+      const r = res as unknown as Record<string, { data: Float32Array; dims: number[] }>
       return {
         logits: pickOutput(r, /logits/).data,
         pastKeys: res[pickOutputName(res, /past_keys|key/i)]!,

@@ -56,9 +56,11 @@ function isTerminalPatch(patch: Partial<RunStatus>): boolean {
   return Boolean(patch.status && TERMINAL_STATUSES.has(patch.status))
 }
 
-/** Step ticks / mode switches are forensic checkpoints — do not debounce behind events.jsonl. */
+/** Terminal statuses / mode switches are forensic checkpoints — do not debounce behind events.jsonl.
+ * Step ticks deliberately DO coalesce: each step previously paid a full
+ * read-modify-write of status.json; the canonical transcript lives elsewhere. */
 function shouldFlushImmediately(patch: Partial<RunStatus>): boolean {
-  return isTerminalPatch(patch) || patch.step !== undefined || patch.mode !== undefined
+  return isTerminalPatch(patch) || patch.mode !== undefined
 }
 
 /** Meaningful enough to refresh the run list (not every step tick). */
@@ -181,9 +183,9 @@ function ensurePending(dir: string): Pending {
 }
 
 /**
- * Merge a status patch. Non-step fields coalesce for STATUS_FLUSH_MS; step ticks
- * and terminal statuses flush immediately. List-runs cache invalidates only on
- * meaningful changes.
+ * Merge a status patch. Non-step fields coalesce for STATUS_FLUSH_MS; terminal
+ * statuses and mode switches flush immediately. List-runs cache invalidates
+ * only on meaningful changes.
  */
 export function enqueueStatusPatch(dir: string, patch: Partial<RunStatus>): void {
   const entry = ensurePending(dir)

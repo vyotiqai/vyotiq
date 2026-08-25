@@ -107,10 +107,10 @@ describe('tools', () => {
     ).rejects.toMatchObject({ name: 'AbortError' })
   })
 
-  it('reads files inside workspace', () => {
+  it('reads files inside workspace', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'vyotiq-read-'))
     writeFileSync(join(dir, 'r.txt'), 'payload', 'utf8')
-    expect(toolRead(dir, 'r.txt')).toBe('payload')
+    expect(await toolRead(dir, 'r.txt')).toBe('payload')
   })
 
   it('reads and writes memory tools', async () => {

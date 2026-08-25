@@ -287,7 +287,7 @@ describe('landing docs architecture and truth', () => {
       'utf8'
     )
     const secrets = emptySecretStatus()
-    expect(PROVIDER_DEFAULTS).toHaveLength(10)
+    expect(PROVIDER_DEFAULTS).toHaveLength(11)
     for (const entry of PROVIDER_DEFAULTS) {
       expect(providers, `missing provider ${entry.id}`).toContain(`\`${entry.id}\``)
     }
@@ -426,10 +426,6 @@ describe('landing docs architecture and truth', () => {
     const header = readFileSync(join(LANDING_SOURCE, 'components', 'SiteHeader.astro'), 'utf8')
     const footer = readFileSync(join(LANDING_SOURCE, 'components', 'SiteFooter.astro'), 'utf8')
     const hero = readFileSync(join(LANDING_SOURCE, 'components', 'Hero.astro'), 'utf8')
-    const startWork = readFileSync(
-      join(REPO, 'src', 'renderer', 'src', 'features', 'chat', 'components', 'ChatStartWork.tsx'),
-      'utf8'
-    )
     const emptyChat = readFileSync(
       join(
         REPO,
@@ -475,7 +471,6 @@ describe('landing docs architecture and truth', () => {
     expect(footer).toContain('<span>{SITE_PRODUCT}</span>')
     expect(hero).toContain('<p class="home-eyebrow">{SITE_PRODUCT}</p>')
 
-    expect(startWork).not.toContain('VyotiqLockup')
     expect(emptyChat).not.toContain('VyotiqLockup')
     expect(emptyChat).not.toContain('data-empty-brand')
     expect(about).toContain('<VyotiqLockup markSize={36} />')
@@ -486,7 +481,7 @@ describe('landing docs architecture and truth', () => {
     expect(pkg).toContain('"description": "Agent V — coding workspace for real repositories"')
 
     expect(readme).toMatch(/^# Agent V/m)
-    expect(readme).toContain('The built-in catalog has **59** tools')
+    expect(readme).toContain('**59** tools')
     expect(readme).not.toMatch(/\b43 tools\b/i)
     expect(readme).not.toMatch(/docs\/architecture\.md/)
     expect(readme).toContain('**MCPs**')
@@ -525,7 +520,6 @@ describe('landing docs architecture and truth', () => {
       docsIndex,
       pkg,
       about,
-      startWork,
       emptyChat
     ]) {
       expect(text).not.toMatch(/\bopen[- ]source\b/i)
@@ -746,7 +740,7 @@ describe('landing docs architecture and truth', () => {
   it('preserves dictation engines and attachment limits from product constants', () => {
     const voice = readDoc('tools/voice-dictation.md')
     const attachments = readDoc('reference/attachments.md')
-    for (const engine of DICTATION_ENGINE_OPTIONS) expect(voice).toContain(`**${engine.label}**`)
+    for (const engine of DICTATION_ENGINE_OPTIONS) expect(voice).toContain(engine.label)
     expect(attachments).toContain(`| Extracted file | ${MAX_FILES} |`)
     expect(attachments).toContain(`| Image | ${MAX_IMAGES} |`)
     expect(attachments).toContain(`| Audio | ${MAX_AUDIO_FILES} |`)

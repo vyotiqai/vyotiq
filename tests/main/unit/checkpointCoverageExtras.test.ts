@@ -219,7 +219,7 @@ describe('workspaceMutationWatch', () => {
     expect(readFileSync(join(workspace, 'm.txt'), 'utf8')).toBe('before\n')
   })
 
-  it('records large modified files as non-undoable when no snapshot blob exists', async () => {
+  it('records mid-size modified files as undoable now that the snapshot blob cap is larger', async () => {
     const largePath = join(workspace, 'big.bin')
     writeFileSync(largePath, Buffer.alloc(1_100_000, 1))
     beginWriteCheckpoint(runDir, workspace)
@@ -231,7 +231,26 @@ describe('workspaceMutationWatch', () => {
     disposeWatch(snap)
     const meta = finalizeWriteCheckpoint(runDir)
     expect(meta!.files).toEqual([
-      expect.objectContaining({ path: 'big.bin', action: 'modified', undoable: false })
+      expect.objectContaining({ path: 'big.bin', action: 'modified', undoable: true })
+    ])
+    // And it actually restores to the prior content.
+    undoWrites(runDir, workspace, meta!.id)
+    expect(readFileSync(largePath).equals(Buffer.alloc(1_100_000, 1))).toBe(true)
+  })
+
+  it('records truly huge modified files as non-undoable (beyond the snapshot blob budget)', async () => {
+    const hugePath = join(workspace, 'huge.bin')
+    writeFileSync(hugePath, Buffer.alloc(33 * 1024 * 1024, 1))
+    beginWriteCheckpoint(runDir, workspace)
+    const snap = await startWatch(workspace)
+    writeFileSync(hugePath, Buffer.alloc(33 * 1024 * 1024, 2))
+    const diff = await diffSince(snap)
+    expect(diff.modified).toContain('huge.bin')
+    applyWatchDiffToCheckpoint(snap, diff, { runDir })
+    disposeWatch(snap)
+    const meta = finalizeWriteCheckpoint(runDir)
+    expect(meta!.files).toEqual([
+      expect.objectContaining({ path: 'huge.bin', action: 'modified', undoable: false })
     ])
   })
 

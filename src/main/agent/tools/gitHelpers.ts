@@ -1,7 +1,8 @@
-import { readGitDiff, readGitStatus } from '../../git/git'
+import { readGitDiff } from '../../git/git'
+import { readGitStatusCached } from '../../git/gitStatusCache'
 
 export async function toolGitStatusAsync(workspace: string): Promise<string> {
-  const result = await readGitStatus(workspace)
+  const result = await readGitStatusCached(workspace)
   if (result.kind === 'unavailable') return result.detail
   if (result.kind === 'not_repo') return 'Not a git repository'
   const status = result.status

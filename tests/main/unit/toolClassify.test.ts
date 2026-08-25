@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { resetMcpSessionsForTests, setMcpReadOnlyHintsForTests } from '@main/agent/mcp'
+import { groupStepToolCalls } from '@main/agent/executeStepTools'
 import {
   isApprovalExemptTool,
   isParallelAwaitTool,
@@ -158,6 +159,48 @@ describe('tool classify', () => {
     expect(isParallelMutationTool('delete')).toBe(false)
     expect(stepToolBatchClass('multi_edit')).toBe('serial')
     expect(stepToolBatchClass('delete')).toBe('serial')
+  })
+
+  it('treats edit_notebook and memory_write as mutation-parallel and gated', () => {
+    expect(isParallelMutationTool('edit_notebook')).toBe(true)
+    expect(isParallelMutationTool('memory_write')).toBe(true)
+    expect(isParallelSafeTool('edit_notebook')).toBe(false)
+    expect(isParallelSafeTool('memory_write')).toBe(false)
+    expect(stepToolBatchClass('edit_notebook')).toBe('mutation')
+    expect(stepToolBatchClass('memory_write')).toBe('mutation')
+    expect(isParallelMutationTool('multi_edit')).toBe(false)
+    expect(isParallelMutationTool('delete')).toBe(false)
+    expect(isApprovalExemptTool('edit_notebook')).toBe(false)
+    expect(isApprovalExemptTool('memory_write')).toBe(false)
+    expect(isToolGated('edit_notebook', 'mutating', new Set(), [])).toBe(true)
+    expect(isToolGated('memory_write', 'mutating', new Set(), [])).toBe(true)
+  })
+
+  it('keys notebook mutations on target_notebook', () => {
+    expect(parallelMutationPathKey({ target_notebook: './Nb/A.ipynb' }, 'edit_notebook')).toBe(
+      process.platform === 'win32' ? 'nb/a.ipynb' : 'Nb/A.ipynb'
+    )
+    expect(parallelMutationPathKey({ target_notebook: 'nb\\a.ipynb' }, 'edit_notebook')).toBe(
+      process.platform === 'win32' ? 'nb/a.ipynb' : 'nb/a.ipynb'
+    )
+    expect(parallelMutationPathKey({ target_notebook: '' }, 'edit_notebook')).toBeUndefined()
+    expect(parallelMutationPathKey({ target_notebook: '.' }, 'edit_notebook')).toBeUndefined()
+    expect(parallelMutationPathKey({ target_notebook: 'a.ipynb' })).toBeUndefined()
+    expect(parallelMutationPathKey({ path: 'notes/foo.md' })).toBe('notes/foo.md')
+  })
+
+  it('splits same notebook path and batches disjoint notebooks', () => {
+    const same = groupStepToolCalls([
+      { id: 'n1', name: 'edit_notebook', arguments: '{"target_notebook":"a.ipynb"}' },
+      { id: 'n2', name: 'edit_notebook', arguments: '{"target_notebook":"a.ipynb"}' }
+    ])
+    expect(same.map((g) => g.map((c) => c.id))).toEqual([['n1'], ['n2']])
+
+    const disjoint = groupStepToolCalls([
+      { id: 'n1', name: 'edit_notebook', arguments: '{"target_notebook":"./a.ipynb"}' },
+      { id: 'n2', name: 'edit_notebook', arguments: '{"target_notebook":"b.ipynb"}' }
+    ])
+    expect(disjoint.map((g) => g.map((c) => c.id))).toEqual([['n1', 'n2']])
   })
 
   it('never puts MCP tools in a parallel batch class', () => {

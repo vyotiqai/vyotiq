@@ -53,6 +53,7 @@ ensureLocalStorage()
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
+    options: Record<string, unknown> = {}
     open() {}
     loadAddon() {}
     dispose() {}

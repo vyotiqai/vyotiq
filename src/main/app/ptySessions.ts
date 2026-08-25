@@ -28,17 +28,28 @@ type PtyHandle = {
   running: boolean
   backend: SessionBackend
   /** Ring buffer for macOS window recreate / late subscriber recovery. */
-  scrollback: string
+  scrollbackChunks: string[]
+  scrollbackLength: number
 }
 
 const sessions = new Map<string, PtyHandle>()
 const PTY_SCROLLBACK_MAX = 200_000
 
 function appendScrollback(handle: PtyHandle, data: string): void {
-  handle.scrollback += data
-  if (handle.scrollback.length > PTY_SCROLLBACK_MAX) {
-    handle.scrollback = handle.scrollback.slice(-PTY_SCROLLBACK_MAX)
+  handle.scrollbackChunks.push(data)
+  handle.scrollbackLength += data.length
+  // Drop whole oldest chunks instead of re-slicing a max-size string per chunk.
+  while (handle.scrollbackLength > PTY_SCROLLBACK_MAX && handle.scrollbackChunks.length > 1) {
+    const dropped = handle.scrollbackChunks[0]
+    handle.scrollbackChunks.shift()
+    handle.scrollbackLength -= dropped.length
   }
+}
+
+function scrollbackText(handle: PtyHandle): string {
+  return handle.scrollbackChunks.length === 1
+    ? handle.scrollbackChunks[0]
+    : handle.scrollbackChunks.join('')
 }
 
 function shellTitle(): string {
@@ -117,20 +128,12 @@ export function createPtySession(opts: {
     workspacePath: opts.cwd,
     running: true,
     backend: { kind: 'pipe', child: null as unknown as ChildProcessWithoutNullStreams },
-    scrollback: ''
+    scrollbackChunks: [],
+    scrollbackLength: 0
   }
   sessions.set(id, handle)
 
-  const send = (channel: string, payload: unknown): void => {
-    if (
-      channel === IPC.ptyData &&
-      payload &&
-      typeof payload === 'object' &&
-      'data' in payload &&
-      typeof (payload as { data: unknown }).data === 'string'
-    ) {
-      appendScrollback(handle, (payload as { data: string }).data)
-    }
+  const rawSend = (channel: string, payload: unknown): void => {
     const current = getMainWindow()
     const target =
       current && !current.isDestroyed()
@@ -140,6 +143,46 @@ export function createPtySession(opts: {
           : null
     if (!target || target.webContents.isDestroyed()) return
     target.webContents.send(channel, payload)
+  }
+
+  // Coalesce PTY output into one IPC message per flush window. Chatty builds
+  // emit hundreds of tiny chunks/sec; batching keeps structured-clone + send
+  // overhead flat while preserving exact byte order via concatenation.
+  const PTY_BATCH_FLUSH_MS = 16
+  let pendingChunks: string[] | null = null
+  let flushTimer: NodeJS.Timeout | null = null
+
+  const flushPtyData = (): void => {
+    if (flushTimer) {
+      clearTimeout(flushTimer)
+      flushTimer = null
+    }
+    const chunks = pendingChunks
+    pendingChunks = null
+    if (!chunks || chunks.length === 0) return
+    rawSend(IPC.ptyData, { id, data: chunks.length === 1 ? chunks[0] : chunks.join('') })
+  }
+
+  const send = (channel: string, payload: unknown): void => {
+    if (
+      channel === IPC.ptyData &&
+      payload &&
+      typeof payload === 'object' &&
+      'data' in payload &&
+      typeof (payload as { data: unknown }).data === 'string'
+    ) {
+      const data = (payload as { data: string }).data
+      appendScrollback(handle, data)
+      if (!pendingChunks) pendingChunks = []
+      pendingChunks.push(data)
+      if (!flushTimer) {
+        flushTimer = setTimeout(flushPtyData, PTY_BATCH_FLUSH_MS)
+      }
+      return
+    }
+    // Non-data events (exit) must not overtake buffered output.
+    if (channel === IPC.ptyExit) flushPtyData()
+    rawSend(channel, payload)
   }
 
   let backend: SessionBackend | null = null
@@ -214,8 +257,8 @@ export function createPtySession(opts: {
 export function replayPtySessionsToWindow(win: BrowserWindow): void {
   if (win.isDestroyed() || win.webContents.isDestroyed()) return
   for (const s of sessions.values()) {
-    if (!s.scrollback) continue
-    win.webContents.send(IPC.ptyData, { id: s.id, data: s.scrollback })
+    if (s.scrollbackLength === 0) continue
+    win.webContents.send(IPC.ptyData, { id: s.id, data: scrollbackText(s) })
   }
 }
 

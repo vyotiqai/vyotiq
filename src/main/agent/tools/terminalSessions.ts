@@ -269,6 +269,13 @@ export type StartBackgroundTerminalOpts = {
   pattern?: string
   /** Wait this long before returning (0 = immediate). */
   blockUntilMs: number
+  /**
+   * When the wait window (blockUntilMs) elapses and the process is still
+   * running, hard-kill it and report a failure (exit_code 124) instead of
+   * leaving it alive for later polls. Used for foreground new commands so the
+   * agent waits for completion but never leaks a runaway process.
+   */
+  killOnTimeout?: boolean
   onOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
 }
 
@@ -409,7 +416,8 @@ export async function startBackgroundTerminal(
     sessionId: id,
     blockUntilMs: opts.blockUntilMs,
     pattern: opts.pattern,
-    signal: opts.signal
+    signal: opts.signal,
+    killOnTimeout: opts.killOnTimeout
   })
 }
 
@@ -422,6 +430,8 @@ export type PollTerminalSessionOpts = {
   signal: AbortSignal
   /** Hard run-cancel signal — distinguishes Cancelled (kill) from Interrupted (keep running). */
   runSignal?: AbortSignal
+  /** Hard-kill (exit_code 124) instead of leaving the process running on timeout. */
+  killOnTimeout?: boolean
   onOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
 }
 
@@ -469,6 +479,17 @@ export async function pollTerminalSession(opts: PollTerminalSessionOpts): Promis
   }
 
   if (session.running && opts.blockUntilMs > 0 && session.status === 'running') {
+    if (opts.killOnTimeout) {
+      // Foreground wait expired: hard-kill so the process cannot leak past the
+      // run, and surface it as a failure the tool layer can flag.
+      if (session.child.pid) killProcessTree(session.child.pid, 'poll-timeout-kill')
+      session.running = false
+      session.finishedAt ??= Date.now()
+      session.exitCode = 124
+      session.status = 'timeout'
+      notifySessionWaiters(session)
+      return formatSession(session)
+    }
     // Timed out waiting; leave process running for further polls.
     return formatSession({ ...session, status: 'timeout' })
   }

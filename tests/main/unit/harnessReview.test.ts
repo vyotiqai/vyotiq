@@ -163,35 +163,38 @@ describe('harnessReview', () => {
 
 
 
-  it('does not route non-harness evidence through the LLM rewriter', async () => {
+  it('reports consecutive tool-failure streaks from receipt metrics', () => {
     const sessions = workspaceSessionsRoot(workspace)
-    const runDir = join(sessions, 'run-b')
-    mkdirSync(runDir, { recursive: true })
-    writeFileSync(
-      join(runDir, RUN_RECEIPT_FILENAME),
-      JSON.stringify(
-        sampleReceipt({
-          runId: 'run-b',
-          failureClusters: [],
-          unreadEditPaths: [],
-        })
-      ),
-      'utf8'
-    )
-    mkdirSync(join(workspace, 'resources', 'harness'), { recursive: true })
-    writeFileSync(join(workspace, 'resources', 'harness', 'default.md'), '# Agent V\nold\n', 'utf8')
+    const runs: Array<{ runId: string; streak?: number }> = [
+      { runId: 'streak-low', streak: 1 },
+      { runId: 'streak-high', streak: 3 }
+    ]
+    for (const { runId, streak } of runs) {
+      const runDir = join(sessions, runId)
+      mkdirSync(runDir, { recursive: true })
+      writeFileSync(
+        join(runDir, RUN_RECEIPT_FILENAME),
+        JSON.stringify(
+          sampleReceipt({
+            runId,
+            failureClusters: [],
+            unreadEditPaths: [],
+            ...(streak && streak >= 3 ? { maxConsecutiveToolFailures: streak } : {})
+          })
+        ),
+        'utf8'
+      )
+    }
 
-    let rewriteCalls = 0
-    const result = await runHarnessReview(workspace, {
-      rewriteBody: async () => {
-        rewriteCalls++
-        return { body: '# Agent V\n\nrewritten-by-llm\n', usedLlm: true }
-      }
-    })
-    const body = readFileSync(result.proposalPath, 'utf8')
-    expect(rewriteCalls).toBe(0)
-    expect(body).not.toMatch(/LLM-assisted proposal/)
-    expect(body).not.toMatch(/rewritten-by-llm/)
-    expect(body).toMatch(/No harness-owned weakness found/i)
+    const summary = summarizeWeaknesses(collectRecentReceipts(workspace))
+    // Only the run with maxConsecutiveToolFailures >= 3 counts as a streak.
+    expect(
+      summary.bullets.some((b) =>
+        /^1 run\(s\) had consecutive tool-failure streaks ≥ 3/.test(b)
+      )
+    ).toBe(true)
+    // Streak-only evidence still routes into the tool_policy bucket.
+    expect(summary.evidenceBuckets.some((b) => b.component === 'tool_policy')).toBe(true)
+    expect(summary.suggestions.join('\n')).toMatch(/No harness-owned weakness found/i)
   })
 })

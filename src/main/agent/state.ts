@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, writeFileSync, openSync, readSync, closeSync, fstatSync } from 'fs'
-import { readFile, readdir } from 'fs/promises'
+import { readFile, readdir, open } from 'fs/promises'
 import { join, basename } from 'path'
-import { atomicWriteFile, atomicWriteJson } from '../storage/atomicWrite'
+import { atomicWriteFile, atomicWriteFileAsync, atomicWriteJson } from '../storage/atomicWrite'
 import { enqueueEventAppend, flushEventAppends } from './eventAppendQueue'
 import {
   enqueueMessageAppend,
@@ -293,10 +293,13 @@ export function syncMessages(dir: string, messages: ChatMessage[]): void {
   atomicWriteFile(join(dir, 'messages.jsonl'), body ? `${body}\n` : '')
 }
 
-/** Await pending async appends, then rewrite messages.jsonl (authoritative). */
+/** Await pending async appends, then rewrite messages.jsonl (authoritative).
+ * Uses the async atomic writer so long-transcript rewrites never block the
+ * main-thread event loop mid-run. */
 export async function syncMessagesAsync(dir: string, messages: ChatMessage[]): Promise<void> {
   await flushMessageAppends(dir)
-  syncMessages(dir, messages)
+  const body = messages.map((m) => JSON.stringify(m)).join('\n')
+  await atomicWriteFileAsync(join(dir, 'messages.jsonl'), body ? `${body}\n` : '')
 }
 
 export function appendMessage(dir: string, message: ChatMessage): Promise<void> {
@@ -541,7 +544,30 @@ function toolMessageText(content: MessageContent): string {
   return typeof content === 'string' ? content : contentToText(content)
 }
 
-/** Read full persisted tool output for lazy UI expansion (IPC ships a preview only). */
+/** Backward-scan window for tool-result lookup — recent output usually lives here. */
+const TOOL_RESULT_TAIL_WINDOW_BYTES = 256 * 1024
+
+function parseToolLine(line: string, toolCallId: string): string | null {
+  if (!line) return null
+  let json: unknown
+  try {
+    json = JSON.parse(line)
+  } catch {
+    return null
+  }
+  if (!json || typeof json !== 'object') return null
+  const row = json as { role?: unknown; toolCallId?: unknown }
+  if (row.role !== 'tool' || row.toolCallId !== toolCallId) return null
+  const parsed = ChatMessageSchema.safeParse(json)
+  if (!parsed.success || parsed.data.role !== 'tool') return null
+  return toolMessageText(parsed.data.content)
+}
+
+/**
+ * Read full persisted tool output for lazy UI expansion (IPC ships a preview only).
+ * Scans newest-first through growing byte-tail windows so typical expansions read
+ * ~256 KB instead of re-loading the entire multi-MB transcript.
+ */
 export async function loadToolResultContent(
   workspacePath: string,
   runId: string,
@@ -551,36 +577,61 @@ export async function loadToolResultContent(
   await flushMessageAppends(dir)
   const p = join(dir, 'messages.jsonl')
   if (!existsSync(p)) return null
-  let raw: string
+  let fh: Awaited<ReturnType<typeof open>>
   try {
-    raw = await readFile(p, 'utf8')
+    fh = await open(p, 'r')
   } catch {
-    logger.warn('Failed to read messages.jsonl for tool result', {
+    logger.warn('Failed to open messages.jsonl for tool result', {
       scope: 'state',
       runId,
       toolCallId
     })
     return null
   }
-  // Scan newest-first without materializing the full ChatMessage[] array.
-  const lines = raw.split('\n')
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i]
-    if (!line) continue
-    let json: unknown
-    try {
-      json = JSON.parse(line)
-    } catch {
-      continue
+  try {
+    const { size } = await fh.stat()
+    // Bytes not yet known to end at a line boundary (partial oldest line).
+    let pending: Buffer = Buffer.alloc(0)
+    let end = size
+    while (end > 0) {
+      const start = Math.max(0, end - TOOL_RESULT_TAIL_WINDOW_BYTES)
+      const buf = Buffer.alloc(end - start)
+      await fh.read(buf, 0, buf.length, start)
+      pending = Buffer.concat([buf, pending])
+      end = start
+
+      // Only consume up to the last complete newline unless we reached file head.
+      let usable = pending.length
+      if (end > 0) {
+        const lastNl = pending.lastIndexOf(0x0a)
+        if (lastNl === -1) continue
+        usable = lastNl
+      }
+      const segment = pending.subarray(0, usable).toString('utf8')
+      pending = end > 0 ? pending.subarray(usable + 1) : Buffer.alloc(0)
+
+      const lines = segment.split('\n')
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const hit = parseToolLine(lines[i], toolCallId)
+        if (hit !== null) return hit
+      }
     }
-    if (!json || typeof json !== 'object') continue
-    const row = json as { role?: unknown; toolCallId?: unknown; content?: unknown }
-    if (row.role !== 'tool' || row.toolCallId !== toolCallId) continue
-    const parsed = ChatMessageSchema.safeParse(json)
-    if (!parsed.success || parsed.data.role !== 'tool') continue
-    return toolMessageText(parsed.data.content)
+    if (pending.length > 0) {
+      const hit = parseToolLine(pending.toString('utf8'), toolCallId)
+      if (hit !== null) return hit
+    }
+    return null
+  } catch (err) {
+    logger.warn('Failed to read messages.jsonl for tool result', {
+      scope: 'state',
+      runId,
+      toolCallId,
+      err
+    })
+    return null
+  } finally {
+    await fh.close().catch(() => undefined)
   }
-  return null
 }
 
 function normalizePersistedEvent(

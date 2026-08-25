@@ -381,25 +381,7 @@ export function finalizeWriteCheckpoint(runDir: string): WriteCheckpointMeta | n
   const session = activeSessions.get(runDir)
   activeSessions.delete(runDir)
   if (!session) return null
-  const meta = session.finalize()
-  // Latest turn owns Keep/Discard UI; auto-keep older unresolved checkpoints so
-  // they cannot linger on disk with no actionable card.
-  if (meta) keepPriorUnresolvedCheckpoints(runDir, meta.id)
-  return meta
-}
-
-/** Mark earlier unresolved checkpoints as kept when a newer write turn completes. */
-function keepPriorUnresolvedCheckpoints(runDir: string, currentId: string): void {
-  const index = loadIndex(runDir)
-  for (const entry of index.checkpoints) {
-    if (entry.id === currentId) continue
-    const meta = loadMeta(runDir, entry.id)
-    if (!meta || meta.undone || meta.resolved) continue
-    for (const file of meta.files) {
-      if (!file.resolved) file.resolved = 'kept'
-    }
-    markCheckpointFullyResolved(runDir, meta)
-  }
+  return session.finalize()
 }
 
 /** Drop an open session without persisting (e.g. tests). */
@@ -418,6 +400,12 @@ export type ResolveWritesResult = {
   kept: string[]
   discarded: string[]
   skipped: string[]
+  /**
+   * Paths whose revert was refused because the file was edited by the user after
+   * the agent wrote it (content no longer matches). These stay unresolved so the
+   * UI can surface "can't auto-revert" instead of falsely marking them reverted.
+   */
+  conflicted: string[]
   fullyResolved: boolean
 }
 
@@ -444,7 +432,7 @@ function restoreOneFile(
   workspaceRoot: string,
   checkpointDir: string,
   file: CheckpointFileEntry
-): 'restored' | 'skipped' {
+): 'restored' | 'skipped' | 'conflict' {
   if (!file.undoable) return 'skipped'
   const resolved = resolveInsideWorkspace(workspaceRoot, file.path)
   try {
@@ -452,11 +440,12 @@ function restoreOneFile(
       if (file.hash) {
         const current = hashExistingFile(resolved)
         if (current && current !== file.hash) {
+          // User edited the file the agent created — refuse to delete their work.
           logger.warn('Skipping checkpoint restore; file changed after the agent write', {
             scope: 'agent',
             path: file.path
           })
-          return 'skipped'
+          return 'conflict'
         }
       }
       if (existsSync(resolved)) {
@@ -469,16 +458,23 @@ function restoreOneFile(
 
     if (file.action === 'modified' && file.hash) {
       const current = hashExistingFile(resolved)
-      if (!current) return 'skipped'
-      if (current !== file.hash) {
-        const priorHash = hashExistingFile(blob)
-        if (current === priorHash) return 'restored'
-        logger.warn('Skipping checkpoint restore; file changed after the agent write', {
-          scope: 'agent',
-          path: file.path
-        })
-        return 'skipped'
+      if (current) {
+        if (current !== file.hash) {
+          const priorHash = hashExistingFile(blob)
+          if (current === priorHash) return 'restored'
+          // User edited the file after the agent modified it — refuse to clobber.
+          logger.warn('Skipping checkpoint restore; file changed after the agent write', {
+            scope: 'agent',
+            path: file.path
+          })
+          return 'conflict'
+        }
+        // current === file.hash: user has not changed the file; fall through to
+        // restore the prior blob at the bottom of this function.
       }
+      // current is undefined: the agent-modified file was deleted after the write.
+      // Fall through so the prior blob is restored, recreating the original file
+      // instead of silently leaving the deletion in place.
     }
 
     if (file.action === 'deleted') {
@@ -551,6 +547,8 @@ export function undoWrites(
       file.resolved = 'discarded'
       restored.push(file.path)
     } else if (file.undoable) {
+      // Covers genuine I/O failures and 'conflict' (user edited after the agent
+      // write). Either way we must not mark the checkpoint resolved.
       hadIoFailure = true
       skipped.push(file.path)
     } else {
@@ -568,6 +566,12 @@ export function undoWrites(
 
 /**
  * Keep and/or discard specific paths (or all unresolved when paths omitted for discard/keep all).
+ *
+ * Resolution is scoped to `checkpointId` when provided. When `checkpointId` is
+ * omitted but `paths` are given, each path is resolved within the newest
+ * unresolved checkpoint that recorded it — so a user can Keep/Discard a file
+ * from any turn, not just the latest one. When both are omitted the latest
+ * unresolved checkpoint is fully resolved (Undo / Keep-all / Discard-all).
  */
 export function resolveWrites(
   runDir: string,
@@ -579,7 +583,56 @@ export function resolveWrites(
     paths?: string[]
   }
 ): ResolveWritesResult {
-  const id = resolveCheckpointId(runDir, opts.checkpointId)
+  if (opts.checkpointId) {
+    return resolveWritesInCheckpoint(runDir, workspaceRoot, opts.checkpointId, opts.action, opts.paths ?? null)
+  }
+
+  if (opts.paths && opts.paths.length > 0) {
+    const index = loadIndex(runDir)
+    const byCheckpoint = new Map<string, string[]>()
+    for (const p of opts.paths) {
+      const rel = toCheckpointRelPath(workspaceRoot, p)
+      const cpId = findNewestUnresolvedCheckpointForPath(runDir, index, rel)
+      if (!cpId) continue
+      const arr = byCheckpoint.get(cpId) ?? []
+      arr.push(rel)
+      byCheckpoint.set(cpId, arr)
+    }
+    if (byCheckpoint.size === 0) {
+      // Soft no-op: none of the paths are part of an actionable checkpoint.
+      return {
+        checkpointId: '',
+        kept: [],
+        discarded: [],
+        skipped: [...opts.paths],
+        conflicted: [],
+        fullyResolved: true
+      }
+    }
+    const kept: string[] = []
+    const discarded: string[] = []
+    const skipped: string[] = []
+    const conflicted: string[] = []
+    let allFullyResolved = true
+    for (const [cpId, rels] of byCheckpoint) {
+      const r = resolveWritesInCheckpoint(runDir, workspaceRoot, cpId, opts.action, rels)
+      kept.push(...r.kept)
+      discarded.push(...r.discarded)
+      skipped.push(...r.skipped)
+      conflicted.push(...r.conflicted)
+      if (!r.fullyResolved) allFullyResolved = false
+    }
+    return {
+      checkpointId: '',
+      kept,
+      discarded,
+      skipped,
+      conflicted,
+      fullyResolved: allFullyResolved
+    }
+  }
+
+  const id = resolveCheckpointId(runDir, undefined)
   if (!id) {
     // Soft no-op: UI may call Keep/Discard after the banner cleared or with no writes.
     return {
@@ -587,22 +640,49 @@ export function resolveWrites(
       kept: [],
       discarded: [],
       skipped: [],
+      conflicted: [],
       fullyResolved: true
     }
   }
-  const meta = loadMeta(runDir, id)
-  if (!meta) throw new Error(`Checkpoint not found: ${id}`)
+  return resolveWritesInCheckpoint(runDir, workspaceRoot, id, opts.action, null)
+}
+
+/** Newest unresolved checkpoint that still has an unresolved entry for `relPath`. */
+function findNewestUnresolvedCheckpointForPath(
+  runDir: string,
+  index: CheckpointIndex,
+  relPath: string
+): string | null {
+  for (let i = index.checkpoints.length - 1; i >= 0; i--) {
+    const entry = index.checkpoints[i]!
+    const meta = loadMeta(runDir, entry.id)
+    if (!meta || meta.undone || meta.resolved) continue
+    if (meta.files.some((f) => f.path === relPath && !f.resolved)) return meta.id
+  }
+  return null
+}
+
+function resolveWritesInCheckpoint(
+  runDir: string,
+  workspaceRoot: string,
+  checkpointId: string,
+  action: 'keep' | 'discard',
+  paths: string[] | null
+): ResolveWritesResult {
+  const meta = loadMeta(runDir, checkpointId)
+  if (!meta) throw new Error(`Checkpoint not found: ${checkpointId}`)
   if (meta.undone || meta.resolved) throw new Error('That checkpoint was already resolved')
 
   const targetPaths =
-    opts.paths && opts.paths.length > 0
-      ? new Set(opts.paths.map((p) => toCheckpointRelPath(workspaceRoot, p)))
+    paths && paths.length > 0
+      ? new Set(paths.map((p) => toCheckpointRelPath(workspaceRoot, p)))
       : null
 
-  const checkpointDir = join(runDir, 'checkpoints', id)
+  const checkpointDir = join(runDir, 'checkpoints', checkpointId)
   const kept: string[] = []
   const discarded: string[] = []
   const skipped: string[] = []
+  const conflicted: string[] = []
 
   for (const file of meta.files) {
     if (targetPaths && !targetPaths.has(file.path)) continue
@@ -610,7 +690,7 @@ export function resolveWrites(
       skipped.push(file.path)
       continue
     }
-    if (opts.action === 'keep') {
+    if (action === 'keep') {
       file.resolved = 'kept'
       kept.push(file.path)
       continue
@@ -619,6 +699,10 @@ export function resolveWrites(
     if (outcome === 'restored') {
       file.resolved = 'discarded'
       discarded.push(file.path)
+    } else if (outcome === 'conflict') {
+      // User edited the file after the agent wrote it; leave it unresolved and
+      // surface it so the UI can explain why it cannot be auto-reverted.
+      conflicted.push(file.path)
     } else {
       // Non-undoable: still mark discarded so the UI can clear it.
       file.resolved = 'discarded'
@@ -642,10 +726,11 @@ export function resolveWrites(
   }
 
   return {
-    checkpointId: id,
+    checkpointId,
     kept,
     discarded,
     skipped,
+    conflicted,
     fullyResolved: allHandled
   }
 }

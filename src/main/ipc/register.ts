@@ -76,6 +76,7 @@ import {
   WorkspaceReadImageRequestSchema,
   WorkspaceFileListRequestSchema,
   WorkspaceFileReadRequestSchema,
+  WorkspaceFileStatRequestSchema,
   WorkspaceFileSaveRequestSchema,
   WorkspaceFileCreateRequestSchema,
   WorkspaceFileMoveRequestSchema,
@@ -423,6 +424,7 @@ import {
   readWorkspaceAttachmentBytes,
   saveEditorRecovery,
   saveWorkspaceFile,
+  statWorkspaceFile,
   WorkspaceFileError
 } from '@main/workspace/fileService'
 import {
@@ -2276,6 +2278,11 @@ export function registerIpc(): void {
     }
   })
 
+  ipcMain.handle(IPC.accessibilitySupportState, async (event): Promise<IpcResult<{ enabled: boolean }>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    return ok({ enabled: app.accessibilitySupportEnabled })
+  })
+
   ipcMain.handle(IPC.appInfo, async (event): Promise<IpcResult<AppInfo>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
@@ -3122,6 +3129,17 @@ export function registerIpc(): void {
       return ok(await readWorkspaceFile(req.workspacePath, req.path))
     } catch (err) {
       return failWorkspaceFile(err, IPC.workspaceFileRead)
+    }
+  })
+
+  ipcMain.handle(IPC.workspaceFileStat, async (event, raw) => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = WorkspaceFileStatRequestSchema.parse(raw ?? {})
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      return ok(await statWorkspaceFile(req.workspacePath, req.path))
+    } catch (err) {
+      return failWorkspaceFile(err, IPC.workspaceFileStat)
     }
   })
 

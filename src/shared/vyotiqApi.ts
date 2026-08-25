@@ -85,6 +85,8 @@ import type {
   WorkspaceFileListResult,
   WorkspaceFileReadRequest,
   WorkspaceFileReadResult,
+  WorkspaceFileStatRequest,
+  WorkspaceFileStatResult,
   WorkspaceFileSaveRequest,
   WorkspaceFileSaveResult,
   WorkspaceFileCreateRequest,
@@ -144,6 +146,8 @@ export interface VyotiqApi {
   ) => Promise<IpcResult<WorkspacesState>>
   getSettings: () => Promise<IpcResult<Settings>>
   setSettings: (partial: Partial<Settings>) => Promise<IpcResult<Settings>>
+  getAccessibilitySupportState: () => Promise<IpcResult<{ enabled: boolean }>>
+  onAccessibilitySupportChanged: (listener: (payload: { enabled: boolean }) => void) => () => void
   setSecret: (provider: SecretProvider, key: string) => Promise<IpcResult<true>>
   clearSecret: (provider: SecretProvider) => Promise<IpcResult<true>>
   secretStatus: () => Promise<IpcResult<SecretsStatus>>
@@ -534,6 +538,9 @@ export interface VyotiqApi {
   workspaceFileRead: (
     payload: WorkspaceFileReadRequest
   ) => Promise<IpcResult<WorkspaceFileReadResult>>
+  workspaceFileStat: (
+    payload: WorkspaceFileStatRequest
+  ) => Promise<IpcResult<WorkspaceFileStatResult>>
   workspaceFileSave: (
     payload: WorkspaceFileSaveRequest
   ) => Promise<IpcResult<WorkspaceFileSaveResult>>

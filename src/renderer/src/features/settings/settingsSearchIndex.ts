@@ -274,6 +274,18 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     section: 'voice'
   },
   {
+    id: 'dictation-qwen3-asr-onnx-0.6b',
+    title: 'Qwen3-ASR 0.6B (on-device)',
+    keywords: ['dictation', 'voice', 'qwen', 'qwen3', 'asr', 'transcribe', 'local server', 'onnx', 'on-device'],
+    section: 'voice'
+  },
+  {
+    id: 'dictation-qwen3-asr-onnx-1.7b',
+    title: 'Qwen3-ASR 1.7B (on-device)',
+    keywords: ['dictation', 'voice', 'qwen', 'qwen3', 'asr', 'transcribe', 'local server', 'onnx', 'on-device'],
+    section: 'voice'
+  },
+  {
     id: 'tool-approval',
     title: 'Tool approval',
     keywords: ['approval', 'allowlist', 'tools', 'mutating'],
@@ -289,6 +301,12 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     id: 'terminal-shell',
     title: 'Terminal shell',
     keywords: ['shell', 'powershell', 'bash', 'cmd', 'terminal'],
+    section: 'tools'
+  },
+  {
+    id: 'terminal-screen-reader',
+    title: 'Terminal screen reader',
+    keywords: ['screen reader', 'accessibility', 'a11y', 'terminal', 'assistive'],
     section: 'tools'
   },
   {
@@ -433,12 +451,6 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     id: 'github-client-id',
     title: 'GitHub client ID',
     keywords: ['github', 'oauth', 'pr', 'connect'],
-    section: 'integrations'
-  },
-  {
-    id: 'harness-rewriter',
-    title: 'LLM harness proposal rewriter',
-    keywords: ['harness', 'experimental', 'rewriter'],
     section: 'integrations'
   },
   {

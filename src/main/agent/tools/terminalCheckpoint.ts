@@ -22,9 +22,9 @@ export function extractTerminalWritePaths(command: string): string[] {
     }
   }
 
-  // Common mutators: cp/mv/rm/del/mkdir/touch/git checkout -- / git restore
+  // Common mutators: cp/mv/rm/del/mkdir/touch/sed -i/patch/dd/git checkout|restore|apply
   const mutatorRe =
-    /(?:^|[\s;|&])(?:(?:copy|cp|move|mv|del|rm|rmdir|rd|mkdir|md|touch|ni|New-Item)\b|(?:git\s+(?:checkout|restore)\b))\s+(.+?)(?=(?:[\s;|&](?:&&|\|\||;|\|)\s*)|$)/gi
+    /(?:^|[\s;|&])(?:(?:copy|cp|move|mv|del|rm|rmdir|rd|mkdir|md|touch|ni|New-Item|sed|patch|dd)\b|(?:git\s+(?:checkout|restore|apply)\b))\s+(.+?)(?=(?:[\s;|&](?:&&|\|\||;|\|)\s*)|$)/gi
   while ((m = mutatorRe.exec(raw)) !== null) {
     const tail = (m[1] ?? '').trim()
     if (!tail) continue
@@ -105,7 +105,7 @@ function isLikelyDeleteCommand(command: string, pathArg: string): boolean {
 /** Package managers and build runners often mutate paths the parser cannot see. */
 function isLikelyOpaqueCommand(command: string): boolean {
   const lower = command.toLowerCase()
-  return /\b(?:npm|pnpm|yarn|npx|bun|cargo|go|make|cmake|gradle|mvn|dotnet|pip|poetry|bundle|rake|mix|docker(?:\s+compose|-compose)?)\b/.test(
+  return /\b(?:npm|pnpm|yarn|npx|bun|cargo|go|make|cmake|gradle|mvn|dotnet|pip|poetry|bundle|rake|mix|docker(?:\s+compose|-compose)?|patch|rsync|terraform|git\s+apply)\b/.test(
     lower
   )
 }
@@ -113,8 +113,8 @@ function isLikelyOpaqueCommand(command: string): boolean {
 /**
  * Full workspace watch only for package managers / build runners that mutate
  * paths the parser cannot see. Read-only commands (python -c, dir, ls, …)
- * must NOT trigger a sync walk — on a venv-heavy workspace that was ~17 GB
- * disk I/O per long terminal-heavy run.
+ * must NOT trigger a sync walk. The watch itself is bounded: dependency/cache
+ * dirs are skipped, small files get revert blobs, everything else is hashed.
  */
 export function needsOpaqueWatch(command: string): boolean {
   return isLikelyOpaqueCommand(command)

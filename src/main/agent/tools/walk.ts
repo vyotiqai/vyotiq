@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, realpathSync } from 'fs'
+import { realpathSync, promises as fsp } from 'fs'
 import { basename, extname, join } from 'path'
 import { gitignoreMatcherForDir } from './gitignore'
 import {
@@ -401,21 +401,16 @@ function pathKey(path: string): string {
   return isWindowsStylePath(path) ? path.toLowerCase() : path
 }
 
-function isInsideRoot(resolved: string, realRoot: string): boolean {
-  const rootKey = pathKey(canonicalizeWorkspacePath(realRoot))
-  const resolvedKey = pathKey(canonicalizeWorkspacePath(resolved))
-  const sep = isWindowsStylePath(realRoot) ? '\\' : '/'
-  return resolvedKey === rootKey || resolvedKey.startsWith(rootKey + sep)
-}
-
-/** True when the path exists and its realpath stays inside the workspace root. */
-function isContainedInWorkspace(full: string, realRoot: string): boolean {
-  try {
-    if (!existsSync(full)) return false
-    return isInsideRoot(realpathSync(full), realRoot)
-  } catch {
-    return false
-  }
+/**
+ * Syscall-free containment check for walked entries. Walks never follow
+ * symlinks (entries are excluded above) and every child path is joined onto
+ * the already-resolved real root, so a prefix compare is sufficient — the
+ * per-entry existsSync/realpathSync pair cost two syscalls per entry.
+ */
+function isContainedByConstruction(full: string, realRoot: string): boolean {
+  const rootKey = pathKey(realRoot)
+  const fullKey = pathKey(full)
+  return fullKey === rootKey || fullKey.startsWith(rootKey + (isWindowsStylePath(realRoot) ? '\\' : '/'))
 }
 
 export type WorkspaceFilesPage = {
@@ -479,7 +474,7 @@ export async function collectWorkspaceFilesPage(
     const dirMatcher = gitignoreMatcherForDir(workspaceRoot, next.relDir)
     let entries
     try {
-      entries = readdirSync(next.dir, { withFileTypes: true })
+      entries = await fsp.readdir(next.dir, { withFileTypes: true })
     } catch {
       continue
     }
@@ -497,7 +492,7 @@ export async function collectWorkspaceFilesPage(
         /\\/g,
         '/'
       )
-      if (!isContainedInWorkspace(full, realRoot)) continue
+      if (!isContainedByConstruction(full, realRoot)) continue
       if (entry.isDirectory()) {
         if (skipDirNames?.has(entry.name.toLowerCase())) continue
         queue.push({ dir: full, relDir: childRel })

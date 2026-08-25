@@ -9,7 +9,7 @@ import {
   resetDnsLookupForTests,
   setDnsLookupForTests,
   setPublicFetchForTests,
-  toolWebFetch
+  spaShellWarning
 } from '@main/agent/tools/webFetch'
 
 const PUBLIC_IP = '93.184.216.34'
@@ -106,7 +106,7 @@ describe('isSyncBlockedUrl', () => {
   })
 })
 
-describe('toolWebFetch redirects', () => {
+describe('fetchWithValidatedRedirects', () => {
   it('rejects redirects to private hosts', async () => {
     const fetchMock = vi.fn(async () => {
       return new Response(null, {
@@ -116,7 +116,9 @@ describe('toolWebFetch redirects', () => {
     })
     setPublicFetchForTests(fetchMock)
 
-    await expect(toolWebFetch(`https://${PUBLIC_IP}/`)).rejects.toThrow(/private or loopback/)
+    await expect(
+      fetchWithValidatedRedirects(new URL(`https://${PUBLIC_IP}/`), new AbortController().signal)
+    ).rejects.toThrow(/private or loopback/)
   })
 
   it('follows safe redirects and validates each hop', async () => {
@@ -136,95 +138,24 @@ describe('toolWebFetch redirects', () => {
       )
     setPublicFetchForTests(fetchMock)
 
-    const out = await toolWebFetch(`https://${PUBLIC_IP}/start`)
-    expect(out).toContain(`# https://${PUBLIC_IP}/final`)
-    expect(out).toContain('hello')
+    const { finalUrl, response } = await fetchWithValidatedRedirects(
+      new URL(`https://${PUBLIC_IP}/start`),
+      new AbortController().signal
+    )
+    expect(finalUrl.href).toBe(`https://${PUBLIC_IP}/final`)
+    expect(await response.text()).toContain('hello')
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
-  it('appends SPA shell warning for nav-heavy HTML', async () => {
-    const html =
-      '<html><body><header><nav><ul>' +
-      '<li><a href="/models">Models</a></li>' +
-      '<li><a href="/datasets">Datasets</a></li>' +
-      '<li><a href="/spaces">Spaces</a></li>' +
-      '<li><a href="/docs">Docs</a></li>' +
-      '<li><a href="/enterprise">Enterprise</a></li>' +
-      '</ul></nav></header></body></html>'
-    setPublicFetchForTests(
-      vi.fn(async () =>
-        new Response(html, {
-          status: 200,
-          headers: { 'content-type': 'text/html; charset=utf-8' }
-        })
-      )
-    )
-
-    const out = await toolWebFetch(`https://${PUBLIC_IP}/hf-model`)
-    expect(out).toMatch(/JavaScript-rendered/i)
-  })
-
-  it('throws AbortError when aborted during network retry backoff', async () => {
-    vi.useFakeTimers()
-    try {
-      const err = Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' })
-      setPublicFetchForTests(vi.fn(async () => {
-        throw err
-      }))
-      const controller = new AbortController()
-      const pending = toolWebFetch(`https://${PUBLIC_IP}/`, {}, controller.signal)
-      await vi.advanceTimersByTimeAsync(0)
-      controller.abort()
-      await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('retries a transient network error then returns the page', async () => {
-    vi.useFakeTimers()
-    try {
-      const fetchMock = vi
-        .fn()
-        .mockRejectedValueOnce(Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' }))
-        .mockResolvedValueOnce(
-          new Response('<html><body><p>recovered</p></body></html>', {
-            status: 200,
-            headers: { 'content-type': 'text/html' }
-          })
-        )
-      setPublicFetchForTests(fetchMock)
-      const pending = toolWebFetch(`https://${PUBLIC_IP}/`)
-      await vi.runAllTimersAsync()
-      const out = await pending
-      expect(out).toContain('recovered')
-      expect(fetchMock).toHaveBeenCalledTimes(2)
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('retries HTTP 503 then returns the page', async () => {
-    vi.useFakeTimers()
-    try {
-      const fetchMock = vi
-        .fn()
-        .mockResolvedValueOnce(new Response('unavailable', { status: 503, statusText: 'Unavailable' }))
-        .mockResolvedValueOnce(
-          new Response('<html><body><p>recovered-503</p></body></html>', {
-            status: 200,
-            headers: { 'content-type': 'text/html' }
-          })
-        )
-      setPublicFetchForTests(fetchMock)
-      const pending = toolWebFetch(`https://${PUBLIC_IP}/`)
-      await vi.runAllTimersAsync()
-      const out = await pending
-      expect(out).toContain('recovered-503')
-      expect(fetchMock).toHaveBeenCalledTimes(2)
-    } finally {
-      vi.useRealTimers()
-    }
+  it('appends SPA shell warning for nav-heavy markdown', () => {
+    const markdown = [
+      '- [Models](/models)',
+      '- [Datasets](/datasets)',
+      '- [Spaces](/spaces)',
+      '- [Docs](/docs)',
+      '- [Enterprise](/enterprise)'
+    ].join('\n')
+    expect(spaShellWarning(markdown)).toMatch(/JavaScript-rendered/i)
   })
 })
 

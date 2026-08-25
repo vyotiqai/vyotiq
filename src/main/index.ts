@@ -137,9 +137,16 @@ if (!gotLock) {
   })
 
   app.whenReady().then(async () => {
-    if (process.platform === 'win32') {
-      app.setAccessibilitySupportEnabled(true)
-    }
+    // Accessibility is no longer forced on: Chromium auto-detects assistive
+    // tech (WM_GETOBJECT) when unforced, and the forced tree cost every
+    // renderer CPU even with no screen reader attached. The terminal reads
+    // the detected state over IPC (accessibilitySupportState) instead.
+    app.on('accessibility-support-changed', (_event, accessibilitySupportEnabled) => {
+      const win = getMainWindow()
+      if (win && !win.isDestroyed() && !win.webContents.isDestroyed()) {
+        win.webContents.send(IPC.accessibilitySupportChanged, { enabled: accessibilitySupportEnabled })
+      }
+    })
     // After userData path switches; before IPC / windows (Sentry + electron-log).
     initMainLogging()
 

@@ -424,7 +424,7 @@ export function groupStepToolCalls(calls: ToolCall[]): ToolCall[][] {
     }
 
     if (cls === 'mutation') {
-      const path = parallelMutationPathKey(toolArgsFromCall(call.arguments))
+      const path = parallelMutationPathKey(toolArgsFromCall(call.arguments), call.name)
       if (path == null) {
         flushBatch()
         groups.push([call])

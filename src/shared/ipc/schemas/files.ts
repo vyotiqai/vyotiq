@@ -75,6 +75,21 @@ export const WorkspaceFileReadResultSchema = z.object({
 })
 export type WorkspaceFileReadResult = z.infer<typeof WorkspaceFileReadResultSchema>
 
+export const WorkspaceFileStatRequestSchema = z.object({
+  workspacePath: WorkspacePathSchema,
+  path: WorkspacePathSchema
+})
+export type WorkspaceFileStatRequest = z.infer<typeof WorkspaceFileStatRequestSchema>
+
+/** Cheap change probe for open editor tabs — stat only, never reads file content. */
+export const WorkspaceFileStatResultSchema = z.object({
+  path: WorkspacePathSchema,
+  exists: z.boolean(),
+  size: z.number().int().nonnegative(),
+  mtimeMs: z.number()
+})
+export type WorkspaceFileStatResult = z.infer<typeof WorkspaceFileStatResultSchema>
+
 export const WorkspaceReadImageRequestSchema = z.object({
   workspacePath: WorkspacePathSchema,
   path: WorkspacePathSchema

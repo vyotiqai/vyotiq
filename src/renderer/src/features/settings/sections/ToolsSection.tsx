@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { TerminalShell, ToolApprovalMode } from '@shared/ipc'
 import { Menu, Button, Switch, Textarea } from '@renderer/lib/ui'
 import type { SettingsFormState } from '../hooks/useSettingsForm'
-import { TERMINAL_SHELL_OPTIONS, TOOL_APPROVAL_OPTIONS } from '../constants'
+import { TERMINAL_SCREEN_READER_OPTIONS, TERMINAL_SHELL_OPTIONS, TOOL_APPROVAL_OPTIONS } from '../constants'
 import { SettingsField, SettingsGroup, SettingsStack } from '../components/SettingsField'
 import {
   formatBrowserDomainAllowlist,
@@ -137,6 +137,27 @@ export function ToolsSection({ form }: { form: SettingsFormState }) {
             disabled={form.formLocked}
             onChange={(v) => {
               void form.runUpdate({ terminalShell: v as TerminalShell })
+            }}
+          />
+        </SettingsField>
+
+        <SettingsField
+          id="terminal-screen-reader"
+          title="Terminal screen reader"
+          hint="Accessibility mirror for terminal output."
+          help="Auto enables it only when a screen reader or assistive technology is detected. Always on costs extra CPU on fast-scrolling output because xterm maintains a parallel accessibility DOM for every chunk."
+        >
+          <Menu
+            aria-label="Terminal screen reader"
+            value={form.settings.terminalScreenReader ?? 'auto'}
+            options={TERMINAL_SCREEN_READER_OPTIONS}
+            searchable={false}
+            placement="down"
+            disabled={form.formLocked}
+            onChange={(v) => {
+              void form.runUpdate({
+                terminalScreenReader: v as 'auto' | 'on' | 'off'
+              })
             }}
           />
         </SettingsField>

@@ -355,6 +355,7 @@ function stripLegacyFields(raw: Record<string, unknown>): Record<string, unknown
     contractDoneWhen: _contractDoneWhen,
     readBeforeEdit: _readBeforeEdit,
     memoryAutoPromote: _memoryAutoPromote,
+    harnessProposalRewriter: _harnessProposalRewriter,
     ...rest
   } = raw
   return rest

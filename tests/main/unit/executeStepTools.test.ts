@@ -707,6 +707,75 @@ describe('executeStepToolCalls', () => {
     expect(maxConcurrent).toBe(1)
   })
 
+  it('overlaps edit_notebook on different notebooks', async () => {
+    let concurrent = 0
+    let maxConcurrent = 0
+    executeTool.mockImplementation(async (name: string) => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 20))
+      concurrent -= 1
+      return { ok: true, summary: name, content: name }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    await executeStepToolCalls(
+      [
+        { id: 'n1', name: 'edit_notebook', arguments: '{"target_notebook":"a.ipynb"}' },
+        { id: 'n2', name: 'edit_notebook', arguments: '{"target_notebook":"b.ipynb"}' }
+      ],
+      ctx
+    )
+
+    expect(maxConcurrent).toBeGreaterThan(1)
+  })
+
+  it('serializes edit_notebook on the same notebook', async () => {
+    let concurrent = 0
+    let maxConcurrent = 0
+    executeTool.mockImplementation(async (name: string) => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 20))
+      concurrent -= 1
+      return { ok: true, summary: name, content: name }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    await executeStepToolCalls(
+      [
+        { id: 'n1', name: 'edit_notebook', arguments: '{"target_notebook":"a.ipynb"}' },
+        { id: 'n2', name: 'edit_notebook', arguments: '{"target_notebook":"a.ipynb"}' }
+      ],
+      ctx
+    )
+
+    expect(maxConcurrent).toBe(1)
+  })
+
+  it('overlaps memory_write on disjoint memory paths', async () => {
+    let concurrent = 0
+    let maxConcurrent = 0
+    executeTool.mockImplementation(async (name: string) => {
+      concurrent += 1
+      maxConcurrent = Math.max(maxConcurrent, concurrent)
+      await new Promise((r) => setTimeout(r, 20))
+      concurrent -= 1
+      return { ok: true, summary: name, content: name }
+    })
+
+    const { ctx } = makeCtx(new AbortController().signal)
+    await executeStepToolCalls(
+      [
+        { id: 'm1', name: 'memory_write', arguments: '{"path":"notes/a.md","contents":"a"}' },
+        { id: 'm2', name: 'memory_write', arguments: '{"path":"notes/b.md","contents":"b"}' }
+      ],
+      ctx
+    )
+
+    expect(maxConcurrent).toBeGreaterThan(1)
+  })
+
   it('keeps multi_edit serial', async () => {
     let concurrent = 0
     let maxConcurrent = 0

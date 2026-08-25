@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
   loopStopDecision,
-  MAX_CONSECUTIVE_TOOL_FAILURE_STEPS,
   MAX_IDENTICAL_STEP_STREAK,
   nextIdenticalStepStreak,
   stepToolCallsFingerprint
@@ -48,14 +47,14 @@ describe('loop safety policy', () => {
     expect(
       loopStopDecision({
         step: 12,
-        consecutiveToolFailureSteps: MAX_CONSECUTIVE_TOOL_FAILURE_STEPS,
+        consecutiveToolFailureSteps: 8,
         identicalStepStreak: 1
       })
     ).toBeUndefined()
     expect(
       loopStopDecision({
         step: 12,
-        consecutiveToolFailureSteps: MAX_CONSECUTIVE_TOOL_FAILURE_STEPS * 10,
+        consecutiveToolFailureSteps: 80,
         identicalStepStreak: 1
       })
     ).toBeUndefined()
