@@ -42,8 +42,13 @@ export function killProcessTreeAndWait(
   })
 }
 
-/** @deprecated Former per-stream output cap; output is no longer truncated. */
-export const TERMINAL_MAX_OUTPUT = Number.POSITIVE_INFINITY
+/**
+ * Per-stream capture cap (restored pre-a067d81 behavior). A runaway command
+ * (huge file dump, chatty build log) must not balloon main-process memory;
+ * capture stops buffering past this mark while the child keeps draining.
+ * Context-side trimming (toolTrim) is separate and happens later.
+ */
+export const TERMINAL_MAX_OUTPUT = 64 * 1024
 /**
  * Former upper bound for model-requested wait. Timeouts may exceed this;
  * omitted waits still default to TERMINAL_DEFAULT_TIMEOUT_MS.
@@ -310,6 +315,62 @@ export function bashForLoopOnPowerShellMessage(command: string): string | null {
   ].join('\n')
 }
 
+/**
+ * AGENTS.md unzip recipe (ZipFile + word/document.xml) fails under nested
+ * quoting. `read` extracts .docx text — fail before spawn.
+ */
+export function docxUnzipViaShellMessage(command: string): string | null {
+  if (!/\.docx\b/i.test(command)) return null
+  if (!/ZipFile|Compression\.FileSystem|word\/document\.xml/i.test(command)) return null
+  return [
+    'Do not unzip Word .docx in the terminal.',
+    'Call read on the .docx path — it returns extracted document text.',
+    'Do not write a helper script for this.',
+    'exit_code: 1'
+  ].join('\n')
+}
+
+export function terminalDocxUnzipPreflight(
+  command: string,
+  resolved: ResolvedTerminalShell,
+  cwd: string
+): string | null {
+  const body = docxUnzipViaShellMessage(command)
+  return body ? formatShellPreflight(cwd, resolved, body) : null
+}
+
+/**
+ * Nested `powershell -Command` inside an already-PowerShell session expands
+ * `$variables` twice and breaks quoting.
+ */
+export function nestedPowerShellCommandMessage(
+  command: string,
+  resolved: ResolvedTerminalShell
+): string | null {
+  if (resolved !== 'powershell') return null
+  const token = primaryCommandToken(command)
+  if (token !== 'powershell' && token !== 'pwsh') return null
+  if (!/(?:^|\s)-(?:Command|c)\b/i.test(command)) return null
+  return [
+    'This terminal session is already PowerShell. Do not wrap the body in powershell -NoProfile -Command or pwsh -Command — the outer shell expands $variables and breaks quoting.',
+    'Pass the PowerShell statements as the terminal command directly.',
+    'exit_code: 1'
+  ].join('\n')
+}
+
+function formatShellPreflight(cwd: string, resolved: ResolvedTerminalShell, body: string): string {
+  return [`cwd: ${cwd}`, `shell: ${resolved}`, '', body].join('\n')
+}
+
+export function terminalNestedPowerShellPreflight(
+  command: string,
+  resolved: ResolvedTerminalShell,
+  cwd: string
+): string | null {
+  const nested = nestedPowerShellCommandMessage(command, resolved)
+  return nested ? formatShellPreflight(cwd, resolved, nested) : null
+}
+
 /** Append Windows cmd hints when a pipeline stage used a Unix-only tool. */
 function appendWindowsCompatHint(
   command: string,
@@ -339,7 +400,8 @@ export function appendPowerShellCompatHint(
   content: string,
   exitCode: number | null,
   stderr: string,
-  resolved: ResolvedTerminalShell
+  resolved: ResolvedTerminalShell,
+  command = ''
 ): string {
   if (resolved !== 'powershell' || exitCode === 0 || exitCode === null) return content
   if (/running scripts is disabled|npm\.ps1 cannot be loaded/i.test(stderr)) {
@@ -348,7 +410,45 @@ export function appendPowerShellCompatHint(
   if (/invalid statement separator.*&&|token '&&'/i.test(stderr)) {
     return `${content}\n\n[Windows hint] && is not valid in Windows PowerShell 5.x. Use ; between statements, separate terminal calls, or pwsh 7+.`
   }
+  if (
+    /string is missing the terminator|expression was expected after '\('|The term '=' is not recognized/i.test(
+      stderr
+    )
+  ) {
+    return `${content}\n\n[Windows hint] PowerShell parse error. If this session is already PowerShell, do not wrap the body in powershell -Command — $variables are expanded twice. Pass the statements directly.`
+  }
+  // 75135925: `($_ .Line` and `$log -split` on a path string.
+  if (/Unexpected token '\.[A-Za-z_]/i.test(stderr)) {
+    let hint =
+      'PowerShell member access cannot have a space before the dot. Write $_.Line not $_ .Line.'
+    if (/-split/i.test(command) || /-split/i.test(content)) {
+      hint +=
+        ' To scan a log file, Get-Content $path first — do not -split the path string.'
+    }
+    return `${content}\n\n[Windows hint] ${hint}`
+  }
   return content
+}
+
+/**
+ * Command missing from PATH (92c049d6: `swift --version` / `dotnet --list-sdks`).
+ * Exclude `The term '='` — that is a parse error, already hinted above.
+ */
+export function appendMissingCommandHint(
+  content: string,
+  exitCode: number | null,
+  stderr: string
+): string {
+  if (exitCode === 0 || exitCode === null) return content
+  if (/The term '=' is not recognized/i.test(stderr)) return content
+  if (
+    !/is not recognized as the name of a cmdlet|is not recognized as an internal or external command|command not found/i.test(
+      stderr
+    )
+  ) {
+    return content
+  }
+  return `${content}\n\n[hint] That command is not on PATH. Do not retry the same invocation. Locate the executable or state the missing toolchain.`
 }
 
 /**
@@ -447,7 +547,8 @@ function formatTerminalOutput(
     .filter(Boolean)
     .join('\n')
   out = appendWindowsCompatHint(command, out, code, resolved)
-  out = appendPowerShellCompatHint(out, code, stderr, resolved)
+  out = appendPowerShellCompatHint(out, code, stderr, resolved, command)
+  out = appendMissingCommandHint(out, code, stderr)
   return out
 }
 
@@ -517,6 +618,18 @@ export function sanitizedTerminalEnv(
     'HOMEBREW_CELLAR',
     'APPDATA',
     'LOCALAPPDATA',
+    'ProgramData',
+    'PROGRAMDATA',
+    'ALLUSERSPROFILE',
+    'ProgramFiles',
+    'ProgramFiles(x86)',
+    'ProgramW6432',
+    'CommonProgramFiles',
+    'CommonProgramFiles(x86)',
+    'CommonProgramW6432',
+    'PUBLIC',
+    'HOMEDRIVE',
+    'HOMEPATH',
     'GH_CONFIG_DIR',
     'XDG_CONFIG_HOME'
   ]
@@ -530,7 +643,40 @@ export function sanitizedTerminalEnv(
   if (!env.PATH && !env.Path) {
     env.PATH = source.PATH ?? source.Path ?? ''
   }
+  applyWindowsFolderDefaults(env, source)
   return env
+}
+
+/**
+ * NuGet/MSBuild (92c049d6) call Path.Combine(CommonApplicationData, …) and
+ * crash with `path1` null when ProgramData is stripped from the child env.
+ */
+function applyWindowsFolderDefaults(
+  env: Record<string, string>,
+  source: NodeJS.ProcessEnv
+): void {
+  const systemRoot = env.SystemRoot || env.SYSTEMROOT || source.SystemRoot || source.SYSTEMROOT
+  if (!systemRoot) return
+  const drive = (
+    env.SystemDrive ||
+    env.SYSTEMDRIVE ||
+    source.SystemDrive ||
+    source.SYSTEMDRIVE ||
+    'C:'
+  ).replace(/\\$/, '')
+  const defaults: Record<string, string> = {
+    ProgramData: `${drive}\\ProgramData`,
+    ALLUSERSPROFILE: `${drive}\\ProgramData`,
+    ProgramFiles: `${drive}\\Program Files`,
+    'ProgramFiles(x86)': `${drive}\\Program Files (x86)`,
+    ProgramW6432: `${drive}\\Program Files`,
+    CommonProgramFiles: `${drive}\\Program Files\\Common Files`,
+    'CommonProgramFiles(x86)': `${drive}\\Program Files (x86)\\Common Files`,
+    PUBLIC: `${drive}\\Users\\Public`
+  }
+  for (const [key, fallback] of Object.entries(defaults)) {
+    if (!env[key]) env[key] = fallback
+  }
 }
 
 export type ToolTerminalOptions = {
@@ -561,6 +707,18 @@ export async function toolTerminal(
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
       reject(new DOMException('Aborted', 'AbortError'))
+      return
+    }
+
+    const docxUnzip = terminalDocxUnzipPreflight(command, resolved, cwd)
+    if (docxUnzip) {
+      resolve(docxUnzip)
+      return
+    }
+
+    const nested = terminalNestedPowerShellPreflight(command, resolved, cwd)
+    if (nested) {
+      resolve(nested)
       return
     }
 
@@ -600,6 +758,7 @@ export async function toolTerminal(
     let stdout = ''
     let stderr = ''
     let settled = false
+    let outputCapped = false
 
     const finish = (fn: () => void): void => {
       if (settled) return
@@ -627,12 +786,26 @@ export async function toolTerminal(
 
     child.stdout.on('data', (buf: Buffer) => {
       const text = buf.toString('utf8')
-      stdout += text
+      // Capture cap: stop appending once at TERMINAL_MAX_OUTPUT but keep the
+      // stream draining so the child never blocks on a full pipe.
+      if (stdout.length < TERMINAL_MAX_OUTPUT) {
+        const room = TERMINAL_MAX_OUTPUT - stdout.length
+        stdout += text.length > room ? text.slice(0, room) : text
+        if (text.length > room) outputCapped = true
+      } else {
+        outputCapped = true
+      }
       if (text) opts.onOutput?.({ text, stream: 'stdout' })
     })
     child.stderr.on('data', (buf: Buffer) => {
       const text = buf.toString('utf8')
-      stderr += text
+      if (stderr.length < TERMINAL_MAX_OUTPUT) {
+        const room = TERMINAL_MAX_OUTPUT - stderr.length
+        stderr += text.length > room ? text.slice(0, room) : text
+        if (text.length > room) outputCapped = true
+      } else {
+        outputCapped = true
+      }
       if (text) opts.onOutput?.({ text, stream: 'stderr' })
     })
 
@@ -649,7 +822,12 @@ export async function toolTerminal(
         stdout,
         stderr,
         code,
-        [findstrNoMatch ? 'findstr: no matches' : ''],
+        [
+          findstrNoMatch ? 'findstr: no matches' : '',
+          outputCapped
+            ? `[truncated] output exceeded ${TERMINAL_MAX_OUTPUT} chars per stream; narrow the command (head/tail/grep) for the rest`
+            : ''
+        ],
         resolved
       )
       finish(() => resolve(out))

@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+env:
+  # Without a cert (CSC_LINK unset) pack unsigned so macOS DMG still builds;
+  # with it set, electron-builder signs normally.
+  CSC_IDENTITY_AUTO_DISCOVERY: ${{ secrets.CSC_LINK != '' }}
+
 jobs:
   package:
     name: ${{ matrix.name }}
@@ -52,7 +57,7 @@ jobs:
       - name: Enable pnpm
         run: |
           corepack enable
-          corepack prepare pnpm@11.22.0 --activate
+          corepack prepare pnpm@11.24.0 --activate
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

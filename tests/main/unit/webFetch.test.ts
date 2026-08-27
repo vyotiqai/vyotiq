@@ -199,6 +199,20 @@ describe('fetchPublicResponse retries', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 
+  it('caps the buffered body at WEB_FETCH_MAX_BYTES', async () => {
+    // 3 MB body — larger than the 2 MB cap. readBody must keep the buffered
+    // bytes bounded regardless of how much the server streams.
+    const big = 'x'.repeat(3 * 1024 * 1024)
+    const fetchMock = vi.fn().mockResolvedValue(new Response(big, { status: 200 }))
+    setPublicFetchForTests(fetchMock)
+    const result = await fetchPublicResponse(
+      new URL(`https://${PUBLIC_IP}/big`),
+      new AbortController().signal
+    )
+    expect(result.response.status).toBe(200)
+    expect(result.body.byteLength).toBeLessThanOrEqual(2 * 1024 * 1024)
+  })
+
   it('refuses to follow redirects on POST', async () => {
     setDnsLookupForTests(async () => [{ address: PUBLIC_IP, family: 4 }])
     setPublicFetchForTests(

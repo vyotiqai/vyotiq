@@ -60,6 +60,24 @@ describe('executeTool terminal', () => {
     expect(result.content).toContain('exit_code: 0')
   })
 
+  it('caps captured output at TERMINAL_MAX_OUTPUT with a truncation notice', async () => {
+    // Dump ~10 MB of stdout — far past the 64 KB per-stream capture cap.
+    const result = await executeTool(
+      'terminal',
+      JSON.stringify({
+        command: 'node -e "process.stdout.write(\'x\'.repeat(10 * 1024 * 1024))"'
+      }),
+      workspace,
+      new AbortController().signal,
+      termCtx()
+    )
+    expect(result.ok).toBe(true)
+    expect(result.content).toContain('[truncated] output exceeded')
+    // Framing + capped stdout must stay bounded (64 KB cap + cwd/shell/exit lines).
+    expect(result.content.length).toBeLessThan(80 * 1024)
+    expect(result.content).toContain('exit_code: 0')
+  }, 30_000)
+
   it('timeoutMs wait expiry keeps the process alive for polling (does not kill)', async () => {
     const signal = new AbortController().signal
     const context = termCtx({ runId: 'term-run-timeout-keep', invokeId: 1 })

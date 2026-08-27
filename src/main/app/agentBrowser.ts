@@ -35,7 +35,12 @@ export {
 } from './browserUrl'
 const SNAPSHOT_JPEG_QUALITY = 55
 const PREVIEW_MAX_WIDTH = 960
-export const MAX_BROWSER_TABS = Number.POSITIVE_INFINITY
+/**
+ * Hard cap on live agent-browser tabs (restored pre-a067d81 behavior). Each
+ * tab is a full WebContentsView; unbounded growth exhausts memory/fds.
+ * Reuse existing tabs (browser_tabs close / active tab) before opening new ones.
+ */
+export const MAX_BROWSER_TABS = 16
 
 const PARTITION_PREFIX = 'persist:vyotiq-agent-browser'
 const downloadGuardedPartitions = new Set<string>()
@@ -272,6 +277,23 @@ function attachTabView(tab: BrowserTab): void {
   main.contentView.addChildView(tab.view)
 }
 
+/** True while the guest must stay live (painted, or an agent browser tool is using it). */
+function tabNeedsLiveRenderer(tab: BrowserTab): boolean {
+  if (tab.id !== visibleTabId) return false
+  const boundsLive = embedBounds != null && embedBounds.width >= 1 && embedBounds.height >= 1
+  return boundsLive || agentBusyDepth > 0
+}
+
+function applyGuestThrottling(tab: BrowserTab): void {
+  if (isTabDestroyed(tab)) return
+  try {
+    // true = Chromium default (throttle hidden); false = keep the guest awake.
+    tab.view.webContents.setBackgroundThrottling(!tabNeedsLiveRenderer(tab))
+  } catch {
+    // older Electron
+  }
+}
+
 function applyActiveViewBounds(): void {
   for (const tab of tabs.values()) {
     if (isTabDestroyed(tab)) continue
@@ -280,17 +302,14 @@ function applyActiveViewBounds(): void {
     if (!active || !bounds || bounds.width < 1 || bounds.height < 1) {
       tab.view.setVisible(false)
       tab.view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+      applyGuestThrottling(tab)
       continue
     }
 
     attachTabView(tab)
     tab.view.setBounds(bounds)
     tab.view.setVisible(true)
-    try {
-      tab.view.webContents.setBackgroundThrottling(false)
-    } catch {
-      // older Electron
-    }
+    applyGuestThrottling(tab)
   }
 }
 
@@ -504,6 +523,7 @@ function attachAgentSecurity(wc: WebContents): void {
     const parentWorkspace = parentTab?.workspacePath
     const parentAllow = allowLocalFor()
     if (isSyncBlockedNavigation(url, parentAllow)) return { action: 'deny' }
+    if (tabs.size >= MAX_BROWSER_TABS) return { action: 'deny' }
     void withBrowserLock(async () => {
       const tab = createTab(parentWorkspace, parentAllow)
       setActiveTabId(tab.id, parentWorkspace)
@@ -592,11 +612,7 @@ function createTab(workspacePath?: string, allowLocalHosts = true): BrowserTab {
   attachTabView(tab)
   view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
   view.setVisible(false)
-  try {
-    view.webContents.setBackgroundThrottling(false)
-  } catch {
-    // ignore
-  }
+  applyGuestThrottling(tab)
 
   view.webContents.on('destroyed', () => {
     tabs.delete(id)
@@ -632,6 +648,11 @@ function ensureTab(tabId?: string, workspacePath?: string): BrowserTab {
     if (active && !isTabDestroyed(active) && tabBelongsToWorkspace(active, workspacePath)) {
       return active
     }
+  }
+  if (tabs.size >= MAX_BROWSER_TABS) {
+    throw new Error(
+      `Browser tab limit reached (${MAX_BROWSER_TABS}). Close tabs with browser_tabs { action: 'close' } or reuse the active tab before opening another.`
+    )
   }
   const tab = createTab(workspacePath)
   setActiveTabId(tab.id, workspacePath)
@@ -1856,6 +1877,9 @@ async function manageTabsUnlocked(
       .join('\n')
   }
   if (action === 'open') {
+    if (tabs.size >= MAX_BROWSER_TABS) {
+      return `Browser tab limit reached (${MAX_BROWSER_TABS}). Close tabs with browser_tabs { action: 'close' } or reuse the active tab before opening another.`
+    }
     const allowLocal = opts.allowLocal !== false
     const tab = createTab(opts.workspacePath, allowLocal)
     setActiveTabId(tab.id, opts.workspacePath)

@@ -20,7 +20,13 @@ import {
 import { abortError } from '../../../shared/errors'
 import type { IncomingMessage, RequestOptions } from 'http'
 
-export const WEB_FETCH_MAX_BYTES = Number.POSITIVE_INFINITY
+/**
+ * Hard cap on bytes buffered for any public fetch. Restores the pre-a067d81
+ * 2 MB limit: a hostile or accidental huge download must not balloon
+ * main-process memory. `readBody` truncates at this mark; `fetchPinnedPublic`
+ * destroys the socket when exceeded.
+ */
+export const WEB_FETCH_MAX_BYTES = 2 * 1024 * 1024
 export const WEB_FETCH_DEFAULT_TIMEOUT_MS = 20_000
 export const WEB_FETCH_DEFAULT_MAX_CHARS = 40_000
 export const WEB_FETCH_MAX_TIMEOUT_MS = 60_000
@@ -601,11 +607,34 @@ async function fetchPinnedPublic(
     }
     const req = lib.request(options, (incoming: IncomingMessage) => {
       const chunks: Buffer[] = []
+      let totalBytes = 0
+      let tooLarge = false
       incoming.on('data', (chunk: Buffer | string) => {
         const buf = typeof chunk === 'string' ? Buffer.from(chunk) : chunk
-        chunks.push(buf)
+        // Same byte cap as readBody(): stop buffering (but keep draining) once
+        // the response exceeds WEB_FETCH_MAX_BYTES so the socket cannot balloon
+        // main-process memory. The error surfaces on 'end' below.
+        if (totalBytes >= WEB_FETCH_MAX_BYTES) {
+          tooLarge = true
+          return
+        }
+        const room = WEB_FETCH_MAX_BYTES - totalBytes
+        const clipped = buf.byteLength > room ? buf.subarray(0, room) : buf
+        totalBytes += clipped.byteLength
+        if (buf.byteLength > room) tooLarge = true
+        chunks.push(clipped)
       })
       incoming.on('end', () => {
+        if (tooLarge) {
+          finish(() =>
+            reject(
+              new Error(
+                `Response body exceeded ${WEB_FETCH_MAX_BYTES} bytes; use browser tools or a direct download instead`
+              )
+            )
+          )
+          return
+        }
         const body = Buffer.concat(chunks)
         const headerInit: Record<string, string> = {}
         for (const [key, value] of Object.entries(incoming.headers)) {
@@ -648,18 +677,31 @@ export function setPublicFetchForTests(next: PublicFetchImpl | null): void {
   publicFetchImpl = next ?? fetchPinnedPublic
 }
 
-/** Read the full response body. */
+/** Read the full response body, capped at WEB_FETCH_MAX_BYTES. */
 async function readBody(res: Response): Promise<Buffer> {
   if (!res.body) return Buffer.alloc(0)
   const reader = res.body.getReader()
   const chunks: Buffer[] = []
+  let totalBytes = 0
 
   try {
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
       if (!value) continue
-      chunks.push(Buffer.from(value))
+      // Hard cap (restores pre-a067d81 behavior): buffered bytes never exceed
+      // WEB_FETCH_MAX_BYTES. Remaining stream bytes are read and discarded so
+      // the connection can close cleanly.
+      const room = WEB_FETCH_MAX_BYTES - totalBytes
+      if (room <= 0) continue
+      const buf = Buffer.from(value)
+      if (buf.byteLength > room) {
+        chunks.push(buf.subarray(0, room))
+        totalBytes = WEB_FETCH_MAX_BYTES
+      } else {
+        chunks.push(buf)
+        totalBytes += buf.byteLength
+      }
     }
   } finally {
     await reader.cancel().catch(() => undefined)

@@ -8,6 +8,9 @@ import {
   resolveTerminalShell,
   sanitizedTerminalEnv,
   stripPowerShellPatternNoise,
+  TERMINAL_MAX_OUTPUT,
+  terminalDocxUnzipPreflight,
+  terminalNestedPowerShellPreflight,
   terminalSpawnSpec,
   type ResolvedTerminalShell
 } from './terminal'
@@ -287,6 +290,10 @@ export async function startBackgroundTerminal(
 
   const cwd = opts.cwd ?? opts.workspaceRoot
   const resolved = resolveTerminalShell(opts.shell ?? 'auto')
+  const docxUnzip = terminalDocxUnzipPreflight(command, resolved, cwd)
+  if (docxUnzip) return docxUnzip
+  const nested = terminalNestedPowerShellPreflight(command, resolved, cwd)
+  if (nested) return nested
   if (resolved === 'bash' && !commandOnPath('bash')) {
     return [
       `cwd: ${cwd}`,
@@ -376,7 +383,12 @@ export async function startBackgroundTerminal(
 
   child.stdout?.on('data', (buf: Buffer) => {
     const text = buf.toString('utf8')
-    session.stdout += text
+    // Same per-stream capture cap as the foreground terminal tool: bound
+    // buffered output while the child keeps draining.
+    if (session.stdout.length < TERMINAL_MAX_OUTPUT) {
+      const room = TERMINAL_MAX_OUTPUT - session.stdout.length
+      session.stdout += text.length > room ? text.slice(0, room) : text
+    }
     if (text) session.onOutput?.({ text, stream: 'stdout' })
     if (session.pattern && !session.patternMatched && matchesPattern(session) && session.running) {
       session.status = 'pattern_matched'
@@ -385,7 +397,10 @@ export async function startBackgroundTerminal(
   })
   child.stderr?.on('data', (buf: Buffer) => {
     const text = buf.toString('utf8')
-    session.stderr += text
+    if (session.stderr.length < TERMINAL_MAX_OUTPUT) {
+      const room = TERMINAL_MAX_OUTPUT - session.stderr.length
+      session.stderr += text.length > room ? text.slice(0, room) : text
+    }
     if (text) session.onOutput?.({ text, stream: 'stderr' })
     if (session.pattern && !session.patternMatched && matchesPattern(session) && session.running) {
       session.status = 'pattern_matched'
