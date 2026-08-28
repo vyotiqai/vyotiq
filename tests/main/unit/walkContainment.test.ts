@@ -11,6 +11,7 @@ import {
   isDenseIndexPath,
   isIndexableSourcePath,
   isIndexClutterFileName,
+  isGrepOverlapRel,
   TEXT_EXTS
 } from '@main/agent/tools/walk'
 
@@ -270,5 +271,14 @@ describe('INDEX_SKIP_DIR_SEGMENTS', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe('isGrepOverlapRel', () => {
+  it('keeps docs and tests/ text that the source index omits', () => {
+    expect(isGrepOverlapRel('docs/guide.md')).toBe(true)
+    expect(isGrepOverlapRel('notes.md.docx')).toBe(true)
+    expect(isGrepOverlapRel('tests/main/unit/webFetch.test.ts')).toBe(true)
+    expect(isGrepOverlapRel('src/webFetch.ts')).toBe(false)
   })
 })

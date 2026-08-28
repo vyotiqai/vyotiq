@@ -1468,7 +1468,7 @@ export function createOpenAiCompatibleProvider(
           message: scrubProviderErrorSnippet(text) || message,
           model: req.model
         })
-        yield { type: 'error', error: message, errorCode: 'PROVIDER_HTTP' }
+        yield { type: 'error', error: message, errorCode: 'PROVIDER_HTTP', httpStatus: res.status }
         return
       }
 
@@ -1480,7 +1480,7 @@ export function createOpenAiCompatibleProvider(
           message: scrubProviderErrorSnippet(lastHttpErrorText) || message,
           model: req.model
         })
-        yield { type: 'error', error: message, errorCode: 'PROVIDER_HTTP' }
+        yield { type: 'error', error: message, errorCode: 'PROVIDER_HTTP', httpStatus: status }
         return
       }
 
@@ -1739,9 +1739,9 @@ export const xaiProvider = createOpenAiCompatibleProvider('xai', {
   listLanguageModels: true
 })
 export const mistralProvider = createOpenAiCompatibleProvider('mistral', {
-  defaultBaseUrl: 'https://api.mistral.ai/v1',
-  /** Mistral rejects OpenAI `stream_options.include_usage`. */
-  includeUsage: false
+  defaultBaseUrl: 'https://api.mistral.ai/v1'
+  // stream_options.include_usage is sent like the other OpenAI-compat hosts; a
+  // host that rejects it retries automatically without it (shouldRetryOmitIncludeUsage).
 })
 
 /** Bring-your-own OpenAI-compatible host (Cerebras, Fireworks, Together, vLLM, …). */

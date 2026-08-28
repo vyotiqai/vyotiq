@@ -43,6 +43,8 @@ export function Sidebar({
   onSelectRunInWorkspace,
   onRenameRunInWorkspace,
   onDeleteRunInWorkspace,
+  onExportRunInWorkspace,
+  onLoadOlderRuns,
   isRunOpenInPane,
   isRunFocusedInPane,
   openInstanceRunId = null,
@@ -202,6 +204,13 @@ export function Sidebar({
             }}
             onDeleteRun={(path, runId) => {
               onDeleteRunInWorkspace?.(path, runId)
+            }}
+            onExportRun={(path, runId) => {
+              onExportRunInWorkspace?.(path, runId)
+            }}
+            onLoadOlderRuns={(path) => {
+              setExpanded(path, true)
+              onLoadOlderRuns?.(path)
             }}
             isRunOpenInPane={isRunOpenInPane}
             isRunFocusedInPane={isRunFocusedInPane}

@@ -15,6 +15,13 @@ export type SlashClientHandlers = {
   onCreateRule?: (title?: string) => void | boolean | Promise<void | boolean>
   onCreateSkill?: (title?: string) => void | boolean | Promise<void | boolean>
   onHarnessApply?: (proposalPath?: string) => void | boolean | Promise<void | boolean>
+  onGoalPause?: () => void | boolean | Promise<void | boolean>
+  onGoalResume?: () => void | boolean | Promise<void | boolean>
+  onGoalComplete?: () => void | boolean | Promise<void | boolean>
+  onGoalUsage?: () => void | boolean | Promise<void | boolean>
+  onLoopSet?: (trailing?: string) => void | boolean | Promise<void | boolean>
+  onLoopStop?: () => void | boolean | Promise<void | boolean>
+  onLoopStatus?: () => void | boolean | Promise<void | boolean>
   onMarketplaceAction?: (
     packageId: string,
     intent: 'install' | 'enable'
@@ -98,6 +105,34 @@ async function runClientAction(
     }
     case 'harness_apply': {
       const r = await handlers.onHarnessApply?.(opts.trailingText)
+      return r !== false
+    }
+    case 'goal_pause': {
+      const r = await handlers.onGoalPause?.()
+      return r !== false
+    }
+    case 'goal_resume': {
+      const r = await handlers.onGoalResume?.()
+      return r !== false
+    }
+    case 'goal_complete': {
+      const r = await handlers.onGoalComplete?.()
+      return r !== false
+    }
+    case 'goal_usage': {
+      const r = await handlers.onGoalUsage?.()
+      return r !== false
+    }
+    case 'loop_set': {
+      const r = await handlers.onLoopSet?.(opts.trailingText)
+      return r !== false
+    }
+    case 'loop_stop': {
+      const r = await handlers.onLoopStop?.()
+      return r !== false
+    }
+    case 'loop_status': {
+      const r = await handlers.onLoopStatus?.()
       return r !== false
     }
     default: {

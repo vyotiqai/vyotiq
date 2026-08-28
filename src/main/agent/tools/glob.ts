@@ -12,6 +12,24 @@ import {
 
 export const GLOB_SCAN_CAP = 20_000
 export const GLOB_DEFAULT_MAX_RESULTS = 100
+const NESTED_SUGGEST_CAP = 8
+
+/** Prepend a recursive glob prefix so a root-relative pattern can match under a nested folder. */
+export function nestedGlobPattern(pattern: string): string | null {
+  const normalized = pattern.replace(/\\/g, '/').replace(/^\.\//, '').trim()
+  if (!normalized || normalized.startsWith('**/')) return null
+  return `**/${normalized}`
+}
+
+function nestedMatchRels(pattern: string, files: WalkedFile[]): string[] {
+  const nested = nestedGlobPattern(pattern)
+  if (!nested) return []
+  const regex = globToRegExp(nested)
+  return files
+    .map((file) => file.rel)
+    .filter((rel) => regex.test(rel))
+    .sort((a, b) => a.localeCompare(b))
+}
 
 /** True when every extension the glob can match is in the source index. */
 export function globPatternIsTextOnly(pattern: string, textExts: ReadonlySet<string> = CODE_INDEX_EXTS): boolean {
@@ -90,6 +108,16 @@ export async function toolGlob(
 
   if (matches.length === 0) {
     const notices = [`No files match ${trimmed}`]
+    const nested = nestedMatchRels(trimmed, files)
+    if (nested.length > 0) {
+      notices.push('Paths are relative to the workspace root.')
+      notices.push('Nested matches:')
+      const shown = nested.slice(0, NESTED_SUGGEST_CAP)
+      notices.push(...shown)
+      if (nested.length > shown.length) {
+        notices.push(`… ${nested.length - shown.length} more`)
+      }
+    }
     if (indexSyncInProgress) {
       notices.push(`index sync in progress (${indexedFileCount} files indexed so far)`)
     }

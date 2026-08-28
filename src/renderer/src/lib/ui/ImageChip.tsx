@@ -19,7 +19,25 @@ export function ImageChip({
 }) {
   if (variant === 'compact') {
     return (
-      <span className="inline-flex items-center gap-1 rounded-xl border border-border bg-surface px-1.5 py-0.5 text-xs text-muted">
+      <span
+        className={cn(
+          'inline-flex items-center gap-1 rounded-xl border border-border bg-surface px-1.5 py-0.5 text-xs text-muted',
+          onClick && 'cursor-pointer'
+        )}
+        role={onClick ? 'button' : undefined}
+        tabIndex={onClick ? 0 : undefined}
+        onClick={onClick}
+        onKeyDown={
+          onClick
+            ? (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onClick()
+                }
+              }
+            : undefined
+        }
+      >
         <Icon name="image" size={14} />
         {label}
         {onRemove ? (
@@ -29,7 +47,10 @@ export function ImageChip({
               className="text-muted vy-transition hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]"
               aria-label={`Remove ${label}`}
               disabled={disabled}
-              onClick={onRemove}
+              onClick={(event) => {
+                event.stopPropagation()
+                onRemove()
+              }}
             >
               <Icon name="close" size={12} />
             </button>
@@ -76,7 +97,10 @@ export function ImageChip({
             className="grid place-items-center px-1 text-muted vy-transition hover:text-fg disabled:cursor-not-allowed disabled:opacity-[var(--vy-disabled-opacity)]"
             aria-label={`Remove ${label}`}
             disabled={disabled}
-            onClick={onRemove}
+            onClick={(event) => {
+              event.stopPropagation()
+              onRemove()
+            }}
           >
             <Icon name="close" size={12} />
           </button>

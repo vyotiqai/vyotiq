@@ -23,7 +23,14 @@ function normalizeNewlines(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 }
 
-/** Best-effort line hint when old_string is missing (first line of needle). */
+function sharedPrefixLength(a: string, b: string): number {
+  const n = Math.min(a.length, b.length)
+  let i = 0
+  while (i < n && a[i] === b[i]) i++
+  return i
+}
+
+/** Best-effort line hint when old_string is missing (first non-empty needle line). */
 function closestLineHint(normalizedFile: string, oldString: string): string {
   const needleLine = normalizeNewlines(oldString).split('\n').find((l) => l.trim().length > 0)
   if (!needleLine || needleLine.length < 4) {
@@ -31,12 +38,26 @@ function closestLineHint(normalizedFile: string, oldString: string): string {
   }
   const lines = normalizedFile.split('\n')
   const sample = needleLine.slice(0, Math.min(80, needleLine.length))
+  const sampleTrim = sample.trim()
+  let bestI = -1
+  let bestScore = 0
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i].includes(sample) || sample.includes(lines[i].trim())) {
-      return `Closest match near line ${i + 1}: ${JSON.stringify(lines[i].slice(0, 120))}. Re-read with startLine/endLine and retry.`
+    const trimmed = lines[i]!.trim()
+    // Empty/`{`/`}` lines made `sample.includes("")` always true (75135925 line 8: "").
+    if (trimmed.length < 8) continue
+    let score = 0
+    if (lines[i]!.includes(sample)) score = sample.length
+    else if (sample.includes(trimmed)) score = trimmed.length
+    else score = sharedPrefixLength(trimmed, sampleTrim)
+    if (score > bestScore) {
+      bestScore = score
+      bestI = i
     }
   }
-  return 'Re-read the file with read (startLine/endLine) and retry with an exact snippet (match indentation and newlines).'
+  if (bestI < 0 || bestScore < 8) {
+    return 'Re-read the file with read (startLine/endLine) and retry with an exact snippet (match indentation and newlines).'
+  }
+  return `Closest match near line ${bestI + 1}: ${JSON.stringify(lines[bestI]!.slice(0, 120))}. Re-read with startLine/endLine and retry.`
 }
 
 /**

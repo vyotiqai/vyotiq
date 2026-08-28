@@ -44,8 +44,16 @@ const api: VyotiqApi = {
   onAccessibilitySupportChanged: (
     listener: (payload: { enabled: boolean }) => void
   ): (() => void) => {
-    const wrapped = (_event: IpcRendererEvent, payload: { enabled: boolean }): void =>
-      listener(payload)
+    const wrapped = (_event: IpcRendererEvent, payload: unknown): void => {
+      if (
+        !payload ||
+        typeof payload !== 'object' ||
+        typeof (payload as { enabled?: unknown }).enabled !== 'boolean'
+      ) {
+        return
+      }
+      listener(payload as { enabled: boolean })
+    }
     ipcRenderer.on(IPC.accessibilitySupportChanged, wrapped)
     return () => {
       ipcRenderer.removeListener(IPC.accessibilitySupportChanged, wrapped)
@@ -189,6 +197,14 @@ const api: VyotiqApi = {
     }
     return ipcRenderer.invoke(IPC.listRuns, { workspacePath: path })
   },
+  listOlderRuns: (workspacePath, olderThan, limit) => {
+    const path = workspacePath?.trim() ?? ''
+    const cursor = olderThan?.trim() ?? ''
+    if (!path || !cursor) {
+      return Promise.resolve({ ok: true as const, data: { runs: [], hasMore: false } })
+    }
+    return ipcRenderer.invoke(IPC.listOlderRuns, limit && limit > 0 ? { workspacePath: path, olderThan: cursor, limit } : { workspacePath: path, olderThan: cursor })
+  },
   loadRun: (workspacePath, runId) => ipcRenderer.invoke(IPC.loadRun, { workspacePath, runId }),
   loadRunEvents: (workspacePath, runId) =>
     ipcRenderer.invoke(IPC.loadRunEvents, { workspacePath, runId }),
@@ -196,8 +212,12 @@ const api: VyotiqApi = {
     ipcRenderer.invoke(IPC.loadToolResult, { workspacePath, runId, toolCallId }),
   deleteRun: (workspacePath, runId) =>
     ipcRenderer.invoke(IPC.runsDelete, { workspacePath, runId }),
+  exportRun: (workspacePath, runId) =>
+    ipcRenderer.invoke(IPC.runsExport, { workspacePath, runId }),
   renameRun: (workspacePath, runId, goal) =>
     ipcRenderer.invoke(IPC.runsRename, { workspacePath, runId, goal }),
+  setGoalStatus: (payload) => ipcRenderer.invoke(IPC.runsSetGoalStatus, payload),
+  setLoop: (payload) => ipcRenderer.invoke(IPC.runsSetLoop, payload),
   listActiveRuns: () => ipcRenderer.invoke(IPC.runsActive),
   gitStatus: (workspacePath) => ipcRenderer.invoke(IPC.gitStatus, { workspacePath }),
   gitGenerateCommitMessage: (payload) =>
@@ -282,14 +302,20 @@ const api: VyotiqApi = {
   windowClose: () => ipcRenderer.invoke(IPC.windowClose),
   windowIsMaximized: () => ipcRenderer.invoke(IPC.windowIsMaximized),
   onWindowMaximizedChanged: (handler) => {
-    const listener = (_: IpcRendererEvent, maximized: boolean): void => handler(maximized)
+    const listener = (_: IpcRendererEvent, maximized: unknown): void => {
+      if (typeof maximized !== 'boolean') return
+      handler(maximized)
+    }
     ipcRenderer.on(IPC.windowMaximizedChanged, listener)
     return () => {
       ipcRenderer.removeListener(IPC.windowMaximizedChanged, listener)
     }
   },
   onWindowFocusChanged: (handler) => {
-    const listener = (_: IpcRendererEvent, focused: boolean): void => handler(focused)
+    const listener = (_: IpcRendererEvent, focused: unknown): void => {
+      if (typeof focused !== 'boolean') return
+      handler(focused)
+    }
     ipcRenderer.on(IPC.windowFocusChanged, listener)
     return () => {
       ipcRenderer.removeListener(IPC.windowFocusChanged, listener)
@@ -517,7 +543,10 @@ const api: VyotiqApi = {
   workspaceListRules: (payload) => ipcRenderer.invoke(IPC.workspaceListRules, payload),
   workspaceDiagnostics: (payload) => ipcRenderer.invoke(IPC.workspaceDiagnostics, payload),
   onSystemThemeChanged: (handler) => {
-    const listener = (_: IpcRendererEvent, prefersDark: boolean): void => handler(prefersDark)
+    const listener = (_: IpcRendererEvent, prefersDark: unknown): void => {
+      if (typeof prefersDark !== 'boolean') return
+      handler(prefersDark)
+    }
     ipcRenderer.on(IPC.themeChanged, listener)
     return () => {
       ipcRenderer.removeListener(IPC.themeChanged, listener)

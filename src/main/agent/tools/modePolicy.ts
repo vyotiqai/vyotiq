@@ -2,7 +2,7 @@ import { basename, normalize } from 'path'
 import type { AgentInteractionMode } from '../../../shared/ipc'
 import { parseMcpToolName } from '../mcp'
 import { wrapPromptSection } from '../promptSections'
-import { AGENT_ONLY_BUILTIN } from './classify'
+import { AGENT_ONLY_BUILTIN, INLINE_OMIT_BUILTIN } from './classify'
 import { lspActionFromArgs } from './lsp'
 
 /** Options for mode policy gates (tool allowlists + mode section prompts). */
@@ -57,6 +57,8 @@ export const ASK_SAFE_BUILTIN = new Set([
 const PLAN_EXTRA_BUILTIN = new Set([
   'todo_write',
   'create_plan',
+  'create_goal',
+  'update_goal',
   'edit',
   'str_replace',
   'multi_edit',
@@ -202,7 +204,7 @@ export function filterToolDefsForMode<T extends { name: string }>(
           return isBuiltinAllowedInMode(mode, t.name, opts)
         })
   if (opts?.inlineInstance) {
-    filtered = filtered.filter((t) => !AGENT_ONLY_BUILTIN.has(t.name))
+    filtered = filtered.filter((t) => !INLINE_OMIT_BUILTIN.has(t.name))
   }
   return filtered
 }
@@ -239,7 +241,7 @@ export function assertToolAllowedInMode(
     }
   }
 
-  if (opts?.inlineInstance && AGENT_ONLY_BUILTIN.has(name)) {
+  if (opts?.inlineInstance && INLINE_OMIT_BUILTIN.has(name)) {
     return {
       ok: false,
       error: `Tool "${name}" is only available on the root orchestrator (inline instances cannot nest).`

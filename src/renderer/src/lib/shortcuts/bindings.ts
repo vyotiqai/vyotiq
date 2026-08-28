@@ -13,6 +13,9 @@ export type ShortcutId =
   | 'panelTerminal'
   | 'panelChanges'
   | 'panelBrowser'
+  | 'panelFiles'
+  | 'panelPlan'
+  | 'panelPr'
   | 'closeChat'
   | 'findInFiles'
   | 'commandPalette'
@@ -43,6 +46,9 @@ export const SHORTCUT_BINDINGS: Record<ShortcutId, ShortcutBinding> = {
   panelTerminal: { id: 'panelTerminal', key: '`', mod: true },
   panelChanges: { id: 'panelChanges', key: 'e', mod: true },
   panelBrowser: { id: 'panelBrowser', key: 'b', mod: true, shift: 'require' },
+  panelFiles: { id: 'panelFiles', key: 'e', mod: true, shift: 'require' },
+  panelPlan: { id: 'panelPlan', key: 'd', mod: true, shift: 'require' },
+  panelPr: { id: 'panelPr', key: 'g', mod: true, shift: 'require' },
   closeChat: { id: 'closeChat', key: 'w', mod: true },
   findInFiles: { id: 'findInFiles', key: 'f', mod: true, shift: 'require' },
   commandPalette: { id: 'commandPalette', key: 'p', mod: true, shift: 'require' }

@@ -1,5 +1,5 @@
-import { openSync, readSync, closeSync, fstatSync } from 'fs'
-import { join } from 'path'
+import { openSync, readSync, closeSync, fstatSync, promises as fsp } from 'fs'
+import { basename, join } from 'path'
 import { cosineSimilarity, type Embedder } from './embed'
 import { reciprocalRankFusion } from './rrf'
 import type { CodeIndexStore } from './store'
@@ -11,7 +11,13 @@ import {
   type CodebaseSearchHit,
   type CodebaseSearchMode
 } from './types'
-import { throwIfAborted, yieldToEventLoop } from '../tools/walk'
+import {
+  collectWorkspaceFilesPage,
+  DOC_TEXT_EXTS,
+  throwIfAborted,
+  yieldToEventLoop
+} from '../tools/walk'
+import { extractDocxText, isDocxPath, MAX_DOCX_ARCHIVE_BYTES } from '../tools/docxText'
 
 export type SearchOptions = {
   limit?: number
@@ -20,8 +26,103 @@ export type SearchOptions = {
 }
 
 const DENSE_YIELD_EVERY = 256
+const DOCS_OVERLAP_YIELD_EVERY = 16
+/** Docs walk cap — index skips `docs/`; this is search-time only. */
+const DOCS_OVERLAP_SCAN_CAP = 4_000
 /** Cap bytes read when extracting a line-bounded snippet (match indexed-file max). */
 const SNIPPET_READ_CAP_BYTES = CODE_INDEX_MAX_FILE_BYTES
+
+function docsQueryTokens(query: string): string[] {
+  const parts = query
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/i)
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 4)
+  if (parts.length > 0) return [...new Set(parts)]
+  const compact = query.toLowerCase().trim()
+  return compact.length >= 3 ? [compact] : []
+}
+
+async function loadDocsOverlapText(rel: string, full: string): Promise<string | null> {
+  try {
+    const st = await fsp.stat(full)
+    if (isDocxPath(rel) || isDocxPath(full)) {
+      if (st.size > MAX_DOCX_ARCHIVE_BYTES) return null
+      return extractDocxText(await fsp.readFile(full))
+    }
+    if (st.size > CODE_INDEX_MAX_FILE_BYTES) return null
+    return await fsp.readFile(full, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Lexical hits under workspace `docs/` (.md/.docx). The source index skips that
+ * tree; this walk is search-time only and does not embed zip bytes.
+ */
+export async function collectDocsLexicalHits(
+  workspaceRoot: string,
+  query: string,
+  opts: { limit: number; seenPaths: ReadonlySet<string>; signal?: AbortSignal }
+): Promise<CodebaseSearchHit[]> {
+  const tokens = docsQueryTokens(query)
+  if (tokens.length === 0 || opts.limit <= 0) return []
+
+  const docsRoot = join(workspaceRoot, 'docs')
+  try {
+    const st = await fsp.stat(docsRoot)
+    if (!st.isDirectory()) return []
+  } catch {
+    return []
+  }
+
+  const page = await collectWorkspaceFilesPage(
+    docsRoot,
+    DOCS_OVERLAP_SCAN_CAP,
+    undefined,
+    opts.signal,
+    DOC_TEXT_EXTS
+  )
+  const out: CodebaseSearchHit[] = []
+  for (let i = 0; i < page.files.length; i++) {
+    if (out.length >= opts.limit) break
+    throwIfAborted(opts.signal)
+    if (i > 0 && i % DOCS_OVERLAP_YIELD_EVERY === 0) {
+      await yieldToEventLoop()
+      throwIfAborted(opts.signal)
+    }
+    const file = page.files[i]!
+    const rel = `docs/${file.rel.replace(/\\/g, '/')}`
+    if (opts.seenPaths.has(rel)) continue
+    const text = await loadDocsOverlapText(rel, file.full)
+    if (!text) continue
+    const lower = text.toLowerCase()
+    let matched = 0
+    let firstIdx = -1
+    for (const token of tokens) {
+      const idx = lower.indexOf(token)
+      if (idx < 0) continue
+      matched++
+      if (firstIdx < 0 || idx < firstIdx) firstIdx = idx
+    }
+    if (matched === 0) continue
+    const line = text.slice(0, Math.max(0, firstIdx)).split('\n').length
+    const snippet = (text.split('\n')[line - 1] ?? '').trim().slice(0, 900)
+    out.push({
+      path: rel,
+      startLine: line,
+      endLine: line,
+      kind: 'section',
+      name: basename(rel),
+      parentName: null,
+      score: matched / tokens.length,
+      snippet
+    })
+  }
+  out.sort((a, b) => b.score - a.score)
+  return out.slice(0, opts.limit)
+}
 
 export type ScoredId = { id: number; score: number }
 
@@ -190,6 +291,19 @@ export async function searchCodeIndex(
       score: item.score,
       snippet: readSnippet(workspaceRoot, chunk.path, chunk.startLine, chunk.endLine)
     })
+  }
+
+  const seen = new Set(hits.map((h) => h.path))
+  const docsBudget = hits.length === 0 ? limit : Math.min(3, Math.max(1, limit - hits.length))
+  const docsHits = await collectDocsLexicalHits(workspaceRoot, q, {
+    limit: docsBudget,
+    seenPaths: seen,
+    signal: opts.signal
+  })
+  if (docsHits.length > 0) {
+    hits.push(...docsHits)
+    hits.sort((a, b) => b.score - a.score)
+    if (hits.length > limit) hits.length = limit
   }
   return hits
 }

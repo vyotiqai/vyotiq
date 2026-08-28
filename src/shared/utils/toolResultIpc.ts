@@ -6,10 +6,22 @@ export const TOOL_RESULT_IPC_PREVIEW_CHARS = 4000
 /** Cap live tool-call argument previews in the renderer (full args stay on disk / messages). */
 export const TOOL_ARGS_IPC_PREVIEW_CHARS = TOOL_RESULT_IPC_PREVIEW_CHARS
 
+/** Trailing chars preserved on truncated results so `exit_code:` survives. */
+export const TOOL_RESULT_TAIL_CHARS = 200
+
+/**
+ * Head+tail truncation that keeps trailing metadata lines intact.
+ *
+ * Terminal results carry `cwd:` at the top and `exit_code: N` at the very
+ * bottom. A plain head slice drops that footer, so a long command renders with
+ * no exit badge at all and `terminalResultOk` (absence of `exit_code:`) treats
+ * it as a pass. Keeping the tail preserves the verdict.
+ */
 export function truncateToolResultContent(content: string | undefined): string | undefined {
   if (!content) return content
   if (content.length <= TOOL_RESULT_IPC_PREVIEW_CHARS) return content
-  return `${content.slice(0, TOOL_RESULT_IPC_PREVIEW_CHARS)}\n…`
+  const head = content.slice(0, TOOL_RESULT_IPC_PREVIEW_CHARS)
+  return `${head}\n…\n${content.slice(-TOOL_RESULT_TAIL_CHARS)}`
 }
 
 /** Bound tool-call argument strings shown in the UI transcript. */

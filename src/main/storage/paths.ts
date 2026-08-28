@@ -76,6 +76,15 @@ export function resolveRunDir(workspacePath: string, runId: string): string {
   return dir
 }
 
+/**
+ * Root passed to takeBrowserScreenshot when no run is open.
+ * Files land in `{this}/browser/` under userData, not the project tree.
+ */
+export function workspaceBrowserArtifactsDir(workspacePath: string): string {
+  const canonical = canonicalizeWorkspacePath(workspacePath)
+  return workspaceMetaDir(workspaceId(canonical))
+}
+
 export function readWorkspaceMeta(workspacePath: string): WorkspaceMeta | null {
   const canonical = canonicalizeWorkspacePath(workspacePath)
   const id = workspaceId(canonical)

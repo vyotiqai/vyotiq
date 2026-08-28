@@ -278,6 +278,54 @@
       "installable": true
     },
     {
+      "id": "goal",
+      "name": "Goal",
+      "version": "1.0.0",
+      "description": "Keep working a long-lived chat objective until it is complete. Use when the user sets /goal or asks to persist until an outcome is done. Pair with /loop. Never pause yourself.",
+      "kind": "skill",
+      "bundledPath": "goal",
+      "source": "bundled",
+      "publisher": "Agent V",
+      "category": "skills",
+      "installable": true
+    },
+    {
+      "id": "frontend-design",
+      "name": "Frontend design",
+      "version": "1.0.0",
+      "description": "Design and implement UI layout, hierarchy, motion, and brand-facing screens without generic clutter.",
+      "kind": "skill",
+      "bundledPath": "frontend-design",
+      "source": "bundled",
+      "publisher": "Agent V",
+      "category": "skills",
+      "installable": true
+    },
+    {
+      "id": "accessibility",
+      "name": "Accessibility",
+      "version": "1.0.0",
+      "description": "Audit and improve UI accessibility: semantic HTML, keyboard, focus, contrast, screen-reader names, and motion preferences.",
+      "kind": "skill",
+      "bundledPath": "accessibility",
+      "source": "bundled",
+      "publisher": "Agent V",
+      "category": "skills",
+      "installable": true
+    },
+    {
+      "id": "api-design",
+      "name": "API design",
+      "version": "1.0.0",
+      "description": "Design or change HTTP, IPC, and SDK API contracts, schemas, errors, and versioning.",
+      "kind": "skill",
+      "bundledPath": "api-design",
+      "source": "bundled",
+      "publisher": "Agent V",
+      "category": "skills",
+      "installable": true
+    },
+    {
       "id": "devtools",
       "name": "Devtools",
       "version": "1.0.0",

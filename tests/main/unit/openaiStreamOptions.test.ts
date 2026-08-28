@@ -19,10 +19,10 @@ describe('compatStreamOptions', () => {
     })
   })
 
-  it('omits stream_options for Mistral', () => {
+  it('requests include_usage for Mistral (rejected hosts auto-retry without it)', () => {
     expect(
-      compatStreamOptions({ defaultBaseUrl: 'https://api.mistral.ai/v1', includeUsage: false })
-    ).toEqual({})
+      compatStreamOptions({ defaultBaseUrl: 'https://api.mistral.ai/v1' })
+    ).toEqual({ stream_options: { include_usage: true } })
   })
 
   it('requests include_usage for Ollama so the final usage chunk is sent', () => {

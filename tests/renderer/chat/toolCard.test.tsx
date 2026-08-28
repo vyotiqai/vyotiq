@@ -316,7 +316,7 @@ describe('ToolCard terminal fixed viewport', () => {
     expect(viewport.textContent).toContain('ok')
   })
 
-  it('prefers started_at / running_for_ms when ToolItem timing exists', () => {
+  it('prefers started_at / ran_for_ms when ToolItem timing exists', () => {
     const startedAt = Date.parse('2026-08-01T09:02:08.030Z')
     render(
       <ToolCard
@@ -328,12 +328,36 @@ describe('ToolCard terminal fixed viewport', () => {
     )
     const viewport = screen.getByTestId('terminal-viewport')
     expect(viewport.textContent).toContain('started_at: 2026-08-01T09:02:08.030Z')
-    expect(viewport.textContent).toContain('running_for_ms: 580931')
+    expect(viewport.textContent).toContain('ran_for_ms: 580931')
     // Timing and workspace meta both show when available.
     expect(viewport.textContent).toContain('cwd: /ws')
     expect(viewport.textContent).toContain('shell: powershell')
     expect(viewport.getAttribute('role')).toBe('region')
     expect(viewport.getAttribute('aria-label')).toBe('Terminal output')
+  })
+
+  it('hides the exit badge for an in-progress session frame (placeholder exit_code: -1)', () => {
+    render(
+      <ToolCard
+        item={terminalItem('running', {
+          content:
+            'session_id: abc\nstatus: running\ncommand: pnpm test\ncwd: /ws\nshell: powershell\nexit_code: -1'
+        })}
+      />
+    )
+    expect(screen.queryByText('failed (-1)')).toBeNull()
+  })
+
+  it('still flags a finished session that closed with the placeholder exit code', () => {
+    render(
+      <ToolCard
+        item={terminalItem('done', {
+          content:
+            'session_id: abc\nstatus: aborted\ncommand: pnpm test\ncwd: /ws\nshell: powershell\nexit_code: -1'
+        })}
+      />
+    )
+    expect(screen.getByText('failed (-1)')).toBeTruthy()
   })
 
   it('shows multi-line command as first line + N+ in the header secondary', () => {

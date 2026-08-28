@@ -16,6 +16,64 @@ importers:
 
   .:
     dependencies:
+      '@electron-toolkit/utils':
+        specifier: ^4.0.0
+        version: 4.0.0(electron@43.2.0(supports-color@7.2.0))
+      '@huggingface/transformers':
+        specifier: ^4.2.0
+        version: 4.2.0(@types/node@22.20.1)
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.29.0
+        version: 1.30.0(supports-color@7.2.0)(zod@3.25.76)
+      '@sentry/electron':
+        specifier: ^7.15.0
+        version: 7.16.0(@opentelemetry/core@2.10.0(@opentelemetry/api@1.9.1))(supports-color@7.2.0)
+      '@sentry/react':
+        specifier: 10.67.0
+        version: 10.67.0(react@19.2.8)
+      ajv:
+        specifier: 8.17.1
+        version: 8.17.1
+      cross-spawn:
+        specifier: ^7.0.6
+        version: 7.0.6
+      electron-log:
+        specifier: ^5.4.4
+        version: 5.4.4
+      electron-updater:
+        specifier: ^6.8.9
+        version: 6.8.9(supports-color@7.2.0)
+      gpt-tokenizer:
+        specifier: ^3.4.0
+        version: 3.4.0
+      onnxruntime-node:
+        specifier: ^1.24.3
+        version: 1.24.3
+      tree-kill:
+        specifier: ^1.2.2
+        version: 1.2.2
+      tree-sitter-wasms:
+        specifier: ^0.1.13
+        version: 0.1.13
+      unpdf:
+        specifier: ^1.6.2
+        version: 1.8.0
+      web-tree-sitter:
+        specifier: ^0.26.11
+        version: 0.26.11
+      zod:
+        specifier: ^3.25.76
+        version: 3.25.76
+    devDependencies:
+      '@babel/core':
+        specifier: ^8.0.1
+        version: 8.0.1
+      '@babel/eslint-parser':
+        specifier: ^8.0.1
+        version: 8.0.1(@babel/core@8.0.1)(eslint@10.8.0(jiti@2.7.0)(supports-color@7.2.0))
+      '@babel/preset-typescript':
+        specifier: ^8.0.1
+        version: 8.0.1(@babel/core@8.0.1)
       '@codemirror/lang-css':
         specifier: ^6.3.1
         version: 6.3.1
@@ -46,106 +104,21 @@ importers:
       '@codemirror/view':
         specifier: ^6.43.8
         version: 6.43.8
-      '@electron-toolkit/utils':
-        specifier: ^4.0.0
-        version: 4.0.0(electron@43.2.0(supports-color@7.2.0))
+      '@eslint/js':
+        specifier: ^10.0.1
+        version: 10.0.1(eslint@10.8.0(jiti@2.7.0)(supports-color@7.2.0))
       '@fontsource/jetbrains-mono':
         specifier: ^5.3.0
         version: 5.3.0
       '@fontsource/plus-jakarta-sans':
         specifier: ^5.3.0
         version: 5.3.0
-      '@huggingface/transformers':
-        specifier: ^4.2.0
-        version: 4.2.0(@types/node@22.20.1)
       '@lobehub/icons':
         specifier: ^5.15.0
         version: 5.15.0(@lobehub/ui@5.24.0)(@types/react@19.2.18)(antd@6.5.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(supports-color@7.2.0)
-      '@modelcontextprotocol/sdk':
-        specifier: ^1.29.0
-        version: 1.30.0(supports-color@7.2.0)(zod@3.25.76)
       '@phosphor-icons/react':
         specifier: ^2.1.10
         version: 2.1.10(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      '@sentry/electron':
-        specifier: ^7.15.0
-        version: 7.16.0(@opentelemetry/core@2.10.0(@opentelemetry/api@1.9.1))(supports-color@7.2.0)
-      '@sentry/react':
-        specifier: 10.67.0
-        version: 10.67.0(react@19.2.8)
-      '@tanstack/react-virtual':
-        specifier: ^3.14.8
-        version: 3.14.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      '@xterm/addon-fit':
-        specifier: ^0.11.0
-        version: 0.11.0
-      '@xterm/addon-web-links':
-        specifier: ^0.12.0
-        version: 0.12.0
-      '@xterm/xterm':
-        specifier: ^6.0.0
-        version: 6.0.0
-      codemirror:
-        specifier: ^6.0.2
-        version: 6.0.2
-      cross-spawn:
-        specifier: ^7.0.6
-        version: 7.0.6
-      electron-log:
-        specifier: ^5.4.4
-        version: 5.4.4
-      electron-updater:
-        specifier: ^6.8.9
-        version: 6.8.9(supports-color@7.2.0)
-      gpt-tokenizer:
-        specifier: ^3.4.0
-        version: 3.4.0
-      material-icon-theme:
-        specifier: ^5.37.0
-        version: 5.37.0
-      onnxruntime-node:
-        specifier: ^1.24.3
-        version: 1.24.3
-      react-markdown:
-        specifier: ^10.1.0
-        version: 10.1.0(@types/react@19.2.18)(react@19.2.8)(supports-color@7.2.0)
-      rehype-sanitize:
-        specifier: ^6.0.0
-        version: 6.0.0
-      remark-gfm:
-        specifier: ^4.0.1
-        version: 4.0.1(supports-color@7.2.0)
-      shiki:
-        specifier: ^4.3.1
-        version: 4.4.1
-      tree-kill:
-        specifier: ^1.2.2
-        version: 1.2.2
-      tree-sitter-wasms:
-        specifier: ^0.1.13
-        version: 0.1.13
-      unpdf:
-        specifier: ^1.6.2
-        version: 1.8.0
-      web-tree-sitter:
-        specifier: ^0.26.11
-        version: 0.26.11
-      zod:
-        specifier: ^3.25.76
-        version: 3.25.76
-    devDependencies:
-      '@babel/core':
-        specifier: ^8.0.1
-        version: 8.0.1
-      '@babel/eslint-parser':
-        specifier: ^8.0.1
-        version: 8.0.1(@babel/core@8.0.1)(eslint@10.8.0(jiti@2.7.0)(supports-color@7.2.0))
-      '@babel/preset-typescript':
-        specifier: ^8.0.1
-        version: 8.0.1(@babel/core@8.0.1)
-      '@eslint/js':
-        specifier: ^10.0.1
-        version: 10.0.1(eslint@10.8.0(jiti@2.7.0)(supports-color@7.2.0))
       '@playwright/test':
         specifier: ^1.62.1
         version: 1.62.1
@@ -155,6 +128,9 @@ importers:
       '@tailwindcss/vite':
         specifier: ^4.3.3
         version: 4.3.3(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0))
+      '@tanstack/react-virtual':
+        specifier: ^3.14.8
+        version: 3.14.9(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@testing-library/react':
         specifier: ^16.3.2
         version: 16.3.2(@testing-library/dom@10.4.1)(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -176,6 +152,21 @@ importers:
       '@vitest/coverage-v8':
         specifier: ^3.2.7
         version: 3.2.7(supports-color@7.2.0)(vitest@3.2.7(@types/debug@4.1.13)(@types/node@22.20.1)(jiti@2.7.0)(jsdom@26.1.0(supports-color@7.2.0))(lightningcss@1.32.0)(supports-color@7.2.0)(yaml@2.9.0))
+      '@xterm/addon-fit':
+        specifier: ^0.11.0
+        version: 0.11.0
+      '@xterm/addon-web-links':
+        specifier: ^0.12.0
+        version: 0.12.0
+      '@xterm/xterm':
+        specifier: ^6.0.0
+        version: 6.0.0
+      babel-plugin-react-compiler:
+        specifier: ^1.0.0
+        version: 1.0.0
+      codemirror:
+        specifier: ^6.0.2
+        version: 6.0.2
       electron:
         specifier: 43.2.0
         version: 43.2.0(supports-color@7.2.0)
@@ -203,6 +194,9 @@ importers:
       jsdom:
         specifier: ^26.1.0
         version: 26.1.0(supports-color@7.2.0)
+      material-icon-theme:
+        specifier: ^5.37.0
+        version: 5.37.0
       opentype.js:
         specifier: ^2.0.0
         version: 2.0.0
@@ -212,9 +206,21 @@ importers:
       react-dom:
         specifier: ^19.2.1
         version: 19.2.8(react@19.2.8)
+      react-markdown:
+        specifier: ^10.1.0
+        version: 10.1.0(@types/react@19.2.18)(react@19.2.8)(supports-color@7.2.0)
+      rehype-sanitize:
+        specifier: ^6.0.0
+        version: 6.0.0
+      remark-gfm:
+        specifier: ^4.0.1
+        version: 4.0.1(supports-color@7.2.0)
       sharp:
         specifier: '>=0.35.3'
         version: 0.35.3(@types/node@22.20.1)
+      shiki:
+        specifier: ^4.3.1
+        version: 4.4.1
       tailwindcss:
         specifier: ^4.3.3
         version: 4.3.3
@@ -3484,6 +3490,9 @@ packages:
   ajv@6.15.0:
     resolution: {integrity: sha512-fgFx7Hfoq60ytK2c7DhnF8jIvzYgOMxfugjLOSMHjLIPgenqa7S7oaagATUq99mV6IYvN2tRmC0wnTYX6iPbMw==}
 
+  ajv@8.17.1:
+    resolution: {integrity: sha512-B/gBuNg5SiMTrPkC+A2+cW0RszwxYmn6VYxB/inlBStS5nx6xHIt/ehKRhIMhqusl7a8LjQoZnjCs5vhwxOQ1g==}
+
   ajv@8.20.0:
     resolution: {integrity: sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==}
 
@@ -3654,6 +3663,9 @@ packages:
   babel-plugin-macros@3.1.0:
     resolution: {integrity: sha512-Cg7TFGpIr01vOQNODXOOaGz2NpCU5gl8x1qJFbb6hbZxR7XrcE2vtbAsTAbJ7/xwJtUuJEw8K8Zr/AE0LHlesg==}
     engines: {node: '>=10', npm: '>=6'}
+
+  babel-plugin-react-compiler@1.0.0:
+    resolution: {integrity: sha512-Ixm8tFfoKKIPYdCCKYTsqv+Fd4IJ0DQqMyEimo+pxUOMUR9cVPlwTrFt9Avu+3cb6Zp3mAzl+t1MrG2fxxKsxw==}
 
   bail@2.0.2:
     resolution: {integrity: sha512-0xO6mYd7JB2YesxDKplafRpsiOzPt9V02ddPCLbY1xYGPOX24NTyN50qnUxgCPcSoYMhKpAuBTjQoRZCAkUDRw==}
@@ -11029,6 +11041,13 @@ snapshots:
       json-schema-traverse: 0.4.1
       uri-js: 4.4.1
 
+  ajv@8.17.1:
+    dependencies:
+      fast-deep-equal: 3.1.3
+      fast-uri: 3.1.5
+      json-schema-traverse: 1.0.0
+      require-from-string: 2.0.2
+
   ajv@8.20.0:
     dependencies:
       fast-deep-equal: 3.1.3
@@ -11390,6 +11409,10 @@ snapshots:
       '@babel/runtime': 7.29.7
       cosmiconfig: 7.1.0
       resolve: 1.22.12
+
+  babel-plugin-react-compiler@1.0.0:
+    dependencies:
+      '@babel/types': 7.29.8
 
   bail@2.0.2: {}
 

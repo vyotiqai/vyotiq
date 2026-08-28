@@ -2,6 +2,7 @@ import type { ComponentType } from 'react'
 import type { UiToolRow } from '@shared/transcript'
 import { isUnresolvedToolName, summarizeToolArgs, TOOL_LABELS } from '@shared/toolSummary'
 import { formatPathLabel } from '@shared/utils/displayPath'
+import { isTerminalSessionInProgress } from '@shared/utils/terminalFormat'
 import { basename } from '@shared/utils/path'
 import {
   BrowserActionBody,
@@ -358,6 +359,26 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
       }
     }
   },
+  create_goal: {
+    Body: StatusMessageBody,
+    hasBody: () => false,
+    headerOnly: true,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'flag'
+    })
+  },
+  update_goal: {
+    Body: StatusMessageBody,
+    hasBody: () => false,
+    headerOnly: true,
+    headerMeta: (tool) => ({
+      verb: toolLabel(tool.name, tool.status),
+      target: tool.summary,
+      icon: 'flag'
+    })
+  },
   web_fetch: {
     Body: WebFetchBody,
     hasBody: resultHasBody,
@@ -423,7 +444,9 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
         verb: toolLabel(tool.name, tool.status),
         target: formatTerminalHeaderTarget(data, tool.summary),
         icon: 'terminal',
-        exitCode: data.exitCode
+        // Live background-session frames carry the placeholder `exit_code: -1`
+        // (same rule as the main-process terminalResultOk): not a failure.
+        exitCode: isTerminalSessionInProgress(data.sessionStatus) ? null : data.exitCode
       }
     }
   },

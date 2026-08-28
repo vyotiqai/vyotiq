@@ -108,10 +108,29 @@ describe('glob parser', () => {
       tool({
         name: 'glob',
         argsPreview: JSON.stringify({ pattern: '**/*.ts' }),
-        content: 'src/a.ts\nsrc/b.ts'
+        content: 'src/a.ts\nsrc/b.ts\nindex=trigram'
       })
     )
     expect(data.paths).toEqual(['src/a.ts', 'src/b.ts'])
+    expect(data.nested).toBe(false)
+  })
+
+  it('surfaces nested matches from an empty root-relative glob', () => {
+    const data = parseGlobData(
+      tool({
+        name: 'glob',
+        argsPreview: JSON.stringify({ pattern: 'windows/**/*.{sln,slnf,csproj}' }),
+        content: [
+          'No files match windows/**/*.{sln,slnf,csproj}',
+          'Paths are relative to the workspace root.',
+          'Nested matches:',
+          'murmur-youtube-main/windows/Murmur.CrossPlatform.slnf',
+          'index=live'
+        ].join('\n')
+      })
+    )
+    expect(data.nested).toBe(true)
+    expect(data.paths).toEqual(['murmur-youtube-main/windows/Murmur.CrossPlatform.slnf'])
   })
 })
 

@@ -32,7 +32,8 @@ function dirHasFiles(root: string): boolean {
 
 /**
  * Remove empty package id directories that are not referenced by marketplace index.json.
- * Incomplete installs left orphans such as accessibility/ and filesystem/.
+ * Incomplete installs left empty package dirs; this only removes directories
+ * that contain no files.
  */
 export function purgeOrphanMarketplacePackageDirs(): { removed: number } {
   const root = marketplacePackagesRoot()

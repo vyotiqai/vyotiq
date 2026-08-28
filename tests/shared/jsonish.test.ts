@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { closeUnterminatedJson, completeJsonPrefix, parseJsonish } from '@shared/utils/jsonish'
+import {
+  closeUnterminatedJson,
+  completeJsonPrefix,
+  duplicateTopLevelJsonKeyError,
+  parseJsonish,
+  topLevelDuplicateJsonKeys
+} from '@shared/utils/jsonish'
 
 describe('completeJsonPrefix', () => {
   it('returns the first complete value when trailing junk follows', () => {
@@ -57,5 +63,38 @@ describe('parseJsonish', () => {
     const malformed =
       '[{"id": "how_open", "prompt": "How?", "type": "single", "options": ["A VS Code "Live Server" or similar", "Other"]}]'
     expect(parseJsonish(malformed)).toBeUndefined()
+  })
+})
+
+describe('topLevelDuplicateJsonKeys', () => {
+  it('lists both values when a top-level path key is repeated', () => {
+    const raw =
+      '{"path":"murmur-youtube-main/windows/global.json","path":"murmur-youtube-main/windows/Directory.Build.props"}'
+    expect(JSON.parse(raw)).toEqual({
+      path: 'murmur-youtube-main/windows/Directory.Build.props'
+    })
+    expect(topLevelDuplicateJsonKeys(raw)).toEqual([
+      {
+        key: 'path',
+        values: [
+          'murmur-youtube-main/windows/global.json',
+          'murmur-youtube-main/windows/Directory.Build.props'
+        ]
+      }
+    ])
+    expect(duplicateTopLevelJsonKeyError(raw)).toMatch(
+      /global\.json" and "murmur-youtube-main\/windows\/Directory\.Build\.props"/
+    )
+    expect(duplicateTopLevelJsonKeyError(raw)).toMatch(/Call the tool once per file/)
+  })
+
+  it('ignores unique keys and nested path keys', () => {
+    expect(topLevelDuplicateJsonKeys('{"path":"a.ts","offset":1}')).toEqual([])
+    expect(
+      topLevelDuplicateJsonKeys(
+        '{"edits":[{"path":"a.ts","contents":"x"},{"path":"b.ts","contents":"y"}]}'
+      )
+    ).toEqual([])
+    expect(duplicateTopLevelJsonKeyError('{"path":"a.ts"}')).toBeNull()
   })
 })

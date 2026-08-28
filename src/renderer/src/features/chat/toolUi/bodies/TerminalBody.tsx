@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type ReactElement, type UIEvent } from 'react'
+import { useEffect, useMemo, useRef, type ReactElement, type UIEvent } from 'react'
 import { cn } from '@renderer/lib/ui'
 import { TOOL_TERMINAL_VIEWPORT } from '@renderer/lib/utils/layout'
+import { useSharedNow } from '@renderer/lib/hooks/useSharedNow'
 import { sanitizeTerminalDisplayText } from '@shared/utils/terminalFormat'
 import type { ToolBodyProps } from '../types'
 import { parseTerminalCardData } from '../parsers/terminal'
@@ -41,13 +42,9 @@ export function TerminalBody({ tool, loading, loadFailed, timing }: ToolBodyProp
   const startedAt = resolveStartedAt(timing)
   const endedAt = resolveEndedAt(timing)
 
-  const [nowMs, setNowMs] = useState(() => Date.now())
-  useEffect(() => {
-    if (!running || startedAt == null) return
-    setNowMs(Date.now())
-    const id = window.setInterval(() => setNowMs(Date.now()), 1000)
-    return () => window.clearInterval(id)
-  }, [running, startedAt])
+  // Reuse the single shared 1 Hz clock instead of a per-card setInterval — many
+  // mounted terminal cards previously each fired their own timer + re-render/sec.
+  const nowMs = useSharedNow(running && startedAt != null)
 
   useEffect(() => {
     if (running) pinnedRef.current = true
@@ -72,7 +69,8 @@ export function TerminalBody({ tool, loading, loadFailed, timing }: ToolBodyProp
     metaLines.push(`started_at: ${new Date(startedAt).toISOString()}`)
     const endMs = running ? nowMs : (endedAt ?? undefined)
     if (endMs != null && endMs >= startedAt) {
-      metaLines.push(`running_for_ms: ${Math.max(0, endMs - startedAt)}`)
+      // Live clock while the command runs; fixed duration once it settles.
+      metaLines.push(`${running ? 'running' : 'ran'}_for_ms: ${Math.max(0, endMs - startedAt)}`)
     }
   }
   // Always surface cwd/shell when known — timing must not hide workspace context.
@@ -103,7 +101,7 @@ export function TerminalBody({ tool, loading, loadFailed, timing }: ToolBodyProp
       >
         {hasMeta
           ? metaLines.map((line) => (
-              <span key={line} className="block text-tertiary/70">
+              <span key={line} className="block text-tertiary">
                 {line}
               </span>
             ))

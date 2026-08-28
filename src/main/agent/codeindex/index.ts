@@ -102,7 +102,7 @@ export {
 export { CodeIndexStore, codeindexRoot, sanitizeFtsQuery, ftsQueryTokens, buildChunkFtsText } from './store'
 export { syncCodeIndex, INDEX_SCAN_CAP, CODE_INDEX_EMBED_BATCH, CODE_INDEX_RECONCILE_WALK_CAP, embedLengthBucket } from './sync'
 export { clearIndexSyncProgress, publishIndexSyncProgress } from './indexProgress'
-export { searchCodeIndex, formatSearchHits, codebaseSearchHitPathsFromResult, insertTopK, streamDenseTopK, storeEmbeddingsMatchEmbedder } from './search'
+export { searchCodeIndex, formatSearchHits, codebaseSearchHitPathsFromResult, collectDocsLexicalHits, insertTopK, streamDenseTopK, storeEmbeddingsMatchEmbedder } from './search'
 export {
   buildOrtSessionOptions,
   resolveOrtIntraOpThreads

@@ -24,6 +24,7 @@ vi.mock('@main/agent/tools/terminal', () => ({
   resolveTerminalShell: () => 'cmd',
   sanitizedTerminalEnv: () => ({ PATH: '/usr/bin' }),
   commandOnPath: () => false,
+  killProcessTree: () => undefined,
   killProcessTreeAndWait: async () => undefined
 }))
 

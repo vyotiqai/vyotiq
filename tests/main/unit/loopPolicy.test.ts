@@ -13,6 +13,9 @@ import {
   loopHintForConsecutiveToolFailures,
   loopHintForOmittedMcpTools,
   isPlausibleWorkspaceFilePath,
+  isBuildOutputRelPath,
+  isAbortStubToolResult,
+  isNonMutatingWriteFailure,
   normalizeWorkspaceRelPath,
   readPathFromToolCall,
   seedKnownPathsFromMessages,
@@ -85,21 +88,112 @@ describe('loopPolicy', () => {
     expect(emptyHint).toMatch(/use diff to remove contents explicitly/i)
   })
 
-  it('hints read to drop offset/limit when mixed with startLine/endLine', () => {
+  it('hints duplicate-path multi_edit without the schema-shape message', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'multi_edit',
+      summary:
+        'edits.1.path: duplicate path "src/main/agent/harnessReview.ts" — combine into one edit'
+    })
+    expect(hint).toMatch(/cannot list the same path twice/i)
+    expect(hint).not.toMatch(/requires edits: \[/i)
+  })
+
+  it('hints stale edit diffs and missing str_replace snippets', () => {
+    const diffHint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'edit',
+      summary:
+        'Diff hunk failed to match near line 150 (context/removal mismatch). Expected: "import"'
+    })
+    expect(diffHint).toMatch(/did not match the file/i)
+    expect(diffHint).toMatch(/Re-read/i)
+
+    const replaceHint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'str_replace',
+      summary:
+        'old_string not found in src/main/agent/loopPolicy.ts. Closest match near line 8:'
+    })
+    expect(replaceHint).toMatch(/old_string was not found/i)
+    expect(replaceHint).toMatch(/startLine\/endLine/i)
+  })
+
+  it('hints workspace-root path escapes and Plan-mode product edits', () => {
+    const escapeHint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'read',
+      summary: 'Path escapes workspace: vyotiq'
+    })
+    expect(escapeHint).toMatch(/outside the workspace root/i)
+    expect(escapeHint).toMatch(/workspace-relative/i)
+
+    const planHint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'edit',
+      summary:
+        'Plan mode may only edit plan.md or contract.md (run plan artifacts). Call `switch_mode` with mode "agent" to edit product code.'
+    })
+    expect(planHint).toMatch(/switch_mode/i)
+    expect(planHint).toMatch(/plan\.md/i)
+  })
+
+  it('hints read instead of unzipping Word .docx in the terminal', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'terminal',
+      summary:
+        'Do not unzip Word .docx in the terminal. Call read on the .docx path — it returns extracted document text.'
+    })
+    expect(hint).toMatch(/Call read on the \.docx path/i)
+    expect(hint).toMatch(/extracted document text/i)
+  })
+
+  it('hints missing PATH instead of retrying swift/dotnet not-recognized', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'terminal',
+      summary:
+        "swift : The term 'swift' is not recognized as the name of a cmdlet, function, script file, or operable program."
+    })
+    expect(hint).toMatch(/not on PATH/i)
+    expect(hint).toMatch(/Do not retry the same invocation/i)
+
+    const parseHint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'terminal',
+      summary: "The term '=' is not recognized as the name of a cmdlet"
+    })
+    expect(parseHint).not.toMatch(/not on PATH/i)
+  })
+
+  it('hints PowerShell space-before-dot member access', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'terminal',
+      summary: "Unexpected token '.Line' in expression or statement."
+    })
+    expect(hint).toMatch(/\$_\.Line not \$_ \.Line/)
+    expect(hint).toMatch(/Get-Content/)
+  })
+
+  it('hints duplicate JSON keys so the dropped path is not retried as one call', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'read',
+      summary:
+        'Duplicate JSON key "path" ("murmur-youtube-main/windows/global.json" and "murmur-youtube-main/windows/Directory.Build.props"). JSON keeps only the last value. Call the tool once per file.'
+    })
+    expect(hint).toMatch(/Duplicate JSON key/)
+    expect(hint).toMatch(/once per file/)
+  })
+
+  it('hints todo_write Zod field errors, not only todos: Required', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'todo_write',
+      summary: 'todos.0.content: Required'
+    })
+    expect(hint).toMatch(/todos: \[\{ id, content, status \}\]/i)
+  })
+
+  it('does not specialize mixed read offset/limit errors (line-range already wins at Zod)', () => {
     const hint = loopHintForConsecutiveToolFailures(2, {
       tool: 'read',
       summary: 'offset: offset/limit cannot be combined with startLine/endLine'
     })
     expect(hint).toBeTruthy()
-    expect(hint).toMatch(/omit offset\/limit when using startLine\/endLine/i)
-    expect(hint).toMatch(/byte window, not a line range/i)
-
-    expect(
-      loopHintForConsecutiveToolFailures(1, {
-        tool: 'read',
-        summary: 'offset: offset/limit cannot be combined with startLine/endLine'
-      })
-    ).toBeUndefined()
+    expect(hint).toMatch(/read the last tool_result errors/i)
+    expect(hint).not.toMatch(/omit offset\/limit/i)
   })
 
   it('normalizes workspace-relative paths', () => {
@@ -110,6 +204,29 @@ describe('loopPolicy', () => {
     expect(isPlausibleWorkspaceFilePath('src/stores')).toBe(true)
     expect(isPlausibleWorkspaceFilePath('src/stores;')).toBe(false)
     expect(isPlausibleWorkspaceFilePath('src/a.ts')).toBe(true)
+    expect(isPlausibleWorkspaceFilePath('$env:TEMP/ext.ps1')).toBe(false)
+  })
+
+  it('classifies .NET bin/Debug output and abort/mode write failures', () => {
+    expect(
+      isBuildOutputRelPath(
+        'murmur-youtube-main/windows/src/Murmur.App/bin/Debug/net10.0/Murmur.App.dll'
+      )
+    ).toBe(true)
+    expect(isBuildOutputRelPath('src/obj/Debug/foo.cs')).toBe(true)
+    expect(isBuildOutputRelPath('bin/cli.ts')).toBe(false)
+    expect(isBuildOutputRelPath('src/main/agent/loopPolicy.ts')).toBe(false)
+
+    expect(isAbortStubToolResult('Cancelled')).toBe(true)
+    expect(isAbortStubToolResult('Interrupted')).toBe(true)
+    expect(isAbortStubToolResult('exit 1')).toBe(false)
+
+    expect(
+      isNonMutatingWriteFailure(
+        'Plan mode may only edit plan.md or contract.md (run plan artifacts). Call `switch_mode` with mode "agent" to edit product code.'
+      )
+    ).toBe(true)
+    expect(isNonMutatingWriteFailure('Diff hunk failed to match near line 150')).toBe(false)
   })
 
   it('extracts read and edit paths from tool calls', () => {

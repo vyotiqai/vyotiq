@@ -35,6 +35,15 @@ const slashCommands = [
     kind: 'builtin' as const,
     group: 'App',
     availability: 'ready' as const
+  },
+  {
+    id: 'builtin:goal',
+    trigger: 'goal',
+    label: 'Set goal',
+    description: 'Set a long-lived objective',
+    kind: 'builtin' as const,
+    group: 'App',
+    availability: 'ready' as const
   }
 ]
 
@@ -52,6 +61,19 @@ beforeEach(() => {
           return {
             ok: true,
             data: { action: 'client', clientAction: 'create_skill', trailingText: 'personal notes' }
+          }
+        }
+        if (payload.id === 'builtin:goal') {
+          const text = String((payload as { trailingText?: string }).trailingText ?? '').trim()
+          if (/^pause\b/i.test(text)) {
+            return { ok: true, data: { action: 'client', clientAction: 'goal_pause' } }
+          }
+          return {
+            ok: true,
+            data: {
+              action: 'send',
+              message: `[Goal]\n${text}\n\nCall \`create_goal\` with this objective now.`
+            }
           }
         }
         if (payload.id === 'skill:code-review') {
@@ -227,6 +249,65 @@ describe('Composer slash commands', () => {
       )
     })
     await waitFor(() => expect(onCreateSkill).toHaveBeenCalled())
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('forces Agent mode before sending /goal', async () => {
+    const onSetAgentMode = vi.fn().mockResolvedValue(true)
+    const onSend = vi.fn().mockResolvedValue(true)
+    const onDraftChange = vi.fn()
+    const { rerender } = render(
+      <Composer
+        {...baseProps}
+        agentMode="plan"
+        draft="/goal make CI green"
+        onDraftChange={onDraftChange}
+        onSend={onSend}
+        slashHandlers={{ onSetAgentMode }}
+      />
+    )
+    await waitFor(() => expect(window.vyotiq.slashCommandsList).toHaveBeenCalled())
+    rerender(
+      <Composer
+        {...baseProps}
+        agentMode="plan"
+        draft="/goal make CI green"
+        onDraftChange={onDraftChange}
+        onSend={onSend}
+        slashHandlers={{ onSetAgentMode }}
+      />
+    )
+    const form = screen.getByRole('combobox', { name: /^Message$/i }).closest('form')!
+    fireEvent.submit(form)
+    await waitFor(() => expect(onSetAgentMode).toHaveBeenCalledWith('agent'))
+    await waitFor(() => expect(onSend).toHaveBeenCalled())
+    expect(String(onSend.mock.calls[0]?.[0])).toContain('[Goal]')
+    expect(String(onSend.mock.calls[0]?.[0])).toContain('make CI green')
+  })
+
+  it('resolves /goal pause as a client action', async () => {
+    const onGoalPause = vi.fn().mockResolvedValue(true)
+    const onSend = vi.fn()
+    const { rerender } = render(
+      <Composer
+        {...baseProps}
+        draft="/goal pause"
+        onSend={onSend}
+        slashHandlers={{ onGoalPause }}
+      />
+    )
+    await waitFor(() => expect(window.vyotiq.slashCommandsList).toHaveBeenCalled())
+    rerender(
+      <Composer
+        {...baseProps}
+        draft="/goal pause"
+        onSend={onSend}
+        slashHandlers={{ onGoalPause }}
+      />
+    )
+    const form = screen.getByRole('combobox', { name: /^Message$/i }).closest('form')!
+    fireEvent.submit(form)
+    await waitFor(() => expect(onGoalPause).toHaveBeenCalled())
     expect(onSend).not.toHaveBeenCalled()
   })
 

@@ -1,21 +1,24 @@
 // Runs vitest, waits for the summary line, then force-kills the whole process
 // tree and maps the outcome to vitest's real exit code.
 //
-// Why: on Windows, a full `vitest run` here prints its summary and then hangs
-// forever. Vitest's built-in teardownTimeout force-exit (cli-api: setTimeout
-// -> process.exit) does not fire reliably while a forked IPC channel (tinypool
-// worker) is still open. Killing by PID does work, so: watch stdout for the
-// final "Duration" summary, wait TEST_EXIT_GRACE_MS for a natural exit, then
-// taskkill /T the tree and report vitest's exit code (1 on failure, 0 on
-// green). HANG_EXIT (86) distinguishes a summary-then-hang from a real failure
-// so CI could optionally fail on it.
+// Why: on Windows, a full `vitest run` here used to print its summary and then
+// hang forever — an orphaned tinypool fork worker holding an open IPC channel
+// kept the event loop alive, and vitest's own force-exit never fired.
 //
-// Remove this wrapper once the underlying leak (orphaned tinypool fork worker)
-// is fixed upstream or the leaking suite teardown is found.
+// Primary fix is now vitest.config.ts `teardownTimeout` (tinypool's
+// `terminateTimeout`), which terminates a worker that will not shut down on its
+// own. This wrapper stays only as a safety net: it still catches the case
+// where vitest itself wedges before printing a summary, and it maps a
+// summary-then-hang to a non-zero code instead of hanging CI.
+//
+// HANG_EXIT (86) distinguishes a summary-then-hang from a real failure so CI
+// could optionally fail on it.
 
 const { spawn } = require('child_process')
 
-const TEST_EXIT_GRACE_MS = Number(process.env.TEST_EXIT_GRACE_MS ?? 30_000)
+// Vitest's own teardownTimeout (15s) now handles the common case, so this
+// grace period only has to cover the hand-off, not the whole teardown.
+const TEST_EXIT_GRACE_MS = Number(process.env.TEST_EXIT_GRACE_MS ?? 20_000)
 const HANG_EXIT = 86
 
 // Vitest lives under .pnpm on this machine (no hoisted node_modules/vitest).
@@ -31,7 +34,7 @@ const vitestEntry = require('path').join(vitestDir, 'vitest.mjs')
 // reads the tee'd copy below).
 const child = spawn(
   process.execPath,
-  [vitestEntry, 'run', '--reporter=basic', ...process.argv.slice(2)],
+  [vitestEntry, 'run', '--reporter=dot', ...process.argv.slice(2)],
   { stdio: ['ignore', 'pipe', 'pipe'], env: process.env, shell: false }
 )
 child.stdout.pipe(process.stdout)
@@ -46,7 +49,7 @@ let summarySeenAt = 0
 const start = Date.now()
 const probe = setInterval(() => {
   const now = Date.now()
-  if (!summarySeenAt && /Duration\s+[\d.]+(ms|s)/.test(out)) {
+  if (!summarySeenAt && /Duration\s+[\d.]+(ms|s)|Test Files\s+\d+/.test(out)) {
     summarySeenAt = now
   }
   // Safety valve: even without a summary, don't wait forever.

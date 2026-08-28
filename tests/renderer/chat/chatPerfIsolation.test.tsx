@@ -2,10 +2,17 @@
  * @vitest-environment jsdom
  */
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { renderHook, act } from '@testing-library/react'
-import { useHasChatItems } from '@renderer/features/chat/components/ChatStreamLeaves'
+import {
+  useHasChatItems,
+  useHasTranscriptRunError
+} from '@renderer/features/chat/components/ChatStreamLeaves'
 import type { ChatItemsStore } from '@renderer/features/chat/chatStores'
 import type { UiItem } from '@shared/transcript'
+
+const root = join(__dirname, '../../../src/renderer/src')
 
 function makeStore(initial: UiItem[]): ChatItemsStore & { setItems: (items: UiItem[]) => void } {
   let items = initial
@@ -93,6 +100,47 @@ describe('useHasChatItems', () => {
     rerender({ store: wrap() })
     expect(subscribeCalls).toBe(1)
     expect(result.current).toBe(true)
+  })
+})
+
+describe('useHasTranscriptRunError', () => {
+  it('stays Object.is-stable across stream growth without a run_error', () => {
+    const store = makeStore([])
+    const { result, rerender } = renderHook(() => useHasTranscriptRunError(store, []))
+    expect(result.current).toBe(false)
+    act(() => {
+      store.setItems([
+        {
+          kind: 'text',
+          id: 'a1',
+          role: 'assistant',
+          text: 'hi',
+          streaming: true
+        } as UiItem
+      ])
+    })
+    rerender()
+    expect(result.current).toBe(false)
+  })
+
+  it('flips true when itemsStore has a run_error and items prop is stale', () => {
+    const store = makeStore([
+      { kind: 'run_error', id: 'e1', message: 'boom' } as UiItem
+    ])
+    const { result } = renderHook(() => useHasTranscriptRunError(store, []))
+    expect(result.current).toBe(true)
+  })
+})
+
+describe('ChatView / SessionChatColumn isolation', () => {
+  it('keeps items subscription off ChatView and unused git chrome off SessionChatColumn', () => {
+    const chatView = readFileSync(join(root, 'features/chat/ChatView.tsx'), 'utf8')
+    const column = readFileSync(join(root, 'features/chat/SessionChatColumn.tsx'), 'utf8')
+    expect(chatView).not.toMatch(/useChatLiveItems/)
+    expect(chatView).toMatch(/changesDockVisible/)
+    expect(column).not.toMatch(/useGitChrome/)
+    expect(column).not.toMatch(/useGitRevision/)
+    expect(column).toMatch(/virtualizeLiveEarly/)
   })
 })
 

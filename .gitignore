@@ -93,6 +93,17 @@ venv/
 /.cursor/
 /.devin/
 /.vyotiq/rules/
+# Editor recovery snapshot (full source mirror) — local-only, never commit.
+/.vyotiq/editor-recovery.json
+/.vyotiq/**/editor-recovery.json
+# Runtime audit scratch: real userData transcripts/telemetry. Only the written
+# report and the .ps1 projections are committed; everything else stays local.
+/_audit-runtime/*
+!/_audit-runtime/AUDIT-REPORT.md
+!/_audit-runtime/proj-*.ps1
+
+# Local coverage scratch
+/coverage-baseline.txt
 /docs/**
 !/docs/**/
 !/docs/**/*.docx

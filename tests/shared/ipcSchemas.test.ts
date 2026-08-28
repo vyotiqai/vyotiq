@@ -479,6 +479,31 @@ describe('ipc schemas', () => {
       }).mode
     ).toBe('plan')
     expect(
+      AgentEventSchema.parse({
+        type: 'goal_update',
+        runId: 'r1',
+        goal: {
+          objective: 'Ship',
+          status: 'active',
+          createdAt: 't',
+          updatedAt: 't'
+        },
+        notice: 'Resuming goal: Ship'
+      }).notice
+    ).toBe('Resuming goal: Ship')
+    expect(
+      AgentEventSchema.parse({
+        type: 'loop_update',
+        runId: 'r1',
+        loop: {
+          prompt: 'check CI',
+          intervalMs: 30_000,
+          status: 'armed',
+          nextAt: 't'
+        }
+      }).loop?.status
+    ).toBe('armed')
+    expect(
       AgentQuestionRequestSchema.parse({
         requestId: 'q1',
         runId: 'r1',
@@ -985,8 +1010,8 @@ describe('ipc schemas', () => {
       })
     ).toEqual({ workspacePath: '/ws', runId: 'run-1', tabId: 'tab-a' })
     expect(
-      BrowserTakeScreenshotRequestSchema.safeParse({ workspacePath: '/ws' }).success
-    ).toBe(false)
+      BrowserTakeScreenshotRequestSchema.parse({ workspacePath: '/ws' })
+    ).toEqual({ workspacePath: '/ws' })
   })
 
   it('parses browser select/close request schemas with optional workspacePath', async () => {

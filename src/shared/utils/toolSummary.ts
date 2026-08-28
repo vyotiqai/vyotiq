@@ -54,6 +54,8 @@ export const TOOL_LABELS: Record<string, { running: string; done: string }> = {
   str_replace: { running: 'Editing', done: 'Edited' },
   delete: { running: 'Deleting', done: 'Deleted' },
   todo_write: { running: 'Updating tasks', done: 'Updated tasks' },
+  create_goal: { running: 'Setting goal', done: 'Set goal' },
+  update_goal: { running: 'Updating goal', done: 'Updated goal' },
   create_plan: { running: 'Writing plan', done: 'Wrote plan' },
   web_fetch: { running: 'Fetching', done: 'Fetched' },
   web_search: { running: 'Searching web', done: 'Web search' },
@@ -183,6 +185,14 @@ export function normalizeToolTarget(name: string, args: Record<string, unknown> 
       const n = todos.length
       return n === 1 ? '1 task' : `${n} tasks`
     }
+  }
+  if (name === 'create_goal') {
+    const objective = args.objective
+    if (typeof objective === 'string' && objective.trim()) return truncate(objective.trim())
+  }
+  if (name === 'update_goal') {
+    const status = args.status
+    if (typeof status === 'string' && status.trim()) return truncate(status.trim())
   }
   if (name === 'create_plan') {
     const title = args.title

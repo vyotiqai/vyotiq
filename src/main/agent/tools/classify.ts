@@ -46,6 +46,8 @@ const SERIAL_APPROVAL_EXEMPT_BUILTIN = new Set([
   'switch_mode',
   'todo_write',
   'create_plan',
+  'create_goal',
+  'update_goal',
   'await_agent_instance',
   'spawn_agent_instance',
   'cancel_agent_instance'
@@ -58,6 +60,13 @@ export const AGENT_ONLY_BUILTIN = new Set([
   'pull_agent_instance',
   'merge_agent_instance',
   'cancel_agent_instance'
+])
+
+/** Root-chat-only builtins omitted from inline instance catalogs. */
+export const INLINE_OMIT_BUILTIN = new Set([
+  ...AGENT_ONLY_BUILTIN,
+  'create_goal',
+  'update_goal'
 ])
 
 export const MAX_PARALLEL_READ_TOOLS = 8

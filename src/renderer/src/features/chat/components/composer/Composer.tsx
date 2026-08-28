@@ -392,6 +392,8 @@ export function Composer({
           workspacePath: boundWorkspace,
           draft: rawText,
           existingFiles: sendFiles ?? [],
+          existingImages: sendImages ?? [],
+          runId: activeRunId ?? null,
           isCurrent: () => workspacePathRef.current === boundWorkspace
         })
         if (resolved.stale || workspacePathRef.current !== boundWorkspace) {
@@ -405,14 +407,14 @@ export function Composer({
         if (
           !resolved.text.trim() &&
           !resolved.files.length &&
-          !(sendImages?.length) &&
+          !resolved.images.length &&
           !hasExtras
         ) {
           return false
         }
         return await onSend(
           resolved.text,
-          sendImages?.length ? sendImages : undefined,
+          resolved.images.length ? resolved.images : undefined,
           resolved.files.length ? resolved.files : undefined,
           extras
         )
@@ -421,7 +423,7 @@ export function Composer({
         return false
       }
     },
-    [workspacePath, onSend, setFileError]
+    [workspacePath, activeRunId, onSend, setFileError]
   )
 
   const resolveSlashSubmitCommand = useCallback(
@@ -468,6 +470,8 @@ export function Composer({
         workspacePath: boundWorkspace,
         draft: trailingText,
         existingFiles: sendFiles,
+        existingImages: sendImages,
+        runId: activeRunId ?? null,
         isCurrent: () => workspacePathRef.current === boundWorkspace
       })
       if (resolvedTrailing.stale || workspacePathRef.current !== boundWorkspace) {
@@ -504,10 +508,22 @@ export function Composer({
       })
 
       if (outcome === 'sent' && res.data.action === 'send') {
+        if (command.id === 'builtin:goal') {
+          if (running && agentMode !== 'agent') {
+            slashHandlers?.onNotice?.(
+              'Start /goal in Agent mode. Prefer a new chat while another mode is running.'
+            )
+            return false
+          }
+          if (!running && agentMode !== 'agent') {
+            const modeOk = await Promise.resolve(slashHandlers?.onSetAgentMode?.('agent'))
+            if (modeOk === false) return false
+          }
+        }
         const ok = await Promise.resolve(
           sendWithMentions(
             res.data.message,
-            sendImages.length ? sendImages : undefined,
+            resolvedTrailing.images.length ? resolvedTrailing.images : undefined,
             resolvedTrailing.files.length ? resolvedTrailing.files : undefined,
             extras
           )
@@ -521,7 +537,7 @@ export function Composer({
       if (outcome === 'failed') return false
       return true
     },
-    [workspacePath, slashHandlers, onCompactContext, sendWithMentions, slash, setFileError]
+    [workspacePath, activeRunId, slashHandlers, onCompactContext, sendWithMentions, slash, setFileError, running, agentMode]
   )
 
   const onSlashAccept = useCallback(

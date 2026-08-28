@@ -26,7 +26,12 @@ describe('loopCheckpoint', () => {
       invokeId: 3,
       updatedAt: new Date().toISOString(),
       truncationContinues: 1,
-      overflowRetryUsed: true
+      overflowRetryUsed: true,
+      identicalStepStreak: 2,
+      lastStepFingerprint: 'fp-abc123',
+      consecutiveToolFailureSteps: 1,
+      emptyResponseContinues: 1,
+      goalNoToolFinishes: 2
     }
     saveLoopCheckpoint(runDir, checkpoint)
     expect(existsSync(join(runDir, LOOP_CHECKPOINT_FILENAME))).toBe(true)

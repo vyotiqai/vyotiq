@@ -19,7 +19,7 @@ export function SettingsLayout({
 }) {
   return (
     <div
-      className="flex h-full flex-col overflow-hidden bg-transparent animate-fade-in"
+      className="flex h-full flex-col overflow-hidden bg-transparent pt-9 animate-fade-in"
       data-settings-shell
     >
       <div

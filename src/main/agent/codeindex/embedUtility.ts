@@ -294,6 +294,11 @@ async function ensureChildSession(signal?: AbortSignal): Promise<LoadedSession> 
 
 function resolveSyncEmbedder(msg: UtilityRequest): Embedder {
   const kind = msg.embedderKind ?? 'session'
+  if (kind === 'llamacpp') {
+    // llama.cpp embeddings must stay in-process (native lib, no GGUF staging in
+    // the child); callers exclude this kind before reaching the utility.
+    throw new Error('llamacpp embedder is not supported in the index utility child process')
+  }
   if (kind === 'hash') {
     return createLocalHashEmbedder(msg.dimensions ?? DEFAULT_EMBED_DIM, msg.modelId)
   }

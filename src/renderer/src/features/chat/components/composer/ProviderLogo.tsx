@@ -1,10 +1,13 @@
+import { useEffect, useState } from 'react'
 import { PlugsConnectedIcon } from '@phosphor-icons/react'
 import { cn } from '@renderer/lib/ui/cn'
 import { useDocumentTheme } from '@renderer/lib/ui/useDocumentTheme'
 import type { ProviderId } from '@shared/ipc'
 import {
-  PROVIDER_BRAND_DATA,
+  getCachedProviderBrand,
+  loadProviderBrand,
   resolveProviderBrandSlug,
+  type ProviderBrandData,
   type ProviderBrandSlug
 } from './providerBrandPaths'
 import { resolveProviderBrandColor } from './providerBrandColor'
@@ -23,7 +26,40 @@ function BrandMark({
   className?: string
 }) {
   const theme = useDocumentTheme()
-  const brand = PROVIDER_BRAND_DATA[slug]
+  const [brand, setBrand] = useState<ProviderBrandData | null>(
+    () => getCachedProviderBrand(slug) ?? null
+  )
+
+  useEffect(() => {
+    const cached = getCachedProviderBrand(slug)
+    if (cached) {
+      setBrand(cached)
+      return
+    }
+    setBrand(null)
+    let cancelled = false
+    loadProviderBrand(slug)
+      .then((data) => {
+        if (!cancelled) setBrand(data)
+      })
+      .catch(() => {
+        if (!cancelled) setBrand(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [slug])
+
+  if (!brand) {
+    return (
+      <span
+        className={cn('inline-block shrink-0', className)}
+        style={{ width: size, height: size }}
+        aria-hidden="true"
+      />
+    )
+  }
+
   const color = resolveProviderBrandColor(brand.colorPrimary, theme)
   return (
     <brand.Component

@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach } from 'vitest'
 import {
+  ASK_SAFE_BUILTIN,
   assertToolAllowedInMode,
   filterToolDefsForMode,
   filterToolDefsForCodeIndex,
@@ -9,7 +10,8 @@ import {
   isRunPlanPath,
   modeSectionMarkdown
 } from '../../../src/main/agent/tools/modePolicy'
-import { isParallelSafeTool } from '../../../src/main/agent/tools/classify'
+import { AGENT_ONLY_BUILTIN } from '../../../src/main/agent/tools/classify'
+import { BUILTIN_TOOL_NAMES } from '../../../src/main/agent/schemas/tools'
 import { setMcpReadOnlyHintsForTests } from '../../../src/main/agent/mcp'
 
 describe('modePolicy', () => {
@@ -37,6 +39,8 @@ describe('modePolicy', () => {
       { name: 'await_agent_instance' },
       { name: 'pull_agent_instance' },
       { name: 'merge_agent_instance' },
+      { name: 'create_goal' },
+      { name: 'update_goal' },
       { name: 'edit' }
     ]
     const filtered = filterToolDefsForMode('agent', defs, {
@@ -48,6 +52,9 @@ describe('modePolicy', () => {
       assertToolAllowedInMode('agent', 'spawn_agent_instance', { goal: 'x' }, { inlineInstance: true })
         .ok
     ).toBe(false)
+    expect(assertToolAllowedInMode('agent', 'create_goal', { objective: 'x' }, { inlineInstance: true }).ok).toBe(
+      false
+    )
   })
 
   it('root Agent mode delegates instance details to tool schemas', () => {
@@ -243,5 +250,68 @@ describe('modePolicy', () => {
       'grep'
     ])
     expect(filterToolDefsForCodeIndex(defs, false).map((d) => d.name)).toEqual(['read', 'grep'])
+  })
+
+  it('classifies every built-in into Ask, Plan-extra, instance-only, switch_mode, or Agent-only', () => {
+    const planExtra = [
+      'todo_write',
+      'create_plan',
+      'create_goal',
+      'update_goal',
+      'edit',
+      'str_replace',
+      'multi_edit',
+      'diagnostics',
+      'run_tests'
+    ] as const
+    const agentOnlyByOmission = [
+      'delete',
+      'browser_click',
+      'browser_type',
+      'browser_fill',
+      'browser_press_key',
+      'browser_select_option',
+      'browser_handle_dialog',
+      'request_mcp_tools',
+      'release_mcp_tools',
+      'mcp_read_resource',
+      'mcp_get_prompt',
+      'terminal',
+      'memory_write',
+      'git_commit',
+      'git_apply',
+      'github_pr_create',
+      'github_pr_review',
+      'github_issue',
+      'edit_notebook'
+    ] as const
+
+    const classified = [
+      ...ASK_SAFE_BUILTIN,
+      ...planExtra,
+      ...AGENT_ONLY_BUILTIN,
+      ...agentOnlyByOmission,
+      'switch_mode'
+    ]
+    expect([...classified].sort()).toEqual([...BUILTIN_TOOL_NAMES].sort())
+    expect(new Set(classified).size).toBe(BUILTIN_TOOL_NAMES.length)
+
+    for (const name of ASK_SAFE_BUILTIN) {
+      expect(isBuiltinAllowedInMode('ask', name), name).toBe(true)
+      expect(isBuiltinAllowedInMode('plan', name), name).toBe(true)
+    }
+    for (const name of planExtra) {
+      expect(isBuiltinAllowedInMode('ask', name), name).toBe(false)
+      expect(isBuiltinAllowedInMode('plan', name), name).toBe(true)
+    }
+    for (const name of [...AGENT_ONLY_BUILTIN, ...agentOnlyByOmission]) {
+      expect(isBuiltinAllowedInMode('ask', name), name).toBe(false)
+      expect(isBuiltinAllowedInMode('plan', name), name).toBe(false)
+      expect(isBuiltinAllowedInMode('agent', name), name).toBe(true)
+    }
+    expect(isBuiltinAllowedInMode('ask', 'switch_mode')).toBe(false)
+    expect(isBuiltinAllowedInMode('plan', 'switch_mode')).toBe(false)
+    expect(isBuiltinAllowedInMode('agent', 'switch_mode')).toBe(false)
+    expect(isBuiltinAllowedInMode('agent', 'switch_mode', { autoModeSwitch: true })).toBe(true)
   })
 })

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { cn } from '@renderer/lib/ui'
 import { MarkdownContent } from '@renderer/lib/ui'
 import { allocateHeadingId } from '@renderer/lib/markdown/headingIds'
@@ -321,7 +321,7 @@ function receiptToolFailHint(receipt: RunReceipt): string | null {
  * Docked panel for run plan.md / contract.md / receipt.json artifacts.
  * Identity must be passed as props — this panel sits outside RunSessionProvider.
  */
-export function PlanPanel({
+export const PlanPanel = memo(function PlanPanel({
   workspacePath,
   runId,
   running = false,
@@ -735,4 +735,4 @@ export function PlanPanel({
       ) : null}
     </div>
   )
-}
+})

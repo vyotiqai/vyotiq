@@ -1,6 +1,6 @@
 ---
 title: Slash commands
-description: Use all 13 built-in commands and understand dynamic commands from skills, MCP prompts, rules, and command files.
+description: Use all 15 built-in commands and understand dynamic commands from skills, MCP prompts, rules, and command files.
 section: customize
 order: 8
 type: reference
@@ -8,7 +8,7 @@ audience: Keyboard-oriented users
 related:
   - customize/skills
   - customize/mcp
-  - agent/modes
+  - agent/goals
 ---
 
 Type / in the composer to search available commands. Built-ins can change the app or run directly; dynamic entries can send an expanded prompt.
@@ -30,8 +30,10 @@ Type / in the composer to search available commands. Built-ins can change the ap
 | /agent | Switch to Agent mode |
 | /harness-review | Mine recent run receipts into a harness proposal draft |
 | /harness-apply | Confirm and apply the latest or named harness proposal |
+| /goal | Set a long-lived objective for this chat (`/goal pause`, `resume`, `complete`) |
+| /loop | Repeat a prompt on an interval (`/loop 30s check CI`; `/loop stop`) |
 
-There are 13 built-in slash commands.
+There are 15 built-in slash commands.
 
 ## Dynamic command sources
 

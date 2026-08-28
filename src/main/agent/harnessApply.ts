@@ -152,7 +152,11 @@ export function buildReceiptNotesSection(
   ].join('\n')
 }
 
-/** Merge receipt notes into a harness document (idempotent replace of that section). */
+/**
+ * Merge receipt notes into a document (idempotent replace of that section).
+ * Do not use this as the default `/harness-review` proposed body: canonical
+ * `default.md` must use section tags, not `##` headings.
+ */
 export function upsertReceiptNotes(
   currentHarness: string,
   bullets: readonly string[],

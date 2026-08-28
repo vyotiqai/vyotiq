@@ -7,6 +7,7 @@ import { workspacePathIsInside, workspacePathsEqual } from '../../shared/workspa
 import { getSettings } from '../settings/settings'
 import {
   commandOnPath,
+  killProcessTree,
   killProcessTreeAndWait,
   resolveTerminalShell,
   sanitizedTerminalEnv
@@ -321,6 +322,11 @@ export function killPty(id: string, workspacePath?: string): boolean {
   } catch {
     /* ignore */
   }
+  // The interactive shell may have spawned long-lived grandchildren (dev
+  // servers, watchers). Killing only the direct child orphans them, so walk
+  // the process tree as well. Fire-and-forget: the session is already gone.
+  const pid = backendPid(s.backend)
+  if (pid) killProcessTree(pid, 'pty-session-terminate')
   sessions.delete(id)
   return true
 }

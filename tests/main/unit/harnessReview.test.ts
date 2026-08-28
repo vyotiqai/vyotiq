@@ -8,6 +8,7 @@ import {
   writeHarnessProposal,
   runHarnessReview
 } from '@main/agent/harnessReview'
+import { extractProposedHarnessBody, upsertReceiptNotes } from '@main/agent/harnessApply'
 import { RUN_RECEIPT_FILENAME, RUN_RECEIPT_VERSION } from '@main/agent/runReceipt'
 import { workspaceSessionsRoot } from '@main/storage/paths'
 import type { RunReceipt } from '@shared/ipc'
@@ -93,8 +94,10 @@ describe('harnessReview', () => {
     const body = readFileSync(written.proposalPath, 'utf8')
     expect(body).toMatch(/Suggested harness edits/)
     expect(body).toMatch(/Proposed harness body/)
-    expect(body).toMatch(/Receipt review notes/)
     expect(body).toMatch(/## Evidence buckets/)
+    const proposed = extractProposedHarnessBody(body)
+    expect(proposed).toBe('# Agent V\n\n## Work style\n\nx\n')
+    expect(proposed).not.toMatch(/Receipt review notes/)
     expect(body).toMatch(/run-a/)
     expect(body).toMatch(/receipt\.json/)
     expect(body).toMatch(/not unsupervised Self-Harness/)
@@ -129,6 +132,9 @@ describe('harnessReview', () => {
     expect(body).toMatch(/trajectory\.jsonl/)
     expect(body).toMatch(/prediction\.json/)
     expect(body).toMatch(/observed_only|not auto-applied|not auto-merged/i)
+    const proposed = extractProposedHarnessBody(body)
+    expect(proposed).toMatch(/no editable harness|no resources\/harness\/default\.md/i)
+    expect(proposed).not.toMatch(/Receipt review notes/)
   })
 
   it('migrates known legacy receipt versions without overstating diagnostics cleanliness', () => {
@@ -196,5 +202,31 @@ describe('harnessReview', () => {
     // Streak-only evidence still routes into the tool_policy bucket.
     expect(summary.evidenceBuckets.some((b) => b.component === 'tool_policy')).toBe(true)
     expect(summary.suggestions.join('\n')).toMatch(/No harness-owned weakness found/i)
+  })
+
+  it('keeps a canonical proposed body valid (receipt notes stay outside default.md)', async () => {
+    const { validateHarnessMarkdown } = await import('../../../scripts/sync-harness.mjs')
+    const canonical = readFileSync(join(process.cwd(), 'resources', 'harness', 'default.md'), 'utf8')
+    expect(validateHarnessMarkdown(canonical)).toEqual([])
+    const withNotes = upsertReceiptNotes(canonical, ['Mined 1 receipt(s).'], [
+      '- No harness-owned weakness found; route tool, loop, and memory signals to their runtime owners.'
+    ])
+    expect(validateHarnessMarkdown(withNotes).length).toBeGreaterThan(0)
+    expect(withNotes).toMatch(/## Receipt review notes/)
+
+    mkdirSync(join(workspace, 'resources', 'harness'), { recursive: true })
+    writeFileSync(join(workspace, 'resources', 'harness', 'default.md'), canonical, 'utf8')
+    const sessions = workspaceSessionsRoot(workspace)
+    const runDir = join(sessions, 'run-a')
+    mkdirSync(runDir, { recursive: true })
+    writeFileSync(join(runDir, RUN_RECEIPT_FILENAME), JSON.stringify(sampleReceipt()), 'utf8')
+
+    const written = writeHarnessProposal(workspace, summarizeWeaknesses(collectRecentReceipts(workspace)))
+    const proposed = extractProposedHarnessBody(readFileSync(written.proposalPath, 'utf8'))
+    expect(proposed).toBeTruthy()
+    expect(validateHarnessMarkdown(proposed!)).toEqual([])
+    expect(proposed).not.toMatch(/^##\s+/m)
+    expect(proposed).not.toMatch(/Receipt review notes/)
+    expect(readFileSync(written.proposalPath, 'utf8')).toMatch(/## Evidence/)
   })
 })

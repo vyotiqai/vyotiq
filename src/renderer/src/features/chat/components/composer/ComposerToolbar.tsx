@@ -344,6 +344,8 @@ export function ComposerToolbar({
   //   has content        → Send
   //   locked/blocked     → muted Send (disabled)
   //   idle + empty       → Dictate (mic)
+  // The mic itself never disappears: whenever it is not the primary action it stays
+  // mounted beside Send/Stop so dictation can keep appending to an existing draft.
   const dictationLive =
     dictationPhase === 'checking' ||
     dictationPhase === 'recording' ||
@@ -352,6 +354,9 @@ export function ComposerToolbar({
   // Dictate is reachable whenever it is enabled and we are not already dictating —
   // including mid-run, so a follow-up can be composed while the agent runs.
   const dictationAllowed = !!onDictationToggle && !disabled && !dictationLive
+  // Empty idle draft: the mic IS the primary action. Once the draft has any content,
+  // Send takes the primary slot and the mic moves beside it instead of disappearing.
+  const micIsPrimary = dictationAllowed && !running && !hasContent
   const micButton = (
     <Tooltip content={dictationMicTooltip(dictationPhase, dictationEngineHint)}>
       <button
@@ -407,7 +412,7 @@ export function ComposerToolbar({
         <Icon name="send" size={14} weight="fill" />
       </button>
     </Tooltip>
-  ) : dictationAllowed && !hasContent && !running ? (
+  ) : micIsPrimary ? (
     micButton
   ) : (
     <Tooltip content={sendTooltip}>
@@ -424,9 +429,9 @@ export function ComposerToolbar({
     </Tooltip>
   )
 
-  // Keep the toolbar sparse once a draft exists; Ctrl/Cmd+M still starts dictation,
-  // while the mic remains visible during a live run for follow-up composition.
-  const dictateButton = dictationAllowed && running ? micButton : null
+  // The mic stays mounted beside Send/Stop whenever it is not the primary action,
+  // so dictation can keep appending to an existing draft (or a mid-run follow-up).
+  const dictateButton = dictationAllowed && !micIsPrimary ? micButton : null
 
   const sendOrStop = (
     <div className="flex items-center gap-1">

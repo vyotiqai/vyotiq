@@ -19,6 +19,7 @@ vi.mock('electron', () => ({
 import {
   appendMessage,
   listRuns,
+  listRunsOlder,
   interruptOrphanRuns,
   loadEvents,
   loadMessages,
@@ -87,6 +88,35 @@ describe('listRuns / interruptOrphanRuns', () => {
     const result = await listRuns(workspace)
     expect(result.runs).toHaveLength(30)
     expect(result.capped).toBe(true)
+  })
+
+  it('lists older pages beyond the cap strictly below the cursor', async () => {
+    for (let i = 0; i < 33; i++) {
+      const stamp = String(i).padStart(2, '0')
+      writeStatus(resolveRunDir(workspace, `run-${stamp}`), {
+        status: 'done',
+        updatedAt: `2026-01-01T00:${stamp}:00.000Z`,
+        goal: `run ${stamp}`,
+        workspacePath: workspace
+      })
+    }
+
+    const first = await listRuns(workspace)
+    expect(first.runs).toHaveLength(30)
+    // Cursor = oldest run already listed → the page holds the remaining runs.
+    const cursor = first.runs.at(-1)!.updatedAt
+    const page = await listRunsOlder(workspace, cursor)
+    // Pages keep the same newest-first order as the main list.
+    expect(page.runs.map((r) => r.runId)).toEqual(['run-02', 'run-01', 'run-00'])
+    expect(page.hasMore).toBe(false)
+
+    // A mid-list cursor returns only strictly older runs.
+    const mid = await listRunsOlder(workspace, first.runs[0]!.updatedAt, 2)
+    expect(mid.runs).toHaveLength(2)
+    expect(mid.hasMore).toBe(true)
+    for (const run of mid.runs) {
+      expect(run.updatedAt < first.runs[0]!.updatedAt).toBe(true)
+    }
   })
 
   it('loads messages and skips invalid jsonl lines', () => {

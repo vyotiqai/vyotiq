@@ -112,8 +112,20 @@ export function removeLegacyWorkspaceIndexDirs(workspaceRoot: string): void {
   }
 }
 
-/** Warm both indexes (boot / workspace open) via a single background job. */
-export function warmWorkspaceIndexes(workspaceRoot: string): void {
+/**
+ * Warm indexes (boot / workspace open / scheduled sync) via a single background job.
+ *
+ * The heavy embedding (code) index loads an ONNX/transformers model and walks the
+ * whole workspace, so it is only warmed when `warmCodeIndex` is true. Boot and
+ * workspace open/switch pass `warmCodeIndex: false` — the code index is instead
+ * built lazily on the first `codebase_search` (runCodebaseSearch already calls
+ * ensureCodeIndexSynced). This keeps startup and workspace switches responsive.
+ */
+export function warmWorkspaceIndexes(
+  workspaceRoot: string,
+  opts: { warmCodeIndex?: boolean } = {}
+): void {
+  const warmCodeIndex = opts.warmCodeIndex !== false
   if (!workspaceRoot.trim()) return
   const key = workspaceKey(workspaceRoot)
   if (permanentlyDisposedKeys.has(key)) return
@@ -129,12 +141,15 @@ export function warmWorkspaceIndexes(workspaceRoot: string): void {
       const signal = combineSignals(disposeSignal, activeIndexJobPreemptSignal())
       try {
         throwIfAborted(signal)
-        logger.info('Workspace index warm started', { scope: 'workspaceIndex' })
+        logger.info('Workspace index warm started', { scope: 'workspaceIndex', warmCodeIndex })
         throwIfAborted(signal)
-        const code = await ensureCodeIndexSynced(workspaceRoot, {
-          signal,
-          keepIndexingStatus: true
-        })
+        // Deferred: the embedding model is only loaded on the first codebase_search.
+        const code: Awaited<ReturnType<typeof ensureCodeIndexSynced>> = warmCodeIndex
+          ? await ensureCodeIndexSynced(workspaceRoot, {
+              signal,
+              keepIndexingStatus: true
+            })
+          : { entry: null, sync: null, disabled: false }
         if (code.sync) {
           logger.info('Code index warm sync', {
             scope: 'workspaceIndex',

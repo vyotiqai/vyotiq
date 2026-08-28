@@ -175,6 +175,24 @@ export function geminiFunctionCallingMode(
   return 'AUTO'
 }
 
+/**
+ * Flash-family models accept `thinkingBudget: 0` to disable thinking; 2.5 Pro
+ * cannot be disabled (budget 0 is rejected with a 400), so the config is only
+ * sent where it is documented to work. Thinking-enabled 2.5/3 models route to
+ * the Interactions transport before this path is reached.
+ */
+const GEMINI_DISABLEABLE_THINKING_RE = /gemini-(2\.5-)?flash/i
+
+/** Exported for tests — thinkingConfig for the plain generateContent path. */
+export function geminiThinkingConfigForPlainPath(
+  req: ProviderChatRequest
+): Record<string, unknown> | undefined {
+  if (req.thinking?.enabled === false && GEMINI_DISABLEABLE_THINKING_RE.test(req.model)) {
+    return { thinkingBudget: 0 }
+  }
+  return undefined
+}
+
 /** Exported for tests — build Gemini generateContent request body. */
 export function buildGeminiBody(req: ProviderChatRequest): Record<string, unknown> {
   const zones = resolveSystemZones({
@@ -213,6 +231,10 @@ export function buildGeminiBody(req: ProviderChatRequest): Record<string, unknow
   if (req.responseFormat) {
     generationConfig.responseMimeType = 'application/json'
     generationConfig.responseSchema = req.responseFormat.schema
+  }
+  const thinkingConfig = geminiThinkingConfigForPlainPath(req)
+  if (thinkingConfig) {
+    generationConfig.thinkingConfig = thinkingConfig
   }
   const contents = toGeminiContents(req.messages)
   if (zones.volatile) {
@@ -333,7 +355,7 @@ export const geminiProvider: LlmProvider = {
     if (!res.ok) {
       const text = await res.text().catch(() => '')
       logProviderFailure('gemini', 'http', { status: res.status })
-      yield { type: 'error', error: formatProviderHttpError(res.status, text, 'gemini'), errorCode: 'PROVIDER_HTTP' }
+      yield { type: 'error', error: formatProviderHttpError(res.status, text, 'gemini'), errorCode: 'PROVIDER_HTTP', httpStatus: res.status }
       return
     }
 
@@ -390,6 +412,9 @@ export const geminiProvider: LlmProvider = {
         }
       }
       for (const part of parts) {
+        // `thought: true` rows are model reasoning, not answer text — the plain
+        // path has no thinking channel, so they must never reach the transcript.
+        if (part.thought === true) continue
         if (typeof part.text === 'string' && part.text) {
           yield { type: 'text', text: part.text }
         }

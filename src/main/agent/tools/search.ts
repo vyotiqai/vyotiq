@@ -4,12 +4,14 @@ import { extname } from 'path'
 import {
   collectWorkspaceFilesPage,
   formatLiveScanCapNotice,
+  isGrepOverlapRel,
   TEXT_EXTS,
   throwIfAborted,
   yieldToEventLoop,
   type WalkedFile
 } from './walk'
 import { compileUserRegex } from './safeUserRegex'
+import { extractDocxText, isDocxPath, MAX_DOCX_ARCHIVE_BYTES } from './docxText'
 import {
   querySparseCandidates,
   resolveCandidateFullPaths
@@ -28,8 +30,14 @@ async function contentHit(
   regex: boolean
 ): Promise<string | null> {
   try {
-    await fsp.stat(file)
-    const text = await fsp.readFile(file, 'utf8')
+    const st = await fsp.stat(file)
+    let text: string
+    if (isDocxPath(rel) || isDocxPath(file)) {
+      if (st.size > MAX_DOCX_ARCHIVE_BYTES) return null
+      text = extractDocxText(await fsp.readFile(file))
+    } else {
+      text = await fsp.readFile(file, 'utf8')
+    }
     if (regex) {
       const match = pattern.exec(text)
       if (!match) return null
@@ -65,7 +73,7 @@ export async function toolSearch(
 
   let pattern: RegExp
   if (regex) {
-    pattern = compileUserRegex(q, 'i')
+    pattern = compileUserRegex(q, 'im')
   } else {
     const lower = q.toLowerCase()
     pattern = {
@@ -103,7 +111,7 @@ export async function toolSearch(
   if (Number.isFinite(limit) && hits.length >= limit) {
     truncated = true
   } else {
-    let contentFiles: WalkedFile[]
+    let contentFiles: WalkedFile[] = allFiles.filter((f) => !fileHitRels.has(f.rel))
     const sparse = await querySparseCandidates(workspaceRoot, {
       query: q,
       kind: regex ? 'regex' : 'substring',
@@ -111,12 +119,18 @@ export async function toolSearch(
       signal
     })
     if (sparse?.lookup.ok) {
-      indexMode = 'trigram'
-      contentFiles = resolveCandidateFullPaths(workspaceRoot, sparse.lookup.paths).filter(
+      const pruned = resolveCandidateFullPaths(workspaceRoot, sparse.lookup.paths).filter(
         (f) => !fileHitRels.has(f.rel)
       )
-    } else {
-      contentFiles = allFiles.filter((f) => !fileHitRels.has(f.rel))
+      if (pruned.length > 0) {
+        indexMode = 'trigram'
+        const seen = new Set(pruned.map((f) => f.rel))
+        const extraOverlap = allFiles.filter((f) => {
+          if (seen.has(f.rel) || fileHitRels.has(f.rel)) return false
+          return isGrepOverlapRel(f.rel, f.full)
+        })
+        contentFiles = extraOverlap.length > 0 ? [...pruned, ...extraOverlap] : pruned
+      }
     }
 
     for (let i = 0; i < contentFiles.length; i++) {
@@ -131,7 +145,7 @@ export async function toolSearch(
       }
       const { full: file, rel } = contentFiles[i]!
       const ext = extname(file).toLowerCase()
-      if (!TEXT_EXTS.has(ext)) continue
+      if (!TEXT_EXTS.has(ext) && !isDocxPath(rel)) continue
       const hit = await contentHit(file, rel, q, pattern, regex)
       if (hit) hits.push(hit)
     }

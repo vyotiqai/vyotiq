@@ -24,12 +24,12 @@ function isFilesystemMcpServer(serverId: string): boolean {
  * Snapshot known MCP filesystem write paths before invokeMcpTool.
  * Conservative: only bundled filesystem tool names + explicit path args.
  */
-export function recordMcpFilesystemPriors(
+export async function recordMcpFilesystemPriors(
   serverId: string,
   toolName: string,
   args: Record<string, unknown>,
   context: { runDir?: string; skipWriteCheckpoint?: boolean }
-): void {
+): Promise<void> {
   if (context.skipWriteCheckpoint || !context.runDir) return
   if (!isFilesystemMcpServer(serverId) || !FILESYSTEM_WRITE_TOOLS.has(toolName)) return
 
@@ -39,8 +39,8 @@ export function recordMcpFilesystemPriors(
   if (toolName === 'move_file') {
     const source = asString(args.source)
     const destination = asString(args.destination)
-    if (source) cp.recordPrior(source, 'delete')
-    if (destination) cp.recordPrior(destination, 'write')
+    if (source) await cp.recordPrior(source, 'delete')
+    if (destination) await cp.recordPrior(destination, 'write')
     return
   }
 
@@ -48,7 +48,7 @@ export function recordMcpFilesystemPriors(
 
   const path = asString(args.path)
   if (!path) return
-  cp.recordPrior(path, 'write')
+  await cp.recordPrior(path, 'write')
 }
 
 /**

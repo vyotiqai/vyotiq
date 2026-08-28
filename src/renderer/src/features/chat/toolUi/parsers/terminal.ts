@@ -3,6 +3,8 @@ import { parseArgsRecord } from '@shared/toolSummary'
 import { sanitizeCommandForDisplay, truncateMiddle } from '@shared/utils/displayPath'
 import { parseTerminalOutput } from '@shared/utils/terminalFormat'
 
+const NEWLINE_SPLIT = new RegExp('\\r?\\n')
+
 export type TerminalCardData = {
   command: string
   exitCode: number | null
@@ -38,6 +40,10 @@ export function parseTerminalCardData(tool: UiToolRow): TerminalCardData {
 /**
  * Header secondary for terminal cards: first command line + `, N+` when multi-line.
  * Uses real command/shell data only — never invents free-form titles.
+ *
+ * Truncating mid-token is what makes two unrelated pipeline stages read as one
+ * invented command (`…AddM…t.log`). Prefer a real separator so the header stays
+ * honest about what actually ran.
  */
 export function formatTerminalHeaderTarget(
   data: Pick<TerminalCardData, 'command' | 'shell'>,
@@ -45,14 +51,26 @@ export function formatTerminalHeaderTarget(
   maxLen = 56
 ): string {
   const lines = data.command
-    .split(/\r?\n/)
+    .split(NEWLINE_SPLIT)
     .map((line) => line.trim())
     .filter(Boolean)
   if (lines.length > 0) {
-    const first = truncateMiddle(sanitizeCommandForDisplay(lines[0]!), maxLen)
+    const first = commandHeaderLabel(sanitizeCommandForDisplay(lines[0]!), maxLen)
     const extra = lines.length - 1
     return extra > 0 ? `${first}, ${extra}+` : first
   }
   if (data.shell) return data.shell
   return fallback
+}
+
+/** Truncate a command for a one-line header without fusing two stages. */
+function commandHeaderLabel(command: string, maxLen: number): string {
+  if (command.length <= maxLen) return command
+  // Cut at a stage separator when one sits inside the budget, so the header
+  // ends where a real command ends instead of mid-identifier.
+  const sep = command.search(/[|;&]/)
+  if (sep > 0 && sep <= maxLen) {
+    return `${command.slice(0, sep + 1)} …`
+  }
+  return truncateMiddle(command, maxLen)
 }

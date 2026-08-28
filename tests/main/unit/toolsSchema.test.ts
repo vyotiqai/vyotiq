@@ -38,14 +38,16 @@ describe('toolsSchema', () => {
   it('covers every executable built-in with a short description', () => {
     const names = AGENT_TOOLS.map((t) => t.name).sort()
     expect(names).toEqual([...BUILTIN_TOOL_NAMES].sort())
-    expect(names.length).toBe(59)
+    expect(names.length).toBe(61)
     expect(names).toEqual(
       expect.arrayContaining([
         'github_pr_create',
         'github_pr_review',
         'github_issue',
         'edit_notebook',
-        'lsp'
+        'lsp',
+        'create_goal',
+        'update_goal'
       ])
     )
 
@@ -62,7 +64,7 @@ describe('toolsSchema', () => {
   it('wires a real handler for every built-in tool (no missing/stub handlers)', () => {
     const handlerNames = Object.keys(BUILTIN_HANDLERS).sort()
     expect(handlerNames).toEqual([...BUILTIN_TOOL_NAMES].sort())
-    expect(handlerNames).toHaveLength(59)
+    expect(handlerNames).toHaveLength(61)
     for (const name of BUILTIN_TOOL_NAMES) {
       const handler = BUILTIN_HANDLERS[name as keyof typeof BUILTIN_HANDLERS]
       expect(typeof handler, `${name} handler must be a function`).toBe('function')
@@ -74,6 +76,9 @@ describe('toolsSchema', () => {
     expect(read).toBeDefined()
     expect(read!.description).toMatch(/omit offset\/limit/i)
     expect(read!.description).toMatch(/byte window, not lines/i)
+    expect(read!.description).toMatch(/\.docx/)
+    expect(read!.description).toMatch(/extracted document text/i)
+    expect(read!.description).toMatch(/do not unzip/i)
     const props = (read!.parameters as { properties: Record<string, { description?: string }> })
       .properties
     expect(props.startLine?.description).toMatch(/Prefer this over offset\/limit/)
@@ -114,6 +119,8 @@ describe('toolsSchema', () => {
     expect(tool).toBeDefined()
     expect(tool!.description).toMatch(/conceptual/i)
     expect(tool!.description).toMatch(/grep\/search/i)
+    expect(tool!.description).toMatch(/docs\//)
+    expect(tool!.description).toMatch(/search time/i)
     expect(tool!.description).not.toMatch(/nomic-embed/i)
     const props = (
       tool!.parameters as {
@@ -265,6 +272,10 @@ describe('harness tool catalog', () => {
     expect(handbook).toMatch(/never replaces the first-party harness/i)
     expect(handbook).toMatch(/harness-apply/i)
     expect(handbook).toMatch(/normal code change/i)
+    expect(handbook).toMatch(/compaction use dedicated prompts/i)
+    expect(handbook).not.toMatch(/harness rewriting/i)
+    expect(handbook).toMatch(/does not rewrite the spine with a model/i)
+    expect(handbook).toMatch(/proposed body starts as the current canonical harness/i)
     }
   )
 
@@ -313,7 +324,8 @@ describe('harness tool catalog', () => {
   it('describes search as text-only without a skip-size cap', () => {
     const search = AGENT_TOOLS.find((t) => t.name === 'search')
     expect(search).toBeDefined()
-    expect(search!.description).toMatch(/Text files only/)
+    expect(search!.description).toMatch(/Word \.docx/)
+    expect(search!.description).toMatch(/extracted text/)
     expect(search!.description).not.toMatch(/256 KB/)
     expect(search!.description).not.toMatch(/512 KB/)
   })
@@ -321,7 +333,8 @@ describe('harness tool catalog', () => {
   it('describes grep as text-only without a skip-size cap', () => {
     const grep = AGENT_TOOLS.find((t) => t.name === 'grep')
     expect(grep).toBeDefined()
-    expect(grep!.description).toMatch(/Text files only/)
+    expect(grep!.description).toMatch(/Word \.docx/)
+    expect(grep!.description).toMatch(/extracted text/)
     expect(grep!.description).not.toMatch(/KB are skipped/)
   })
 
@@ -338,6 +351,8 @@ describe('harness tool catalog', () => {
     const byName = Object.fromEntries(AGENT_TOOLS.map((t) => [t.name, t.description]))
     expect(byName.delete).toMatch(/non-empty directory/)
     expect(byName.list_dir).toMatch(/Gitignore/)
+    expect(byName.list_dir).toMatch(/workspace root/)
+    expect(byName.glob).toMatch(/workspace root/)
     expect(byName.git_commit).toMatch(/paths is omitted/)
     expect(byName.ask_question).toMatch(/Never call with \{\}/)
     expect(byName.diagnostics).toMatch(/no override command/)
@@ -385,6 +400,18 @@ describe('harness tool catalog', () => {
     expect(validateToolArgs('search', JSON.stringify({ query: '   ' })).ok).toBe(false)
     expect(validateToolArgs('glob', JSON.stringify({ pattern: '   ' })).ok).toBe(false)
     expect(validateToolArgs('grep', JSON.stringify({ pattern: '   ' })).ok).toBe(false)
+  })
+
+  it('rejects duplicate top-level path keys before JSON last-wins', () => {
+    const result = validateToolArgs(
+      'read',
+      '{"path":"murmur-youtube-main/windows/global.json","path":"murmur-youtube-main/windows/Directory.Build.props"}'
+    )
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error).toMatch(/Duplicate JSON key "path"/)
+    expect(result.error).toContain('murmur-youtube-main/windows/global.json')
+    expect(result.error).toContain('murmur-youtube-main/windows/Directory.Build.props')
   })
 
   it('rejects empty required paths and browser_navigate URLs at Zod', () => {
@@ -562,5 +589,14 @@ describe('harness tool catalog', () => {
       JSON.stringify({ path: 'index.md', contents: 'x'.repeat(80_000) })
     )
     expect(result.ok).toBe(true)
+  })
+
+  it('rejects paused on update_goal and accepts active or complete', () => {
+    expect(validateToolArgs('update_goal', JSON.stringify({ status: 'paused' })).ok).toBe(false)
+    expect(validateToolArgs('update_goal', JSON.stringify({ status: 'complete' })).ok).toBe(true)
+    expect(validateToolArgs('update_goal', JSON.stringify({ status: 'active' })).ok).toBe(true)
+    expect(validateToolArgs('create_goal', JSON.stringify({ objective: 'fix flaky tests' })).ok).toBe(
+      true
+    )
   })
 })

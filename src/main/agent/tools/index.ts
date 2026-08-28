@@ -1,7 +1,8 @@
 import { logger, logErrorSummary } from '../../../shared/logger'
-import { formatError, isAbortError, isExpectedToolError } from '../../../shared/errors'
+import { formatError, formatToolResultError, isAbortError, isExpectedToolError } from '../../../shared/errors'
+import { duplicateTopLevelJsonKeyError } from '../../../shared/utils/jsonish'
 import { summarizeToolArgsFromRecord } from '../../../shared/toolSummary'
-import { parseTerminalOutput } from '../../../shared/utils/terminalFormat'
+import { isTerminalSessionInProgress, parseTerminalOutput } from '../../../shared/utils/terminalFormat'
 import {
   canonicalizeAgentToolName,
   formatMalformedToolArgsError,
@@ -48,6 +49,9 @@ import {
   assertInlineInstanceUnscopedToolAllowed
 } from './writeGuard'
 import { toolTodoWrite, type TodoItem } from './todo'
+import { createGoal, updateGoalStatus, goalToolContent } from '../runGoal'
+import { emitGoalUpdate } from '../goalEvents'
+import { truncateGoalObjective } from '../../../shared/goalRuntime'
 import { executeCreatePlan } from './createPlan'
 import { ensurePlanStub } from '../planArtifacts'
 import {
@@ -344,10 +348,7 @@ function toolFailureKind(err: unknown): string | undefined {
 export function terminalResultOk(command: string, content: string): boolean {
   // Background session frames: in-progress statuses are a healthy session, not
   // a failure — the placeholder `exit_code: -1` would otherwise fail them.
-  const sessionStatus = /^status: (\w+)/m.exec(content)?.[1]
-  if (sessionStatus === 'running' || sessionStatus === 'timeout' || sessionStatus === 'pattern_matched') {
-    return true
-  }
+  if (isTerminalSessionInProgress(/^status: (\w+)/m.exec(content)?.[1])) return true
   if (!content.includes('exit_code: ')) return true
   if (/exit_code: 0\b/.test(content)) return true
   // Soft-success helpers are cmd-oriented only.
@@ -401,7 +402,7 @@ async function withTerminalCheckpointWatch<T>(
   context: CheckpointWatchContext,
   run: () => Promise<T>
 ): Promise<T> {
-  recordTerminalCommandPriors(workspace, command, context)
+  await recordTerminalCommandPriors(workspace, command, context)
   const snap =
     !context.skipWriteCheckpoint && context.runDir && command.trim() && needsOpaqueWatch(command)
       ? await startWatch(workspace)
@@ -410,7 +411,7 @@ async function withTerminalCheckpointWatch<T>(
     return await run()
   } finally {
     if (snap) {
-      applyWatchDiffToCheckpoint(snap, await diffSince(snap), context)
+      await applyWatchDiffToCheckpoint(snap, await diffSince(snap), context)
       disposeWatch(snap)
     }
   }
@@ -484,7 +485,7 @@ export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       (typeof diff === 'string' && diff.trim().length > 0)
     if (!hasBody) throw new Error('edit requires contents or diff')
     if (!context.skipWriteCheckpoint) {
-      getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
+      await getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
     }
     const content = await toolEditAsync(workspace, path, contents, diff)
     invalidateAfterWorkspaceMutation(workspace, path)
@@ -553,7 +554,7 @@ export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       if (cp) {
         for (const edit of edits) {
           const path = readPathArg(edit as Record<string, unknown>)
-          if (path) cp.recordPrior(path, 'write')
+          if (path) await cp.recordPrior(path, 'write')
         }
       }
     }
@@ -577,7 +578,7 @@ export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     const path = requirePathArg('str_replace', args)
     if (!context.skipWriteCheckpoint) {
-      getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
+      await getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
     }
     const content = await toolStrReplaceAsync(
       workspace,
@@ -594,7 +595,9 @@ export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const path = requirePathArg('delete', args)
     const recursive = args.recursive === true
     if (!context.skipWriteCheckpoint) {
-      getWriteCheckpoint(context.runDir)?.recordPrior(path, 'delete', { recursiveDir: recursive })
+      await getWriteCheckpoint(context.runDir)?.recordPrior(path, 'delete', {
+        recursiveDir: recursive
+      })
     }
     const content = await toolDeleteAsync(workspace, path, recursive)
     invalidateAfterWorkspaceMutation(workspace, path)
@@ -611,6 +614,47 @@ export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     const n = next.length
     const countLabel = n === 1 ? '1 task' : `${n} tasks`
     return toolOk('todo_write', notice ? `${countLabel}; ${notice}` : countLabel, content)
+  },
+  create_goal: (_workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    if (context.inlineInstance) {
+      return toolFail('create_goal', 'Root chat only', 'create_goal is only available on the root chat.')
+    }
+    const objective = typeof args.objective === 'string' ? args.objective : ''
+    const goal = createGoal(context.runDir ?? '', objective)
+    if (context.runId) {
+      emitGoalUpdate({
+        workspacePath: context.sessionWorkspace ?? _workspace,
+        runId: context.runId,
+        runDir: context.runDir ?? '',
+        goal
+      })
+    }
+    return toolOk('create_goal', truncateGoalObjective(goal.objective), goalToolContent(goal))
+  },
+  update_goal: (_workspace, args, signal, context) => {
+    throwIfAborted(signal)
+    if (context.inlineInstance) {
+      return toolFail('update_goal', 'Root chat only', 'update_goal is only available on the root chat.')
+    }
+    const statusArg = args.status
+    if (statusArg !== 'complete' && statusArg !== 'active') {
+      return toolFail(
+        'update_goal',
+        'Invalid status',
+        'update_goal accepts only "active" (resume) or "complete" (objective done).'
+      )
+    }
+    const goal = updateGoalStatus(context.runDir ?? '', statusArg)
+    if (context.runId) {
+      emitGoalUpdate({
+        workspacePath: context.sessionWorkspace ?? _workspace,
+        runId: context.runId,
+        runDir: context.runDir ?? '',
+        goal
+      })
+    }
+    return toolOk('update_goal', goal.status, goalToolContent(goal))
   },
   create_plan: (workspace, args, signal, context) => {
     throwIfAborted(signal)
@@ -1682,7 +1726,7 @@ export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
     throwIfAborted(signal)
     const path = String(args.target_notebook ?? '')
     if (!context.skipWriteCheckpoint) {
-      getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
+      await getWriteCheckpoint(context.runDir)?.recordPrior(path, 'write')
     }
     const content = await toolEditNotebookAsync(workspace, args as EditNotebookArgs)
     invalidateAfterWorkspaceMutation(workspace, path)
@@ -1704,7 +1748,7 @@ export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
       if (!context.skipWriteCheckpoint) {
         const cp = getWriteCheckpoint(context.runDir)
         if (cp) {
-          for (const path of paths) cp.recordPrior(path, 'write')
+          for (const path of paths) await cp.recordPrior(path, 'write')
         }
       }
       const mutated = await applyLspRenameEdits(workspace, result.pendingRenameEdits)
@@ -1962,6 +2006,11 @@ export async function executeTool(
   }
   const name = canonicalizeAgentToolName(rawName)
 
+  const duplicateKey = duplicateTopLevelJsonKeyError(argsJson ?? '')
+  if (duplicateKey) {
+    return toolFail(name, name, duplicateKey)
+  }
+
   const agentMode: AgentInteractionMode = resolveAgentMode(context)
 
   const mcp = parseMcpToolName(name)
@@ -2018,7 +2067,7 @@ export async function executeTool(
     }
     const stamp = Math.max(context.currentStep ?? 1, 1)
     context.mcpLastUsedByName?.set(name, stamp)
-    recordMcpFilesystemPriors(mcp.serverId, mcp.toolName, parsed, {
+    await recordMcpFilesystemPriors(mcp.serverId, mcp.toolName, parsed, {
       runDir: context.runDir,
       skipWriteCheckpoint: context.skipWriteCheckpoint
     })
@@ -2169,7 +2218,7 @@ export async function executeTool(
         inlineInstance: effectiveContext.inlineInstance
       })
     } catch (err) {
-      const message = formatError(err)
+      const message = formatToolResultError(err)
       return toolFail(name, summary, message)
     }
   }
@@ -2231,7 +2280,7 @@ export async function executeTool(
       logger.warn('Tool aborted', { scope: 'tools', tool: name })
       throw err
     }
-    const message = formatError(err)
+    const message = formatToolResultError(err)
     logToolFailure(name, err)
     return toolFail(name, summary, message, { failureLogged: true })
   }

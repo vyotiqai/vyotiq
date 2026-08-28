@@ -2,7 +2,12 @@ import { randomBytes } from 'crypto'
 import { HARNESS_SECTION_TAGS } from './harnessSections'
 import { neutralizeXmlTags, OVERLAY_SECTION_TAGS } from './promptSections'
 
-export type UntrustedSource = 'workspace_harness' | 'browser' | 'mcp'
+/**
+ * Sources whose bytes can carry prompt-injection payloads. Marketplace skills,
+ * plugin rules, and workspace-authored rule files are deliberately included:
+ * all three reach the model verbatim today.
+ */
+export type UntrustedSource = 'workspace_harness' | 'browser' | 'mcp' | 'skill' | 'workspace_rules'
 
 export type WrapUntrustedOptions = {
   source: UntrustedSource

@@ -8,9 +8,12 @@ const RAIL_ICON_ACTIVE =
   'bg-surface text-fg ring-1 ring-inset ring-border/50 rounded-lg'
 
 const PANEL_SHORTCUT: Partial<Record<ChatRightPanelId, ShortcutId>> = {
+  files: 'panelFiles',
   browser: 'panelBrowser',
   terminal: 'panelTerminal',
-  changes: 'panelChanges'
+  changes: 'panelChanges',
+  plan: 'panelPlan',
+  pr: 'panelPr'
 }
 
 /**

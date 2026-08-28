@@ -18,3 +18,34 @@ export function formatUserRules(rules: readonly UserRule[]): string {
     ].join('\n')
   )
 }
+
+export type ResponseStyleInput = {
+  /** Assistant identity override. Empty = default spine name. */
+  persona?: string
+  /** Preferred response language. Empty = follow the user's language. */
+  responseLanguage?: string
+  /** Default answer length. `concise` is the spine default and emits nothing. */
+  responseVerbosity?: 'concise' | 'balanced' | 'detailed'
+}
+
+/**
+ * Optional user persona/language/verbosity preferences from settings, rendered
+ * as a stable-zone section mirroring `<user_rules>`. Emits nothing at defaults.
+ */
+export function formatResponseStyle(input: ResponseStyleInput): string {
+  const persona = input.persona?.trim() ?? ''
+  const language = input.responseLanguage?.trim() ?? ''
+  const verbosity = input.responseVerbosity ?? 'concise'
+  const lines: string[] = []
+  if (persona) {
+    lines.push(`Identity: this assistant is "${persona}"; that name overrides the default assistant name.`)
+  }
+  if (language) lines.push(`Respond in ${language}.`)
+  if (verbosity === 'detailed') {
+    lines.push('Default to complete, self-contained answers with full context; keep them skimmable.')
+  } else if (verbosity === 'balanced') {
+    lines.push('Default to compact answers; expand when the task needs detail.')
+  }
+  if (lines.length === 0) return ''
+  return wrapPromptSection('response_style', lines.join('\n'))
+}

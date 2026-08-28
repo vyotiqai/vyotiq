@@ -26,11 +26,30 @@ export function formatPathForDisplay(path: string): { name: string; parent: stri
   return { name: basename(full), parent: parentPath(full), full }
 }
 
-/** Truncate long strings in the middle, preserving start and end. */
+/**
+ * Truncate at a word/segment boundary, keeping the start and end.
+ *
+ * A raw middle slice cuts mid-token: `Get-ChildItem -Path out; taskkill /PID 7720`
+ * becomes `Get-ChildItem -P…D 7720`, which reads as one invented command made
+ * of two unrelated fragments. Splitting on separators first keeps each side a
+ * real fragment and never fuses two different sub-commands into a false one.
+ */
 export function truncateMiddle(text: string, maxLen: number): string {
   if (text.length <= maxLen) return text
-  const keep = Math.floor((maxLen - 1) / 2)
-  return `${text.slice(0, keep)}…${text.slice(-keep)}`
+  const head = text.slice(0, Math.max(1, Math.ceil((maxLen - 1) / 2)))
+  const tail = text.slice(-Math.max(1, Math.floor((maxLen - 1) / 2)))
+  // Prefer the last separator in the head and the first in the tail so both
+  // halves start and end on a token edge rather than mid-identifier.
+  const headCut = Math.max(head.lastIndexOf(' '), head.lastIndexOf('/'), head.lastIndexOf('\\'))
+  const tailSpace = tail.indexOf(' ')
+  const tailSlashIdx = tail.indexOf('/')
+  const tailBackIdx = tail.indexOf('\\')
+  const tailCuts = [tailSpace, tailSlashIdx, tailBackIdx].filter((i) => i >= 0)
+  const tailCut = tailCuts.length > 0 ? Math.min(...tailCuts) : -1
+  // Only trim when enough text survives — a 2-char stub helps nobody.
+  const keepHead = headCut >= 8 ? head.slice(0, headCut) : head
+  const keepTail = tailCut >= 0 && tail.length - tailCut >= 8 ? tail.slice(tailCut + 1) : tail
+  return `${keepHead.trimEnd()} … ${keepTail.trimStart()}`
 }
 
 /** Compact http(s) URLs for one-line tool headers; other text unchanged. */

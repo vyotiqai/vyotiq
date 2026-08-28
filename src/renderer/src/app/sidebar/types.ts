@@ -31,6 +31,9 @@ export type SidebarProps = {
   onSelectRunInWorkspace?: (path: string, runId: string) => void
   onRenameRunInWorkspace?: (path: string, runId: string, goal: string) => void
   onDeleteRunInWorkspace?: (path: string, runId: string) => void
+  onExportRunInWorkspace?: (path: string, runId: string) => void
+  /** Load one older page of runs beyond the sidebar cap (runs beyond 30). */
+  onLoadOlderRuns?: (path: string) => void
   isRunOpenInPane?: (path: string, runId: string) => boolean
   isRunFocusedInPane?: (path: string, runId: string) => boolean
   openInstanceRunId?: string | null

@@ -9,6 +9,41 @@ import { loopHintForRetainedDecisions } from './context/retainedDecisions'
 /** Stop the run when the same tool call(s) (name + args) repeats this many steps in a row. */
 export const MAX_IDENTICAL_STEP_STREAK = 3
 
+/**
+ * Terminal stop when the same tool call(s) repeat this many steps in a row.
+ * Below this ceiling identical repeats steer via the escalating hint
+ * (loopHintForIdenticalStepStreak); the loop treats this reason as terminal.
+ */
+export const MAX_IDENTICAL_STEP_STREAK_TERMINAL = 8
+
+/**
+ * Stop the run after this many consecutive steps whose tool calls all failed.
+ * Mirrors the "failed 4 steps in a row" loop hint threshold.
+ */
+export const MAX_CONSECUTIVE_TOOL_FAILURE_STEPS = 4
+
+/**
+ * Cap auto-continuation after the model output is truncated. Each continuation
+ * re-sends the full context, so an unbounded loop burns tokens with no progress.
+ * A legitimate truncation almost never needs more than a handful of continuations.
+ */
+export const MAX_TRUNCATION_CONTINUES = 8
+
+/**
+ * Cap auto-continuation after the model returns an empty response. Repeated
+ * empty responses are never productive and must not loop forever.
+ */
+export const MAX_EMPTY_RESPONSE_CONTINUES = 4
+
+/**
+ * Hard step ceiling for a single user turn. Without it, a run that alternates
+ * distinct (non-identical) tool calls can loop indefinitely, paying for
+ * compaction cycles each time the window refills. Generous by design — real
+ * long turns (large refactors) land well under a few hundred steps — so only
+ * genuine runaway loops hit it.
+ */
+export const MAX_STEPS_PER_TURN = 500
+
 export type LoopStopReason = 'tool_failure_streak' | 'identical_step_streak'
 
 export type LoopStop = { reason: LoopStopReason; message: string }
@@ -51,7 +86,7 @@ export function mcpNotInCatalogErrorMessage(
     ? `It is already pinned — wait for the next model step so the sticky catalog can admit it.`
     : `Use mcp_list_tools then request_mcp_tools to pin it once, then wait for the next model step (do not keep calling it this step).`
   return [
-    `MCP tool "${toolName}" ${MCP_NOT_IN_CATALOG_MARKER} (omitted by context budget or mode).`,
+    `MCP tool "${toolName}" ${MCP_NOT_IN_CATALOG_MARKER} (excluded by mode or catalog policy).`,
     pinNote
   ].join(' ')
 }
@@ -177,20 +212,40 @@ export function loopHintForConsecutiveToolFailures(
       'edit requires path plus non-empty contents (full file) or diff (unified @@ hunks). Never call edit with {}. Use diff to remove contents explicitly.'
     )
   } else if (
+    (recent?.tool === 'edit' || recent?.tool === 'multi_edit') &&
+    /Diff hunk failed to match|Diff hunk .* matched \d+/i.test(recent.summary)
+  ) {
+    lines.push(
+      'edit diff did not match the file. Re-read the current bytes and send a hunk whose context/removal lines match exactly.'
+    )
+  } else if (
     recent?.tool === 'str_replace' &&
     /empty arguments|path: Required|truncated during streaming/i.test(recent.summary)
   ) {
     lines.push('str_replace requires path, old_string, and new_string — never call it with {}.')
   } else if (
+    (recent?.tool === 'str_replace' || recent?.tool === 'edit_notebook') &&
+    /old_string not found/i.test(recent.summary)
+  ) {
+    lines.push(
+      'str_replace old_string was not found. Re-read with startLine/endLine and retry with an exact snippet (indentation and newlines).'
+    )
+  } else if (recent?.tool === 'multi_edit' && /duplicate path/i.test(recent.summary)) {
+    lines.push(
+      'multi_edit cannot list the same path twice — combine those edits into one entry.'
+    )
+  } else if (
     recent?.tool === 'multi_edit' &&
-    /empty arguments|empty contents|edits(?:\.|:)|each edit requires|truncated during streaming/i.test(recent.summary)
+    /empty arguments|empty contents|edits(?:\.|:)|each edit requires|truncated during streaming/i.test(
+      recent.summary
+    )
   ) {
     lines.push(
       'multi_edit requires edits: [{ path, contents }] or edits: [{ path, diff }]. Send each complete edit object together. Empty contents cannot replace an existing non-empty file; use diff to remove contents explicitly.'
     )
   } else if (
     recent?.tool === 'todo_write' &&
-    /empty arguments|todos: Required|invalid args/i.test(recent.summary)
+    /empty arguments|todos(?:\.|:)|invalid args/i.test(recent.summary)
   ) {
     lines.push(
       'todo_write requires todos: [{ id, content, status }] or merge:true with an empty todos list.'
@@ -204,12 +259,39 @@ export function loopHintForConsecutiveToolFailures(
     lines.push(
       'ask_question requires questions: [{ id, prompt, type: "boolean"|"text"|"single"|"multi", options? }] or legacy { question: "…" }. Never call it with {}.'
     )
+  } else if (/Duplicate JSON key/i.test(recent?.summary ?? '')) {
+    lines.push(
+      'Duplicate JSON key — JSON keeps only the last value. Call the tool once per file (one path per call).'
+    )
+  } else if (/Path escapes workspace/i.test(recent?.summary ?? '')) {
+    lines.push(
+      'That path is outside the workspace root. Use a workspace-relative path; read/list_dir cannot open AppData, home, or other-drive locations.'
+    )
+  } else if (/Plan mode may only edit plan\.md or contract\.md/i.test(recent?.summary ?? '')) {
+    lines.push(
+      'Plan mode cannot edit product files. Call switch_mode with mode "agent" before editing code, or keep edits on plan.md / contract.md.'
+    )
   } else if (
-    recent?.tool === 'read' &&
-    /offset\/limit cannot be combined with startLine\/endLine/i.test(recent.summary)
+    recent?.tool === 'terminal' &&
+    /\.docx/i.test(recent.summary) &&
+    /ZipFile|document\.xml|Do not unzip Word|extracted document text/i.test(recent.summary)
   ) {
     lines.push(
-      'read: omit offset/limit when using startLine/endLine. offset/limit is a byte window, not a line range.'
+      'Do not unzip Word .docx in the terminal. Call read on the .docx path — it returns extracted document text.'
+    )
+  } else if (
+    recent?.tool === 'terminal' &&
+    /is not recognized as the name of a cmdlet|is not recognized as an internal or external command|command not found|That command is not on PATH/i.test(
+      recent.summary
+    ) &&
+    !/The term '=' is not recognized/i.test(recent.summary)
+  ) {
+    lines.push(
+      'That command is not on PATH. Do not retry the same invocation. Locate the executable or state the missing toolchain.'
+    )
+  } else if (recent?.tool === 'terminal' && /Unexpected token '\.[A-Za-z_]/i.test(recent.summary)) {
+    lines.push(
+      'PowerShell member access cannot have a space before the dot. Write $_.Line not $_ .Line. To scan a log file, Get-Content $path first — do not -split the path string.'
     )
   }
 
@@ -316,10 +398,39 @@ export function isPlausibleWorkspaceFilePath(value: string): boolean {
   if (!isConcreteWorkspacePath(path)) return false
   if (path.includes(',')) return false
   if (/[;|&<>]/.test(path)) return false
+  // PowerShell env paths (`$env:TEMP/…`) are not workspace files.
+  if (path.startsWith('$')) return false
   if (/^[=+-]+$/.test(path)) return false
   if (path.includes(')') && !path.includes('(')) return false
   if (!path.includes('/') && !/\.[a-zA-Z0-9][\w.-]*$/.test(path)) return false
   return true
+}
+
+/**
+ * Compiler output that opaque `dotnet`/`msbuild` watches used to record as
+ * agent writes (receipt 92c049d6: 1541 bin/Debug files).
+ */
+export function isBuildOutputRelPath(value: string): boolean {
+  const path = normalizeWorkspaceRelPath(value)
+  return /(?:^|\/)(?:bin\/(?:Debug|Release)(?:\/|$)|obj\/)/i.test(path)
+}
+
+/** Run-cancel / steer stubs — not agent tool errors. */
+export function isAbortStubToolResult(content: string): boolean {
+  const text = content.trim()
+  return text === 'Cancelled' || text === 'Interrupted'
+}
+
+/**
+ * Failures that never mutated the file. Counting them as unread-before-edit
+ * poisoned harness review (Plan-mode memory-path edits on run 75135925).
+ */
+export function isNonMutatingWriteFailure(content: string): boolean {
+  if (isAbortStubToolResult(content)) return true
+  if (/Plan mode may only edit plan\.md or contract\.md/i.test(content)) return true
+  if (/Ask mode does not allow tool "/i.test(content)) return true
+  if (/Path escapes workspace/i.test(content)) return true
+  return false
 }
 
 /** Tools whose successful concrete paths count as inspect for path tracking. */
@@ -522,12 +633,57 @@ export function nextIdenticalStepStreak(
   return fingerprint === prevFingerprint ? prevStreak + 1 : 1
 }
 
-/** Central loop-safety decision — never stops the run. */
-export function loopStopDecision(_state: {
-  /** Progress metadata only — not a stop condition. */
+/**
+ * Central loop-safety decision. Stops the run when it is clearly spinning:
+ * the same tool call(s) repeating, or tool calls failing every step. These
+ * signals are already collected per step in `loop.ts`; previously this always
+ * returned `undefined`, so the agent could iterate forever burning tokens.
+ */
+export function loopStopDecision(state: {
   step: number
   consecutiveToolFailureSteps?: number
   identicalStepStreak: number
 }): LoopStop | undefined {
+  if (state.identicalStepStreak >= MAX_IDENTICAL_STEP_STREAK_TERMINAL) {
+    return {
+      reason: 'identical_step_streak',
+      message: `Stopping: the same tool call(s) repeated ${state.identicalStepStreak} steps in a row. Change approach instead of retrying identical arguments.`
+    }
+  }
+  const failures = state.consecutiveToolFailureSteps ?? 0
+  if (failures >= MAX_CONSECUTIVE_TOOL_FAILURE_STEPS) {
+    return {
+      reason: 'tool_failure_streak',
+      message: `Stopping: tool calls failed ${failures} steps in a row. Resolve the underlying error or change approach.`
+    }
+  }
+  return undefined
+}
+
+export type RunBudgetLimits = {
+  /** Per-run spend ceiling in USD (provider-reported cumulative billed cost). 0 disables. */
+  runSpendLimitUsd?: number
+  /** Per-run token ceiling (cumulative billed input + output tokens). 0 disables. */
+  runTokenLimit?: number
+}
+
+/**
+ * Per-run budget guard decision. Returns the terminal message when cumulative
+ * spend or tokens have reached the configured limit; undefined keeps the run
+ * going. Checked at the step boundary where step_usage totals already exist.
+ */
+export function runBudgetStopMessage(
+  limits: RunBudgetLimits,
+  totals: { billedCost: number; billedInputTokens: number; outputTokens: number }
+): string | undefined {
+  const spendLimit = limits.runSpendLimitUsd ?? 0
+  if (spendLimit > 0 && totals.billedCost >= spendLimit) {
+    return `This run reached its spend limit ($${spendLimit.toFixed(2)}; $${totals.billedCost.toFixed(2)} billed) and was stopped as a budget guard. Raise or clear the run spend limit in Settings to continue.`
+  }
+  const tokenLimit = limits.runTokenLimit ?? 0
+  if (tokenLimit > 0 && totals.billedInputTokens + totals.outputTokens >= tokenLimit) {
+    const used = totals.billedInputTokens + totals.outputTokens
+    return `This run reached its token limit (${tokenLimit.toLocaleString('en-US')} tokens; ${used.toLocaleString('en-US')} used) and was stopped as a budget guard. Raise or clear the run token limit in Settings to continue.`
+  }
   return undefined
 }

@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { copyText } from '@renderer/lib/markdown/copyText'
 import { cn } from '@renderer/lib/ui/cn'
+import { DEFAULT_SETTINGS } from '@shared/ipc'
+import { resolveAddressBarTarget } from '@shared/utils/searchEngine'
 import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
 import type { AgentBrowserState } from '@shared/ipc'
 import {
@@ -11,6 +13,13 @@ import {
   recordBrowserVisit,
   type BrowserRecent
 } from './browserRecents'
+import {
+  BROWSER_VIEWPORT_KEY,
+  BROWSER_VIEWPORT_PRESETS,
+  browserViewportPreset,
+  parseBrowserViewportPreset,
+  type BrowserViewportPresetId
+} from './browserViewport'
 
 const EMPTY: AgentBrowserState = {
   open: false,
@@ -42,7 +51,7 @@ function reportBrowserIpc(
  * Docked right-side panel hosting the main-process `WebContentsView`.
  * Styled to match Cursor's built-in browser chrome.
  */
-export function AgentBrowserPanel({
+export const AgentBrowserPanel = memo(function AgentBrowserPanel({
   className,
   workspacePath,
   activeRunId,
@@ -71,6 +80,13 @@ export function AgentBrowserPanel({
     }
   })
   const [statusMsg, setStatusMsg] = useState<string | null>(null)
+  const [viewportPreset, setViewportPreset] = useState<BrowserViewportPresetId>(() => {
+    try {
+      return parseBrowserViewportPreset(localStorage.getItem(BROWSER_VIEWPORT_KEY))
+    } catch {
+      return 'fit'
+    }
+  })
   const viewportRef = useRef<HTMLDivElement>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const historyRef = useRef<HTMLDivElement>(null)
@@ -170,7 +186,7 @@ export function AgentBrowserPanel({
       window.removeEventListener('resize', report)
       void window.vyotiq.browserSetBounds?.(null)
     }
-  }, [visible])
+  }, [visible, viewportPreset])
 
   useEffect(() => {
     if (!menuOpen && !historyOpen) return
@@ -204,20 +220,29 @@ export function AgentBrowserPanel({
   const recentGroups = useMemo(() => groupBrowserRecents(filteredRecents), [filteredRecents])
 
   const navigateTo = useCallback((raw: string) => {
-    let target = raw.trim()
-    if (!target) return
-    if (!/^https?:\/\//i.test(target)) {
-      if (/^[a-z0-9-]+\.[a-z]{2,}/i.test(target)) {
-        target = `https://${target}`
-      } else {
-        target = `https://www.google.com/search?q=${encodeURIComponent(target)}`
-      }
+    const input = raw.trim()
+    if (!input) return
+    const go = (target: string): void => {
+      void window.vyotiq.browserNavigate?.(target, workspacePath ?? undefined)?.then((res) => {
+        reportBrowserIpc(res, 'Navigation failed', setStatusMsg)
+      })
+      setHistoryOpen(false)
+      urlInputRef.current?.blur()
     }
-    void window.vyotiq.browserNavigate?.(target, workspacePath ?? undefined)?.then((res) => {
-      reportBrowserIpc(res, 'Navigation failed', setStatusMsg)
+    if (/^https?:\/\//i.test(input) || /^[a-z0-9-]+\.[a-z]{2,}/i.test(input)) {
+      go(resolveAddressBarTarget(input, 'duckduckgo'))
+      return
+    }
+    const settingsCall = window.vyotiq.getSettings?.()
+    if (!settingsCall) {
+      go(resolveAddressBarTarget(input, DEFAULT_SETTINGS.searchEngine))
+      return
+    }
+    void settingsCall.then((res) => {
+      const engine =
+        res && res.ok ? res.data.searchEngine : DEFAULT_SETTINGS.searchEngine
+      go(resolveAddressBarTarget(input, engine))
     })
-    setHistoryOpen(false)
-    urlInputRef.current?.blur()
   }, [workspacePath])
 
   const handleNavigate = useCallback(
@@ -233,15 +258,21 @@ export function AgentBrowserPanel({
       setMenuOpen(false)
       switch (action) {
         case 'screenshot': {
-          if (!workspacePath || !activeRunId) {
-            setStatusMsg('Open a chat run to save a screenshot')
+          if (!workspacePath) {
+            setStatusMsg('Open a workspace to save a screenshot')
             break
           }
           void window.vyotiq
-            .browserTakeScreenshot?.({ workspacePath, runId: activeRunId })
+            .browserTakeScreenshot?.({
+              workspacePath,
+              runId: activeRunId ?? undefined
+            })
             .then((res) => {
-              if (res?.ok) setStatusMsg('Screenshot saved to run artifacts')
-              else setStatusMsg(res && !res.ok ? res.error : 'Screenshot failed')
+              if (res?.ok) {
+                setStatusMsg(
+                  activeRunId ? 'Screenshot saved to run artifacts' : 'Screenshot saved'
+                )
+              } else setStatusMsg(res && !res.ok ? res.error : 'Screenshot failed')
             })
           break
         }
@@ -312,6 +343,9 @@ export function AgentBrowserPanel({
     },
     [activeRunId, onClose, state.url, workspacePath]
   )
+
+  const viewportSpec = browserViewportPreset(viewportPreset)
+  const viewportFitted = viewportSpec.id === 'fit'
 
   return (
     <div
@@ -524,6 +558,31 @@ export function AgentBrowserPanel({
           ) : null}
         </div>
 
+        <label className="sr-only" htmlFor="agent-browser-viewport">
+          Viewport size
+        </label>
+        <select
+          id="agent-browser-viewport"
+          className="h-7 max-w-[7.5rem] shrink-0 rounded-md border border-border/40 bg-surface px-1.5 text-xs text-fg"
+          value={viewportPreset}
+          aria-label="Viewport size"
+          onChange={(event) => {
+            const next = parseBrowserViewportPreset(event.target.value)
+            setViewportPreset(next)
+            try {
+              localStorage.setItem(BROWSER_VIEWPORT_KEY, next)
+            } catch {
+              /* ignore */
+            }
+          }}
+        >
+          {BROWSER_VIEWPORT_PRESETS.map((preset) => (
+            <option key={preset.id} value={preset.id}>
+              {preset.label}
+            </option>
+          ))}
+        </select>
+
         <div className="relative" ref={menuRef}>
           <button
             type="button"
@@ -644,9 +703,29 @@ export function AgentBrowserPanel({
       ) : null}
 
       <div
+        className={cn(
+          'min-h-0 flex-1 bg-bg',
+          viewportFitted ? 'relative' : 'flex items-center justify-center overflow-auto p-2'
+        )}
+      >
+      <div
         ref={viewportRef}
-        className="relative min-h-0 flex-1 bg-bg"
+        className={cn(
+          'relative bg-bg',
+          viewportFitted ? 'min-h-0 h-full' : 'shrink-0 overflow-hidden border border-border/40'
+        )}
+        style={
+          viewportFitted
+            ? undefined
+            : {
+                width: viewportSpec.width,
+                height: viewportSpec.height,
+                maxWidth: '100%',
+                maxHeight: '100%'
+              }
+        }
         data-agent-browser-viewport
+        data-browser-viewport={viewportSpec.id}
       >
         {!hasPage ? (
           <div className="absolute inset-0 overflow-auto px-4 py-6">
@@ -683,9 +762,10 @@ export function AgentBrowserPanel({
           </div>
         ) : null}
       </div>
+      </div>
     </div>
   )
-}
+})
 
 function GlobeGlyph({ className, size = 16 }: { className?: string; size?: number }) {
   return (

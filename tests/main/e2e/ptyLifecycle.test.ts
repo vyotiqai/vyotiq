@@ -26,6 +26,7 @@ vi.mock('@main/agent/tools/terminal', () => ({
     TERM: 'xterm'
   }),
   commandOnPath: () => false,
+  killProcessTree: () => undefined,
   killProcessTreeAndWait: async () => undefined
 }))
 

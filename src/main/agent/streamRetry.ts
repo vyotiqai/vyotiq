@@ -7,6 +7,7 @@ import {
   releaseCircuitProbe
 } from './circuitBreaker'
 import {
+  isRetriableHttpStatus,
   isRetriableNetworkError,
   isRetriableProviderMessage,
   RetriableStreamError
@@ -15,6 +16,9 @@ import {
 export const MAX_STREAM_ATTEMPTS = 5
 export const STREAM_RETRY_BASE_MS = 1000
 export const STREAM_RETRY_MAX_MS = 8000
+/** Slower curve for provider-side wait failures (429/5xx) — they need real cool-down. */
+export const STREAM_HTTP_RETRY_BASE_MS = 2000
+export const STREAM_HTTP_RETRY_MAX_MS = 30_000
 
 /** @deprecated Use streamRetryBackoffMs(attempt) — kept for tests that import a scalar. */
 export const STREAM_RETRY_BACKOFF_MS = STREAM_RETRY_BASE_MS
@@ -29,14 +33,28 @@ export function shouldRetryProviderStreamError(message: string, attempt: number)
   return attempt < MAX_STREAM_ATTEMPTS && isRetriableProviderMessage(message)
 }
 
-/** Connection retries live in fetchWithRetry; do not multiply them at the stream layer. */
+/**
+ * Status-aware mid-stream retry. A `PROVIDER_HTTP` failure retries only for
+ * transient statuses (429/408/5xx) — auth, billing, and bad-request errors are
+ * permanent and must surface to the user immediately.
+ */
 export function shouldRetryStreamErrorChunk(
   errorCode: string,
   message: string,
-  attempt: number
+  attempt: number,
+  httpStatus?: number
 ): boolean {
   if (errorCode === 'CIRCUIT_OPEN' || errorCode === 'PROVIDER_NETWORK') return false
+  if (errorCode === 'PROVIDER_HTTP') {
+    if (httpStatus != null) return attempt < MAX_STREAM_ATTEMPTS && isRetriableHttpStatus(httpStatus)
+    return attempt < MAX_STREAM_ATTEMPTS && isRetriableProviderMessage(message)
+  }
   return shouldRetryProviderStreamError(message, attempt)
+}
+
+/** True when a `PROVIDER_HTTP` failure is a transient wait (429/408/5xx), not a permanent request error. */
+export function isTransientHttpFailure(errorCode: string, httpStatus?: number): boolean {
+  return errorCode === 'PROVIDER_HTTP' && (httpStatus == null || isRetriableHttpStatus(httpStatus))
 }
 
 export function shouldRetryThrownStreamError(err: unknown, attempt: number): boolean {
@@ -52,7 +70,27 @@ export function streamRetryBackoffMs(attempt: number): number {
   return Math.round(capped / 2 + Math.random() * (capped / 2))
 }
 
-export async function sleepStreamRetryBackoff(signal?: AbortSignal, attempt = 1): Promise<void> {
+/** Slow-curve variant for transient HTTP waits: base 2s, cap 30s. */
+export function streamHttpRetryBackoffMs(attempt: number): number {
+  const capped = Math.min(
+    STREAM_HTTP_RETRY_MAX_MS,
+    STREAM_HTTP_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1)
+  )
+  return Math.round(capped / 2 + Math.random() * (capped / 2))
+}
+
+/** Pick the backoff curve from the failure class: transient HTTP waits wait longer. */
+export function streamRetryBackoffMsFor(errorCode: string, attempt: number): number {
+  return errorCode === 'PROVIDER_HTTP'
+    ? streamHttpRetryBackoffMs(attempt)
+    : streamRetryBackoffMs(attempt)
+}
+
+export async function sleepStreamRetryBackoff(
+  signal?: AbortSignal,
+  attempt = 1,
+  ms?: number
+): Promise<void> {
   if (process.env.VITEST === 'true') {
     if (signal?.aborted) {
       const err = new Error('Aborted')
@@ -61,7 +99,7 @@ export async function sleepStreamRetryBackoff(signal?: AbortSignal, attempt = 1)
     }
     return
   }
-  const ms = streamRetryBackoffMs(attempt)
+  const wait = ms ?? streamRetryBackoffMs(attempt)
   if (signal?.aborted) {
     const err = new Error('Aborted')
     err.name = 'AbortError'
@@ -71,7 +109,7 @@ export async function sleepStreamRetryBackoff(signal?: AbortSignal, attempt = 1)
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort)
       resolve()
-    }, ms)
+    }, wait)
     function onAbort(): void {
       clearTimeout(timer)
       signal?.removeEventListener('abort', onAbort)
@@ -160,7 +198,10 @@ export async function runWithStreamRetry(options: {
       return
     }
     if (decision.action === 'throw') {
-      if (options.circuitKey && isAbortError(decision.err)) {
+      // Any un-retried throw ends the attempt without a success/failure record.
+      // Release the half-open probe regardless of error type — a leaked slot
+      // keeps the breaker half-open forever (permanent CIRCUIT_OPEN).
+      if (options.circuitKey) {
         releaseCircuitProbe(options.circuitKey)
       }
       throw decision.err
@@ -235,7 +276,10 @@ export async function* runWithStreamRetryGen<TEvent>(options: {
       return { status: 'terminal' }
     }
     if (decision.action === 'throw') {
-      if (options.circuitKey && isAbortError(decision.err)) {
+      // Any un-retried throw ends the attempt without a success/failure record.
+      // Release the half-open probe regardless of error type — a leaked slot
+      // keeps the breaker half-open forever (permanent CIRCUIT_OPEN).
+      if (options.circuitKey) {
         releaseCircuitProbe(options.circuitKey)
       }
       throw decision.err

@@ -474,7 +474,7 @@ describe('remote MCP install request', () => {
 })
 
 describe('bundled marketplace catalog', () => {
-  it('has the five workflow skills plus create-skill and on-disk manifests', async () => {
+  it('has the workflow pack plus UI/API skills and on-disk manifests', async () => {
     const { MarketplaceCatalogSchema } = await import('@shared/ipc')
     const root = join(process.cwd(), 'resources', 'marketplace')
     const catalog = MarketplaceCatalogSchema.parse(
@@ -484,9 +484,13 @@ describe('bundled marketplace catalog', () => {
     const skills = catalog.packages.filter((p) => p.kind === 'skill')
     const plugins = catalog.packages.filter((p) => p.kind === 'plugin')
     expect(skills.map((p) => p.id).sort()).toEqual([
+      'accessibility',
+      'api-design',
       'create-skill',
       'explain-code',
       'fix-bug',
+      'frontend-design',
+      'goal',
       'implement-feature',
       'review-code',
       'write-tests'

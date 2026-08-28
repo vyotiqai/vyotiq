@@ -98,7 +98,7 @@ vi.mock('@main/agent/tools', () => ({
 }))
 
 import { runAgent } from '@main/agent/loop'
-import { listActiveRuns, registerRunAbort, resetActiveRunsForTests, tryRegisterRunAbort } from '@main/agent/runRegistry'
+import { MAX_ACTIVE_RUNS, listActiveRuns, registerRunAbort, resetActiveRunsForTests, tryRegisterRunAbort } from '@main/agent/runRegistry'
 import { flushStatusWrites, interruptOrphanRuns, loadStatus } from '@main/agent/state'
 
 type CapturedEvent = {
@@ -378,13 +378,14 @@ describe('audit: endurance run', () => {
     AUDIT_TIMEOUT_MS
   )
 
-  it('allows many parallel run registrations', async () => {
+  it('caps parallel run registrations at the global run cap', async () => {
     resetActiveRunsForTests()
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < MAX_ACTIVE_RUNS; i++) {
       const res = tryRegisterRunAbort(`parallel-${i}`, workspace)
       expect(res.ok).toBe(true)
     }
     const extra = tryRegisterRunAbort('parallel-extra', workspace)
-    expect(extra.ok).toBe(true)
+    expect(extra.ok).toBe(false)
+    if (!extra.ok) expect(extra.code).toBe('RUN_LIMIT_REACHED')
   })
 })

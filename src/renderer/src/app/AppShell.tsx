@@ -47,6 +47,8 @@ function AppShellInner({
   onSelectRunInWorkspace,
   onRenameRunInWorkspace,
   onDeleteRunInWorkspace,
+  onExportRunInWorkspace,
+  onLoadOlderRuns,
   isRunOpenInPane,
   isRunFocusedInPane,
   openInstanceRunId = null,
@@ -79,6 +81,8 @@ function AppShellInner({
   onSelectRunInWorkspace?: (path: string, runId: string) => void
   onRenameRunInWorkspace?: (path: string, runId: string, goal: string) => void
   onDeleteRunInWorkspace?: (path: string, runId: string) => void
+  onExportRunInWorkspace?: (path: string, runId: string) => void
+  onLoadOlderRuns?: (path: string) => void
   isRunOpenInPane?: (path: string, runId: string) => boolean
   isRunFocusedInPane?: (path: string, runId: string) => boolean
   openInstanceRunId?: string | null
@@ -291,6 +295,8 @@ function AppShellInner({
     onSelectRunInWorkspace,
     onRenameRunInWorkspace,
     onDeleteRunInWorkspace,
+    onExportRunInWorkspace,
+    onLoadOlderRuns,
     isRunOpenInPane,
     isRunFocusedInPane,
     openInstanceRunId,

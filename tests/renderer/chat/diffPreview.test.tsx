@@ -3,7 +3,10 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
-import { DiffPreview } from '@renderer/features/chat/components/DiffPreview'
+import {
+  DIFF_MAX_EXPANDED_LINES,
+  DiffPreview
+} from '@renderer/features/chat/components/DiffPreview'
 import type { DiffLine } from '@renderer/features/chat/toolUi'
 
 const highlightToLines = vi.hoisted(() => vi.fn())
@@ -94,7 +97,7 @@ describe('DiffPreview', () => {
     highlightToLines.mockImplementation((source: string) =>
       Promise.resolve(colorEachLine(source))
     )
-    const lines = Array.from({ length: 320 }, (_, index) =>
+    const lines = Array.from({ length: DIFF_MAX_EXPANDED_LINES + 100 }, (_, index) =>
       line('add', `line ${index + 1}`, index + 1)
     )
 
@@ -102,9 +105,9 @@ describe('DiffPreview', () => {
 
     await waitFor(() => expect(highlightToLines).toHaveBeenCalled())
     expect(screen.getByText('line 1')).toBeTruthy()
-    expect(screen.getByText('line 200')).toBeTruthy()
-    expect(screen.queryByText('line 201')).toBeNull()
-    expect(screen.getByText('120 more lines')).toBeTruthy()
+    expect(screen.getByText(`line ${DIFF_MAX_EXPANDED_LINES}`)).toBeTruthy()
+    expect(screen.queryByText(`line ${DIFF_MAX_EXPANDED_LINES + 1}`)).toBeNull()
+    expect(screen.getByText('100 more lines')).toBeTruthy()
     // Highlight only the first chunk of visible lines.
     const sent = highlightToLines.mock.calls[0]![0] as string
     expect(sent.split('\n').length).toBeLessThanOrEqual(64)

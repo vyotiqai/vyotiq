@@ -54,14 +54,14 @@ describe('terminalCheckpoint path parser', () => {
     expect(needsOpaqueWatch('cp src/a.ts dest/b.ts')).toBe(false)
   })
 
-  it('records priors into the active checkpoint', () => {
+  it('records priors into the active checkpoint', async () => {
     resetWriteCheckpointsForTests()
     const workspace = mkdtempSync(join(tmpdir(), 'vyotiq-term-cp-'))
     const runDir = mkdtempSync(join(tmpdir(), 'vyotiq-term-run-'))
     try {
       writeFileSync(join(workspace, 'a.txt'), 'old\n', 'utf8')
       beginWriteCheckpoint(runDir, workspace)
-      recordTerminalCommandPriors(workspace, 'echo new > a.txt', { runDir })
+      await recordTerminalCommandPriors(workspace, 'echo new > a.txt', { runDir })
       writeFileSync(join(workspace, 'a.txt'), 'new\n', 'utf8')
       const meta = finalizeWriteCheckpoint(runDir)
       expect(meta!.files).toEqual([
@@ -84,14 +84,14 @@ describe('mcpCheckpoint known paths', () => {
     )
   })
 
-  it('records write_file path before mutation', () => {
+  it('records write_file path before mutation', async () => {
     resetWriteCheckpointsForTests()
     const workspace = mkdtempSync(join(tmpdir(), 'vyotiq-mcp-cp-'))
     const runDir = mkdtempSync(join(tmpdir(), 'vyotiq-mcp-run-'))
     try {
       writeFileSync(join(workspace, 'f.txt'), 'before\n', 'utf8')
       beginWriteCheckpoint(runDir, workspace)
-      recordMcpFilesystemPriors(
+      await recordMcpFilesystemPriors(
         'filesystem',
         'write_file',
         { path: 'f.txt', content: 'after' },
@@ -109,14 +109,14 @@ describe('mcpCheckpoint known paths', () => {
     }
   })
 
-  it('records move_file source as delete and destination as write', () => {
+  it('records move_file source as delete and destination as write', async () => {
     resetWriteCheckpointsForTests()
     const workspace = mkdtempSync(join(tmpdir(), 'vyotiq-mcp-mv-'))
     const runDir = mkdtempSync(join(tmpdir(), 'vyotiq-mcp-mv-run-'))
     try {
       writeFileSync(join(workspace, 'src.txt'), 'body\n', 'utf8')
       beginWriteCheckpoint(runDir, workspace)
-      recordMcpFilesystemPriors(
+      await recordMcpFilesystemPriors(
         'fs',
         'move_file',
         { source: 'src.txt', destination: 'dst.txt' },
@@ -136,14 +136,14 @@ describe('mcpCheckpoint known paths', () => {
     }
   })
 
-  it('skips edit_file dryRun', () => {
+  it('skips edit_file dryRun', async () => {
     resetWriteCheckpointsForTests()
     const workspace = mkdtempSync(join(tmpdir(), 'vyotiq-mcp-dry-'))
     const runDir = mkdtempSync(join(tmpdir(), 'vyotiq-mcp-dry-run-'))
     try {
       writeFileSync(join(workspace, 'f.txt'), 'x\n', 'utf8')
       beginWriteCheckpoint(runDir, workspace)
-      recordMcpFilesystemPriors(
+      await recordMcpFilesystemPriors(
         'filesystem',
         'edit_file',
         { path: 'f.txt', edits: [], dryRun: true },
@@ -195,7 +195,7 @@ describe('workspaceMutationWatch', () => {
     writeFileSync(join(workspace, 'opaque.txt'), 'secret\n', 'utf8')
     const diff = await diffSince(snap)
     expect(diff.created).toContain('opaque.txt')
-    applyWatchDiffToCheckpoint(snap, diff, { runDir })
+    await applyWatchDiffToCheckpoint(snap, diff, { runDir })
     disposeWatch(snap)
     const meta = finalizeWriteCheckpoint(runDir)
     expect(meta!.files).toEqual([
@@ -212,7 +212,7 @@ describe('workspaceMutationWatch', () => {
     writeFileSync(join(workspace, 'm.txt'), 'after\n', 'utf8')
     const diff = await diffSince(snap)
     expect(diff.modified).toContain('m.txt')
-    applyWatchDiffToCheckpoint(snap, diff, { runDir })
+    await applyWatchDiffToCheckpoint(snap, diff, { runDir })
     disposeWatch(snap)
     const meta = finalizeWriteCheckpoint(runDir)
     undoWrites(runDir, workspace, meta!.id)
@@ -227,7 +227,7 @@ describe('workspaceMutationWatch', () => {
     writeFileSync(largePath, Buffer.alloc(1_100_000, 2))
     const diff = await diffSince(snap)
     expect(diff.modified).toContain('big.bin')
-    applyWatchDiffToCheckpoint(snap, diff, { runDir })
+    await applyWatchDiffToCheckpoint(snap, diff, { runDir })
     disposeWatch(snap)
     const meta = finalizeWriteCheckpoint(runDir)
     expect(meta!.files).toEqual([
@@ -246,7 +246,7 @@ describe('workspaceMutationWatch', () => {
     writeFileSync(hugePath, Buffer.alloc(33 * 1024 * 1024, 2))
     const diff = await diffSince(snap)
     expect(diff.modified).toContain('huge.bin')
-    applyWatchDiffToCheckpoint(snap, diff, { runDir })
+    await applyWatchDiffToCheckpoint(snap, diff, { runDir })
     disposeWatch(snap)
     const meta = finalizeWriteCheckpoint(runDir)
     expect(meta!.files).toEqual([
@@ -266,5 +266,20 @@ describe('workspaceMutationWatch', () => {
     expect(spy).toHaveBeenCalled()
     disposeWatch(snap)
     spy.mockRestore()
+  })
+
+  it('skips bin/ build output in opaque workspace snapshots', async () => {
+    mkdirSync(join(workspace, 'bin', 'Debug', 'net10.0'), { recursive: true })
+    writeFileSync(join(workspace, 'bin', 'Debug', 'net10.0', 'App.dll'), 'old-dll', 'utf8')
+    writeFileSync(join(workspace, 'src.ts'), 'old\n', 'utf8')
+    beginWriteCheckpoint(runDir, workspace)
+    const snap = await startWatch(workspace)
+    writeFileSync(join(workspace, 'bin', 'Debug', 'net10.0', 'App.dll'), 'new-dll', 'utf8')
+    writeFileSync(join(workspace, 'src.ts'), 'new\n', 'utf8')
+    const diff = await diffSince(snap)
+    expect(diff.modified).toContain('src.ts')
+    expect(diff.modified.join('\n')).not.toMatch(/bin[\\/]/)
+    expect(diff.created.join('\n')).not.toMatch(/bin[\\/]/)
+    disposeWatch(snap)
   })
 })

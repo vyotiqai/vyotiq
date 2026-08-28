@@ -50,7 +50,7 @@ const DOC_SECTIONS = [
 
 const SECTION_COUNTS = {
   start: 3,
-  agent: 8,
+  agent: 9,
   customize: 8,
   tools: 9,
   concepts: 4,
@@ -67,6 +67,7 @@ const REQUIRED_WORKFLOWS = [
   'agent/workspaces-sessions.md',
   'agent/background-runs.md',
   'agent/instances.md',
+  'agent/goals.md',
   'customize/providers.md',
   'customize/mcp.md',
   'customize/skills.md',
@@ -159,11 +160,11 @@ describe('landing docs architecture and truth', () => {
 
   it('ships docs index, section landings, and article routes with unique section ordering', () => {
     expect(existsSync(DOCS_INDEX)).toBe(true)
-    expect(files).toHaveLength(44)
+    expect(files).toHaveLength(45)
     const sectionRoutes = DOC_SECTIONS.map((section) => `/docs/${section}`)
     const canonicalRoutes = ['/docs', ...sectionRoutes, ...files.map((file) => `/docs/${docsId(file)}`)]
-    expect(canonicalRoutes).toHaveLength(52)
-    expect(new Set(canonicalRoutes).size).toBe(52)
+    expect(canonicalRoutes).toHaveLength(53)
+    expect(new Set(canonicalRoutes).size).toBe(53)
     expect(canonicalRoutes).toContain('/docs')
     expect(canonicalRoutes).toContain('/docs/start/quickstart')
     for (const [section, count] of Object.entries(SECTION_COUNTS)) {
@@ -255,9 +256,9 @@ describe('landing docs architecture and truth', () => {
     expect(footer).not.toContain("aria-current={onDocs ? 'page' : undefined}")
   })
 
-  it('lists all 59 built-ins including Skill', () => {
+  it('lists all 61 built-ins including Skill', () => {
     const tools = readDoc('reference/tools.md')
-    expect(BUILTIN_TOOL_NAMES).toHaveLength(59)
+    expect(BUILTIN_TOOL_NAMES).toHaveLength(61)
     for (const name of BUILTIN_TOOL_NAMES) {
       expect(tools, `missing tool ${name}`).toContain(`\`${name}\``)
     }
@@ -267,7 +268,7 @@ describe('landing docs architecture and truth', () => {
 
   it('lists every built-in slash command and the exact marketplace description', () => {
     const slash = readDoc('customize/slash-commands.md')
-    expect(BUILTIN_COMMANDS).toHaveLength(13)
+    expect(BUILTIN_COMMANDS).toHaveLength(15)
     for (const command of BUILTIN_COMMANDS) {
       expect(slash, `missing /${command.trigger}`).toContain(`/${command.trigger}`)
     }
@@ -311,7 +312,7 @@ describe('landing docs architecture and truth', () => {
     }
     expect(providers).toContain('**Active provider** shows local Ollama')
     expect(features).toContain('New settings initially select Ollama with <code>qwen2.5</code>')
-    expect(features).toContain('eight named cloud providers')
+    expect(features).toContain('nine named cloud providers')
     expect(features).toContain('custom OpenAI-compatible host')
     expect(features).not.toMatch(/default provider/i)
     expect(providers).not.toMatch(/default provider/i)
@@ -409,7 +410,8 @@ describe('landing docs architecture and truth', () => {
       'groq',
       'openrouter',
       'xai',
-      'mistral'
+      'mistral',
+      'opencode'
     ]) {
       expect(providers).toContain('PROVIDERS.map')
       expect(existsSync(join(LANDING_SOURCE, 'assets', 'providers', `${provider}.svg`))).toBe(true)
@@ -481,7 +483,7 @@ describe('landing docs architecture and truth', () => {
     expect(pkg).toContain('"description": "Agent V — coding workspace for real repositories"')
 
     expect(readme).toMatch(/^# Agent V/m)
-    expect(readme).toContain('**59** tools')
+    expect(readme).toContain('**61** tools')
     expect(readme).not.toMatch(/\b43 tools\b/i)
     expect(readme).not.toMatch(/docs\/architecture\.md/)
     expect(readme).toContain('**MCPs**')

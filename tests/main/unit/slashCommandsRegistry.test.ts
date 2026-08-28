@@ -94,6 +94,51 @@ describe('builtin slash commands', () => {
     })
   })
 
+  it('resolves /goal and /loop', () => {
+    expect(BUILTIN_COMMANDS.map((c) => c.trigger)).toEqual(
+      expect.arrayContaining(['goal', 'loop'])
+    )
+    expect(BUILTIN_COMMANDS).toHaveLength(15)
+    const send = resolveBuiltin('builtin:goal', 'fix flaky tests', '')
+    expect(send?.action).toBe('send')
+    if (send?.action === 'send') {
+      expect(send.message).toContain('[Goal]')
+      expect(send.message).toContain('fix flaky tests')
+      expect(send.message).toContain('create_goal')
+    }
+    expect(resolveBuiltin('builtin:goal', 'pause', '')).toEqual({
+      action: 'client',
+      clientAction: 'goal_pause'
+    })
+    expect(resolveBuiltin('builtin:goal', 'resume', '')).toEqual({
+      action: 'client',
+      clientAction: 'goal_resume'
+    })
+    expect(resolveBuiltin('builtin:goal', 'complete', '')).toEqual({
+      action: 'client',
+      clientAction: 'goal_complete'
+    })
+    expect(resolveBuiltin('builtin:goal', '', '')).toEqual({
+      action: 'client',
+      clientAction: 'goal_usage'
+    })
+    expect(resolveBuiltin('builtin:loop', '', '')).toEqual({
+      action: 'client',
+      clientAction: 'loop_status'
+    })
+    expect(resolveBuiltin('builtin:loop', 'stop', '')).toEqual({
+      action: 'client',
+      clientAction: 'loop_stop'
+    })
+    expect(resolveBuiltin('builtin:loop', '30s check CI', '')).toEqual({
+      action: 'client',
+      clientAction: 'loop_set',
+      trailingText: '30s check CI'
+    })
+    const usage = resolveBuiltin('builtin:loop', 'check CI', '')
+    expect(usage?.action).toBe('send')
+  })
+
   it('resolves help as a send message', () => {
     const help = buildHelpMessage(BUILTIN_COMMANDS)
     const result = resolveBuiltin('builtin:help', '', help)

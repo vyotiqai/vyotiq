@@ -172,7 +172,7 @@ export function MarketplaceView({
 
   return (
     <div
-      className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg animate-fade-in"
+      className="flex min-h-0 flex-1 flex-col overflow-hidden bg-bg pt-9 animate-fade-in"
       data-marketplace-shell
     >
       <PageHeader

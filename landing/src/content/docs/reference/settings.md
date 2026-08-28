@@ -18,6 +18,7 @@ Open Settings from the sidebar, /settings, or Open settings (Ctrl+, / ⌘,). Sea
 | Control | Options and notes |
 | --- | --- |
 | Active model | opens the composer model picker, or jump to Providers. Workspace Override can pin a different provider/model per folder |
+| Tab autocomplete | ghost text in the Files editor from the active model. Tab accepts, Esc dismisses. On by default |
 | Workspaces | open workspace tabs. `Add workspace`. Enable Override for per-workspace provider, model, and agent settings. Override seeds thinking, compaction, and approval from global defaults when first enabled |
 | Share crash & error reports | optional opt-in. Local rotating logs are always written. Unavailable in builds with no Sentry DSN. Never includes chat contents, API keys, or file bodies |
 | Enable notifications | master switch for the inbox and desktop toasts |
@@ -34,6 +35,8 @@ Open Settings from the sidebar, /settings, or Open settings (Ctrl+, / ⌘,). Sea
 | Text size | Small, Default, Large |
 | UI density | Compact, Default, Comfortable |
 | Accent color | Neutral, Blue, Violet, Green |
+| Interface skin | Default, Proof, Bench, Native |
+| User CSS overlay | local stylesheet on top of the selected skin. Remote @import URLs are stripped. Max 256KB |
 
 ## Providers
 
@@ -66,7 +69,6 @@ See Security and approval, Browser, and Terminal. `Tool approval`, Terminal shel
 | Control | Options and notes |
 | --- | --- |
 | GitHub client ID | Connect GitHub in the PR panel |
-| LLM harness proposal rewriter | experimental, default off. When on, /harness-review may rewrite the proposed default.md body via the configured model. Apply stays human-confirm |
 
 ## Shortcuts
 

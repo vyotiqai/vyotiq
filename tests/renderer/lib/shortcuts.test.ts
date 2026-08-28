@@ -80,6 +80,14 @@ describe('matchShortcut', () => {
     expect(matchShortcut(keyEvent('b', { ctrlKey: true, shiftKey: true }), 'panelBrowser')).toBe(
       true
     )
+    expect(matchShortcut(keyEvent('e', { ctrlKey: true, shiftKey: true }), 'panelFiles')).toBe(
+      true
+    )
+    expect(matchShortcut(keyEvent('d', { ctrlKey: true, shiftKey: true }), 'panelPlan')).toBe(
+      true
+    )
+    expect(matchShortcut(keyEvent('g', { ctrlKey: true, shiftKey: true }), 'panelPr')).toBe(true)
+    expect(matchShortcut(keyEvent('e', { ctrlKey: true }), 'panelFiles')).toBe(false)
     expect(matchShortcut(keyEvent('w', { ctrlKey: true }), 'closeChat')).toBe(true)
     expect(matchShortcut(keyEvent('w', { ctrlKey: true, shiftKey: true }), 'closeChat')).toBe(
       false
@@ -103,6 +111,9 @@ describe('shortcutLabel', () => {
     expect(shortcutLabel('cycleMode')).toBe('Ctrl+.')
     expect(shortcutLabel('panelTerminal')).toBe('Ctrl+`')
     expect(shortcutLabel('panelBrowser')).toBe('Ctrl+Shift+B')
+    expect(shortcutLabel('panelFiles')).toBe('Ctrl+Shift+E')
+    expect(shortcutLabel('panelPlan')).toBe('Ctrl+Shift+D')
+    expect(shortcutLabel('panelPr')).toBe('Ctrl+Shift+G')
     expect(shortcutLabel('closeChat')).toBe('Ctrl+W')
     expect(shortcutCatalog().some((row) => row.id === 'search' && row.label === 'Ctrl+K')).toBe(
       true

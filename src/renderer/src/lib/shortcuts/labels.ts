@@ -38,6 +38,9 @@ export const SHORTCUT_TITLES: Record<ShortcutId, string> = {
   panelTerminal: 'Terminal panel',
   panelChanges: 'Changes panel',
   panelBrowser: 'Browser panel',
+  panelFiles: 'Files panel',
+  panelPlan: 'Plan panel',
+  panelPr: 'Pull request panel',
   closeChat: 'Close chat tab',
   findInFiles: 'Find in files',
   commandPalette: 'Command palette'

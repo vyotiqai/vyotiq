@@ -2,13 +2,12 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
   realpathSync,
   rmSync,
-  statSync,
-  type Dirent
+  statSync
 } from 'fs'
+import { copyFile, mkdir, readdir, stat } from 'fs/promises'
 import { dirname, join, relative } from 'path'
 import { createHash, randomUUID } from 'crypto'
 import { realpathIfExists, resolveInsideWorkspace } from '../workspace/safePath'
@@ -156,6 +155,8 @@ export class InvokeWriteCheckpoint {
   private readonly runDir: string
   private readonly workspaceRoot: string
   private readonly files = new Map<string, CheckpointFileEntry>()
+  /** Rel-paths with an in-flight async snapshot so first-path-wins stays racy-safe. */
+  private readonly pendingRels = new Set<string>()
   private finalized = false
 
   constructor(
@@ -184,13 +185,14 @@ export class InvokeWriteCheckpoint {
 
   /**
    * Snapshot prior content before a write or delete.
+   * Async blob copy so the Electron main/UI thread is not blocked on disk I/O.
    * @param pathArg Path as the tool received it (workspace-relative or absolute inside root).
    */
-  recordPrior(
+  async recordPrior(
     pathArg: string,
     kind: 'write' | 'delete',
     opts?: { recursiveDir?: boolean }
-  ): void {
+  ): Promise<void> {
     if (this.finalized) return
     const resolved = resolveInsideWorkspace(this.workspaceRoot, pathArg)
     const rel = this.relPathFromResolved(resolved)
@@ -198,29 +200,45 @@ export class InvokeWriteCheckpoint {
     // Recursive dir deletes are recorded as bare directory names (no extension).
     // Plausible-file checks reject those; still allow the checkpoint entry.
     if (!opts?.recursiveDir && !isPlausibleWorkspaceFilePath(rel)) return
-    if (this.files.has(rel)) return
+    if (this.files.has(rel) || this.pendingRels.has(rel)) return
+    this.pendingRels.add(rel)
+    try {
+      await this.snapshotPrior(resolved, rel, kind, opts)
+    } finally {
+      this.pendingRels.delete(rel)
+    }
+  }
 
-    const exists = existsSync(resolved)
+  private async snapshotPrior(
+    resolved: string,
+    rel: string,
+    kind: 'write' | 'delete',
+    opts?: { recursiveDir?: boolean }
+  ): Promise<void> {
+    let st: Awaited<ReturnType<typeof stat>> | null = null
+    try {
+      st = await stat(resolved)
+    } catch {
+      st = null
+    }
     if (kind === 'write') {
-      if (!exists) {
+      if (!st) {
         this.files.set(rel, { path: rel, action: 'created', undoable: true })
         return
       }
-      const st = statSync(resolved)
       if (st.isDirectory()) {
         // Writing through edit tools targets files; ignore dirs.
         return
       }
       const dest = blobPathFor(this.checkpointDir(), rel)
-      mkdirSync(dirname(dest), { recursive: true })
-      copyFileSync(resolved, dest)
+      await mkdir(dirname(dest), { recursive: true })
+      await copyFile(resolved, dest)
       this.files.set(rel, { path: rel, action: 'modified', undoable: true })
       return
     }
 
     // delete
-    if (!exists) return
-    const st = statSync(resolved)
+    if (!st) return
     if (st.isDirectory()) {
       // Snapshot the directory tree so the delete is undoable. Each file becomes
       // its own 'deleted' checkpoint entry; restoring them recreates the original
@@ -228,11 +246,11 @@ export class InvokeWriteCheckpoint {
       const maxDirRestoreFiles = 20000
       let fileCount = 0
       let overflow = false
-      const snapshotTree = (absDir: string): void => {
+      const snapshotTree = async (absDir: string): Promise<void> => {
         if (overflow) return
-        let entries: Dirent[]
+        let entries
         try {
-          entries = readdirSync(absDir, { withFileTypes: true })
+          entries = await readdir(absDir, { withFileTypes: true })
         } catch {
           return
         }
@@ -240,7 +258,7 @@ export class InvokeWriteCheckpoint {
           const abs = join(absDir, entry.name)
           if (entry.isDirectory()) {
             // entry.isDirectory() is false for symlinks, so symlink dirs are not followed.
-            snapshotTree(abs)
+            await snapshotTree(abs)
             if (overflow) return
             continue
           }
@@ -254,15 +272,15 @@ export class InvokeWriteCheckpoint {
           if (!childRel || childRel.startsWith('..')) continue
           const dest = blobPathFor(this.checkpointDir(), childRel)
           try {
-            mkdirSync(dirname(dest), { recursive: true })
-            copyFileSync(abs, dest)
+            await mkdir(dirname(dest), { recursive: true })
+            await copyFile(abs, dest)
           } catch {
             continue
           }
           this.files.set(childRel, { path: childRel, action: 'deleted', undoable: true })
         }
       }
-      snapshotTree(resolved)
+      await snapshotTree(resolved)
       if (overflow) {
         logger.warn('Directory delete too large to snapshot for undo; marked non-undoable', {
           scope: 'agent',
@@ -276,8 +294,8 @@ export class InvokeWriteCheckpoint {
       return
     }
     const dest = blobPathFor(this.checkpointDir(), rel)
-    mkdirSync(dirname(dest), { recursive: true })
-    copyFileSync(resolved, dest)
+    await mkdir(dirname(dest), { recursive: true })
+    await copyFile(resolved, dest)
     this.files.set(rel, { path: rel, action: 'deleted', undoable: true })
   }
 
@@ -285,40 +303,53 @@ export class InvokeWriteCheckpoint {
    * Record a mutation observed after a tool ran (e.g. opaque terminal redirect).
    * First path wins — does not overwrite recordPrior entries.
    */
-  recordObservedMutation(
+  async recordObservedMutation(
     pathArg: string,
     kind: 'created' | 'modified' | 'deleted',
     priorBlobPath?: string
-  ): void {
+  ): Promise<void> {
     if (this.finalized) return
     const resolved = resolveInsideWorkspace(this.workspaceRoot, pathArg)
     const rel = this.relPathFromResolved(resolved)
     if (!rel || rel.startsWith('..')) return
     if (!isPlausibleWorkspaceFilePath(rel)) return
-    if (this.files.has(rel)) return
+    if (this.files.has(rel) || this.pendingRels.has(rel)) return
+    this.pendingRels.add(rel)
+    try {
+      if (kind === 'created') {
+        this.files.set(rel, { path: rel, action: 'created', undoable: true })
+        return
+      }
 
-    if (kind === 'created') {
-      this.files.set(rel, { path: rel, action: 'created', undoable: true })
-      return
-    }
+      let blobExists = false
+      if (priorBlobPath) {
+        try {
+          await stat(priorBlobPath)
+          blobExists = true
+        } catch {
+          blobExists = false
+        }
+      }
+      if (!priorBlobPath || !blobExists) {
+        this.files.set(rel, {
+          path: rel,
+          action: kind === 'modified' ? 'modified' : 'deleted',
+          undoable: false
+        })
+        return
+      }
 
-    if (!priorBlobPath || !existsSync(priorBlobPath)) {
+      const dest = blobPathFor(this.checkpointDir(), rel)
+      await mkdir(dirname(dest), { recursive: true })
+      await copyFile(priorBlobPath, dest)
       this.files.set(rel, {
         path: rel,
         action: kind === 'modified' ? 'modified' : 'deleted',
-        undoable: false
+        undoable: true
       })
-      return
+    } finally {
+      this.pendingRels.delete(rel)
     }
-
-    const dest = blobPathFor(this.checkpointDir(), rel)
-    mkdirSync(dirname(dest), { recursive: true })
-    copyFileSync(priorBlobPath, dest)
-    this.files.set(rel, {
-      path: rel,
-      action: kind === 'modified' ? 'modified' : 'deleted',
-      undoable: true
-    })
   }
 
   private stampPostWriteHashes(): void {

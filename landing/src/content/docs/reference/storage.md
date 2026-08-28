@@ -21,7 +21,7 @@ Agent V stores local state in Electron's platform-specific userData directory. T
 | Secrets | Secure-storage-backed secret record under app data | Provider, GitHub, and MCP secret material; Authorization is refused as plaintext settings fallback |
 | Notifications | {userData}/notifications.json | Bounded inbox items |
 | Workspace records | {userData}/workspaces/{workspaceId}/ | Stable ID derived from canonical workspace path |
-| Run sessions | workspaces/{workspaceId}/sessions/{runId}/ | Transcript, state, artifacts, receipts, and checkpoints |
+| Run sessions | workspaces/{workspaceId}/sessions/{runId}/ | Transcript, state, artifacts (`goal.json`, `loop.json`, todos, plan, receipt), and checkpoints |
 | Semantic index | workspaces/{workspaceId}/codeindex/ | Derived cache |
 | Exact sparse index | workspaces/{workspaceId}/sparsegrep/ | Derived cache |
 | Logs | Directory returned by Open logs folder | Local rotating logs |

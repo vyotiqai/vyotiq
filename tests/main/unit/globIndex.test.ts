@@ -13,7 +13,7 @@ vi.mock('@main/agent/sparsegrep', async (importOriginal) => {
   }
 })
 
-import { globPatternIsTextOnly, toolGlob } from '@main/agent/tools/glob'
+import { globPatternIsTextOnly, nestedGlobPattern, toolGlob } from '@main/agent/tools/glob'
 import { SPARSE_GREP_SCAN_CAP } from '@main/agent/sparsegrep'
 
 describe('glob sparsegrep index path', () => {
@@ -86,6 +86,31 @@ describe('glob sparsegrep index path', () => {
     const out = await toolGlob(root, '**/*.png')
     expect(out).toContain('icon.png')
     expect(out).toMatch(/index=live/)
+  })
+
+  it('lists nested matches when a source glob omits the nested folder prefix', async () => {
+    querySparseFileList.mockResolvedValue({
+      ready: true,
+      paths: ['project/src/a.ts'],
+      fileCount: 1,
+      syncComplete: true
+    })
+    const out = await toolGlob(root, 'src/**/*.ts')
+    expect(out).toContain('No files match src/**/*.ts')
+    expect(out).toContain('Nested matches:')
+    expect(out).toContain('project/src/a.ts')
+    expect(out).toMatch(/index=trigram/)
+  })
+})
+
+describe('nestedGlobPattern', () => {
+  it('prepends **/ unless the glob is already recursive from the root', () => {
+    expect(nestedGlobPattern('windows/**/*.{sln,slnf,csproj}')).toBe(
+      '**/windows/**/*.{sln,slnf,csproj}'
+    )
+    expect(nestedGlobPattern('./src/**/*.ts')).toBe('**/src/**/*.ts')
+    expect(nestedGlobPattern('**/*.ts')).toBeNull()
+    expect(nestedGlobPattern('')).toBeNull()
   })
 })
 

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync } from 'fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -20,6 +20,8 @@ import {
   enqueueMessageAppend,
   flushMessageAppends,
   messageAppendChainSizeForTests,
+  MESSAGES_FILE_KEEP_BYTES,
+  MESSAGES_FILE_MAX_BYTES,
   resetMessageAppendQueueForTests,
   takeMessageAppendFailureNotice
 } from '@main/agent/messageAppendQueue'
@@ -81,6 +83,30 @@ describe('messageAppendQueue', () => {
     expect(takeMessageAppendFailureNotice(dir)).toBeUndefined()
     const lines = readFileSync(join(dir, 'messages.jsonl'), 'utf8').trim().split('\n')
     expect(lines).toHaveLength(1)
+  })
+
+  it('keeps UTF-8 JSONL records valid across a rotation boundary', async () => {
+    const path = join(dir, 'messages.jsonl')
+    const unicodeLine = `${JSON.stringify({ role: 'assistant', content: '界'.repeat(1024) })}\n`
+    const bytesPerLine = Buffer.byteLength(unicodeLine, 'utf8')
+    const prefix = unicodeLine.repeat(Math.ceil((MESSAGES_FILE_MAX_BYTES - MESSAGES_FILE_KEEP_BYTES) / bytesPerLine) + 1)
+    const suffix = unicodeLine.repeat(Math.ceil(MESSAGES_FILE_KEEP_BYTES / bytesPerLine) + 1)
+    writeFileSync(path, prefix + suffix, 'utf8')
+
+    await enqueueMessageAppend(dir, `${JSON.stringify({ role: 'assistant', content: 'after-utf8-rotate' })}\n`)
+    await flushMessageAppends(dir)
+
+    const files = [
+      ...readdirSync(dir)
+        .filter((name) => name.startsWith('messages.archive.'))
+        .map((name) => join(dir, name)),
+      path
+    ]
+    for (const file of files) {
+      for (const line of readFileSync(file, 'utf8').trim().split('\n')) {
+        expect(() => JSON.parse(line)).not.toThrow()
+      }
+    }
   })
 
   it('surfaces an aggregated notice when several appends fail mid-run', async () => {

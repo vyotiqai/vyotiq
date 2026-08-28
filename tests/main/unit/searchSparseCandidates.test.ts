@@ -50,4 +50,17 @@ describe('toolSearch sparse candidates', () => {
     expect(out).toMatch(/deep\/hit\.ts/)
     expect(out).toMatch(/index=trigram/)
   })
+
+  it('live-scans content when trigram prune returns no candidates', async () => {
+    root = mkdtempSync(join(tmpdir(), 'vyotiq-search-sparse-empty-'))
+    writeFileSync(join(root, 'prefix.ts'), 'export const prefixOnly = 1\n', 'utf8')
+    querySparseCandidates.mockResolvedValue({
+      lookup: { ok: true, paths: [], mode: 'trigram' },
+      fileCount: 1,
+      syncComplete: true
+    })
+    const out = await toolSearch(root, 'prefixOnly', 10)
+    expect(out).toMatch(/prefix\.ts/)
+    expect(out).toMatch(/index=live/)
+  })
 })

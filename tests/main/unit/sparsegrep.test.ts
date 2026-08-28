@@ -14,6 +14,8 @@ import {
   lookupCandidatesForRegex
 } from '@main/agent/sparsegrep'
 import { toolGrep } from '@main/agent/tools/grep'
+import { toolSearch } from '@main/agent/tools/search'
+import { minimalDocx } from './helpers/minimalDocx'
 
 describe('trigram extract', () => {
   it('extracts overlapping lowercase trigrams', () => {
@@ -80,6 +82,25 @@ describe('sparsegrep sync + grep parity', () => {
     // Unsafe pattern falls back to live
     const wild = await toolGrep(dir, '.*')
     expect(wild).toMatch(/index=live/)
+  })
+
+  it('matches ^export on a later line through trigram candidates', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-sparse-caret-'))
+    mkdirSync(join(dir, 'src', 'main', 'agent', 'tools'), { recursive: true })
+    writeFileSync(
+      join(dir, 'src', 'main', 'agent', 'tools', 'webFetch.ts'),
+      'import { x } from "./y"\nexport function toolWebFetch() {}\n',
+      'utf8'
+    )
+    await ensureSparseGrepSynced(dir)
+    const out = await toolGrep(dir, '^export', {
+      include: 'src/main/agent/tools/webFetch.ts',
+      maxResults: 15
+    })
+    expect(out).toContain('src/main/agent/tools/webFetch.ts:2:')
+    expect(out).toContain('export function toolWebFetch')
+    expect(out).toMatch(/index=trigram/)
+    expect(out).not.toMatch(/No matches/)
   })
 
   it('skips unchanged files on second sync', async () => {
@@ -198,5 +219,73 @@ describe('sparsegrep sync + grep parity', () => {
     if (lookup.ok) {
       expect(lookup.paths).toContain('src/auth.ts')
     }
+  })
+
+  it('falls back to live walk when trigram prune has no candidates (docx-only hit)', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-sparse-docx-'))
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    writeFileSync(join(dir, 'src', 'a.ts'), 'export const alphaHelper = 1\n', 'utf8')
+    writeFileSync(join(dir, 'notes.md.docx'), minimalDocx(['UniqueDocxGrepMarker in architecture']))
+    await ensureSparseGrepSynced(dir)
+    const out = await toolGrep(dir, 'UniqueDocxGrepMarker', { include: '**/*.docx' })
+    expect(out).toContain('UniqueDocxGrepMarker')
+    expect(out).toContain('notes.md.docx')
+    expect(out).toMatch(/index=live/)
+
+    const withoutInclude = await toolGrep(dir, 'UniqueDocxGrepMarker')
+    expect(withoutInclude).toContain('UniqueDocxGrepMarker')
+    expect(withoutInclude).toContain('notes.md.docx')
+    expect(withoutInclude).toMatch(/index=live/)
+  })
+
+  it('still scans docs when trigram already has source candidates', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-sparse-docx-overlap-'))
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    writeFileSync(join(dir, 'src', 'a.ts'), 'export const SharedDocxGrepMarker = 1\n', 'utf8')
+    writeFileSync(join(dir, 'notes.md.docx'), minimalDocx(['SharedDocxGrepMarker in architecture']))
+    await ensureSparseGrepSynced(dir)
+    const out = await toolGrep(dir, 'SharedDocxGrepMarker')
+    expect(out).toContain('src/a.ts')
+    expect(out).toContain('notes.md.docx')
+    expect(out).toMatch(/index=trigram/)
+
+    const scoped = await toolGrep(dir, 'SharedDocxGrepMarker', { include: '**/*.ts' })
+    expect(scoped).toContain('src/a.ts')
+    expect(scoped).not.toContain('notes.md.docx')
+    expect(scoped).toMatch(/index=trigram/)
+
+    const searchOut = await toolSearch(dir, 'SharedDocxGrepMarker', 10)
+    expect(searchOut).toContain('src/a.ts')
+    expect(searchOut).toContain('notes.md.docx')
+    expect(searchOut).toMatch(/index=trigram/)
+  })
+
+  it('still scans tests/ when trigram already has source candidates', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'vyotiq-sparse-tests-overlap-'))
+    mkdirSync(join(dir, 'src'), { recursive: true })
+    mkdirSync(join(dir, 'tests', 'main', 'unit'), { recursive: true })
+    writeFileSync(
+      join(dir, 'src', 'webFetch.ts'),
+      'export function fetchPublic() {}\nexport const SharedTestGrepMarkerNot = 1\n',
+      'utf8'
+    )
+    writeFileSync(
+      join(dir, 'tests', 'main', 'unit', 'webFetch.test.ts'),
+      'import { toolWebFetch } from "@main/agent/tools/webFetch"\nSharedTestGrepMarker\n',
+      'utf8'
+    )
+    await ensureSparseGrepSynced(dir)
+
+    const overlap = await toolGrep(dir, 'SharedTestGrepMarker$')
+    expect(overlap).toContain('tests/main/unit/webFetch.test.ts')
+    expect(overlap).not.toContain('src/webFetch.ts')
+    expect(overlap).toMatch(/index=trigram/)
+
+    const unscoped = await toolGrep(dir, 'toolWebFetch')
+    expect(unscoped).toContain('tests/main/unit/webFetch.test.ts')
+    expect(unscoped).toContain('toolWebFetch')
+
+    const searchOut = await toolSearch(dir, 'toolWebFetch', 10)
+    expect(searchOut).toContain('tests/main/unit/webFetch.test.ts')
   })
 })

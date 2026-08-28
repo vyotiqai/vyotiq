@@ -20,7 +20,8 @@ import {
 import { formatPinnedFacts } from './pinFoldFacts'
 import { stripUnsupportedModalitiesFromMessages, wireCapsFromModel } from './stripImages'
 import { buildWorkspaceRulesSection } from './rules'
-import { formatUserRules } from './userRules'
+import { formatResponseStyle, formatUserRules } from './userRules'
+import { readMemoryIndexAsync, readMemoryStateAsync } from './memory'
 import { buildWorkspaceSnapshotAsync } from './workspaceSnapshot'
 import { perfLog, perfNow } from './perfDebug'
 import { logger } from '../../../shared/logger'
@@ -54,12 +55,14 @@ export function clearSystemPromptCache(): void {
 function stableSystemFingerprint(parts: {
   harness: string
   userRules: string
+  responseStyleSection: string
   rules: string
   skillsSection: string
   pluginRulesSection: string
   contract: string
   plan: string
   modeSection?: string
+  memorySection: string
   compactionSummary: string
   compactionPinned: string
   systemBudget: number
@@ -68,12 +71,14 @@ function stableSystemFingerprint(parts: {
   return [
     parts.harness,
     parts.userRules,
+    parts.responseStyleSection,
     parts.rules,
     parts.skillsSection,
     parts.pluginRulesSection,
     parts.contract,
     parts.plan,
     parts.modeSection ?? '',
+    parts.memorySection,
     parts.compactionSummary,
     parts.compactionPinned,
     String(parts.systemBudget),
@@ -241,6 +246,7 @@ export function capHarness(text: string, maxTokens: number): string {
 function buildStableSystem(parts: {
   harness: string
   userRules: string
+  responseStyleSection?: string
   rules: string
   skillsSection?: string
   pluginRulesSection?: string
@@ -248,6 +254,7 @@ function buildStableSystem(parts: {
   plan?: string
   modeSection?: string
   planVerbatim?: boolean
+  memorySection?: string
   compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
   model: ModelInfo
@@ -255,12 +262,14 @@ function buildStableSystem(parts: {
   const fingerprint = stableSystemFingerprint({
     harness: parts.harness,
     userRules: parts.userRules,
+    responseStyleSection: parts.responseStyleSection ?? '',
     rules: parts.rules,
     skillsSection: parts.skillsSection ?? '',
     pluginRulesSection: parts.pluginRulesSection ?? '',
     contract: parts.contract ?? '',
     plan: parts.plan ?? '',
     modeSection: parts.modeSection,
+    memorySection: parts.memorySection ?? '',
     compactionSummary: parts.compaction?.summary ?? '',
     compactionPinned: JSON.stringify(parts.compaction?.pinnedFacts ?? null),
     systemBudget: parts.budgets.system,
@@ -336,6 +345,13 @@ function buildStableSystem(parts: {
     const userRules = capWithinSystem(userRulesRaw, Math.floor(parts.budgets.system * 0.35))
     if (userRules) sections.push(userRules)
   }
+  if (parts.responseStyleSection?.trim()) {
+    const style = capWithinSystem(
+      parts.responseStyleSection.trim(),
+      Math.max(120, Math.floor(parts.budgets.system * 0.05))
+    )
+    if (style) sections.push(style)
+  }
   if (parts.rules.trim()) {
     const rulesRaw = parts.rules.trim()
     const rules = capWithinSystem(rulesRaw, Math.floor(parts.budgets.system * 0.5))
@@ -356,6 +372,14 @@ function buildStableSystem(parts: {
         systemBudget: parts.budgets.system
       })
     }
+  }
+
+  if (parts.memorySection?.trim()) {
+    const memory = capWithinSystem(
+      parts.memorySection.trim(),
+      Math.floor(parts.budgets.memoryWorkspace / 2)
+    )
+    if (memory) sections.push(memory)
   }
 
   if (parts.compaction?.summary) {
@@ -383,6 +407,7 @@ function buildVolatileSystem(parts: {
   budgets: ReturnType<typeof allocateBudget>
   loopHint?: string
   taskList?: string
+  activeGoal?: string
   model: ModelInfo
 }): string {
   const sections: string[] = []
@@ -390,12 +415,16 @@ function buildVolatileSystem(parts: {
   const envCap = Math.max(200, Math.floor(parts.budgets.system * 0.15))
   const hintCap = Math.floor(workspaceCap * 0.5)
   const taskCap = Math.max(200, Math.floor(workspaceCap * 0.35))
+  const goalCap = Math.max(160, Math.floor(workspaceCap * 0.2))
 
   if (parts.sessionEnv?.trim()) {
     sections.push(capToTokenBudget(parts.sessionEnv.trim(), envCap, parts.model))
   }
   if (parts.workspace.trim()) {
     sections.push(capToTokenBudget(parts.workspace, workspaceCap, parts.model))
+  }
+  if (parts.activeGoal?.trim()) {
+    sections.push(capToTokenBudget(parts.activeGoal.trim(), goalCap, parts.model))
   }
   if (parts.taskList?.trim()) {
     sections.push(capToTokenBudget(parts.taskList.trim(), taskCap, parts.model))
@@ -425,15 +454,19 @@ function buildSystemZones(parts: {
   modeSection?: string
   planVerbatim?: boolean
   sessionEnv?: string
+  responseStyleSection?: string
+  memorySection?: string
   compaction?: CompactionRecord | null
   budgets: ReturnType<typeof allocateBudget>
   loopHint?: string
   taskList?: string
+  activeGoal?: string
   model: ModelInfo
 }): SystemZones {
   const stable = buildStableSystem({
     harness: parts.harness,
     userRules: parts.userRules,
+    responseStyleSection: parts.responseStyleSection,
     rules: parts.rules,
     skillsSection: parts.skillsSection,
     pluginRulesSection: parts.pluginRulesSection,
@@ -441,6 +474,7 @@ function buildSystemZones(parts: {
     plan: parts.plan,
     modeSection: parts.modeSection,
     planVerbatim: parts.planVerbatim,
+    memorySection: parts.memorySection,
     compaction: parts.compaction,
     budgets: parts.budgets,
     model: parts.model
@@ -451,10 +485,33 @@ function buildSystemZones(parts: {
     budgets: parts.budgets,
     loopHint: parts.loopHint,
     taskList: parts.taskList,
+    activeGoal: parts.activeGoal,
     model: parts.model
   })
   const system = !volatile ? stable : !stable ? volatile : `${stable}\n\n${volatile}`
   return { stable, volatile, system }
+}
+
+/**
+ * Pre-load durable workspace memory (state.md + index.md) into the stable
+ * zone so the <memory> continuation flow works without spending a memory_read
+ * tool call on every run. Both files are char-capped by the memory readers.
+ */
+async function buildMemorySection(workspacePath: string | null | undefined): Promise<string> {
+  if (!workspacePath) return ''
+  const [state, index] = await Promise.all([
+    readMemoryStateAsync(workspacePath),
+    readMemoryIndexAsync(workspacePath)
+  ])
+  const stateBody = state.trim()
+  const indexBody = index.trim()
+  if (!stateBody && !indexBody) return ''
+  const pieces: string[] = [
+    'Durable workspace memory, pre-loaded below (memory_read fetches full note bodies):'
+  ]
+  if (stateBody) pieces.push(`## state.md\n\n${stateBody}`)
+  if (indexBody) pieces.push(`## index.md\n\n${indexBody}`)
+  return wrapPromptSection('memory', pieces.join('\n\n'))
 }
 
 async function computeLayers(
@@ -488,9 +545,10 @@ export async function assembleContext(
   const budgets = allocateBudget(input.model)
   const window = contentWindow(input.model)
 
-  const [workspace, rules] = await Promise.all([
+  const [workspace, rules, memorySection] = await Promise.all([
     buildWorkspaceSnapshotAsync(input.workspacePath, input.goal),
-    buildWorkspaceRulesSection(input.workspacePath, input.focusedFile)
+    buildWorkspaceRulesSection(input.workspacePath, input.focusedFile),
+    buildMemorySection(input.workspacePath)
   ])
 
   let messages = input.messages.map((message) =>
@@ -504,10 +562,16 @@ export async function assembleContext(
 
   const estimateStarted = perfNow()
   const userRules = formatUserRules(input.userRules ?? [])
+  const responseStyleSection = formatResponseStyle({
+    persona: input.persona,
+    responseLanguage: input.responseLanguage,
+    responseVerbosity: input.responseVerbosity
+  })
   const systemParts = {
     harness: input.harness,
     workspace,
     userRules,
+    responseStyleSection,
     rules,
     skillsSection: input.skillsSection,
     pluginRulesSection: input.pluginRulesSection,
@@ -516,9 +580,11 @@ export async function assembleContext(
     modeSection: input.modeSection,
     planVerbatim: input.planVerbatim,
     sessionEnv: input.sessionEnv,
+    memorySection,
     budgets,
     loopHint: input.loopHint,
     taskList: input.taskList,
+    activeGoal: input.activeGoal,
     model: input.model
   }
 

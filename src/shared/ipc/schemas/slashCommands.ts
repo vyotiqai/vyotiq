@@ -43,7 +43,14 @@ export const BuiltinClientActionSchema = z.enum([
   'set_mode_ask',
   'set_mode_plan',
   'set_mode_agent',
-  'harness_apply'
+  'harness_apply',
+  'goal_pause',
+  'goal_resume',
+  'goal_complete',
+  'goal_usage',
+  'loop_set',
+  'loop_stop',
+  'loop_status'
 ])
 export type BuiltinClientAction = z.infer<typeof BuiltinClientActionSchema>
 

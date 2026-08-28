@@ -77,6 +77,7 @@ import {
   getActiveInlineChildRunIds,
   getRunAbort,
   isActive,
+  MAX_ACTIVE_RUNS,
   resetActiveRunsForTests,
   tryRegisterRunAbort
 } from '@main/agent/runRegistry'
@@ -210,9 +211,11 @@ describe('agentInstances', () => {
     clearRunAbort(child.runId)
   })
 
-  it('allows many live children per parent (no live cap)', async () => {
+  it('spawns many live children per parent up to the global run cap', async () => {
     const ids: string[] = []
-    for (let i = 0; i < 10; i += 1) {
+    // One parent + children fill every global slot: no per-parent cap exists,
+    // the only limit is MAX_ACTIVE_RUNS.
+    for (let i = 0; i < MAX_ACTIVE_RUNS - 1; i += 1) {
       const r = await spawnAgentInstance({
         parentRunId,
         workspacePath,
@@ -222,7 +225,15 @@ describe('agentInstances', () => {
       expect(r.ok).toBe(true)
       if (r.ok) ids.push(r.runId)
     }
-    expect(getActiveInlineChildRunIds(parentRunId)).toHaveLength(10)
+    expect(getActiveInlineChildRunIds(parentRunId)).toHaveLength(MAX_ACTIVE_RUNS - 1)
+    const capped = await spawnAgentInstance({
+      parentRunId,
+      workspacePath,
+      goal: 'beyond the global cap',
+      pathScope: ['src']
+    })
+    expect(capped.ok).toBe(false)
+    if (!capped.ok) expect(capped.error).toMatch(/Too many concurrent runs/)
     for (const id of ids) {
       chatCancelResult(id)
       clearRunAbort(id)
@@ -247,9 +258,10 @@ describe('agentInstances', () => {
     clearRunAbort(child.runId)
   })
 
-  it('allows spawn when many concurrent runs are already active', async () => {
+  it('spawns into the last global slot when runs are already active', async () => {
     const fillerIds: string[] = []
-    for (let i = 0; i < 8; i += 1) {
+    // Parent holds one slot; fillers leave exactly one free.
+    for (let i = 0; i < MAX_ACTIVE_RUNS - 2; i += 1) {
       const id = `filler-${i}`
       const reg = tryRegisterRunAbort(id, workspacePath)
       expect(reg.ok).toBe(true)
@@ -258,7 +270,7 @@ describe('agentInstances', () => {
     const result = await spawnAgentInstance({
       parentRunId,
       workspacePath,
-      goal: 'should succeed without global capacity cap',
+      goal: 'fills the last global slot',
       pathScope: ['src']
     })
     expect(result.ok).toBe(true)

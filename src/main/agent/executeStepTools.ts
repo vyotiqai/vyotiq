@@ -1,11 +1,12 @@
 import { existsSync } from 'fs'
 import type { AgentEvent, AgentInteractionMode, ChatMessage, Settings } from '../../shared/ipc'
 import { isAbortError } from '../../shared/errors'
+import { composeAbortSignal } from '../../shared/utils/errors'
 import { logger } from '../../shared/logger'
 import { summarizeToolArgs } from '../../shared/toolSummary'
 import { toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import type { ToolCall } from './providers/types'
-import { executeTool } from '@main/agent/tools'
+import { executeTool, type ToolResult } from '@main/agent/tools'
 import { canonicalizeAgentToolName } from './schemas/tools'
 import {
   isParallelBatchClass,
@@ -118,6 +119,60 @@ function emitToolResult(ctx: ToolStepContext, event: AgentEvent): void {
   ctx.emitLiveEvent?.(event)
 }
 
+/**
+ * Soft deadline per tool invocation. Tools receive the abort signal, but a
+ * handler that ignores it must not hold the run slot forever. On expiry the
+ * call resolves as a failed tool result (counted by loop-safety streaks).
+ *
+ * Expiry also aborts the tool through `onDeadline`. Without it the handler is
+ * merely abandoned mid-flight: a shell it spawned keeps running after the run
+ * moves on, and the next command contends with it for the same repo (one wedged
+ * `vitest` tree outlived its deadline by ~25 minutes and starved the retry).
+ * Aborting propagates to the handlers that own processes — terminal kills its
+ * whole child tree, background sessions dispose — so nothing outlives the slot.
+ */
+export const TOOL_SOFT_DEADLINE_MS = resolveSoftDeadlineMs()
+
+function resolveSoftDeadlineMs(): number {
+  const raw = process.env.VYOTIQ_TOOL_SOFT_DEADLINE_MS
+  if (raw) {
+    const parsed = Number(raw)
+    if (Number.isFinite(parsed) && parsed > 0) return parsed
+  }
+  return 10 * 60_000
+}
+
+async function raceToolDeadline(
+  pending: Promise<ToolResult>,
+  name: string,
+  onDeadline?: () => void
+): Promise<ToolResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<ToolResult>((resolve) => {
+    timer = setTimeout(() => {
+      // Resolve before aborting: both settle in the same tick, and settling the
+      // deadline first is what wins the race, so the step reports the deadline
+      // instead of an AbortError. The abort and its tree-kill still run.
+      resolve({
+        ok: false,
+        summary: name,
+        content: `Tool "${name}" exceeded its ${Math.round(TOOL_SOFT_DEADLINE_MS / 60_000)}-minute deadline and was stopped. Split the work into smaller calls or check whether the tool is stuck.`,
+        failureLogged: false
+      })
+      onDeadline?.()
+    }, TOOL_SOFT_DEADLINE_MS)
+  })
+  try {
+    // The loser keeps running after the race settles. Aborting it on the
+    // deadline path makes it reject with AbortError — swallow that, or the
+    // late rejection surfaces as an unhandledRejection in the main process.
+    void pending.catch(() => {})
+    return await Promise.race([pending, deadline])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function runSingleTool(
   call: ToolCall,
   ctx: ToolStepContext,
@@ -173,7 +228,14 @@ async function runSingleTool(
           })
         : []
 
-    const result = await executeTool(call.name, call.arguments, ctx.workspace, ctx.signal, {
+    // Per-call signal: the run signal plus a deadline-only abort. The deadline
+    // must not abort ctx.signal itself — that is shared with sibling tools in
+    // the step, and cancelling it would cancel every one of them.
+    const deadlineController = new AbortController()
+    const toolSignal = composeAbortSignal(ctx.signal, deadlineController.signal)
+
+    const result = await raceToolDeadline(
+      executeTool(call.name, call.arguments, ctx.workspace, toolSignal, {
       runDir: ctx.runDir,
       sessionWorkspace: ctx.sessionWorkspace,
       inlineInstance: ctx.inlineInstance,
@@ -212,7 +274,10 @@ async function runSingleTool(
               stream: chunk.stream
             })
         : undefined
-    })
+      }),
+      call.name,
+      () => deadlineController.abort()
+    )
     let content = result.content
     if (result.ok && unreadPaths.length > 0) {
       content = `${content}\n\n[Soft warning: edited existing file(s) without a prior read/grep/glob/codebase_search inspect: ${unreadPaths.join(', ')}]`

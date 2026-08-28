@@ -12,7 +12,14 @@ export function GlobBody({ tool, loading, loadFailed, inGroup }: ToolBodyProps) 
       <div className={`${TOOL_BODY_PAD} flex flex-wrap items-center gap-2 pb-1`}>
         {!inGroup ? <Chip>{data.pattern}</Chip> : null}
         <span className="text-2xs tabular-nums text-tertiary">
-          {data.paths.length} {data.paths.length === 1 ? 'file' : 'files'}
+          {data.paths.length}{' '}
+          {data.nested
+            ? data.paths.length === 1
+              ? 'nested match'
+              : 'nested matches'
+            : data.paths.length === 1
+              ? 'file'
+              : 'files'}
           {data.truncated ? ' (truncated)' : ''}
         </span>
       </div>

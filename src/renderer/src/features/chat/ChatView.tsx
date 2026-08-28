@@ -14,13 +14,14 @@ import { RunSessionProvider } from './RunSessionContext'
 import { AgentInstancePane } from './components/AgentInstancePane'
 import { ChatTranscriptStage } from './components/ChatTranscriptStage'
 import { useInlineInstanceUi } from './hooks/useInlineInstanceUi'
+import { useRunGoal } from './hooks/useRunGoal'
 import {
   type AgentInstanceUiState
 } from '@shared/utils/agentInstance'
 import {
-  useChatLiveItems,
   useGitRevision,
-  useHasChatItems
+  useHasChatItems,
+  useHasTranscriptRunError
 } from './components/ChatStreamLeaves'
 import { useGitChrome } from './components/GitChrome'
 import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
@@ -65,8 +66,7 @@ import { ChatPaneHost, type PaneRenderOptions } from './ChatPaneHost'
 import {
   buildComposerSendProps,
   lastUserMessageIndex,
-  useComposerEditState,
-  useSuppressedChatError
+  useComposerEditState
 } from './hooks/composerShared'
 import type { PaneCapacityContext } from '@renderer/lib/hooks/useWorkspaceManager'
 import type { ChatPane, PaneDropZone } from '@renderer/lib/chat/chatPaneLayout'
@@ -90,6 +90,7 @@ const MemoComposer = memo(Composer)
 
 function TranscriptPane({
   items,
+  itemsStore,
   pendingRun,
   running,
   transcriptLoading,
@@ -129,6 +130,8 @@ function TranscriptPane({
   metaStore
 }: {
   items: UiItem[]
+  /** When set, MessageList subscribes via store so TranscriptPane skips token patches. */
+  itemsStore?: ChatItemsStore
   pendingRun?: boolean
   running: boolean
   transcriptLoading?: boolean
@@ -188,6 +191,8 @@ function TranscriptPane({
       <MessageList
         key={`transcript:${surfaceKey}`}
         items={items}
+        itemsStore={itemsStore}
+        virtualizeLiveEarly
         pendingRun={pendingRun}
         running={running}
         networkWait={networkWait}
@@ -457,6 +462,13 @@ export function ChatView({
     closeInstancePane,
     pendingGates
   } = useInlineInstanceUi(agentInstances, activeRunId, instanceOpenControlled)
+
+const runGoal = useRunGoal({
+  workspacePath,
+  runId: activeRunId,
+  running,
+  active: true
+})
   const onOpenAgentInstance = useMemo(
     () =>
       workspacePath != null
@@ -505,9 +517,11 @@ export function ChatView({
     [paneCount]
   )
   // Boolean presence only — stays Object.is-stable across pure text_delta frames.
+  // Item subscription stays on the leaves (MessageList/ChangesPanel); ChatView
+  // reads only Object.is-stable booleans so token patches skip these levels.
   const hasItems = useHasChatItems(itemsStore, items)
-  const liveItems = useChatLiveItems(itemsStore, items)
-  const chatBannerError = useSuppressedChatError(liveItems, error)
+  const hasTranscriptRunError = useHasTranscriptRunError(itemsStore, items)
+  const chatBannerError = hasTranscriptRunError ? null : error
   const operationalBannerError = operationalError ?? null
   const turnFailed = isRetryableTurnFailure({
     errorCode,
@@ -580,7 +594,12 @@ export function ChatView({
 
   /** Session-scoped: skip auto-open after the user closes a panel until they open it again. */
   const dismissedPanelsRef = useRef<Set<ChatRightPanelId>>(new Set())
-  const [gitRevision, bumpGitRevision] = useGitRevision(workspacePath, running, liveItems)
+  const [gitRevision, bumpGitRevision] = useGitRevision(
+    workspacePath,
+    running,
+    items,
+    itemsStore
+  )
   const filesFlushRef = useRef<(() => Promise<boolean>) | null>(null)
   const registerFilesFlush = useCallback(
     (flush: (() => Promise<boolean>) | null): void => {
@@ -601,11 +620,16 @@ export function ChatView({
         .catch(() => respond(requestId, false))
     })
   }, [flushDirtyFiles])
+  // Fetch git chrome only while a Changes surface is actually visible
+  // (side-dock panel or the immersive Changes tab) — never on mount.
+  const changesDockVisible = dockImmersive
+    ? immersiveTab === 'changes'
+    : activeRightPanel === 'changes'
   const gitChrome = useGitChrome(
     workspacePath,
     gitRevision,
-    Boolean(workspacePath),
-    undefined,
+    Boolean(workspacePath) && changesDockVisible,
+    changesDockVisible ? 0 : undefined,
     flushDirtyFiles
   )
   const notifyGitMutated = useCallback(() => {
@@ -1166,9 +1190,18 @@ export function ChatView({
           sideRailPad={agentSideRailPad}
           pendingGates={pendingGates}
           onOpenInstance={openInstancePane}
+          goal={runGoal.goal}
+          loop={runGoal.loop}
+          running={running}
+          onGoalPause={runGoal.pause}
+          onGoalResume={runGoal.resume}
+          onGoalComplete={runGoal.complete}
+          onStopLoop={runGoal.stopLoop}
+          onStopRun={onStop}
           transcript={
             <TranscriptPane
-              items={liveItems}
+              items={items}
+              itemsStore={itemsStore}
               pendingRun={pendingRun}
               running={running}
               transcriptLoading={transcriptLoading}
@@ -1314,7 +1347,8 @@ export function ChatView({
           inert={visiblePanelId !== 'changes' ? true : undefined}
         >
           <ChangesPanel
-            items={liveItems}
+            items={items}
+            itemsStore={itemsStore}
             workspacePath={workspacePath}
             gitRevision={gitRevision}
             chrome={gitChrome}
@@ -1390,7 +1424,7 @@ export function ChatView({
   )
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col pt-9">
       {dockImmersive && titleBarHost
         ? createPortal(
             <DockTabBar

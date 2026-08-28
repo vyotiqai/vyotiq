@@ -53,6 +53,8 @@ export interface StreamChunk {
   error?: string
   /** Structured failure code for `error` chunks (e.g. PROVIDER_HTTP vs PROVIDER_STREAM). */
   errorCode?: string
+  /** HTTP status for `PROVIDER_HTTP` error chunks — drives status-aware stream retry. */
+  httpStatus?: number
   usage?: TokenUsage
   /** Anthropic server-side compaction summary (not user-visible assistant text). */
   compaction?: string

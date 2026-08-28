@@ -41,3 +41,5 @@ Before continuing:
 Enable notifications if you want an inbox entry while another workspace is active. Keep tool approval enabled when a background run should pause before mutations. An approval or blocking question creates Agent needs you rather than silently choosing for you.
 
 If `Continue` repeats without progress, or the run reports Connection lost, Temporarily paused, or a provider error, follow [Run, network, and recovery issues](/docs/troubleshooting/runs-network-recovery).
+
+An **active** long-lived goal is different from a resumable interruption. After a restart, Agent V resumes active `goal.json` objectives (not paused) for currently open workspaces and re-arms `loop.json` timers. See [Long-lived goals](/docs/agent/goals).

@@ -1179,7 +1179,7 @@ export const TOOL_REGISTRY = {
   },
   terminal: {
     description:
-      'Run a shell command (cwd workspace root or working_directory). For builds, installs, downloads, and CLI — not for cat/type/findstr (use read/list_dir/glob/grep). Wait expiry keeps the process running and returns session_id — poll that UUID. When command is set it wins over session_id. block_until_ms: 0 starts in the background.',
+      'Run a shell command (cwd workspace root or working_directory). For builds, installs, downloads, and CLI — not for cat/type/findstr (use read/list_dir/glob/grep). Wait expiry keeps the process running and returns session_id — poll that UUID. Frames returned before the process closes carry a placeholder exit_code: -1 — a live or matched session, not a failure; poll session_id for the real exit. When command is set it wins over session_id. block_until_ms: 0 starts in the background.',
     schema: terminalArgs
   },
   memory_list: {

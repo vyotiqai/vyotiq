@@ -190,6 +190,7 @@ describe('runReceipt', () => {
               { path: 'package.json', action: 'created', undoable: true },
               { path: 'Directory', action: 'created', undoable: true },
               { path: 'src/config,src/llm,src/memory', action: 'created', undoable: true },
+              { path: '$env:TEMP/ext.ps1', action: 'created', undoable: true },
               { path: '=', action: 'created', undoable: true },
               { path: 'f1.confidence)', action: 'modified', undoable: true },
               { path: 'src/utils/paths.js', action: 'created', undoable: true }
@@ -198,6 +199,29 @@ describe('runReceipt', () => {
         }
       ])
     ).toEqual(['package.json', 'src/utils/paths.js'])
+  })
+
+  it('drops .NET bin/Debug checkpoint paths from wroteFiles', () => {
+    expect(
+      wroteFilesFromEvents([
+        {
+          at: 't',
+          event: {
+            type: 'writes_checkpoint',
+            files: [
+              { path: 'src/App.cs', action: 'modified', undoable: true },
+              {
+                path:
+                  'murmur-youtube-main/windows/src/Murmur.App/bin/Debug/net10.0/Murmur.App.dll',
+                action: 'created',
+                undoable: false
+              },
+              { path: 'windows/src/Foo/obj/Debug/Foo.pdb', action: 'created', undoable: false }
+            ]
+          }
+        }
+      ])
+    ).toEqual(['src/App.cs'])
   })
 
   it('keeps cumulative metrics but scopes outcome fields to the latest invocation', () => {
@@ -292,6 +316,134 @@ describe('runReceipt', () => {
     ])
   })
 
+  it('clusters terminal session-poll failures without unique session_id keys', () => {
+    const body = (sessionId: string): string =>
+      [
+        `session_id: ${sessionId}`,
+        'status: done',
+        'command: pnpm exec vitest run tests/main/unit/foo.test.ts',
+        'cwd: C:/ws',
+        'shell: powershell',
+        '',
+        'stderr:',
+        'FAIL',
+        'exit_code: 1'
+      ].join('\n')
+    const messages: ChatMessage[] = [
+      {
+        role: 'tool',
+        toolCallId: 't1',
+        toolName: 'terminal',
+        ok: false,
+        content: body('4ed64741-7158-4627-90b7-c8cec0c281ce')
+      },
+      {
+        role: 'tool',
+        toolCallId: 't2',
+        toolName: 'terminal',
+        ok: false,
+        content: body('c9e70b7f-55f8-4f54-8fcd-c3375adb5fc6')
+      }
+    ]
+    const receipt = buildRunReceipt({
+      runId: 'term-cluster',
+      status: { status: 'done', step: 1, updatedAt: new Date().toISOString() },
+      messages,
+      events: [],
+      contract: ''
+    })
+    expect(receipt.toolStats.failed).toBe(2)
+    expect(receipt.failureClusters).toEqual([
+      {
+        key: 'terminal: exit 1 · status done · pnpm exec vitest run tests/main/unit/foo.test.ts',
+        count: 2
+      }
+    ])
+    expect(receipt.failureClusters[0]?.key).not.toMatch(/session_id/)
+    expect(receipt.failureClusters[0]?.key).not.toMatch(
+      /4ed64741-7158-4627-90b7-c8cec0c281ce|c9e70b7f-55f8-4f54-8fcd-c3375adb5fc6/
+    )
+  })
+
+  it('clusters edit diff mismatches without unique line-number keys', () => {
+    const messages: ChatMessage[] = [
+      {
+        role: 'tool',
+        toolCallId: 'e1',
+        toolName: 'edit',
+        ok: false,
+        content:
+          'Diff hunk failed to match near line 150 (context/removal mismatch).\nExpected:\n  "import"'
+      },
+      {
+        role: 'tool',
+        toolCallId: 'e2',
+        toolName: 'edit',
+        ok: false,
+        content:
+          'Diff hunk failed to match near line 424 (context/removal mismatch).\nExpected:\n  " )"'
+      },
+      {
+        role: 'tool',
+        toolCallId: 's1',
+        toolName: 'str_replace',
+        ok: false,
+        content:
+          'old_string not found in src/main/agent/loopPolicy.ts. Closest match near line 8:'
+      },
+      {
+        role: 'tool',
+        toolCallId: 'm1',
+        toolName: 'multi_edit',
+        ok: false,
+        content:
+          'edits.1.path: duplicate path "src/main/agent/harnessReview.ts" — combine into one edit'
+      }
+    ]
+    const receipt = buildRunReceipt({
+      runId: 'edit-cluster',
+      status: { status: 'done', step: 1, updatedAt: new Date().toISOString() },
+      messages,
+      events: [],
+      contract: ''
+    })
+    expect(receipt.failureClusters).toEqual([
+      { key: 'edit: Diff hunk failed to match (context/removal mismatch)', count: 2 },
+      { key: 'multi_edit: duplicate path — combine into one edit', count: 1 },
+      { key: 'str_replace: old_string not found', count: 1 }
+    ])
+  })
+
+  it('clusters path-escape failures without the scrubbed basename', () => {
+    const messages: ChatMessage[] = [
+      {
+        role: 'tool',
+        toolCallId: 'r1',
+        toolName: 'read',
+        ok: false,
+        content: 'Path escapes workspace: vyotiq'
+      },
+      {
+        role: 'tool',
+        toolCallId: 'r2',
+        toolName: 'read',
+        ok: false,
+        content:
+          'Path escapes workspace: requested path is outside the workspace root. Use a workspace-relative path; absolute home, AppData, and other-drive paths are rejected.'
+      }
+    ]
+    const receipt = buildRunReceipt({
+      runId: 'escape-cluster',
+      status: { status: 'done', step: 1, updatedAt: new Date().toISOString() },
+      messages,
+      events: [],
+      contract: ''
+    })
+    expect(receipt.failureClusters).toEqual([
+      { key: 'read: Path escapes workspace (outside workspace root)', count: 2 }
+    ])
+  })
+
   it('treats concrete grep/glob as seen for unread edits', () => {
     const messages: ChatMessage[] = [
       {
@@ -316,6 +468,51 @@ describe('runReceipt', () => {
     })
     expect(receipt.unreadEditPaths).not.toContain('seen.ts')
     expect(receipt.unreadEditPaths).toContain('other.ts')
+  })
+
+  it('does not treat Plan-mode denials as unread-before-edit', () => {
+    const deny =
+      'Plan mode may only edit plan.md or contract.md (run plan artifacts). Call `switch_mode` with mode "agent" to edit product code.'
+    const messages: ChatMessage[] = [
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [
+          {
+            id: 'e1',
+            name: 'edit',
+            arguments: '{"path":".vyotiq/memory/index.md","contents":"x"}'
+          }
+        ]
+      },
+      { role: 'tool', toolCallId: 'e1', toolName: 'edit', ok: false, content: deny }
+    ]
+    const receipt = buildRunReceipt({
+      runId: 'plan-unread',
+      status: { status: 'done', step: 1, updatedAt: new Date().toISOString() },
+      messages,
+      events: [],
+      contract: ''
+    })
+    expect(receipt.unreadEditPaths).toEqual([])
+  })
+
+  it('omits Cancelled stubs from failure clusters and consecutive-failure streaks', () => {
+    const messages: ChatMessage[] = [
+      { role: 'tool', toolCallId: 'a', toolName: 'edit', ok: false, content: 'boom' },
+      { role: 'tool', toolCallId: 'b', toolName: 'terminal', ok: false, content: 'Cancelled' },
+      { role: 'tool', toolCallId: 'c', toolName: 'edit', ok: false, content: 'boom' }
+    ]
+    const receipt = buildRunReceipt({
+      runId: 'cancel-cluster',
+      status: { status: 'done', step: 1, updatedAt: new Date().toISOString() },
+      messages,
+      events: [],
+      contract: ''
+    })
+    expect(receipt.toolStats.failed).toBe(3)
+    expect(receipt.failureClusters).toEqual([{ key: 'edit: boom', count: 2 }])
+    expect(receipt.maxConsecutiveToolFailures).toBe(1)
   })
 
   it('writes receipt.json atomically', () => {

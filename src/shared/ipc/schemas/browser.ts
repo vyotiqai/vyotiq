@@ -44,7 +44,7 @@ export type BrowserNavigateRequest = z.infer<typeof BrowserNavigateRequestSchema
 
 export const BrowserTakeScreenshotRequestSchema = z.object({
   workspacePath: z.string().min(1),
-  runId: RunIdSchema,
+  runId: RunIdSchema.optional(),
   tabId: z.string().min(1).optional()
 })
 export type BrowserTakeScreenshotRequest = z.infer<typeof BrowserTakeScreenshotRequestSchema>

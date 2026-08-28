@@ -3,6 +3,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import { ToastHost } from '@renderer/lib/ui/ToastHost'
 import { getToasts, pushToast, resetToastStoreForTests } from '@renderer/lib/ui/toastStore'
 
@@ -50,6 +52,22 @@ describe('ToastHost', () => {
     expect(getToasts()).toHaveLength(1)
     expect(getToasts()[0]?.expiresAt).toBeNull()
     fireEvent.pointerLeave(toast)
+    act(() => {
+      vi.advanceTimersByTime(100)
+    })
+    expect(getToasts()).toHaveLength(0)
+  })
+
+  it('does not drive toast progress with requestAnimationFrame', () => {
+    const src = readFileSync(join(__dirname, '../../../src/renderer/src/lib/ui/ToastHost.tsx'), 'utf8')
+    expect(src).not.toMatch(/requestAnimationFrame/)
+    expect(src).toMatch(/vy-toast-progress/)
+  })
+
+  it('still auto-dismisses timed toasts without rAF', () => {
+    pushToast('timed out', 'info', 100)
+    render(<ToastHost />)
+    expect(screen.getByText('timed out')).toBeTruthy()
     act(() => {
       vi.advanceTimersByTime(100)
     })

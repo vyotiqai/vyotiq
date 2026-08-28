@@ -10,6 +10,7 @@ import { closeAgentBrowser } from '@main/app/agentBrowser'
 import { disposeAllPtySessions, replayPtySessionsToWindow } from '@main/app/ptySessions'
 import { disposeAllTerminalSessions } from '@main/agent/tools/terminalSessions'
 import { registerIpc } from './ipc/register'
+import { resumeActiveGoalsAndLoops } from './agent/resumeActiveGoals'
 import { initAutoUpdater } from '@main/app/updater'
 import { initNotifications } from './notifications/service'
 import { shutdownMcpServers, syncMcpServers } from '@main/agent/mcp'
@@ -173,9 +174,11 @@ if (!gotLock) {
         seen.add(key)
         purgeLegacyProjectHarness(root)
       }
-      // Warm indexes for the active workspace only (serialized via index job queue).
+      // Do NOT eagerly warm the embedding (code) index at boot — that loads an
+      // ONNX/transformers model and walks the whole workspace before any user
+      // action. The code index is built lazily on the first codebase_search.
       const active = workspaces.activePath
-      if (active) warmWorkspaceIndexes(active)
+      if (active) warmWorkspaceIndexes(active, { warmCodeIndex: false })
       const n = await interruptOrphanRunsForWorkspaces(workspaces)
       if (n > 0) {
         logger.info(`Interrupted ${n} orphan run(s)`, { scope: 'main' })
@@ -220,6 +223,11 @@ if (!gotLock) {
     createWindow()
     applyWindowChrome(getSettings().theme, getSettings().skinId)
     initCustomCssWatchFromSettings()
+    const bootWindow = getMainWindow()
+    bootWindow?.webContents.once('did-finish-load', () => {
+      const win = getMainWindow()
+      if (win && !win.isDestroyed()) resumeActiveGoalsAndLoops(win.webContents)
+    })
 
     const pushNativeTheme = (): void => {
       const win = getMainWindow()
@@ -237,6 +245,7 @@ if (!gotLock) {
         applyWindowChrome(getSettings().theme, getSettings().skinId)
         win.webContents.once('did-finish-load', () => {
           replayPtySessionsToWindow(win)
+          resumeActiveGoalsAndLoops(win.webContents)
         })
       }
     })

@@ -131,7 +131,7 @@ async function removeViaShell(longPath: string): Promise<void> {
       {
         timeout: 30_000,
         windowsHide: true,
-        env: process.env,
+        env: sanitizedTerminalEnv(),
         encoding: 'utf8'
       }
     )
@@ -146,7 +146,7 @@ async function removeViaShell(longPath: string): Promise<void> {
       {
         timeout: 30_000,
         windowsHide: true,
-        env: process.env,
+        env: sanitizedTerminalEnv(),
         encoding: 'utf8'
       }
     )

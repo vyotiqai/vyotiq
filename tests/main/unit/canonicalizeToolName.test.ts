@@ -33,6 +33,8 @@ describe('canonicalizeAgentToolName', () => {
     expect(canonicalizeAgentToolName('Todo')).toBe('todo_write')
     expect(canonicalizeAgentToolName('write_plan')).toBe('create_plan')
     expect(canonicalizeAgentToolName('CreatePlan')).toBe('create_plan')
+    expect(canonicalizeAgentToolName('CreateGoal')).toBe('create_goal')
+    expect(canonicalizeAgentToolName('UpdateGoal')).toBe('update_goal')
   })
 
   it('maps Task / subagent onto spawn_agent_instance and leaves Agent alone', () => {

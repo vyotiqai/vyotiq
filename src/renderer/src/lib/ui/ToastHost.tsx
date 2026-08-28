@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useState } from 'react'
 import { cn } from './cn'
 import { Icon } from '@renderer/lib/icons'
 import {
@@ -22,29 +22,18 @@ const KIND_ICON: Record<ToastKind, 'check' | 'warning' | 'sparkles'> = {
   error: 'warning'
 }
 
-function toastProgress(toast: ToastItem): number {
-  if (toast.durationMs <= 0) return 0
-  if (toast.expiresAt == null) return toast.remainingMs / toast.durationMs
-  return Math.max(0, (toast.expiresAt - Date.now()) / toast.durationMs)
-}
-
 function ToastProgress({ toast }: { toast: ToastItem }) {
-  const [progress, setProgress] = useState(() => toastProgress(toast))
-  useEffect(() => {
-    if (toast.durationMs <= 0) return
-    let raf = 0
-    const tick = (): void => {
-      setProgress(toastProgress(toast))
-      raf = window.requestAnimationFrame(tick)
-    }
-    raf = window.requestAnimationFrame(tick)
-    return () => window.cancelAnimationFrame(raf)
-  }, [toast])
   if (toast.durationMs <= 0) return null
+  const paused = toast.expiresAt == null
+  const remainingMs = toast.remainingMs
+  const startFraction = Math.max(0, Math.min(1, remainingMs / toast.durationMs))
   return (
     <div
-      className="pointer-events-none absolute bottom-0 left-0 h-0.5 bg-current opacity-30 vy-transition"
-      style={{ width: `${Math.max(0, Math.min(1, progress)) * 100}%` }}
+      className="pointer-events-none absolute bottom-0 left-0 h-0.5 w-full origin-left bg-current opacity-30"
+      style={{
+        transform: `scaleX(${startFraction})`,
+        animation: paused ? undefined : `vy-toast-progress ${remainingMs}ms linear forwards`
+      }}
       aria-hidden="true"
     />
   )

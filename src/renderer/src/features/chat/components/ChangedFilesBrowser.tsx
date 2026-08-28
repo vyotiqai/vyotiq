@@ -23,7 +23,7 @@ export type BrowserFileEntry = {
 }
 
 /** Match DiffPreview’s expanded cap so we don’t parse more than we render. */
-const DIFF_PREVIEW_MAX_LINES = 200
+const DIFF_PREVIEW_MAX_LINES = 1000
 const MAX_CONCURRENT_DIFF_FETCHES = 2
 
 /** Main returns these when git has no patch; do not parse them as diff text. */

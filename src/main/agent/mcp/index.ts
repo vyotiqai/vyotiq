@@ -3,7 +3,12 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
+import { ListRootsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js'
+import { pathToFileURL } from 'url'
+import { basename } from 'path'
+import Ajv2020 from 'ajv/dist/2020'
+import type { ValidateFunction } from 'ajv'
 import type { McpServer } from '../../../shared/ipc'
 import type { McpServerStatus } from '../../../shared/ipc'
 import type { ToolDefinition } from '../providers/types'
@@ -246,7 +251,55 @@ type McpSession = {
 export type McpResourceEntry = McpResourceSummary & { serverId: string }
 export type McpPromptEntry = McpPromptSummary & { serverId: string }
 
-const MCP_CONTENT_CAP = Number.POSITIVE_INFINITY
+/**
+ * Hard cap on MCP-sourced text fed to the model (chars). The MCP SDK does not
+ * bound tool/resource/prompt payloads, so an oversized server response would
+ * otherwise consume the whole context window in one step.
+ */
+export const MCP_CONTENT_CAP = 64 * 1024
+
+/** Truncate to MCP_CONTENT_CAP with an explicit marker when cut. */
+function capMcpText(text: string): string {
+  if (text.length <= MCP_CONTENT_CAP) return text
+  return `${text.slice(0, MCP_CONTENT_CAP)}\n[MCP output truncated: showing ${MCP_CONTENT_CAP} of ${text.length} chars]`
+}
+
+const ajv2020 = new Ajv2020({ allErrors: true, strict: false })
+/** Compiled per server/tool inputSchema; cleared when a server re-lists tools. */
+const mcpArgValidatorCache = new Map<string, ValidateFunction | null>()
+
+/**
+ * Defense-in-depth: validate tool arguments against the server-declared
+ * inputSchema before the call leaves the process. The MCP server remains the
+ * authority and re-validates itself; this stops schema-blind argument
+ * injection early and turns schema mismatches into fast tool errors instead
+ * of a paid round-trip. Fails open when a schema cannot be compiled.
+ */
+function validateMcpToolArgs(
+  toolName: string,
+  args: Record<string, unknown>,
+  inputSchema: unknown
+): string | null {
+  if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) return null
+  let validate = mcpArgValidatorCache.get(toolName)
+  if (validate === undefined) {
+    try {
+      validate = ajv2020.compile(inputSchema)
+    } catch (err) {
+      logger.warn('MCP inputSchema failed to compile; skipping arg validation', {
+        scope: 'mcp',
+        correlationId: toolName,
+        err
+      })
+      validate = null
+    }
+    mcpArgValidatorCache.set(toolName, validate)
+  }
+  if (!validate) return null
+  if (validate(args)) return null
+  const detail = ajv2020.errorsText(validate.errors?.slice(0, 5))
+  return `Invalid arguments for MCP tool "${toolName}": ${detail}`
+}
 
 function wrapMcpPayload(body: string, origin: string): string {
   return wrapUntrustedContent(body, { source: 'mcp', origin })
@@ -371,7 +424,7 @@ export function assertMcpServerAccess(
 function formatResourceContents(
   contents: Array<{ type?: string; text?: string; blob?: string; mimeType?: string }>
 ): string {
-  return contents
+  const joined = contents
     .map((part) => {
       if (part.type === 'text' && part.text) return part.text
       if (part.blob) {
@@ -380,13 +433,13 @@ function formatResourceContents(
       return JSON.stringify(part)
     })
     .join('\n')
-    .slice(0, MCP_CONTENT_CAP)
+  return capMcpText(joined)
 }
 
 function formatPromptMessages(
   messages: Array<{ role?: string; content?: { type?: string; text?: string } | string }>
 ): string {
-  return messages
+  const joined = messages
     .map((message) => {
       const role = message.role ?? 'unknown'
       const content = message.content
@@ -395,7 +448,7 @@ function formatPromptMessages(
       return `${role}: ${JSON.stringify(content)}`
     })
     .join('\n\n')
-    .slice(0, MCP_CONTENT_CAP)
+  return capMcpText(joined)
 }
 
 const sessions = new Map<string, McpSession>()
@@ -407,6 +460,8 @@ const toolsByName = new Map<string, ToolDefinition>()
 
 function rebuildToolsByNameIndex(): void {
   toolsByName.clear()
+  // Stale validators must not outlive the schema that compiled them.
+  mcpArgValidatorCache.clear()
   for (const session of sessions.values()) {
     for (const tool of session.tools) {
       toolsByName.set(tool.name, tool)
@@ -646,6 +701,34 @@ export async function refreshMcpServers(servers: McpServer[]): Promise<McpServer
   return getMcpServerStatus(servers)
 }
 
+/**
+ * Client that declares the MCP `roots` capability and answers `roots/list` with
+ * the active workspace root. Servers that scope themselves via roots (e.g.
+ * filesystem) otherwise fall back to spawn cwd or fail — this makes the
+ * workspace the explicit root. `listChanged: false`: sessions are keyed per
+ * workspace, so a workspace change is a new connection, not a notification.
+ */
+function createMcpClient(workspacePath?: string | null): Client {
+  const client = new Client({ name: 'vyotiq', version: '1.0.0' }, {
+    capabilities: {
+      roots: { listChanged: false }
+    }
+  })
+  client.setRequestHandler(ListRootsRequestSchema, () => {
+    const workspace = resolveStdioWorkspacePath(workspacePath)
+    if (!workspace) return { roots: [] }
+    return {
+      roots: [
+        {
+          uri: pathToFileURL(workspace).href,
+          name: basename(workspace)
+        }
+      ]
+    }
+  })
+  return client
+}
+
 async function createTransport(
   server: McpServer,
   opts?: { authProvider?: ReturnType<typeof createMcpOAuthProvider>; workspacePath?: string | null }
@@ -730,7 +813,7 @@ async function connectWithOptionalOAuth(
   const transportKind = server.transport ?? 'stdio'
   if (transportKind === 'stdio' || hasMcpAuthToken(server.id)) {
     const transport = await createTransport(server, { workspacePath })
-    const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
+    const client = createMcpClient(workspacePath)
     track({ client, transport })
     await client.connect(transport)
     return { client, transport }
@@ -761,7 +844,7 @@ async function connectWithOptionalOAuth(
   }
 
   const transport = await createTransport(server, { workspacePath })
-  const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
+  const client = createMcpClient(workspacePath)
   const connection = { client, transport }
   track(connection)
   try {
@@ -812,7 +895,7 @@ async function connectRemoteWithOAuth(
     googleAccess: server.googleAccess
   })
   const transport = await createTransport(server, { authProvider, workspacePath })
-  const client = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
+  const client = createMcpClient(workspacePath)
   track({ client, transport })
 
   try {
@@ -857,7 +940,7 @@ async function connectRemoteWithOAuth(
         // ignore
       }
       const transport2 = await createTransport(server, { authProvider, workspacePath })
-      const client2 = new Client({ name: 'vyotiq', version: '1.0.0' }, { capabilities: {} })
+      const client2 = createMcpClient(workspacePath)
       track({ client: client2, transport: transport2 })
       await client2.connect(transport2)
       await maybeLinkNativeGithubAfterMcpAuth(server.id)
@@ -1487,6 +1570,13 @@ export async function invokeMcpTool(
     return { ok: false, summary, content: gate.error }
   }
   try {
+    const toolDef = access.session.tools.find((tool) => tool.name === toolName)
+    const argsError = toolDef
+      ? validateMcpToolArgs(toolName, args, toolDef.parameters)
+      : null
+    if (argsError) {
+      return { ok: false, summary, content: argsError }
+    }
     const result = await session.client.callTool(
       { name: toolName, arguments: args },
       undefined,
@@ -1497,7 +1587,9 @@ export async function invokeMcpTool(
       .join('\n')
     const ok = result.isError !== true
     const prefix = ok ? '' : `[MCP ${fullToolName ?? toolName} error]\n`
-    const content = prefix + wrapMcpPayload((text || '(empty)').slice(0, MCP_CONTENT_CAP), `${serverId}/${toolName}`)
+    const content =
+      prefix +
+      wrapMcpPayload(capMcpText(text || '(empty)'), `${serverId}/${toolName}`)
     recordCircuitSuccess(circuitKeyMcpInvoke(access.sessionKey))
     return { ok, summary, content }
   } catch (err) {

@@ -2,8 +2,10 @@ import {
   Children,
   isValidElement,
   memo,
+  useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type InputHTMLAttributes,
   type ReactElement,
@@ -437,8 +439,21 @@ export function MarkdownContent({
     () => (streaming ? trailingOpenFenceBody(content) : null),
     [streaming, content]
   )
-  // Fresh map each render so remounts don't double-count collision suffixes.
-  const headingUsed = headingIds ? new Map<string, number>() : undefined
+  // Stable across unrelated re-renders (only reset when the rendered markdown
+  // changes) so MemoMarkdownBlock's `components` memo is not defeated every tick.
+  const headingUsed = useMemo(
+    () => (headingIds ? new Map<string, number>() : undefined),
+    [headingIds, markdown]
+  )
+  // Callers often pass an inline `onOpenWorkspaceFile`, whose identity changes
+  // every render and would defeat the block memo. Route through a stable closure
+  // backed by a ref so the memoized `components` stay stable unless content changes.
+  const onOpenRef = useRef(onOpenWorkspaceFile)
+  onOpenRef.current = onOpenWorkspaceFile
+  const openWorkspaceFileStable = useCallback(
+    (path: string, options?: { line?: number }) => onOpenRef.current?.(path, options),
+    []
+  )
   const blocks = useMemo(() => splitMarkdownBlocks(markdown), [markdown])
   const hasVisibleContent = content.trim().length > 0
 
@@ -471,9 +486,7 @@ export function MarkdownContent({
             headingUsed={headingUsed}
             readOnlyTasks={readOnlyTasks}
             linkWorkspacePaths={linkWorkspacePaths}
-            onOpenWorkspaceFile={
-              linkWorkspacePaths ? onOpenWorkspaceFile : undefined
-            }
+            onOpenWorkspaceFile={linkWorkspacePaths ? openWorkspaceFileStable : undefined}
           />
         )
       })}

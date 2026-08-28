@@ -161,6 +161,30 @@ describe('eventAppendQueue', () => {
     expect(active).toContain('after-rotate')
   })
 
+  it('keeps UTF-8 JSONL records valid across a rotation boundary', async () => {
+    const path = join(dir, 'events.jsonl')
+    const unicodeLine = `${JSON.stringify({ at: 'unicode', event: { type: 'status', text: '界'.repeat(512) } })}\n`
+    const bytesPerLine = Buffer.byteLength(unicodeLine, 'utf8')
+    const prefix = unicodeLine.repeat(Math.ceil((EVENTS_FILE_MAX_BYTES - EVENTS_FILE_KEEP_BYTES) / bytesPerLine) + 1)
+    const suffix = unicodeLine.repeat(Math.ceil(EVENTS_FILE_KEEP_BYTES / bytesPerLine) + 1)
+    writeFileSync(path, prefix + suffix, 'utf8')
+
+    enqueueEventAppend(dir, { type: 'status', status: 'after-utf8-rotate' })
+    await flushEventAppends(dir)
+
+    const files = [
+      ...readdirSync(dir)
+        .filter((name) => name.startsWith('events.archive.'))
+        .map((name) => join(dir, name)),
+      path
+    ]
+    for (const file of files) {
+      for (const line of readFileSync(file, 'utf8').trim().split('\n')) {
+        expect(() => JSON.parse(line)).not.toThrow()
+      }
+    }
+  })
+
   it('retries a transient (EBUSY) append failure before persisting', async () => {
     appendFileMock.mockImplementationOnce(async () => {
       throw Object.assign(new Error('resource busy'), { code: 'EBUSY' })

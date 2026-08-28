@@ -61,9 +61,34 @@ export default defineConfig(({ mode }) => {
           '@shared': resolve('src/shared')
         }
       },
-      plugins: [react(), tailwindcss()],
+      plugins: [
+        react({
+          babel: {
+            plugins: [['babel-plugin-react-compiler', { compilationMode: 'annotation' }]]
+          }
+        }),
+        tailwindcss()
+      ],
       define: {
         'import.meta.env.VITE_SENTRY_DSN': JSON.stringify(sentryDsn)
+      },
+      build: {
+        rollupOptions: {
+          output: {
+            manualChunks(id) {
+              if (
+                id.includes('node_modules/react-markdown') ||
+                id.includes('node_modules/remark-gfm') ||
+                id.includes('node_modules/rehype-sanitize')
+              ) {
+                return 'markdown'
+              }
+              if (id.includes('node_modules/shiki')) return 'shiki'
+              if (id.includes('node_modules/@lobehub/icons')) return 'lobehub'
+              return undefined
+            }
+          }
+        }
       }
     }
   }

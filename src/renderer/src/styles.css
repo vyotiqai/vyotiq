@@ -1066,6 +1066,12 @@
   }
 }
 
+@keyframes vy-toast-progress {
+  to {
+    transform: scaleX(0);
+  }
+}
+
 /* Dialog panel: a calm drop-and-settle instead of an instant pop. */
 @keyframes vy-dialog-in {
   from {

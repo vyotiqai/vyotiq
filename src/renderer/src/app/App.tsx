@@ -48,6 +48,7 @@ import {
 } from '@renderer/lib/hooks/composerAttachmentStore'
 import { mergeLiveInstanceRuns } from './mergeLiveInstanceRuns'
 import type { SlashClientHandlers } from '../features/chat/components/composer/slashCommandExecute'
+import { formatLoopStatusLine, loopUsageMessage, parseLoopCommand } from '@shared/goalRuntime'
 import type { ChatStreamController } from '@renderer/lib/hooks/createChatStreamController'
 
 /** Full-screen secondary views are code-split; they parse on first open, not at boot. */
@@ -171,6 +172,7 @@ function App() {
     loadRunIntoTab: loadRunTranscriptIntoTab,
     refreshActiveRuns,
     refreshWorkspaceRuns,
+    loadOlderRuns: loadOlderWorkspaceRuns,
     workspaceHasBackgroundRun,
     scrollRestoreToken,
     setComposerDraft,
@@ -864,6 +866,7 @@ function App() {
   const createSlashHandlers = useCallback(
     (scope: {
       workspacePath: string | null
+      runId: string | null
       running: boolean
       pendingRun: boolean
       onClear: () => void
@@ -872,7 +875,16 @@ function App() {
       ) => Promise<{ ok: true; message: string } | { ok: false; message: string }>
       onUndoWrites: () => Promise<boolean>
       onSetAgentMode: (mode: AgentInteractionMode) => void
-    }): SlashClientHandlers => ({
+      onStop?: () => void
+    }): SlashClientHandlers => {
+      const requireRun = (): { workspacePath: string; runId: string } | null => {
+        if (!scope.workspacePath || !scope.runId) {
+          pushToast('Open a chat first.')
+          return null
+        }
+        return { workspacePath: scope.workspacePath, runId: scope.runId }
+      }
+      return {
       onClear: () => {
         scope.onClear()
         setSettingsError(null)
@@ -997,6 +1009,116 @@ function App() {
         })
         return true
       },
+      onGoalPause: async () => {
+        const run = requireRun()
+        if (!run) return false
+        if (scope.running) {
+          scope.onStop?.()
+          return true
+        }
+        const res = await window.vyotiq.setGoalStatus({
+          workspacePath: run.workspacePath,
+          runId: run.runId,
+          action: 'pause'
+        })
+        if (!res.ok) {
+          pushToast(res.error, 'error')
+          return false
+        }
+        return true
+      },
+      onGoalResume: async () => {
+        const run = requireRun()
+        if (!run) return false
+        const res = await window.vyotiq.setGoalStatus({
+          workspacePath: run.workspacePath,
+          runId: run.runId,
+          action: 'resume'
+        })
+        if (!res.ok) {
+          pushToast(res.error, 'error')
+          return false
+        }
+        return true
+      },
+      onGoalComplete: async () => {
+        const run = requireRun()
+        if (!run) return false
+        const res = await window.vyotiq.setGoalStatus({
+          workspacePath: run.workspacePath,
+          runId: run.runId,
+          action: 'complete'
+        })
+        if (!res.ok) {
+          pushToast(res.error, 'error')
+          return false
+        }
+        return true
+      },
+      onGoalUsage: () => {
+        pushToast(
+          'Usage: /goal <objective> — /goal pause, /goal resume, /goal complete. Prefer a new chat.'
+        )
+        return true
+      },
+      onLoopSet: async (trailing?: string) => {
+        const run = requireRun()
+        if (!run) return false
+        const parsed = parseLoopCommand(trailing ?? '')
+        if (parsed.kind !== 'arm') {
+          pushToast(parsed.kind === 'error' ? parsed.message : loopUsageMessage())
+          return false
+        }
+        const res = await window.vyotiq.setLoop({
+          workspacePath: run.workspacePath,
+          runId: run.runId,
+          action: 'arm',
+          intervalMs: parsed.intervalMs,
+          prompt: parsed.prompt
+        })
+        if (!res.ok) {
+          pushToast(res.error, 'error')
+          return false
+        }
+        return true
+      },
+      onLoopStop: async () => {
+        const run = requireRun()
+        if (!run) return false
+        const res = await window.vyotiq.setLoop({
+          workspacePath: run.workspacePath,
+          runId: run.runId,
+          action: 'stop'
+        })
+        if (!res.ok) {
+          pushToast(res.error, 'error')
+          return false
+        }
+        return true
+      },
+      onLoopStatus: async () => {
+        const run = requireRun()
+        if (!run) return false
+        const res = await window.vyotiq.readRunArtifact({
+          workspacePath: run.workspacePath,
+          runId: run.runId,
+          name: 'loop.json'
+        })
+        if (!res.ok) {
+          pushToast(res.error, 'error')
+          return false
+        }
+        if (!res.data.exists || !res.data.content) {
+          pushToast(formatLoopStatusLine(null))
+          return true
+        }
+        try {
+          pushToast(formatLoopStatusLine(JSON.parse(res.data.content)))
+        } catch {
+          pushToast(formatLoopStatusLine(null))
+        }
+        return true
+      },
       onMarketplaceAction: async (packageId: string, intent: 'install' | 'enable') => {
         if (intent === 'enable') {
           const res = await window.vyotiq.marketplaceSetEnabled(packageId, true)
@@ -1057,7 +1179,8 @@ function App() {
       onNotice: (message: string) => {
         pushToast(message)
       }
-    }),
+    }
+    },
     [refresh, setSettingsError, settings.marketplace]
   )
 
@@ -1065,6 +1188,7 @@ function App() {
     () =>
       createSlashHandlers({
         workspacePath: focusedWorkspacePath ?? activeWorkspace,
+        runId: focusedRunId ?? chat.runId ?? null,
         running: chat.running,
         pendingRun: chat.pendingRun,
         onClear: () => {
@@ -1077,7 +1201,8 @@ function App() {
             workspacePath: focusedWorkspacePath ?? undefined,
             runId: focusedRunId
           })
-        }
+        },
+        onStop: onChatStop
       }),
     [
       activeWorkspace,
@@ -1089,6 +1214,7 @@ function App() {
       onCompactContext,
       onNewChat,
       onUndoWrites,
+      onChatStop,
       setAgentMode
     ]
   )
@@ -1111,6 +1237,28 @@ function App() {
       cancelled = true
     }
   }, [setSettingsError])
+
+  // Surface available app updates outside Settings → About: one toast per
+  // available/ready state so users notice without opening settings.
+  useEffect(() => {
+    const seen = new Set<string>()
+    const stop = window.vyotiq?.onUpdaterStatus?.((status) => {
+      if (status.state !== 'available' && status.state !== 'ready') return
+      const key = `${status.state}:${status.version ?? ''}`
+      if (seen.has(key)) return
+      seen.add(key)
+      if (status.state === 'available') {
+        pushToast(
+          `${status.message ?? 'An update is available.'} Install from Settings → About.`
+        )
+      } else {
+        pushToast(
+          `${status.message ?? 'Update downloaded.'} Restart to install — Settings → About.`
+        )
+      }
+    })
+    return stop
+  }, [])
 
   const [mcpServerNames, setMcpServerNames] = useState(() => new Map<string, string>())
 
@@ -1209,6 +1357,7 @@ function App() {
       )
       const paneSlashHandlers = createSlashHandlers({
         workspacePath: pane.workspacePath,
+        runId: pane.runId,
         running: snap.running,
         pendingRun: snap.pendingRun,
         onClear: () => {
@@ -1237,6 +1386,9 @@ function App() {
           }),
         onSetAgentMode: (mode) => {
           setAgentMode(mode, { workspacePath: pane.workspacePath, runId: pane.runId })
+        },
+        onStop: () => {
+          void paneCtrl?.stop()
         }
       })
       return (
@@ -1491,6 +1643,18 @@ function App() {
     void removeWorkspace(path)
   }
 
+  const onExportRunInWorkspace = async (path: string, runId: string): Promise<void> => {
+    if (!window.vyotiq?.exportRun) return
+    const res = await window.vyotiq.exportRun(path, runId)
+    if (!res.ok) {
+      pushToast(res.error, 'error')
+      return
+    }
+    if (res.data.saved && res.data.path) {
+      pushToast(`Chat exported to ${res.data.path}`)
+    }
+  }
+
   const chatError = chat.error
 
   const runsByWorkspacePath = useMemo(
@@ -1505,10 +1669,17 @@ function App() {
             activeWorkspace && workspacePathsEqual(path, activeWorkspace)
               ? chat.agentInstances
               : undefined
+          // Older pages stay in ctx.olderRuns across refreshes; a run there can
+          // also re-enter the fresh top cap after activity — dedupe by runId.
+          const seen = new Set(ctx.runs.map((r) => r.runId))
+          const mergedRuns = [
+            ...ctx.runs,
+            ...ctx.olderRuns.filter((r) => !seen.has(r.runId))
+          ].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
           return [
             path,
             {
-              runs: ctx.runs,
+              runs: mergedRuns,
               instanceRuns: mergeLiveInstanceRuns(
                 ctx.instanceRuns ?? [],
                 liveInstances,
@@ -1542,6 +1713,8 @@ function App() {
     onRenameRunInWorkspace: (path: string, runId: string, goal: string) =>
       void onRenameRunInWorkspace(path, runId, goal),
     onDeleteRunInWorkspace: (path: string, runId: string) => void onDeleteRunInWorkspace(path, runId),
+    onExportRunInWorkspace: (path: string, runId: string) => void onExportRunInWorkspace(path, runId),
+    onLoadOlderRuns: (path: string) => void loadOlderWorkspaceRuns(path),
     isRunOpenInPane: isSessionOpenInPane,
     isRunFocusedInPane: isSessionFocusedInPane,
     openInstanceRunId: focusedOpenInstance

@@ -38,9 +38,12 @@ Cycle mode allows Shift (previous mode).
 
 | Action | Windows / Linux | macOS |
 | --- | --- | --- |
+| Files panel | Ctrl+Shift+E | ⌘⇧E |
 | Terminal panel | Ctrl+` | ⌘` |
 | Changes panel | Ctrl+E | ⌘E |
 | Browser panel | Ctrl+Shift+B | ⌘⇧B |
+| Plan panel | Ctrl+Shift+D | ⌘⇧D |
+| Pull request panel | Ctrl+Shift+G | ⌘⇧G |
 
 ## Transcript and type size
 

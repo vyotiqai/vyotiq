@@ -1,6 +1,5 @@
 import type { ToolDefinition } from '../providers/types'
 import { AGENT_TOOLS } from '../types'
-import { MCP_TOOL_PREFIX } from '../mcp'
 import { estimateTextTokens } from './estimate'
 
 /**
@@ -50,26 +49,6 @@ export function toolCatalogFingerprint(tools: ReadonlyArray<{ name: string }>): 
   return tools.map((t) => t.name).join('|')
 }
 
-/**
- * Drop a pinned MCP schema after this many agent steps without pin or invoke.
- * Required builtins are never evicted. Deferred optional builtins stay until
- * `release_mcp_tools` — only MCP last-used stamps are persisted.
- */
-export const UNUSED_PINNED_MCP_TTL_STEPS = 4
-
-export function isUnusedPinnedMcp(
-  name: string,
-  catalogStep: number,
-  lastUsedByName: ReadonlyMap<string, number> | undefined
-): boolean {
-  if (!name.startsWith(MCP_TOOL_PREFIX)) return false
-  const lastUsed = lastUsedByName?.get(name)
-  if (typeof lastUsed !== 'number' || !Number.isFinite(lastUsed) || lastUsed < 1) {
-    return false
-  }
-  return catalogStep - lastUsed >= UNUSED_PINNED_MCP_TTL_STEPS
-}
-
 export type BuildStepToolCatalogOptions = {
   pinnedMcpNames?: ReadonlySet<string>
   /**
@@ -79,10 +58,6 @@ export type BuildStepToolCatalogOptions = {
   deferUnpinnedMcp?: boolean
   /** Names kept on a prior step — restore that intersection in order. */
   stickyKeptNames?: ReadonlySet<string>
-  /** Current agent step (1-based). With mcpLastUsedByName, unused pins are evicted. */
-  catalogStep?: number
-  /** MCP tool name → last step pinned or invoked. */
-  mcpLastUsedByName?: ReadonlyMap<string, number>
 }
 
 export type StepToolCatalog = {

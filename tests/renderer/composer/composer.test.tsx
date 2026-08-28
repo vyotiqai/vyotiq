@@ -255,7 +255,7 @@ describe('Composer', () => {
     fireEvent.change(fileInput)
 
     await waitFor(() => {
-      expect(screen.getByText(/Image 1/i)).toBeTruthy()
+      expect(screen.getByAltText(/Image 1/i)).toBeTruthy()
     })
 
     fireEvent.click(screen.getByRole('button', { name: /Select model/i }))

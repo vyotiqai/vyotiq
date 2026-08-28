@@ -10,6 +10,9 @@ import type {
 import { contentToText, RUN_RECEIPT_VERSION, RunReceiptSchema } from '../../shared/ipc'
 import {
   applyToolCallToKnownPaths,
+  isAbortStubToolResult,
+  isBuildOutputRelPath,
+  isNonMutatingWriteFailure,
   isPlausibleWorkspaceFilePath,
   normalizeWorkspaceRelPath,
   toolArgsFromCall,
@@ -18,6 +21,7 @@ import {
 import { parseDiagnosticLines } from './tools/diagnostics'
 import { logger } from '../../shared/logger'
 import { stepUsageTotalsFromPersistedEvents } from '../../shared/utils/runTelemetry'
+import { parseTerminalOutput } from '../../shared/utils/terminalFormat'
 
 export { RUN_RECEIPT_VERSION }
 export const RUN_RECEIPT_FILENAME = 'receipt.json'
@@ -62,6 +66,57 @@ export function normalizeFailureClusterText(text: string): string {
     .trim()
 }
 
+/**
+ * Terminal polls prefix a unique session_id, so raw first-80-char keys never
+ * merge. Cluster by exit / status / command instead.
+ */
+function terminalFailureClusterText(content: string): string | null {
+  const parsed = parseTerminalOutput(content)
+  const command = (parsed.command ?? '').replace(/\s+/g, ' ').trim().slice(0, 48)
+  const parts = [
+    parsed.exitCode != null ? `exit ${parsed.exitCode}` : null,
+    parsed.sessionStatus ? `status ${parsed.sessionStatus}` : null,
+    command || null
+  ].filter((part): part is string => Boolean(part))
+  return parts.length > 0 ? parts.join(' · ') : null
+}
+
+function failureClusterBody(toolName: string, content: string): string {
+  if (toolName === 'terminal') {
+    const terminal = terminalFailureClusterText(content)
+    if (terminal) return terminal
+  }
+  const text = normalizeFailureClusterText(content)
+  if (
+    (toolName === 'edit' || toolName === 'multi_edit') &&
+    /Diff hunk failed to match/i.test(text)
+  ) {
+    return 'Diff hunk failed to match (context/removal mismatch)'
+  }
+  if (
+    (toolName === 'edit' || toolName === 'multi_edit') &&
+    /Diff hunk (?:near line \d+ |for line \d+ )?matched \d+/i.test(text)
+  ) {
+    return 'Diff hunk matched multiple locations'
+  }
+  if (
+    (toolName === 'str_replace' || toolName === 'edit_notebook' || toolName === 'edit') &&
+    /old_string not found/i.test(text)
+  ) {
+    return 'old_string not found'
+  }
+  if (toolName === 'multi_edit' && /duplicate path /i.test(text)) {
+    return 'duplicate path — combine into one edit'
+  }
+  if (/Plan mode may only edit plan\.md or contract\.md/i.test(text)) {
+    return 'Plan mode may only edit plan.md or contract.md'
+  }
+  if (/Path escapes workspace/i.test(text)) {
+    return 'Path escapes workspace (outside workspace root)'
+  }
+  return text.slice(0, 80)
+}
+
 function failureClustersFromMessages(
   messages: readonly SeedToolMessage[],
   cap = 12
@@ -69,7 +124,9 @@ function failureClustersFromMessages(
   const counts = new Map<string, number>()
   for (const msg of messages) {
     if (msg.role !== 'tool' || msg.ok !== false || !msg.toolName) continue
-    const text = normalizeFailureClusterText(contentToText(msg.content ?? '')).slice(0, 80)
+    const content = contentToText(msg.content ?? '')
+    if (isAbortStubToolResult(content)) continue
+    const text = failureClusterBody(msg.toolName, content)
     const key = `${msg.toolName}: ${text || '(no message)'}`
     counts.set(key, (counts.get(key) ?? 0) + 1)
   }
@@ -87,6 +144,10 @@ export function maxConsecutiveToolFailuresFromMessages(
   let current = 0
   for (const msg of messages) {
     if (msg.role !== 'tool' || !msg.toolName) continue
+    if (isAbortStubToolResult(contentToText(msg.content ?? ''))) {
+      current = 0
+      continue
+    }
     if (msg.ok === false) {
       current++
       if (current > max) max = current
@@ -100,16 +161,13 @@ export function maxConsecutiveToolFailuresFromMessages(
 function unreadEditPathsFromMessages(messages: readonly SeedToolMessage[]): string[] {
   const known = new Set<string>()
   const unread = new Set<string>()
-  const successfulCallIds = new Set(
-    messages
-      .filter((msg) => msg.role === 'tool' && msg.toolCallId && msg.ok !== false)
-      .map((msg) => msg.toolCallId!)
-  )
-  const resultByCallId = new Map<string, string>()
+  const resultByCallId = new Map<string, { ok: boolean; content: string }>()
   for (const msg of messages) {
-    if (msg.role === 'tool' && msg.toolCallId && msg.ok !== false) {
-      resultByCallId.set(msg.toolCallId, contentToText(msg.content ?? ''))
-    }
+    if (msg.role !== 'tool' || !msg.toolCallId) continue
+    resultByCallId.set(msg.toolCallId, {
+      ok: msg.ok !== false,
+      content: contentToText(msg.content ?? '')
+    })
   }
   // Transcript replay has no filesystem snapshot; treat edited paths as pre-existing.
   const pathExists = (): boolean => true
@@ -117,20 +175,23 @@ function unreadEditPathsFromMessages(messages: readonly SeedToolMessage[]): stri
     if (msg.role !== 'assistant' || !msg.toolCalls) continue
     for (const call of msg.toolCalls) {
       const args = toolArgsFromCall(call.arguments)
-      const ok = successfulCallIds.has(call.id)
+      const result = resultByCallId.get(call.id)
+      const ok = result?.ok ?? false
+      const content = result?.content ?? ''
+      if (!ok && isNonMutatingWriteFailure(content)) continue
       if (
         call.name === 'read' ||
         call.name === 'grep' ||
         call.name === 'glob' ||
         call.name === 'codebase_search'
       ) {
-        applyToolCallToKnownPaths(known, call.name, args, ok, resultByCallId.get(call.id))
+        applyToolCallToKnownPaths(known, call.name, args, ok, content)
         continue
       }
       for (const path of unreadExistingEditPaths(known, call.name, args, pathExists)) {
         unread.add(path)
       }
-      applyToolCallToKnownPaths(known, call.name, args, ok, resultByCallId.get(call.id))
+      applyToolCallToKnownPaths(known, call.name, args, ok, content)
     }
   }
   return [...unread].sort()
@@ -145,12 +206,16 @@ export function wroteFilesFromEvents(events: readonly PersistedEvent[]): string[
     for (const entry of ev.files) {
       if (typeof entry === 'string') {
         const path = normalizeWorkspaceRelPath(entry)
-        if (path && isPlausibleWorkspaceFilePath(path)) paths.push(path)
+        if (path && isPlausibleWorkspaceFilePath(path) && !isBuildOutputRelPath(path)) {
+          paths.push(path)
+        }
         continue
       }
       if (entry && typeof entry === 'object' && typeof (entry as { path?: unknown }).path === 'string') {
         const path = normalizeWorkspaceRelPath((entry as { path: string }).path)
-        if (path && isPlausibleWorkspaceFilePath(path)) paths.push(path)
+        if (path && isPlausibleWorkspaceFilePath(path) && !isBuildOutputRelPath(path)) {
+          paths.push(path)
+        }
       }
     }
     return paths

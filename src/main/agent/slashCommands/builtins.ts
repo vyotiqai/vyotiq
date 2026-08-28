@@ -1,4 +1,5 @@
 import type { SlashCommandDescriptor, SlashCommandResolveResult } from '../../../shared/ipc'
+import { formatGoalInvocation, loopUsageMessage, parseLoopCommand } from '../../../shared/goalRuntime'
 
 export const BUILTIN_COMMANDS: SlashCommandDescriptor[] = [
   {
@@ -118,6 +119,24 @@ export const BUILTIN_COMMANDS: SlashCommandDescriptor[] = [
     kind: 'builtin',
     group: 'App',
     availability: 'ready'
+  },
+  {
+    id: 'builtin:goal',
+    trigger: 'goal',
+    label: 'Set goal',
+    description: 'Set a long-lived objective for this chat (/goal pause, resume, complete)',
+    kind: 'builtin',
+    group: 'App',
+    availability: 'ready'
+  },
+  {
+    id: 'builtin:loop',
+    trigger: 'loop',
+    label: 'Arm loop',
+    description: 'Repeat a prompt on an interval (/loop 30s check CI; /loop stop)',
+    kind: 'builtin',
+    group: 'App',
+    availability: 'ready'
   }
 ]
 
@@ -170,6 +189,26 @@ export function resolveBuiltin(
         clientAction: 'harness_apply',
         ...(trailingText.trim() ? { trailingText: trailingText.trim() } : {})
       }
+    case 'builtin:goal': {
+      const text = trailingText.trim()
+      if (!text) return { action: 'client', clientAction: 'goal_usage' }
+      if (/^pause\b/i.test(text)) return { action: 'client', clientAction: 'goal_pause' }
+      if (/^resume\b/i.test(text)) return { action: 'client', clientAction: 'goal_resume' }
+      if (/^complete\b/i.test(text)) return { action: 'client', clientAction: 'goal_complete' }
+      return { action: 'send', message: formatGoalInvocation(text) }
+    }
+    case 'builtin:loop': {
+      const parsed = parseLoopCommand(trailingText)
+      if (parsed.kind === 'stop') return { action: 'client', clientAction: 'loop_stop' }
+      if (parsed.kind === 'status') return { action: 'client', clientAction: 'loop_status' }
+      if (parsed.kind === 'usage') return { action: 'send', message: loopUsageMessage() }
+      if (parsed.kind === 'error') return { action: 'send', message: parsed.message }
+      return {
+        action: 'client',
+        clientAction: 'loop_set',
+        trailingText: trailingText.trim()
+      }
+    }
     default:
       return null
   }

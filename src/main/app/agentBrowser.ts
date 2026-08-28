@@ -548,6 +548,23 @@ function attachAgentSecurity(wc: WebContents): void {
   wc.session.setPermissionRequestHandler((_contents, _permission, callback) => {
     callback(false)
   })
+  wc.session.setPermissionCheckHandler(() => false)
+  // Fallback CSP for browsed pages that ship none of their own. Deliberately
+  // minimal so real sites keep working; a page's own CSP is left untouched
+  // because multiple policies would only intersect and break it.
+  wc.session.webRequest.onHeadersReceived((details, callback) => {
+    const headers = details.responseHeaders ?? {}
+    const hasCsp = Object.keys(headers).some(
+      (key) => key.toLowerCase() === 'content-security-policy'
+    )
+    if (hasCsp) {
+      callback({})
+      return
+    }
+    callback({
+      responseHeaders: { ...headers, 'Content-Security-Policy': ["object-src 'none'"] }
+    })
+  })
 }
 
 /** Hook alert/confirm/prompt so browser_handle_dialog can accept/dismiss. */

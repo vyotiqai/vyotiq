@@ -32,7 +32,7 @@ A configured row is not proof of a healthy server. The connection and catalog st
 
 ## Use MCP content
 
-Built-in MCP meta tools list server catalogs and request or release server tools. Server-reported tools are separate from the app's 59 built-ins.
+Built-in MCP meta tools list server catalogs and request or release server tools. Server-reported tools are separate from the app's 61 built-ins.
 
 Ask and Plan may list catalogs only. Invoking an MCP server tool, reading a resource, or fetching a prompt requires Agent mode because server content and side-effect annotations are not trusted as a security gate.
 

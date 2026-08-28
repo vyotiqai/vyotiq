@@ -71,6 +71,27 @@ describe('toolGlob', () => {
 
   it('reports no matches without throwing', async () => {
     expect(await toolGlob(root, '**/*.rs')).toContain('No files match')
+    expect(await toolGlob(root, '**/*.rs')).not.toContain('Nested matches:')
+  })
+
+  it('lists nested matches when a root-relative glob misses a nested project folder', async () => {
+    mkdirSync(join(root, 'murmur-youtube-main', 'windows'), { recursive: true })
+    writeFileSync(
+      join(root, 'murmur-youtube-main', 'windows', 'Murmur.CrossPlatform.slnf'),
+      '<Solution />\n',
+      'utf8'
+    )
+    writeFileSync(
+      join(root, 'murmur-youtube-main', 'windows', 'Murmur.App.csproj'),
+      '<Project />\n',
+      'utf8'
+    )
+    const out = await toolGlob(root, 'windows/**/*.{sln,slnf,csproj}')
+    expect(out).toContain('No files match windows/**/*.{sln,slnf,csproj}')
+    expect(out).toContain('Paths are relative to the workspace root.')
+    expect(out).toContain('Nested matches:')
+    expect(out).toContain('murmur-youtube-main/windows/Murmur.CrossPlatform.slnf')
+    expect(out).toContain('murmur-youtube-main/windows/Murmur.App.csproj')
   })
 })
 
@@ -298,6 +319,23 @@ describe('toolStrReplace', () => {
 
   it('fails when old_string is missing', () => {
     expect(() => toolStrReplace(root, 'src/a.ts', 'nope', 'x')).toThrow(/not found/)
+  })
+
+  it('does not treat an empty file line as the closest match', () => {
+    writeFileSync(
+      join(root, 'loopish.ts'),
+      ['import { x } from "y"', '', '', 'export const keep = 1', ''].join('\n'),
+      'utf8'
+    )
+    try {
+      toolStrReplace(root, 'loopish.ts', 'export const REMOVED_CONSTANT = 1', 'export const keep = 2')
+      expect.fail('expected throw')
+    } catch (err) {
+      const text = String(err)
+      expect(text).toMatch(/old_string not found/)
+      expect(text).not.toMatch(/Closest match near line \d+: ""/)
+      expect(text).toMatch(/export const keep = 1/)
+    }
   })
 })
 

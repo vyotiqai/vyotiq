@@ -1,5 +1,6 @@
 import {
   Fragment,
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -39,6 +40,8 @@ import { setFocusedFile } from '@renderer/lib/focusedFile'
 import { handleTabListKeyDown } from '@renderer/lib/utils/tabListKeyboard'
 import { HexEditor } from './HexEditor'
 import { TextCodeEditor } from './TextCodeEditor'
+import { FilePreview } from './FilePreview'
+import { defaultPreviewOpen, filePreviewKind } from './filePreviewKind'
 import { type InlineCompleteRequestFn } from './tabAutocomplete'
 import { DiffPreview } from './DiffPreview'
 import { useWorkspaceLsp } from '../hooks/useWorkspaceLsp'
@@ -444,7 +447,7 @@ function isUnderPath(path: string, parent: string): boolean {
   return path === parent || path.startsWith(`${parent}/`)
 }
 
-export function FilesPanel({
+export const FilesPanel = memo(function FilesPanel({
   workspacePath,
   active,
   tabAutocompleteEnabled = true,
@@ -454,7 +457,8 @@ export function FilesPanel({
   openPath,
   onOpenPathHandled,
   recoveryData,
-  onRecoveryDataConsumed
+  onRecoveryDataConsumed,
+  findInFilesNonce = 0
 }: {
   workspacePath: string | null
   active: boolean
@@ -464,6 +468,7 @@ export function FilesPanel({
   onFlushReady?: (flush: (() => Promise<boolean>) | null) => void
   openPath?: WorkspaceFileOpenRequest | null
   onOpenPathHandled?: (request: WorkspaceFileOpenRequest) => void
+  findInFilesNonce?: number
   recoveryData?: WorkspaceEditorRecoveryLoadResult
   onRecoveryDataConsumed?: (workspacePath: string) => void
 }) {
@@ -1144,14 +1149,16 @@ export function FilesPanel({
   const [findHits, setFindHits] = useState<Array<{ path: string; line: number; text: string }>>([])
   const [findError, setFindError] = useState<string | null>(null)
   const [findBusy, setFindBusy] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const previewKind = activeTab ? filePreviewKind(activeTab.path) : null
 
   useEffect(() => {
-    const onFind = (): void => {
-      if (active) setFindInFilesOpen(true)
-    }
-    window.addEventListener('vyotiq:find-in-files', onFind)
-    return () => window.removeEventListener('vyotiq:find-in-files', onFind)
-  }, [active])
+    setPreviewOpen(defaultPreviewOpen(previewKind))
+  }, [activeTab?.id, previewKind])
+
+  useEffect(() => {
+    if (findInFilesNonce > 0) setFindInFilesOpen(true)
+  }, [findInFilesNonce])
   const activeDirty = activeTab?.dirty ?? false
   const activeSaveState = activeTab
     ? saveStates[activeTab.id] ?? (activeTab.dirty ? 'pending' : 'saved')
@@ -1536,12 +1543,31 @@ export function FilesPanel({
       await checkExternalChangeForActiveTab()
     }
     if (becameActive) void checkExternalChange()
-    const timer = window.setInterval(() => void checkExternalChange(), 2_000)
+
+    const documentVisible = (): boolean =>
+      typeof document === 'undefined' || document.visibilityState === 'visible'
+
+    const onFocusOrVisible = (): void => {
+      if (documentVisible()) void checkExternalChange()
+    }
+    window.addEventListener('focus', onFocusOrVisible)
+    document.addEventListener('visibilitychange', onFocusOrVisible)
+
+    const dirty = Boolean(activeTab?.dirty)
+    let timer: number | undefined
+    if (dirty && documentVisible()) {
+      timer = window.setInterval(() => {
+        if (!documentVisible()) return
+        void checkExternalChange()
+      }, 2_000)
+    }
     return () => {
       cancelled = true
-      window.clearInterval(timer)
+      if (timer != null) window.clearInterval(timer)
+      window.removeEventListener('focus', onFocusOrVisible)
+      document.removeEventListener('visibilitychange', onFocusOrVisible)
     }
-  }, [active, activeTab?.id, checkExternalChangeForActiveTab, workspacePath])
+  }, [active, activeTab?.id, activeTab?.dirty, checkExternalChangeForActiveTab, workspacePath])
 
   const reloadTab = useCallback(
     async (id: string): Promise<boolean> => {
@@ -4124,6 +4150,22 @@ export function FilesPanel({
                     Lines
                   </button>
                 ) : null}
+                {previewKind ? (
+                  <button
+                    type="button"
+                    className={cn(
+                      DOCK_TOOLBAR_BTN,
+                      'px-1.5',
+                      previewOpen && DOCK_TOOLBAR_BTN_PRESSED
+                    )}
+                    aria-pressed={previewOpen}
+                    aria-label={previewOpen ? 'Show source' : 'Show preview'}
+                    title={previewOpen ? 'Show source' : 'Show preview'}
+                    onClick={() => setPreviewOpen((open) => !open)}
+                  >
+                    {previewOpen ? 'Source' : 'Preview'}
+                  </button>
+                ) : null}
                 <div className="ml-auto flex shrink-0 items-center gap-1">
                 <span className="hidden shrink-0 text-muted sm:inline" title="File encoding and line endings">
                   {activeTab.encoding.toUpperCase()}
@@ -4318,6 +4360,12 @@ export function FilesPanel({
                     </p>
                   )}
                 </div>
+              ) : previewOpen && previewKind ? (
+                <FilePreview
+                  path={activeTab.path}
+                  content={activeTab.content}
+                  binary={activeTab.kind === 'binary'}
+                />
               ) : activeTab.kind === 'text' ? (
                 <TextCodeEditor
                   key={activeTab.id}
@@ -4405,7 +4453,8 @@ export function FilesPanel({
               <Icon name="fileSearch" size={28} className="mb-3 text-muted/50" />
               <p>Select a file to open it in the editor.</p>
               <p className="mt-1 max-w-[18rem] text-caption text-muted/80">
-                Text files use CodeMirror. Binary files use the bounded virtualized hex editor.
+                Text files use CodeMirror. Images, SVG, Markdown, and HTML can preview in the tab.
+                Other binary files use the bounded virtualized hex editor.
               </p>
             </div>
           )}
@@ -4445,4 +4494,4 @@ export function FilesPanel({
       </div>
     </div>
   )
-}
+})

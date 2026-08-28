@@ -4,6 +4,7 @@ import {
   AppError,
   abortError,
   formatError,
+  formatToolResultError,
   createCorrelationId,
   isAbortError,
   isExpectedError,
@@ -38,6 +39,22 @@ describe('formatError + AppError', () => {
   it('scrubs secrets in formatError output', () => {
     expect(formatError(new Error('bad sk-abcdefghijklmnop'))).toContain('[redacted]')
     expect(formatError(new Error('bad sk-abcdefghijklmnop'))).not.toContain('sk-abcdefghijklmnop')
+  })
+
+  it('keeps path-escape tool results actionable instead of a scrubbed basename', () => {
+    const absolute = new Error(
+      'Path escapes workspace: C:\\Users\\ajay\\AppData\\Roaming\\vyotiq'
+    )
+    expect(formatError(absolute)).toBe('Path escapes workspace: vyotiq')
+    const toolText = formatToolResultError(absolute)
+    expect(toolText).toMatch(/outside the workspace root/i)
+    expect(toolText).toMatch(/workspace-relative/i)
+    expect(toolText).not.toMatch(/Roaming/i)
+    expect(toolText).not.toBe('Path escapes workspace: vyotiq')
+
+    const relative = formatToolResultError(new Error('Path escapes workspace: ../escape.txt'))
+    expect(relative).toMatch(/\.\.\/escape\.txt/)
+    expect(relative).toMatch(/do not use '\.\.'/)
   })
 
   it('returns AppError message directly', () => {

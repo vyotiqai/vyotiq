@@ -6,10 +6,11 @@ import { useDiffHighlight, type DiffTokens } from './useDiffHighlight'
 /** Enough of the change to recognise it without turning the transcript into a file. */
 export const DIFF_COLLAPSED_LINES = 14
 /**
- * Hard cap even when expanded. Full diffs (up to ~100k chars from git) as DOM +
- * syntax highlight freeze the renderer — especially Expand All.
+ * Cap when expanded. Syntax highlight already stops at 64 lines (plain-text rows
+ * beyond that are cheap DOM), so the expanded ceiling is set by layout cost —
+ * 1000 lines covers real-world diffs without freezing the renderer.
  */
-export const DIFF_MAX_EXPANDED_LINES = 200
+export const DIFF_MAX_EXPANDED_LINES = 1000
 
 export type DiffLayout = 'unified' | 'split'
 

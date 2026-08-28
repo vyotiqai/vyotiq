@@ -23,7 +23,8 @@ const MUTATING_GIT_TOOLS = new Set([
 export function useGitRevision(
   workspacePath: string | null,
   running: boolean,
-  items: UiItem[]
+  items: UiItem[],
+  itemsStore?: ChatItemsStore
 ): [number, () => void] {
   const [revision, setRevision] = useState(0)
   const bump = useCallback(() => {
@@ -33,6 +34,8 @@ export function useGitRevision(
   const mutatingDoneCount = useRef(0)
   /** Skip the mount bump — useGitStatus already fetches once for the initial path. */
   const prevPathRef = useRef<string | null | undefined>(undefined)
+  const itemsRef = useRef(items)
+  itemsRef.current = items
 
   useEffect(() => {
     if (wasRunning.current && !running) setRevision((value) => value + 1)
@@ -52,19 +55,29 @@ export function useGitRevision(
 
   useEffect(() => {
     if (!running) return
-    let count = 0
-    for (const item of items) {
-      if (item.kind !== 'tool') continue
-      if (item.tool.status !== 'done' && item.tool.status !== 'fail') continue
-      if (MUTATING_GIT_TOOLS.has(item.tool.name)) count++
+    let timer: number | undefined
+    const scan = (): void => {
+      const list = itemsStore?.getItems() ?? itemsRef.current
+      let count = 0
+      for (const item of list) {
+        if (item.kind !== 'tool') continue
+        if (item.tool.status !== 'done' && item.tool.status !== 'fail') continue
+        if (MUTATING_GIT_TOOLS.has(item.tool.name)) count++
+      }
+      if (count <= mutatingDoneCount.current) return
+      mutatingDoneCount.current = count
+      window.clearTimeout(timer)
+      timer = window.setTimeout(() => {
+        setRevision((value) => value + 1)
+      }, 400)
     }
-    if (count <= mutatingDoneCount.current) return
-    mutatingDoneCount.current = count
-    const timer = window.setTimeout(() => {
-      setRevision((value) => value + 1)
-    }, 400)
-    return () => window.clearTimeout(timer)
-  }, [items, running])
+    scan()
+    const unsubscribe = itemsStore?.subscribeItems(scan)
+    return () => {
+      unsubscribe?.()
+      if (timer != null) window.clearTimeout(timer)
+    }
+  }, [itemsStore, items, running])
 
   return [revision, bump]
 }
@@ -80,6 +93,30 @@ function useLiveItems(itemsStore: ChatItemsStore | undefined, items: UiItem[]): 
   const getRevision = useCallback(() => getItemsRevision?.() ?? 0, [getItemsRevision])
   useSyncExternalStore(subscribe, getRevision, getRevision)
   return getItems ? getItems() : items
+}
+
+/**
+ * Boolean-only run_error presence — Object.is-stable across stream deltas so
+ * ChatView / Composer skip re-renders while the transcript grows.
+ */
+export function useHasTranscriptRunError(
+  itemsStore: ChatItemsStore | undefined,
+  items: UiItem[]
+): boolean {
+  const itemsRef = useRef(items)
+  itemsRef.current = items
+  const subscribeItems = itemsStore?.subscribeItems
+  const getItems = itemsStore?.getItems
+  const subscribe = useCallback(
+    (onStoreChange: () => void) => subscribeItems?.(onStoreChange) ?? (() => {}),
+    [subscribeItems]
+  )
+  const getSnapshot = useCallback((): boolean => {
+    const list = getItems ? getItems() : itemsRef.current
+    return list.some((item) => item.kind === 'run_error')
+  }, [getItems])
+  const fromStore = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+  return getItems ? fromStore : items.some((item) => item.kind === 'run_error')
 }
 
 /**

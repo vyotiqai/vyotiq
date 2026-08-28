@@ -395,6 +395,30 @@ function appendWindowsCompatHint(
   return `${content}\n\n[Windows hint] cmd.exe does not support: ${hints.join('; ')}.${redirect} Switch Terminal shell to PowerShell for other shell-only commands.`
 }
 
+/**
+ * `cmd | Select-Object -Last 8; "shard-B exit: $LASTEXITCODE"` and friends:
+ * the trailing statement is a string literal, so the shell exits 0 no matter
+ * what the real command did. The agent then reads a green `exit 0` while the
+ * echoed text says a test failed. Detect the shape so the failure is preserved.
+ */
+export function isMaskedExitCommand(command: string): boolean {
+  return /;\s*(?:"[^"]*"|'[^']*')\s*$/.test(command.trim())
+}
+
+/**
+ * Recover the real exit code from a self-reported footer line such as
+ * `shard-B exit: 1`. Returns null when no code is stated.
+ */
+export function parseEchoedExitCode(text: string): number | null {
+  const matches = text.match(/(?:^|\n)[^\n]*?\b(?:exit|code|rc)[:\s]\s*(-?\d+)\s*$/gim)
+  if (!matches?.length) return null
+  const last = matches[matches.length - 1]!
+  const parsed = last.match(/(-?\d+)\s*$/)
+  if (!parsed?.[1]) return null
+  const code = Number(parsed[1])
+  return Number.isFinite(code) ? code : null
+}
+
 /** Append PowerShell hints for common Windows footguns seen in agent runs. */
 export function appendPowerShellCompatHint(
   content: string,
@@ -403,7 +427,13 @@ export function appendPowerShellCompatHint(
   resolved: ResolvedTerminalShell,
   command = ''
 ): string {
-  if (resolved !== 'powershell' || exitCode === 0 || exitCode === null) return content
+  if (resolved !== 'powershell' || exitCode === null) return content
+  // Masking is a failure even though the shell reported 0 — it must not be
+  // gated behind `exitCode !== 0`, or every masked failure is silently lost.
+  if (isMaskedExitCommand(command)) {
+    return `${content}\n\n[Exit code masked] This command ends with a trailing string literal (e.g. \u2026; "shard exit: $LASTEXITCODE"), so the shell exits 0 regardless of the real result. Run the command alone, or end with \`exit $LASTEXITCODE\`, so failures are reported.`
+  }
+  if (exitCode === 0) return content
   if (/running scripts is disabled|npm\.ps1 cannot be loaded/i.test(stderr)) {
     return `${content}\n\n[Windows hint] npm is blocked by PowerShell execution policy. Use npm.cmd instead of npm (e.g. npm.cmd test), or run Set-ExecutionPolicy -Scope CurrentUser RemoteSigned.`
   }
@@ -546,6 +576,15 @@ function formatTerminalOutput(
   ]
     .filter(Boolean)
     .join('\n')
+  // A masked command reports the shell's code (0) while the real result is
+  // whatever the command echoed. Correct the verdict BEFORE the hints append
+  // their own trailing text — after that, it is no longer the last line.
+  if (isMaskedExitCommand(command)) {
+    const echoed = parseEchoedExitCode(`${stdout}\n${stderr}`)
+    if (echoed != null && echoed !== 0 && echoed !== code) {
+      out = out.replace(/\nexit_code:\s*-?\d+\s*$/, `\nexit_code: ${echoed}`)
+    }
+  }
   out = appendWindowsCompatHint(command, out, code, resolved)
   out = appendPowerShellCompatHint(out, code, stderr, resolved, command)
   out = appendMissingCommandHint(out, code, stderr)

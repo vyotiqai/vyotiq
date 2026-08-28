@@ -93,19 +93,32 @@ function PtySessionView({
     const fit = new FitAddon()
     term.loadAddon(fit)
     term.loadAddon(new WebLinksAddon())
-    // xterm ships no copy keybinding (paste only) — Ctrl/Cmd+C with a selection
-    // copies instead of sending ^C, like VS Code / Windows Terminal.
+    // xterm ships no copy/paste keybindings — Ctrl/Cmd+C with a selection copies
+    // instead of sending ^C, and Ctrl/Cmd+V pastes the clipboard, like VS Code /
+    // Windows Terminal.
     term.attachCustomKeyEventHandler((event) => {
       if (
         event.type === 'keydown' &&
         (event.ctrlKey || event.metaKey) &&
         !event.shiftKey &&
-        !event.altKey &&
-        event.key.toLowerCase() === 'c' &&
-        term.hasSelection()
+        !event.altKey
       ) {
-        void copyText(term.getSelection())
-        return false
+        const key = event.key.toLowerCase()
+        if (key === 'c' && term.hasSelection()) {
+          void copyText(term.getSelection())
+          return false
+        }
+        if (key === 'v') {
+          void navigator.clipboard
+            .readText()
+            .then((text) => {
+              if (text) term.paste(text)
+            })
+            .catch(() => {
+              // Clipboard permission denied — let xterm's default paste handling apply.
+            })
+          return false
+        }
       }
       return true
     })

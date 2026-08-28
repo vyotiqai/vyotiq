@@ -204,4 +204,51 @@ describe('AgentBrowserPanel visibility', () => {
     expect(browserBack).toHaveBeenCalled()
     expect(await findByText('Workspace is closed')).toBeTruthy()
   })
+
+  it('searches with the Settings search engine from the address bar', async () => {
+    const browserNavigate = vi.fn().mockResolvedValue({ ok: true, data: true })
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        browserGetState: vi.fn().mockResolvedValue({
+          ok: true,
+          data: {
+            open: false,
+            url: '',
+            title: '',
+            navigating: false,
+            tabs: [],
+            canGoBack: false,
+            canGoForward: false
+          }
+        }),
+        onBrowserState: vi.fn().mockReturnValue(() => {}),
+        browserSetBounds,
+        getSettings: vi.fn().mockResolvedValue({
+          ok: true,
+          data: { searchEngine: 'duckduckgo' }
+        }),
+        browserNavigate
+      }
+    })
+    const { findByLabelText } = render(<AgentBrowserPanel visible={true} />)
+    const input = await findByLabelText('Search or enter URL')
+    fireEvent.change(input, { target: { value: 'hello world' } })
+    fireEvent.submit(input.closest('form')!)
+    await waitFor(() => {
+      expect(browserNavigate).toHaveBeenCalledWith(
+        'https://duckduckgo.com/?q=hello%20world',
+        undefined
+      )
+    })
+  })
+
+  it('exposes viewport size presets', async () => {
+    const { findByLabelText } = render(<AgentBrowserPanel visible={true} />)
+    const select = (await findByLabelText('Viewport size')) as HTMLSelectElement
+    fireEvent.change(select, { target: { value: 'iphone' } })
+    expect(select.value).toBe('iphone')
+    expect(document.querySelector('[data-browser-viewport="iphone"]')).toBeTruthy()
+  })
 })

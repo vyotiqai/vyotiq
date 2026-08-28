@@ -1,6 +1,7 @@
 import { contentDisplayText } from '@shared/ipc'
 import type { AttachedFile } from '@shared/ipc'
 import { MAX_FILES } from './useComposerFiles'
+import { MAX_IMAGES } from './useComposerImages'
 import {
   extractMentions,
   isSafeWorkspaceRelPath,
@@ -13,6 +14,7 @@ import {
 export type ResolveMentionsResult = {
   text: string
   files: AttachedFile[]
+  images: string[]
   error: string | null
   /** True when the caller abandoned this resolve (e.g. workspace switched). */
   stale?: boolean
@@ -187,6 +189,8 @@ export async function resolveComposerMentions(opts: {
   workspacePath: string | null | undefined
   draft: string
   existingFiles: AttachedFile[]
+  existingImages?: string[]
+  runId?: string | null
   /** Return false after a workspace/run switch so late results are discarded. */
   isCurrent?: () => boolean
 }): Promise<ResolveMentionsResult> {
@@ -194,6 +198,7 @@ export async function resolveComposerMentions(opts: {
   const staleResult = (): ResolveMentionsResult => ({
     text: '',
     files: [...opts.existingFiles],
+    images: [...(opts.existingImages ?? [])],
     error: null,
     stale: true
   })
@@ -201,6 +206,7 @@ export async function resolveComposerMentions(opts: {
   const mentions = extractMentions(opts.draft)
   let text = visibleUserText(opts.draft)
   const files = [...opts.existingFiles]
+  const images = [...(opts.existingImages ?? [])]
   const problems: string[] = []
   const contextBlocks: string[] = []
 
@@ -286,7 +292,54 @@ export async function resolveComposerMentions(opts: {
         break
       }
       case 'browser': {
-        contextBlocks.push(BROWSER_INSTRUCTION)
+        const instruction = BROWSER_INSTRUCTION
+        let screenshotNote: string | null = null
+        if (opts.workspacePath && opts.runId && window.vyotiq?.readRunArtifact) {
+          try {
+            const snap = await window.vyotiq.readRunArtifact({
+              workspacePath: opts.workspacePath,
+              runId: opts.runId,
+              name: 'browser/snapshot.jpg'
+            })
+            if (snap?.ok && snap.data.exists && snap.data.content) {
+              if (images.includes(snap.data.content)) {
+                screenshotNote = 'Screenshot: browser/snapshot.jpg (already attached)'
+              } else if (images.length >= MAX_IMAGES) {
+                screenshotNote =
+                  'Screenshot: browser/snapshot.jpg exists (image attach limit reached)'
+              } else {
+                images.push(snap.data.content)
+                screenshotNote = 'Screenshot: attached browser/snapshot.jpg'
+              }
+            }
+          } catch {
+            /* snapshot is optional */
+          }
+        }
+        try {
+          const res = await window.vyotiq.browserGetState?.()
+          if (res?.ok && res.data.url?.trim() && res.data.url !== 'about:blank') {
+            const title = res.data.title?.trim()
+            contextBlocks.push(
+              [
+                '## Referenced browser',
+                `URL: ${res.data.url.trim()}`,
+                title ? `Title: ${title}` : null,
+                screenshotNote,
+                '',
+                instruction
+              ]
+                .filter((line) => line != null)
+                .join('\n')
+            )
+            break
+          }
+        } catch {
+          /* fall through to instruction-only */
+        }
+        contextBlocks.push(
+          [screenshotNote, instruction].filter((line) => line != null).join('\n\n')
+        )
         break
       }
       case 'chat': {
@@ -318,6 +371,7 @@ export async function resolveComposerMentions(opts: {
   return {
     text,
     files,
+    images,
     error: problems.length ? problems.join(' · ') : null
   }
 }

@@ -58,7 +58,9 @@ const SNAPSHOT_SKIP_DIRS = new Set([
   '.cache',
   '.nox',
   '.pixi',
-  'target'
+  'target',
+  // .NET build output (bin/Debug|Release) — not agent-edited source.
+  'bin'
 ])
 
 function normalizeRel(rel: string): string {
@@ -209,25 +211,25 @@ export function disposeWatch(snapshot: WorkspaceSnapshot): void {
  * Apply a post-tool workspace diff onto the active write checkpoint, using
  * pre-mutation blobs from the snapshot for modified/deleted paths.
  */
-export function applyWatchDiffToCheckpoint(
+export async function applyWatchDiffToCheckpoint(
   snapshot: WorkspaceSnapshot,
   diff: WorkspaceDiff,
   context: { runDir?: string; skipWriteCheckpoint?: boolean }
-): void {
+): Promise<void> {
   if (context.skipWriteCheckpoint || !context.runDir) return
   const cp = getWriteCheckpoint(context.runDir)
   if (!cp) return
 
   for (const rel of diff.created) {
-    cp.recordObservedMutation(rel, 'created')
+    await cp.recordObservedMutation(rel, 'created')
   }
   for (const rel of diff.modified) {
     const prior = snapshot.files.get(rel)
-    cp.recordObservedMutation(rel, 'modified', prior?.blobPath)
+    await cp.recordObservedMutation(rel, 'modified', prior?.blobPath)
   }
   for (const rel of diff.deleted) {
     const prior = snapshot.files.get(rel)
-    cp.recordObservedMutation(rel, 'deleted', prior?.blobPath)
+    await cp.recordObservedMutation(rel, 'deleted', prior?.blobPath)
   }
 }
 

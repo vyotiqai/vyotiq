@@ -62,6 +62,8 @@ const VYOTIQ_INVOKE_MAP: Record<
   undoWrites: IPC.runsUndoWrites,
   resolveWrites: IPC.runsResolveWrites,
   readRunArtifact: IPC.runsReadArtifact,
+  setGoalStatus: IPC.runsSetGoalStatus,
+  setLoop: IPC.runsSetLoop,
   harnessReview: IPC.harnessReview,
   harnessPreviewApply: IPC.harnessPreviewApply,
   harnessApply: IPC.harnessApply,
@@ -77,10 +79,12 @@ const VYOTIQ_INVOKE_MAP: Record<
   dictationUnload: IPC.dictationUnload,
   dictationDeleteCache: IPC.dictationDeleteCache,
   listRuns: IPC.listRuns,
+  listOlderRuns: IPC.listOlderRuns,
   loadRun: IPC.loadRun,
   loadRunEvents: IPC.loadRunEvents,
   loadToolResult: IPC.loadToolResult,
   deleteRun: IPC.runsDelete,
+  exportRun: IPC.runsExport,
   renameRun: IPC.runsRename,
   listActiveRuns: IPC.runsActive,
   browserGetState: IPC.browserGetState,
@@ -293,7 +297,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(179)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(183)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {

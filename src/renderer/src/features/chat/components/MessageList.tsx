@@ -1,8 +1,7 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useAppVirtualizer } from '@renderer/lib/hooks/useAppVirtualizer'
-import { Dialog } from '@renderer/lib/a11y'
 import { Icon } from '@renderer/lib/icons'
-import { cn } from '@renderer/lib/ui'
+import { cn, ImageLightbox, MarkdownContent } from '@renderer/lib/ui'
 import {
   focusComposerMessage,
   isEditableShortcutTarget,
@@ -44,8 +43,8 @@ import {
   timestampMs
 } from '../utils/transcriptRows'
 import type { StepUsageTotals } from '@shared/utils/runTelemetry'
-import type { ChatMetaStore } from '../chatStores'
-import { useResolvedTurnUsage } from './ChatStreamLeaves'
+import type { ChatItemsStore, ChatMetaStore } from '../chatStores'
+import { useChatLiveItems, useResolvedTurnUsage } from './ChatStreamLeaves'
 import { resolveTasksAnchorUserId } from '../utils/tasksAnchor'
 import {
   compactActivityFromRows,
@@ -64,7 +63,6 @@ import { ToolGroup } from './ToolGroup'
 import { TurnSummary } from './TurnSummary'
 import { UserPrompt } from './UserPrompt'
 import { TasksCeilingBand } from './TasksCeilingBand'
-import { MarkdownContent } from '@renderer/lib/ui'
 import { shouldRenderThinking } from '@shared/transcript'
 import {
   formatCitationsForCopy,
@@ -218,10 +216,15 @@ export function estimateTranscriptRowSize(row: TranscriptRow | undefined): numbe
   }
 }
 
-/** Cheap revision string so streaming content growth remasures without a length change. */
+/**
+ * Cheap revision string so streaming content growth re-measures without a length
+ * change. Tail-follow only cares about the bottom of the transcript, and only the
+ * trailing row grows during a stream (its id is stable, its content fingerprint
+ * changes) — so a single last-row fingerprint is equivalent to a full O(n) join.
+ */
 export function transcriptRowsContentRevision(rows: readonly TranscriptRow[]): string {
   if (rows.length === 0) return ''
-  return rows.map((row) => transcriptRowFingerprint(row)).join('\n')
+  return transcriptRowFingerprint(rows[rows.length - 1]!)
 }
 
 /** Minimum pin slack when no dock reserve is known yet. */
@@ -232,6 +235,16 @@ const NEAR_BOTTOM_MIN_PX = 80
  * live user prompt is not left just above the fold with a "Latest N" chip.
  */
 const FOLLOW_LAG_PX = 240
+
+/**
+ * Bottom reserve added to the scrollport while the "Latest" chip is showing.
+ *
+ * The chip is a zero-height sticky row (`h-0`, `-translate-y-full`), so it
+ * floats over whatever the last row happens to be — usually a Thought header —
+ * and covers it. Reserving its height in the scroll container lifts the content
+ * out from under it, and costs nothing once the reader is pinned to the bottom.
+ */
+const JUMP_TO_BOTTOM_CLEARANCE_PX = 40
 
 /**
  * Virtualize only long idle transcripts that never streamed in this mount.
@@ -311,37 +324,6 @@ export function captureScrollAnchor(
   }
 
   return null
-}
-
-function ImageLightbox({ url, label, onClose }: { url: string; label: string; onClose: () => void }) {
-  const closeRef = useRef<HTMLButtonElement>(null)
-
-  return (
-    <Dialog
-      open
-      onClose={onClose}
-      title={label}
-      useNativeDialog={false}
-      overlayClassName="bg-overlay"
-      className="flex items-center justify-center"
-      initialFocusRef={closeRef}
-    >
-      <button
-        ref={closeRef}
-        type="button"
-        className="absolute right-4 top-4 inline-grid size-8 place-items-center rounded-full bg-surface/80 text-fg vy-transition hover:bg-surface"
-        aria-label="Close image preview"
-        onClick={onClose}
-      >
-        <Icon name="close" size={16} />
-      </button>
-      <img
-        src={url}
-        alt={label}
-        className="max-h-[min(90vh,900px)] max-w-[min(92vw,1200px)] rounded-md object-contain shadow-lg"
-      />
-    </Dialog>
-  )
 }
 
 /** Spacing as padding (not margin) so row rhythm stays consistent. */
@@ -568,9 +550,17 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   footerUsage = null,
   footerStatus = null,
   footerOmitReceipt = false,
-  footerOmitDuration = false
+  footerOmitDuration = false,
+  thoughtRunIndex = 0
 }: {
   row: TranscriptRow
+  /**
+   * How many Thought rows precede this one back-to-back in the same stretch of
+   * the transcript. Computed where the row list is available (this component
+   * only ever sees a single row) so a chain of reasoning reads "Thought 1/2/3"
+   * instead of the same bare header repeated without distinction.
+   */
+  thoughtRunIndex?: number
   onImageClick: (url: string, label: string) => void
   onLoadToolContent?: (toolCallId: string) => Promise<string | null>
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
@@ -644,6 +634,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         content={row.item.thinking ?? ''}
         streaming={row.item.thinkingStreaming}
         expanded={row.item.thinkingExpanded}
+        repeatedCount={thoughtRunIndex}
         onToggle={
           onThinkingToggle ? (next) => onThinkingToggle(row.item.id, next) : undefined
         }
@@ -749,7 +740,8 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
 })
 
 export function MessageList({
-  items,
+  items: itemsProp,
+  itemsStore,
   restoreScrollTop,
   scrollRestoreToken,
   onScrollTopChange,
@@ -785,6 +777,7 @@ export function MessageList({
   metaStore
 }: {
   items: UiItem[]
+  itemsStore?: ChatItemsStore
   restoreScrollTop?: number
   scrollRestoreToken?: number
   onScrollTopChange?: (scrollTop: number) => void
@@ -816,7 +809,7 @@ export function MessageList({
   turnStatus?: TurnOutcome | null
   /** True while the selected chat transcript is still loading. */
   transcriptLoading?: boolean
-  /** Instance pane: hybrid-virtualize live transcripts without waiting for 160 rows. */
+  /** Hybrid-virtualize live transcripts without waiting for 160 rows. */
   virtualizeLiveEarly?: boolean
   onOpenChanges?: () => void
   /** When false, use symmetric gutter (immersive Agent — no floating side rail). */
@@ -831,6 +824,7 @@ export function MessageList({
   /** Live meta store — receipt updates without waiting for ChatView to re-render. */
   metaStore?: ChatMetaStore
 }) {
+  const items = useChatLiveItems(itemsStore, itemsProp)
   const containerRef = useRef<HTMLDivElement | null>(null)
   const appliedRestoreRef = useRef<number | null>(null)
   const restoreScrollTopRef = useRef<number | null>(
@@ -885,9 +879,13 @@ export function MessageList({
     return () => window.clearTimeout(timer)
   }, [live, pendingRun, running])
 
-  const itemsStructuralKey = useMemo(() => structuralKey(items), [items])
+  // Defer the expensive transcript derivation so streaming token frames do not
+  // block urgent UI (composer typing, scroll). React recomputes allRows/displayRows
+  // as a non-urgent render, yielding to interaction. Ref: react.dev/reference/react/useDeferredValue.
+  const deferredItems = useDeferredValue(items)
+  const itemsStructuralKey = useMemo(() => structuralKey(deferredItems), [deferredItems])
   const allRows = useMemo(() => {
-    const next = buildTranscriptRows(items, {
+    const next = buildTranscriptRows(deferredItems, {
       pendingRun,
       running,
       showThinking,
@@ -899,7 +897,7 @@ export function MessageList({
     })
     return stabilizeTranscriptRows(prevRowsRef.current, next)
   }, [
-    items,
+    deferredItems,
     pendingRun,
     running,
     showThinking,
@@ -928,7 +926,7 @@ export function MessageList({
     return latest
   }, [allRows])
 
-  const tasksAnchorUserId = useMemo(() => resolveTasksAnchorUserId(items), [items])
+  const tasksAnchorUserId = useMemo(() => resolveTasksAnchorUserId(deferredItems), [deferredItems])
 
   const displayRows = useMemo(() => {
     const visible = allRows.filter((row) => {
@@ -944,6 +942,25 @@ export function MessageList({
       return shouldRenderThinking(row.item.thinking, row.item.thinkingStreaming)
     })
   }, [allRows, collapsedTurnSet, showThinking])
+
+  /**
+   * Position of each Thought row within its own back-to-back run. Keyed by row
+   * id so virtualization (which renders a sparse window) still labels a row
+   * correctly without walking neighbours that are not mounted.
+   */
+  const thoughtRunIndexes = useMemo(() => {
+    const map = new Map<string, number>()
+    let run = 0
+    for (const row of displayRows) {
+      if (row.kind !== 'thinking') {
+        run = 0
+        continue
+      }
+      map.set(row.id, run)
+      run += 1
+    }
+    return map
+  }, [displayRows])
 
   const latestUserRowId = useMemo(() => {
     for (let i = displayRows.length - 1; i >= 0; i--) {
@@ -1307,17 +1324,17 @@ export function MessageList({
   }, [followTail, scrollRestored])
 
   useEffect(() => {
-    hasPendingQuestionRef.current = items.some((item) => item.kind === 'question')
-  }, [items])
+    hasPendingQuestionRef.current = deferredItems.some((item) => item.kind === 'question')
+  }, [deferredItems])
 
   useEffect(() => {
     if (!scrollRestored || restorePendingRef.current || !pinnedToBottomRef.current) return
     if (prevStructuralKeyRef.current === itemsStructuralKey) return
     prevStructuralKeyRef.current = itemsStructuralKey
     // AskQuestionPanel scrolls the gate to show its header; pin-follow would bury it.
-    if (items.some((item) => item.kind === 'question')) return
+    if (deferredItems.some((item) => item.kind === 'question')) return
     scheduleTailFollow()
-  }, [items, itemsStructuralKey, scheduleTailFollow, scrollRestored])
+  }, [deferredItems, itemsStructuralKey, scheduleTailFollow, scrollRestored])
 
   useEffect(() => {
     const el = containerRef.current
@@ -1660,6 +1677,7 @@ export function MessageList({
     return (
     <TranscriptRowBlock
       row={row}
+      thoughtRunIndex={row.kind === 'thinking' ? (thoughtRunIndexes.get(row.id) ?? 0) : 0}
       onImageClick={onImageClick}
       onLoadToolContent={onLoadToolContent}
       onThinkingToggle={onThinkingToggle}
@@ -1757,6 +1775,7 @@ export function MessageList({
         <div
           ref={containerRef}
           data-transcript-scroll
+          style={isUnpinned ? { paddingBottom: JUMP_TO_BOTTOM_CLEARANCE_PX } : undefined}
           className={cn(
             TRANSCRIPT_CONTAINER,
             'relative min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable]',
@@ -1802,8 +1821,7 @@ export function MessageList({
                 !shouldVirtualize ||
                 (virtualItems.length === 0 &&
                   displayRows.length > 0 &&
-                  allowFullFallback &&
-                  flowSuffixRows.length === 0)
+                  allowFullFallback)
 
               const loadingOverlay =
                 transcriptLoading && items.length > 0 ? (

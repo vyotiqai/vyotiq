@@ -17,7 +17,12 @@ import {
   unixShellInvocation,
   unsupportedUnixOnWindowsMessage,
   bashForLoopOnPowerShellMessage,
-  appendPowerShellCompatHint
+  appendPowerShellCompatHint,
+  nestedPowerShellCommandMessage,
+  docxUnzipViaShellMessage,
+  appendMissingCommandHint,
+  isMaskedExitCommand,
+  parseEchoedExitCode
 } from '@main/agent/tools/terminal'
 import { executeTool } from '@main/agent/tools'
 import { toolTerminal } from '@main/agent/tools/terminal'
@@ -81,6 +86,37 @@ describe('sanitizedTerminalEnv', () => {
     expect(env.LOCALAPPDATA).toBe('C:\\Users\\dev\\AppData\\Local')
     expect(env.GH_CONFIG_DIR).toBe('C:\\Users\\dev\\gh')
     expect(env.XDG_CONFIG_HOME).toBe('C:\\Users\\dev\\.config')
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+  })
+
+  it('keeps Windows ProgramData/ProgramFiles so NuGet can resolve machine folders', () => {
+    const env = sanitizedTerminalEnv({
+      PATH: 'C:\\Windows\\system32',
+      SystemRoot: 'C:\\Windows',
+      SystemDrive: 'C:',
+      ProgramData: 'C:\\ProgramData',
+      ProgramFiles: 'C:\\Program Files',
+      'ProgramFiles(x86)': 'C:\\Program Files (x86)',
+      CommonProgramFiles: 'C:\\Program Files\\Common Files',
+      OPENAI_API_KEY: 'sk-secret'
+    })
+    expect(env.ProgramData).toBe('C:\\ProgramData')
+    expect(env.ProgramFiles).toBe('C:\\Program Files')
+    expect(env['ProgramFiles(x86)']).toBe('C:\\Program Files (x86)')
+    expect(env.CommonProgramFiles).toBe('C:\\Program Files\\Common Files')
+    expect(env.OPENAI_API_KEY).toBeUndefined()
+  })
+
+  it('fills Windows folder defaults when SystemRoot is present but ProgramData was stripped', () => {
+    const env = sanitizedTerminalEnv({
+      PATH: 'C:\\Windows\\system32',
+      SystemRoot: 'C:\\Windows',
+      SystemDrive: 'D:',
+      OPENAI_API_KEY: 'sk-secret'
+    })
+    expect(env.ProgramData).toBe('D:\\ProgramData')
+    expect(env.ProgramFiles).toBe('D:\\Program Files')
+    expect(env.CommonProgramFiles).toBe('D:\\Program Files\\Common Files')
     expect(env.OPENAI_API_KEY).toBeUndefined()
   })
 })
@@ -293,6 +329,98 @@ describe('appendPowerShellCompatHint', () => {
     const base = 'cwd: /ws\nshell: powershell\nexit_code: 0'
     expect(appendPowerShellCompatHint(base, 0, '', 'powershell')).toBe(base)
   })
+
+  it('hints PowerShell parse errors from nested -Command quoting', () => {
+    const stderr = "The string is missing the terminator: \".\r\n    + CategoryInfo          : ParserError"
+    const base = `cwd: /ws\nshell: powershell\nstderr:\n${stderr}\nexit_code: 1`
+    const out = appendPowerShellCompatHint(base, 1, stderr, 'powershell')
+    expect(out).toMatch(/already PowerShell/i)
+    expect(out).toMatch(/powershell -Command/)
+  })
+
+  it('hints space-before-dot member access and -split on a path (75135925)', () => {
+    const stderr = "Unexpected token '.Line' in expression or statement."
+    const command =
+      '$log = "$env:TEMP\\vyotiq-vitest-full.log"\n($log -split "`n" | ForEach-Object { ($_ .Line -replace "FAIL","").Trim() })'
+    const base = `cwd: /ws\nshell: powershell\nstderr:\n${stderr}\nexit_code: 1`
+    const out = appendPowerShellCompatHint(base, 1, stderr, 'powershell', command)
+    expect(out).toMatch(/\$_\.Line not \$_ \.Line/)
+    expect(out).toMatch(/Get-Content/)
+    expect(out).toMatch(/do not -split the path string/i)
+  })
+})
+
+describe('appendMissingCommandHint', () => {
+  it('hints PowerShell cmdlet-not-found without retrying PATH', () => {
+    const stderr =
+      "swift : The term 'swift' is not recognized as the name of a cmdlet, function, script file, or operable program."
+    const base = `cwd: /ws\nshell: powershell\nstderr:\n${stderr}\nexit_code: 1`
+    const out = appendMissingCommandHint(base, 1, stderr)
+    expect(out).toMatch(/not on PATH/)
+    expect(out).toMatch(/Do not retry the same invocation/)
+  })
+
+  it('does not treat The term = parse error as a missing binary', () => {
+    const stderr = "The term '=' is not recognized as the name of a cmdlet"
+    const base = `cwd: /ws\nshell: powershell\nstderr:\n${stderr}\nexit_code: 1`
+    expect(appendMissingCommandHint(base, 1, stderr)).toBe(base)
+  })
+
+  it('hints cmd.exe not-recognized', () => {
+    const stderr = "'dotnet' is not recognized as an internal or external command"
+    const base = `cwd: /ws\nshell: cmd\nstderr:\n${stderr}\nexit_code: 1`
+    expect(appendMissingCommandHint(base, 1, stderr)).toMatch(/not on PATH/)
+  })
+})
+
+describe('nestedPowerShellCommandMessage', () => {
+  it('pre-fails powershell -Command when the session is already PowerShell', () => {
+    const cmd =
+      'powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = [IO.Compression.ZipFile]::OpenRead(\'docs/a.md.docx\')"'
+    const msg = nestedPowerShellCommandMessage(cmd, 'powershell')
+    expect(msg).toMatch(/already PowerShell/i)
+    expect(msg).toMatch(/Pass the PowerShell statements/i)
+    expect(nestedPowerShellCommandMessage(cmd, 'cmd')).toBeNull()
+    expect(nestedPowerShellCommandMessage('Get-ChildItem src', 'powershell')).toBeNull()
+    expect(nestedPowerShellCommandMessage('powershell -File scripts/ext.ps1', 'powershell')).toBeNull()
+  })
+
+  it('pre-fails via toolTerminal without spawning', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-term-nested-ps-'))
+    const signal = new AbortController().signal
+    const content = await toolTerminal(
+      dir,
+      'powershell -NoProfile -Command "Write-Host $PWD"',
+      signal,
+      { shell: 'powershell' }
+    )
+    expect(content).toMatch(/already PowerShell/i)
+    expect(content).toMatch(/shell: powershell/)
+    expect(content).toMatch(/exit_code: 1/)
+  })
+})
+
+describe('docxUnzipViaShellMessage', () => {
+  const unzip =
+    'powershell -NoProfile -Command "Add-Type -AssemblyName System.IO.Compression.FileSystem; $zip = [IO.Compression.ZipFile]::OpenRead(\'docs/a.md.docx\')"'
+
+  it('pre-fails the AGENTS.md ZipFile unzip recipe before spawn', () => {
+    const msg = docxUnzipViaShellMessage(unzip)
+    expect(msg).toMatch(/Do not unzip Word \.docx/i)
+    expect(msg).toMatch(/Call read on the \.docx path/i)
+    expect(docxUnzipViaShellMessage('Get-ChildItem docs/a.md.docx')).toBeNull()
+    expect(docxUnzipViaShellMessage('Add-Type -AssemblyName System.IO.Compression.FileSystem')).toBeNull()
+  })
+
+  it('pre-fails via toolTerminal without spawning', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-term-docx-unzip-'))
+    const signal = new AbortController().signal
+    const content = await toolTerminal(dir, unzip, signal, { shell: 'powershell' })
+    expect(content).toMatch(/Do not unzip Word \.docx/i)
+    expect(content).toMatch(/Call read on the \.docx path/i)
+    expect(content).toMatch(/shell: powershell/)
+    expect(content).toMatch(/exit_code: 1/)
+  })
 })
 
 describe('tool success logging', () => {
@@ -326,5 +454,57 @@ describe('tool success logging', () => {
       scope: 'tools',
       tool: 'read'
     })
+  })
+})
+
+describe('exit-code masking', () => {
+  it('detects a command whose trailing statement is a string literal', () => {
+    // `…; "shard-B exit: $LASTEXITCODE"` always leaves the shell at 0.
+    expect(
+      isMaskedExitCommand('pnpm exec vitest run 2>&1 | Select-Object -Last 8; "shard-B exit: $LASTEXITCODE"')
+    ).toBe(true)
+    expect(isMaskedExitCommand("pytest -q; 'done'")).toBe(true)
+  })
+
+  it('does not flag commands that end with a real statement', () => {
+    expect(isMaskedExitCommand('pnpm exec vitest run')).toBe(false)
+    expect(isMaskedExitCommand('pnpm test; exit $LASTEXITCODE')).toBe(false)
+    expect(isMaskedExitCommand('')).toBe(false)
+  })
+
+  it('recovers the real code from a self-reported footer line', () => {
+    expect(parseEchoedExitCode('Tests  1 failed | 2342 passed\nshard-B exit: 1')).toBe(1)
+    expect(parseEchoedExitCode('all good\nexit: 0')).toBe(0)
+  })
+
+  it('returns null when no exit code is stated', () => {
+    expect(parseEchoedExitCode('Tests  1 failed | 2342 passed')).toBeNull()
+    expect(parseEchoedExitCode('')).toBeNull()
+  })
+
+  it('warns on a masked command even though the shell reported 0', () => {
+    const base = 'cwd: /ws\nshell: powershell\nTests  1 failed\nshard-B exit: 1\nexit_code: 0'
+    const out = appendPowerShellCompatHint(
+      base,
+      0,
+      '',
+      'powershell',
+      'pnpm test 2>&1 | Select-Object -Last 8; "shard-B exit: $LASTEXITCODE"'
+    )
+    // A masked failure is still a failure — it must not be dropped just
+    // because the shell's own exit code was 0.
+    expect(out).toMatch(/Exit code masked/)
+  })
+
+  it('reports the echoed exit code for a masked command instead of the shell 0', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-masked-exit-'))
+    const result = await toolTerminal(
+      dir,
+      'echo "shard-A exit: 1"; "shard-A exit: 1"',
+      new AbortController().signal,
+      { timeoutMs: 30_000, shell: 'powershell' }
+    )
+    expect(result).toMatch(/exit_code: 1/)
+    expect(result).toMatch(/Exit code masked/)
   })
 })

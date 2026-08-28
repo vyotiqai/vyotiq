@@ -48,14 +48,14 @@ describe('skills smoke (bundled + isolated marketplace)', () => {
     vi.restoreAllMocks()
   })
 
-  it('finds the five workflow skills plus create-skill with SKILL.md', () => {
-    expect(skillDirs.length).toBe(6)
+  it('finds the workflow skills plus UI/API skills with SKILL.md', () => {
+    expect(skillDirs.length).toBe(10)
     for (const dir of skillDirs) {
       expect(existsSync(join(dir, 'SKILL.md')), dir).toBe(true)
     }
   })
 
-  it('bundles exactly the five workflows plus create-skill and no plugins', () => {
+  it('bundles the workflow pack plus UI/API skills and the four plugins', () => {
     const catalog = JSON.parse(
       readFileSync(join(REPO, 'resources', 'marketplace', 'catalog.json'), 'utf8')
     ) as { packages: Array<{ id: string; kind: string }> }
@@ -64,9 +64,13 @@ describe('skills smoke (bundled + isolated marketplace)', () => {
       .map((pkg) => pkg.id)
       .sort()
     expect(skillIds).toEqual([
+      'accessibility',
+      'api-design',
       'create-skill',
       'explain-code',
       'fix-bug',
+      'frontend-design',
+      'goal',
       'implement-feature',
       'review-code',
       'write-tests'
@@ -107,6 +111,14 @@ describe('skills smoke (bundled + isolated marketplace)', () => {
         'create a skill only when',
         '.vyotiq/skills',
         '/create-skill personal'
+      ],
+      goal: [
+        '## when to use',
+        '## when not to use',
+        'create_goal',
+        'update_goal',
+        'never pause',
+        '/loop'
       ]
     }
     const { parseSkillFrontmatter } = await import('@main/agent/skills/parse')
@@ -121,8 +133,12 @@ describe('skills smoke (bundled + isolated marketplace)', () => {
   it('detectPackageAt treats each standalone skill package as kind skill', async () => {
     const { detectPackageAt } = await import('@main/marketplace/install')
     const standalone = [
+      'accessibility',
+      'api-design',
       'explain-code',
       'fix-bug',
+      'frontend-design',
+      'goal',
       'implement-feature',
       'review-code',
       'create-skill',

@@ -1,6 +1,6 @@
 ---
 title: Built-in tools reference
-description: All 59 built-in tool names, grouped by job with mode, approval, output, and limit boundaries.
+description: All 61 built-in tool names, grouped by job with mode, approval, output, and limit boundaries.
 section: reference
 order: 2
 type: reference
@@ -100,6 +100,8 @@ These are built-ins about connected servers, not the servers’ own tools.
 - `ask_question` — typed form in the transcript; blocks until answer, skip, or timeout
 - `todo_write` — this run’s task list
 - `create_plan` — write plan.md and contract.md
+- `create_goal` — start or replace this chat’s long-lived goal
+- `update_goal` — mark the goal complete or resume it after a user pause
 - `switch_mode` — only present when Automatic mode switching is on
 
 ## Instances

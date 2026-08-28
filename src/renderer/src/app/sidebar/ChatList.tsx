@@ -260,6 +260,8 @@ export function ChatList({
   onSelectRun,
   onRenameRun,
   onDeleteRun,
+  onExportRun,
+  onLoadOlderRuns,
   isRunOpenInPane,
   isRunFocusedInPane,
   openInstanceRunId = null,
@@ -279,6 +281,8 @@ export function ChatList({
   onSelectRun: (path: string, runId: string) => void
   onRenameRun: (path: string, runId: string, goal: string) => void
   onDeleteRun: (path: string, runId: string) => void
+  onExportRun?: (path: string, runId: string) => void
+  onLoadOlderRuns?: (path: string) => void
   isRunOpenInPane?: (path: string, runId: string) => boolean
   isRunFocusedInPane?: (path: string, runId: string) => boolean
   /** Currently viewed inline instance sub-session (sidebar highlight). */
@@ -494,6 +498,7 @@ export function ChatList({
                                     onSelectRun={onSelectRun}
                                     onRenameRun={onRenameRun}
                                     onDeleteRun={onDeleteRun}
+                                    onExportRun={onExportRun}
                                     tabIndex={
                                       parentNavIndex >= 0 ? tabIndexFor(parentNavIndex) : undefined
                                     }
@@ -541,9 +546,19 @@ export function ChatList({
                         </div>
                       ))}
                       {workspace.runsCapped && !searchActive ? (
-                        <p className="px-1 py-1.5 text-caption text-muted">
-                          Showing {RUN_LIST_CAP} most recent
-                        </p>
+                        onLoadOlderRuns ? (
+                          <button
+                            type="button"
+                            className="app-region-no-drag w-full rounded-md px-1.5 py-1 text-left text-caption text-muted vy-transition hover:bg-surface-hover hover:text-fg"
+                            onClick={() => onLoadOlderRuns(workspace.path)}
+                          >
+                            Show older chats
+                          </button>
+                        ) : (
+                          <p className="px-1 py-1.5 text-caption text-muted">
+                            Showing {RUN_LIST_CAP} most recent
+                          </p>
+                        )
                       ) : null}
                     </div>
                   ) : null

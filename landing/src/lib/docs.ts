@@ -15,7 +15,7 @@ export const DOC_SECTION_LABEL: Record<DocSection, string> = {
 
 export const DOC_SECTION_INTRO: Record<DocSection, string> = {
   start: 'Install Agent V, tour the workspace, and complete your first useful run.',
-  agent: 'Choose a mode, manage sessions and runs, and work with plans, todos, and checkpoints.',
+  agent: 'Choose a mode, manage sessions and runs, and work with plans, todos, goals, and checkpoints.',
   customize: 'Configure providers, models, MCP servers, skills, rules, and packages.',
   tools: 'Use the files editor, terminal, browser, Git surfaces, indexing, memory, and voice.',
   concepts: 'Understand what Agent V is, how runs and state work, and how privacy and security apply.',
@@ -60,6 +60,7 @@ export function docsNavTitle(id: string, title: string): string {
     'agent/plans-todos-questions': 'Plans & todos',
     'agent/prompting-attachments': 'Prompts & files',
     'agent/workspaces-sessions': 'Workspaces',
+    'agent/goals': 'Goals',
     'customize/marketplace': 'Marketplace',
     'customize/mcp': 'MCP',
     'customize/models': 'Models',

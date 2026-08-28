@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   collectLoadSnapshot,
+  collectProcessMetrics,
   logLoadSnapshot,
   startLoadPerfMonitor,
   stopLoadPerfMonitor
@@ -10,11 +11,22 @@ import { resetChatEventBatchStats, resetChatEventDispatcher } from '@main/ipc/st
 import { resetStatusWriteQueueForTests } from '@main/agent/statusWriteQueue'
 import { resetTokenizerCache, resetTokenizerPerfStats } from '@main/agent/context/tokenizer'
 
+const isPerfDebugEnabled = vi.hoisted(() => vi.fn(() => true))
+const readAppProcessMetrics = vi.hoisted(() => vi.fn(() => []))
+
 vi.mock('@main/agent/context/perfDebug', () => ({
-  isPerfDebugEnabled: () => true,
+  isPerfDebugEnabled,
   perfNow: () => 0,
   perfLog: () => undefined
 }))
+
+vi.mock('@main/perf/processMetrics', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@main/perf/processMetrics')>()
+  return {
+    ...actual,
+    readAppProcessMetrics
+  }
+})
 
 vi.mock('@main/workspace/workspaces', () => ({
   getWorkspaces: () => ({
@@ -26,6 +38,8 @@ vi.mock('@main/workspace/workspaces', () => ({
 
 describe('loadSnapshot', () => {
   beforeEach(() => {
+    isPerfDebugEnabled.mockReturnValue(true)
+    readAppProcessMetrics.mockClear()
     stopLoadPerfMonitor()
     resetActiveRunsForTests()
     resetChatEventDispatcher()
@@ -113,10 +127,58 @@ describe('loadSnapshot', () => {
     spy.mockClear()
     vi.advanceTimersByTime(5_000)
     expect(spy.mock.calls.some((c) => c[0] === '[vyotiq-perf] load')).toBe(true)
+    expect(readAppProcessMetrics).toHaveBeenCalled()
     stopLoadPerfMonitor()
     spy.mockClear()
     vi.advanceTimersByTime(5_000)
     expect(spy).not.toHaveBeenCalled()
+    spy.mockRestore()
+    vi.useRealTimers()
+  })
+
+  it('does not sample getAppMetrics every 5s when perf is off and RSS is idle', () => {
+    isPerfDebugEnabled.mockReturnValue(false)
+    vi.useFakeTimers()
+    startLoadPerfMonitor()
+    vi.advanceTimersByTime(5_000)
+    expect(readAppProcessMetrics).not.toHaveBeenCalled()
+    stopLoadPerfMonitor()
+    vi.useRealTimers()
+  })
+
+  it('samples getAppMetrics when idle RSS exceeds 1GB even if perf is off', () => {
+    isPerfDebugEnabled.mockReturnValue(false)
+    const memSpy = vi.spyOn(process, 'memoryUsage').mockReturnValue({
+      rss: 1025 * 1024 * 1024,
+      heapUsed: 600 * 1024 * 1024,
+      heapTotal: 700 * 1024 * 1024,
+      external: 0,
+      arrayBuffers: 0
+    })
+    vi.useFakeTimers()
+    startLoadPerfMonitor()
+    vi.advanceTimersByTime(5_000)
+    expect(readAppProcessMetrics).toHaveBeenCalled()
+    stopLoadPerfMonitor()
+    memSpy.mockRestore()
+    vi.useRealTimers()
+  })
+
+  it('keeps collectProcessMetrics as an on-demand getAppMetrics sample', () => {
+    isPerfDebugEnabled.mockReturnValue(false)
+    collectProcessMetrics()
+    expect(readAppProcessMetrics).toHaveBeenCalled()
+  })
+
+  it('does not start the verbose 5s dump when perf is off', () => {
+    isPerfDebugEnabled.mockReturnValue(false)
+    vi.useFakeTimers()
+    const spy = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    startLoadPerfMonitor()
+    expect(spy).not.toHaveBeenCalledWith('[vyotiq-perf] load monitor started (every 5s)')
+    vi.advanceTimersByTime(5_000)
+    expect(spy.mock.calls.some((c) => c[0] === '[vyotiq-perf] load')).toBe(false)
+    stopLoadPerfMonitor()
     spy.mockRestore()
     vi.useRealTimers()
   })

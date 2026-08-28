@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from 'fs/promises'
 import { existsSync, readdirSync, statSync, type Dirent } from 'fs'
 import { join, relative, sep } from 'path'
 import { wrapPromptSection } from '../promptSections'
+import { wrapUntrustedContent } from '../untrustedContent'
 
 /**
  * Project instruction files, read in precedence order. A workspace that ships
@@ -265,12 +266,20 @@ export async function readWorkspaceRules(
 
 /**
  * Render the rules as a system-prompt section. Each file keeps its path as a
- * header so the model can cite where an instruction came from.
+ * header so the model can cite where an instruction came from. File contents
+ * are workspace-authored bytes, so each one is wrapped in an untrusted-content
+ * envelope (prompt-injection containment) before injection.
  */
 export function formatWorkspaceRules(files: RuleFile[]): string {
   if (!files.length) return ''
   const body = files
-    .map((file) => `### ${file.path}\n${file.content}`)
+    .map(
+      (file) =>
+        `### ${file.path}\n${wrapUntrustedContent(file.content, {
+          source: 'workspace_rules',
+          origin: file.path
+        })}`
+    )
     .join('\n\n')
   return wrapPromptSection(
     'workspace_rules',

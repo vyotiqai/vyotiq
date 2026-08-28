@@ -1,3 +1,5 @@
+import { parseGoalInvocation } from '../goalRuntime'
+
 /** Rewrite skill-instruction tag opens/closes so a body cannot close the wrap. */
 function neutralizeSkillInstructionTags(body: string): string {
   return body.replace(/<\s*\/?\s*skill\s+instructions\b/gi, (match) => match.replace('<', '&lt;'))
@@ -267,6 +269,10 @@ export function scrubPathsFromGoalText(text: string): string {
  */
 export function runGoalFromUserText(text: string): string {
   const collapsed = userMessageDisplayText(text).trim()
+  const goalInvoke = parseGoalInvocation(collapsed)
+  if (goalInvoke) {
+    return scrubPathsFromGoalText(goalInvoke.objective).slice(0, 200)
+  }
   let goal: string
   if (collapsed && !/<skill instructions>/i.test(collapsed)) {
     goal = collapsed

@@ -5,12 +5,14 @@ import {
   collectWorkspaceFilesPage,
   formatLiveScanCapNotice,
   globToRegExp,
+  isGrepOverlapRel,
   TEXT_EXTS,
   throwIfAborted,
   yieldToEventLoop,
   type WalkedFile
 } from './walk'
 import { compileUserRegex } from './safeUserRegex'
+import { extractDocxText, isDocxPath, MAX_DOCX_ARCHIVE_BYTES } from './docxText'
 import {
   querySparseCandidates,
   resolveCandidateFullPaths
@@ -32,15 +34,48 @@ export type GrepOptions = {
 }
 
 function compile(pattern: string, caseSensitive: boolean): RegExp {
-  return compileUserRegex(pattern, caseSensitive ? undefined : 'i')
+  // `m` so `^`/`$` are per line — the schema says each line, and ripgrep does the same.
+  // Without it, `^export` only matches files whose first byte is `export`.
+  return compileUserRegex(pattern, caseSensitive ? 'm' : 'im')
 }
 
 type GrepHitState = { out: string[]; matchCount: number; truncated: boolean }
 
+function isGrepDocx(file: WalkedFile): boolean {
+  return isDocxPath(file.rel) || isDocxPath(file.full)
+}
+
 function shouldSkipGrepFile(file: WalkedFile, includeRegex: RegExp | null): boolean {
   if (includeRegex && !includeRegex.test(file.rel)) return true
+  if (isGrepDocx(file)) return false
   if (!TEXT_EXTS.has(extname(file.full).toLowerCase())) return true
   return false
+}
+
+function loadGrepTextSync(file: WalkedFile): string | null {
+  try {
+    const st = statSync(file.full)
+    if (isGrepDocx(file)) {
+      if (st.size > MAX_DOCX_ARCHIVE_BYTES) return null
+      return extractDocxText(readFileSync(file.full))
+    }
+    return readFileSync(file.full, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+async function loadGrepTextAsync(file: WalkedFile): Promise<string | null> {
+  try {
+    const st = await fsp.stat(file.full)
+    if (isGrepDocx(file)) {
+      if (st.size > MAX_DOCX_ARCHIVE_BYTES) return null
+      return extractDocxText(await fsp.readFile(file.full))
+    }
+    return await fsp.readFile(file.full, 'utf8')
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -91,13 +126,8 @@ function grepOneFile(
   state: GrepHitState
 ): void {
   if (shouldSkipGrepFile(file, includeRegex)) return
-  let text: string
-  try {
-    statSync(file.full)
-    text = readFileSync(file.full, 'utf8')
-  } catch {
-    return
-  }
+  const text = loadGrepTextSync(file)
+  if (text == null) return
   grepFileText(file.rel, text, regex, maxResults, contextLines, state)
 }
 
@@ -110,13 +140,8 @@ async function grepOneFileAsync(
   state: GrepHitState
 ): Promise<void> {
   if (shouldSkipGrepFile(file, includeRegex)) return
-  let text: string
-  try {
-    await fsp.stat(file.full)
-    text = await fsp.readFile(file.full, 'utf8')
-  } catch {
-    return
-  }
+  const text = await loadGrepTextAsync(file)
+  if (text == null) return
   grepFileText(file.rel, text, regex, maxResults, contextLines, state)
 }
 
@@ -205,8 +230,12 @@ export async function toolGrep(
     if (includeRegex) {
       candidates = candidates.filter((c) => includeRegex.test(c.rel))
     }
-    candidates.sort((a, b) => a.rel.localeCompare(b.rel))
-    files = candidates
+    // Empty prune (docs-only or tests-only hits, or include outside CODE_INDEX_EXTS)
+    // must live-walk — the source index never contains .md/.docx or tests/.
+    if (candidates.length > 0) {
+      candidates.sort((a, b) => a.rel.localeCompare(b.rel))
+      files = candidates
+    }
   }
 
   let liveHitCap = false
@@ -216,9 +245,28 @@ export async function toolGrep(
       : GREP_SCAN_CAP
   if (files == null) {
     indexMode = 'live'
+    indexSyncInProgress = false
     const page = await collectWorkspaceFilesPage(workspaceRoot, liveCap, undefined, signal)
     files = page.files
     liveHitCap = !page.exhausted
+    throwIfAborted(signal)
+  } else if (!includeRegex) {
+    // Trigram candidates are source-only. Docs and tests/ still need a walk
+    // when the query also hits indexed code (receipt: toolWebFetch only in tests).
+    const seen = new Set(files.map((f) => f.rel))
+    const overlapPage = await collectWorkspaceFilesPage(
+      workspaceRoot,
+      liveCap,
+      undefined,
+      signal,
+      undefined,
+      undefined,
+      isGrepOverlapRel
+    )
+    for (const f of overlapPage.files) {
+      if (!seen.has(f.rel)) files.push(f)
+    }
+    files.sort((a, b) => a.rel.localeCompare(b.rel))
     throwIfAborted(signal)
   }
 

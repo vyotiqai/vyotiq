@@ -355,7 +355,7 @@ export async function* streamOpenAiResponses(
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     logProviderFailure('openai', 'http', { status: res.status })
-    yield { type: 'error', error: formatProviderHttpError(res.status, text, 'openai'), errorCode: 'PROVIDER_HTTP' }
+    yield { type: 'error', error: formatProviderHttpError(res.status, text, 'openai'), errorCode: 'PROVIDER_HTTP', httpStatus: res.status }
     return
   }
 

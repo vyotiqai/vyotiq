@@ -55,6 +55,59 @@ describe('geminiFunctionCallingMode', () => {
   })
 })
 
+describe('gemini plain-path thinkingConfig', () => {
+  const baseReq = {
+    messages: [{ role: 'user' as const, content: 'hi' }],
+    tools: [],
+    apiKey: 'x',
+    signal: new AbortController().signal
+  }
+
+  it('sends thinkingBudget 0 when thinking is disabled on a flash-family model', async () => {
+    const { buildGeminiBody } = await import('@main/agent/providers/gemini')
+    const body = buildGeminiBody({
+      ...baseReq,
+      model: 'gemini-2.5-flash',
+      thinking: { enabled: false }
+    })
+    const config = (body.generationConfig as { thinkingConfig?: { thinkingBudget?: number } })
+      .thinkingConfig
+    expect(config?.thinkingBudget).toBe(0)
+  })
+
+  it('omits thinkingConfig for 2.5 Pro (budget 0 is rejected with a 400)', async () => {
+    const { buildGeminiBody } = await import('@main/agent/providers/gemini')
+    const body = buildGeminiBody({
+      ...baseReq,
+      model: 'gemini-2.5-pro',
+      thinking: { enabled: false }
+    })
+    expect(
+      (body.generationConfig as { thinkingConfig?: unknown } | undefined)?.thinkingConfig
+    ).toBeUndefined()
+  })
+
+  it('omits thinkingConfig when thinking is enabled (Interactions transport owns it)', async () => {
+    const { buildGeminiBody } = await import('@main/agent/providers/gemini')
+    const body = buildGeminiBody({
+      ...baseReq,
+      model: 'gemini-2.5-flash',
+      thinking: { enabled: true, effort: 'low' }
+    })
+    expect(
+      (body.generationConfig as { thinkingConfig?: unknown } | undefined)?.thinkingConfig
+    ).toBeUndefined()
+  })
+
+  it('omits thinkingConfig when thinking is unset', async () => {
+    const { buildGeminiBody } = await import('@main/agent/providers/gemini')
+    const body = buildGeminiBody({ ...baseReq, model: 'gemini-2.5-flash' })
+    expect(
+      (body.generationConfig as { thinkingConfig?: unknown } | undefined)?.thinkingConfig
+    ).toBeUndefined()
+  })
+})
+
 describe('isCurrentInvoke', () => {
   it('keeps the same invoke until clearRunAbort (no overlap while unwinding)', () => {
     resetActiveRunsForTests()

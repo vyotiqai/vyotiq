@@ -221,7 +221,9 @@ const ORPHAN_CRITICAL_TYPES = new Set<AgentEvent['type']>([
   'compaction_verify_failed',
   'compaction',
   'mcp_tools_omitted',
-  'mode_changed'
+  'mode_changed',
+  'goal_update',
+  'loop_update'
 ])
 const UI_PERSIST_DEBOUNCE_MS = 300
 const LIST_RUNS_DEBOUNCE_MS = 300
@@ -432,6 +434,8 @@ export type WorkspaceContext = {
   runs: RunSummary[]
   /** Inline agent instances nested under parent chats in the sidebar. */
   instanceRuns: RunSummary[]
+  /** Older pages loaded on demand beyond the sidebar cap (deduped against `runs`). */
+  olderRuns: RunSummary[]
   runsCapped: boolean
   runsError: string | null
   /** False until the first listRuns settles — drives the sidebar skeleton. */
@@ -494,6 +498,7 @@ function contextFromRegistry(path: string, registry: WorkspacesState): Workspace
     path,
     runs: [],
     instanceRuns: [],
+    olderRuns: [],
     runsCapped: false,
     runsError: null,
     runsLoaded: false,
@@ -1512,6 +1517,13 @@ export function useWorkspaceManager(options?: {
   useEffect(() => {
     if (!window.vyotiq?.onChatEvent) return
     return window.vyotiq.onChatEvent((event) => {
+      if (event.type === 'goal_update' && event.notice) {
+        pushToast(event.notice)
+      }
+      if (event.type === 'goal_update' || event.type === 'loop_update') {
+        const ws = runIdToWorkspaceRef.current.get(event.runId)
+        if (ws) void refreshRunsRef.current(ws)
+      }
       const ctrl = controllersRef.current.get(event.runId)
       if (!ctrl) {
         bufferOrphanEvent(event.runId, event)
@@ -2473,6 +2485,43 @@ export function useWorkspaceManager(options?: {
     [refreshRuns]
   )
 
+  /**
+   * Load one older page of runs beyond the sidebar cap. Pages accumulate in
+   * `olderRuns` (deduped by runId against `runs` and each other) and survive
+   * refreshRuns, which only rewrites the fresh top cap.
+   */
+  const loadOlderRuns = useCallback(async (workspacePath: string): Promise<void> => {
+    if (!workspacePath.trim()) return
+    if (!window.vyotiq?.listOlderRuns) return
+    const ctx = contextsRef.current[workspacePath]
+    if (!ctx) return
+    const allKnown = [...ctx.runs, ...ctx.olderRuns].sort((a, b) =>
+      b.updatedAt.localeCompare(a.updatedAt)
+    )
+    const cursor = allKnown.at(-1)?.updatedAt
+    if (!cursor) return
+    const res = await window.vyotiq.listOlderRuns(workspacePath, cursor)
+    if (!res.ok) {
+      logger.warn('listOlderRuns failed', { scope: 'runs', err: toLogErr(res.error) })
+      return
+    }
+    setContexts((prev) => {
+      const current = prev[workspacePath]
+      if (!current) return prev
+      const seen = new Set(current.runs.map((r) => r.runId))
+      for (const r of current.olderRuns) seen.add(r.runId)
+      const deduped = res.data.runs.filter((r) => !seen.has(r.runId))
+      return {
+        ...prev,
+        [workspacePath]: {
+          ...current,
+          olderRuns: [...current.olderRuns, ...deduped],
+          runsCapped: res.data.hasMore
+        }
+      }
+    })
+  }, [])
+
   useEffect(() => {
     if (!activeWorkspace) return
     const timer = window.setTimeout(() => {
@@ -2616,6 +2665,7 @@ export function useWorkspaceManager(options?: {
     setSessionQuery,
     refreshActiveRuns,
     refreshWorkspaceRuns,
+    loadOlderRuns,
     isRunActiveInBackground,
     workspaceHasBackgroundRun,
     scrollRestoreToken,

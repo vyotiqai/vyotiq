@@ -89,4 +89,14 @@ describe('TitleBar', () => {
     const header = screen.getByRole('banner')
     expect(header.style.paddingLeft).toBe(`${MACOS_TITLEBAR_INSET_PX}px`)
   })
+
+  it('floats flush to the top edge as an overlay with no seam', () => {
+    const { container } = renderBar('win32')
+    const header = screen.getByRole('banner')
+    expect(header.className).toContain('absolute')
+    expect(header.className).toContain('inset-x-0')
+    expect(header.className).toContain('top-0')
+    expect(header.className).not.toContain('border-b')
+    expect(container.querySelector('[data-titlebar-accessory]')).toBeTruthy()
+  })
 })

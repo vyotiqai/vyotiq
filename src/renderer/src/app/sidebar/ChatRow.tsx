@@ -54,6 +54,7 @@ export const ChatRow = memo(function ChatRow({
   onSelectRun,
   onRenameRun,
   onDeleteRun,
+  onExportRun,
   tabIndex,
   rowRef,
   onNavKeyDown
@@ -69,6 +70,7 @@ export const ChatRow = memo(function ChatRow({
   onSelectRun: (workspacePath: string, runId: string) => void
   onRenameRun: (workspacePath: string, runId: string, goal: string) => void
   onDeleteRun: (workspacePath: string, runId: string) => void
+  onExportRun?: (workspacePath: string, runId: string) => void
   tabIndex?: number
   rowRef?: RefCallback<HTMLElement>
   onNavKeyDown?: (event: KeyboardEvent<HTMLButtonElement>) => void
@@ -115,7 +117,13 @@ export const ChatRow = memo(function ChatRow({
     if (run.status === 'error') return 'Error'
     return null
   })()
-  const sessionAriaLabel = runStatusLabel ? `${title}, ${runStatusLabel}` : title
+  const sessionAriaLabel = ((): string => {
+    const parts = [title]
+    if (runStatusLabel) parts.push(runStatusLabel)
+    if (run.goalStatus === 'active') parts.push('active goal')
+    if (run.goalStatus === 'paused') parts.push('paused goal')
+    return parts.join(', ')
+  })()
 
   if (renaming) {
     return (
@@ -211,6 +219,19 @@ export const ChatRow = memo(function ChatRow({
         }}
       >
         <RunStatusDot run={run} />
+        {run.goalStatus === 'active' || run.goalStatus === 'paused' ? (
+          <span
+            className="inline-flex shrink-0"
+            title={run.goalStatus === 'paused' ? 'Goal paused' : 'Active goal'}
+            aria-hidden="true"
+          >
+            <Icon
+              name="flag"
+              size={12}
+              className={run.goalStatus === 'paused' ? 'text-muted' : 'text-fg'}
+            />
+          </span>
+        ) : null}
         <span className="min-w-0 flex-1 truncate">{title}</span>
       </button>
 
@@ -249,6 +270,23 @@ export const ChatRow = memo(function ChatRow({
                 setRenaming(true)
               }}
             />
+            {onExportRun ? (
+              <IconButton
+                icon="download"
+                label={`Export ${fullLabel} as Markdown`}
+                size="xs"
+                variant="bare"
+                className="text-muted hover:text-fg"
+                onMouseDown={(e) => {
+                  e.preventDefault()
+                  e.stopPropagation()
+                }}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onExportRun(workspacePath, run.runId)
+                }}
+              />
+            ) : null}
             <IconButton
               icon="trash"
               label={`Delete ${fullLabel}`}

@@ -33,6 +33,7 @@ A run can contain:
 - status;
 - contract.md and plan.md;
 - todo state;
+- goal.json and loop.json for long-lived goals and prompt timers;
 - checkpoint records;
 - tool outputs and summaries;
 - receipt.json with structured activity and write information.

@@ -28,6 +28,7 @@ import { toolMultiEdit, type MultiEditEntry } from '@main/agent/tools/multiEdit'
 import { toolListDir } from '@main/agent/tools/listDir'
 import { grepFilesForTest, toolGrep } from '@main/agent/tools/grep'
 import { toolDelete } from '@main/agent/tools/deletePath'
+import { minimalDocx } from './helpers/minimalDocx'
 import { toolApplyPatchAsync } from '@main/agent/tools/applyPatch'
 
 let workspace: string
@@ -250,6 +251,25 @@ describe('grepFilesForTest', () => {
     const out = grepFilesForTest(workspace, 'hit', ['a.ts'], { maxResults: 2 })
     expect(out).toContain('… stopped at 2 matches')
   })
+
+  it('greps extracted Word .docx text', () => {
+    writeFileSync(join(workspace, 'notes.md.docx'), minimalDocx(['ArchDocxUniqueToken lives here']))
+    const out = grepFilesForTest(workspace, 'ArchDocxUniqueToken', ['notes.md.docx'])
+    expect(out).toContain('notes.md.docx:1')
+    expect(out).toContain('ArchDocxUniqueToken')
+  })
+
+  it('treats ^ as the start of each line, not the start of the file', () => {
+    writeFileSync(
+      join(workspace, 'webFetch.ts'),
+      'import { x } from "./y"\nexport function toolWebFetch() {}\n',
+      'utf8'
+    )
+    const out = grepFilesForTest(workspace, '^export', ['webFetch.ts'])
+    expect(out).toContain('webFetch.ts:2:')
+    expect(out).toContain('export function toolWebFetch')
+    expect(out).not.toMatch(/No matches/)
+  })
 })
 
 describe('toolGrep', () => {
@@ -265,6 +285,25 @@ describe('toolGrep', () => {
     writeFileSync(join(workspace, 'a.ts'), 'zzz\n', 'utf8')
     const out = await toolGrep(workspace, 'nomatch123')
     expect(out).toContain('No matches')
+  })
+
+  it('live-greps Word .docx in a workspace walk', async () => {
+    writeFileSync(join(workspace, 'notes.md.docx'), minimalDocx(['ArchDocxUniqueToken lives here']))
+    const out = await toolGrep(workspace, 'ArchDocxUniqueToken')
+    expect(out).toContain('notes.md.docx')
+    expect(out).toContain('ArchDocxUniqueToken')
+  })
+
+  it('finds ^export on a later line when include is a single source file', async () => {
+    writeFileSync(
+      join(workspace, 'webFetch.ts'),
+      'import { x } from "./y"\nexport function toolWebFetch() {}\n',
+      'utf8'
+    )
+    const out = await toolGrep(workspace, '^export', { include: 'webFetch.ts', maxResults: 15 })
+    expect(out).toContain('webFetch.ts:2:')
+    expect(out).toContain('export function toolWebFetch')
+    expect(out).not.toMatch(/No matches/)
   })
 })
 

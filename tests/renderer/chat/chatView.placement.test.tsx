@@ -141,20 +141,20 @@ const baseProps = {
   secrets: emptySecretStatus()
 }
 
-/** Terminal/Files/PR dock panels are React.lazy code-split — wait for the chunk. */
+/** Heavy dock panels are React.lazy code-split — wait for the chunk. */
 async function waitForPanel(selector: string): Promise<void> {
   await waitFor(() => expect(document.querySelector(selector)).toBeTruthy())
 }
 
 describe('ChatView composer placement', () => {
-  it('shows a side rail that opens the browser panel', () => {
+  it('shows a side rail that opens the browser panel', async () => {
     render(<ChatView {...baseProps} items={[]} />)
 
     expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
     expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
-    expect(document.querySelector('[data-agent-browser-panel]')).toBeTruthy()
+    await waitForPanel('[data-agent-browser-panel]')
     expect(document.querySelector('[data-agent-browser-viewport]')).toBeTruthy()
     // Dock open ? side rail hidden; dock tabs own navigation.
     expect(document.querySelector('[data-chat-side-rail]')).toBeNull()
@@ -297,7 +297,7 @@ describe('ChatView composer placement', () => {
     await waitFor(() => {
       expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
     })
-    expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
+    await waitForPanel('[data-changes-panel]')
     expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
     expect(screen.getByRole('tab', { name: /^Changes$/i })).toBeTruthy()
 
@@ -327,7 +327,7 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-dock-quick-launch]')).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
-    expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
+    await waitForPanel('[data-changes-panel]')
     // Keep-alive: prior panels stay mounted but hidden.
     expect(
       document.querySelector('[data-terminal-panel]')?.parentElement?.className
@@ -410,17 +410,17 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
   })
 
-  it('restores the Plan panel from localStorage on mount', () => {
+  it('restores the Plan panel from localStorage on mount', async () => {
     localStorage.setItem('vyotiq.rightPanel', 'plan')
     render(<ChatView {...baseProps} items={[]} />)
 
-    expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
+    await waitForPanel('[data-plan-panel]')
     expect(document.querySelector('[data-chat-side-rail]')).toBeNull()
     expect(screen.getByRole('tab', { name: /^Plan$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Close Plan/i })).toBeTruthy()
   })
 
-  it('does not auto-open Browser over a restored Plan panel', () => {
+  it('does not auto-open Browser over a restored Plan panel', async () => {
     let browserHandler: ((state: { open: boolean; url: string; title: string }) => void) | null =
       null
     Object.defineProperty(window, 'vyotiq', {
@@ -444,7 +444,7 @@ describe('ChatView composer placement', () => {
     localStorage.setItem('vyotiq.rightPanel', 'plan')
     render(<ChatView {...baseProps} items={[]} />)
 
-    expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
+    await waitForPanel('[data-plan-panel]')
     expect(document.querySelector('[data-agent-browser-panel]')).toBeNull()
 
     browserHandler?.({ open: true, url: 'https://example.com', title: 'Example' })
@@ -529,7 +529,29 @@ describe('ChatView composer placement', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
     fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
-    expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
+    await waitForPanel('[data-changes-panel]')
+  })
+
+  it('does not fetch git chrome until the Changes dock is visible', async () => {
+    const gitStatus = vi.fn().mockResolvedValue({ ok: true, data: { kind: 'not_repo' } })
+    Object.defineProperty(window, 'vyotiq', {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(window.vyotiq as object),
+        gitStatus
+      }
+    })
+    render(<ChatView {...baseProps} items={[]} />)
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(gitStatus).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /Show changes panel/i }))
+    await waitForPanel('[data-changes-panel]')
+    await waitFor(() => {
+      expect(gitStatus).toHaveBeenCalled()
+    })
   })
 
   it('auto-opens Plan when plan.md is ready in plan mode', async () => {
@@ -560,7 +582,7 @@ describe('ChatView composer placement', () => {
     )
 
     expect(await screen.findByRole('tab', { name: /^Plan$/i })).toBeTruthy()
-    expect(document.querySelector('[data-plan-panel]')).toBeTruthy()
+    await waitForPanel('[data-plan-panel]')
   })
 
     it('shows tasks under the owning user prompt in transcript order', async () => {
@@ -734,7 +756,7 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-transcript-scroll]')?.className).toMatch(/pr-10/)
   })
 
-  it('keeps open right panels without reserving side-rail padding', () => {
+  it('keeps open right panels without reserving side-rail padding', async () => {
     render(
       <ChatView
         {...baseProps}
@@ -750,6 +772,7 @@ describe('ChatView composer placement', () => {
       />
     )
     fireEvent.click(screen.getByRole('button', { name: /Show plan panel/i }))
+    await waitForPanel('[data-plan-panel]')
     const dock = document.querySelector('[data-right-dock]')
     expect(dock?.className).not.toMatch(/pr-10/)
     expect(dock?.className).toMatch(/min-w-0/)
@@ -819,7 +842,7 @@ describe('ChatView composer placement', () => {
     await waitFor(() => {
       expect(document.querySelector('[data-terminal-panel]')).toBeTruthy()
     })
-    expect(document.querySelector('[data-changes-panel]')).toBeTruthy()
+    await waitForPanel('[data-changes-panel]')
     expect(document.querySelector('[data-dock-tab-bar]')).toBeTruthy()
     // Multi-tab strip keeps both Terminal and Changes.
     expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
@@ -834,11 +857,11 @@ describe('ChatView composer placement', () => {
     ).toMatch(/\bhidden\b/)
   })
 
-  it('opens a missing panel from the dock quick launch icons', () => {
+  it('opens a missing panel from the dock quick launch icons', async () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show terminal panel/i }))
     fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
-    expect(document.querySelector('[data-agent-browser-panel]')).toBeTruthy()
+    await waitForPanel('[data-agent-browser-panel]')
     expect(screen.getByRole('tab', { name: /^Terminal$/i })).toBeTruthy()
     expect(screen.getByRole('tab', { name: /^Browser$/i })).toBeTruthy()
   })
@@ -940,7 +963,7 @@ describe('ChatView composer placement', () => {
     ).toBeTruthy()
   })
 
-  it('portals side-dock tabs into the titlebar aligned to the dock column', () => {
+  it('portals side-dock tabs into the titlebar aligned to the dock column', async () => {
     render(
       <BreakpointProvider>
         <TitleBarAccessoryProvider>
@@ -950,6 +973,7 @@ describe('ChatView composer placement', () => {
       </BreakpointProvider>
     )
     fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
+    await waitForPanel('[data-agent-browser-panel]')
 
     const accessory = document.querySelector('[data-titlebar-accessory]')
     const portal = document.querySelector('[data-dock-titlebar-portal]')
@@ -979,9 +1003,10 @@ describe('ChatView composer placement', () => {
     expect(tabsWidth).toBe(dockWidth - 132)
   })
 
-  it('keeps side-dock tabs in the aside when the titlebar host is absent', () => {
+  it('keeps side-dock tabs in the aside when the titlebar host is absent', async () => {
     render(<ChatView {...baseProps} items={[]} />)
     fireEvent.click(screen.getByRole('button', { name: /Show browser panel/i }))
+    await waitForPanel('[data-agent-browser-panel]')
 
     expect(document.querySelector('[data-dock-titlebar-portal]')).toBeNull()
     expect(document.querySelector('[data-right-dock] [data-dock-tab-bar]')).toBeTruthy()
@@ -1180,4 +1205,63 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-transcript-scroll]')).not.toBe(first)
   })
 
+  it('attaches an active goal banner above the docked composer', async () => {
+    const goalJson = JSON.stringify({
+      objective: 'Ship the composer banner',
+      status: 'active',
+      createdAt: '2026-08-01T00:00:00.000Z',
+      updatedAt: '2026-08-01T00:00:00.000Z'
+    })
+    ;(window.vyotiq as unknown as Record<string, unknown>).readRunArtifact = vi
+      .fn()
+      .mockImplementation(async (args: { name?: string }) =>
+        args.name === 'goal.json'
+          ? { ok: true, data: { content: goalJson } }
+          : { ok: false, error: 'none' }
+      )
+
+    render(
+      <ChatView
+        {...baseProps}
+        activeRunId="run-1"
+        items={[
+          {
+            kind: 'message',
+            id: 'm1',
+            role: 'user',
+            content: 'hello',
+            at: '2024-01-01T00:00:00.000Z'
+          }
+        ]}
+      />
+    )
+
+    const banner = await waitFor(() => {
+      const el = document.querySelector('[data-goal-banner][data-goal-status="active"]')
+      expect(el).toBeTruthy()
+      return el as HTMLElement
+    })
+
+    // Lives inside the chat stage, below the transcript — no longer above the first bubble.
+    expect(banner.closest('[data-chat-stage]')).toBeTruthy()
+    const transcript = document.querySelector('[data-transcript-scroll]')
+    expect(
+      banner.compareDocumentPosition(transcript!) & Node.DOCUMENT_POSITION_PRECEDING
+    ).toBeTruthy()
+
+    // Sits immediately above the docked composer.
+    const dock = document.querySelector('[data-composer-dock]')
+    expect(dock).toBeTruthy()
+    expect(
+      banner.compareDocumentPosition(dock!) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy()
+    const wrapper = banner.parentElement!.parentElement!
+    expect(wrapper.nextElementSibling!.contains(dock!)).toBe(true)
+
+    // Shares the centered chat column with the composer, with its own gap so the
+    // banner and the input never read as one combined block.
+    expect(banner.parentElement!.className).toMatch(/mx-auto/)
+    expect(banner.parentElement!.className).toMatch(/max-w-\[840px\]/)
+    expect(wrapper.className).toMatch(/pb-1\.5/)
+  })
 })

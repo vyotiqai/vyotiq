@@ -73,6 +73,34 @@ export function isAbortError(err: unknown): boolean {
 }
 
 /**
+ * Combine independent abort sources into one signal.
+ *
+ * Used where a caller needs to cancel work for its own reason (a per-tool
+ * deadline) without cancelling the shared run signal, which is still driving
+ * sibling operations. Aborting `a` or `b` aborts the result.
+ *
+ * Prefers the native `AbortSignal.any` when available and falls back to a
+ * manual composite otherwise, matching the pattern already used elsewhere in
+ * the runtime (see `compactRun` / `networkMonitor`).
+ */
+export function composeAbortSignal(a: AbortSignal, b: AbortSignal): AbortSignal {
+  if (typeof AbortSignal.any === 'function') {
+    return AbortSignal.any([a, b])
+  }
+  const controller = new AbortController()
+  const onAbort = (): void => {
+    controller.abort((a.reason ?? b.reason) as unknown)
+  }
+  if (a.aborted || b.aborted) {
+    controller.abort((a.reason ?? b.reason) as unknown)
+    return controller.signal
+  }
+  a.addEventListener('abort', onAbort, { once: true })
+  b.addEventListener('abort', onAbort, { once: true })
+  return controller.signal
+}
+
+/**
  * Attach a no-op rejection handler so a promise cannot become an
  * unhandledRejection before the caller awaits it (Electron `loadURL` +
  * `did-fail-load` can reject two promises for one navigation).
@@ -100,13 +128,18 @@ const EXPECTED_CODES = new Set<ErrorCode>([
   'CIRCUIT_OPEN'
 ])
 
+// `PROVIDER_NETWORK` is emitted at runtime (e.g. providers/log.ts) even though
+// it is not yet part of the `ErrorCode` union — keep it so network failures are
+// retryable. PROVIDER_HTTP / PROVIDER_TIMEOUT are also real emitted codes.
 const RETRYABLE_TURN_ERROR_CODES = new Set([
   'PROVIDER_NETWORK',
+  'PROVIDER_HTTP',
+  'PROVIDER_TIMEOUT',
   'PROVIDER_STREAM',
   'CIRCUIT_OPEN'
 ])
 
-const RETRYABLE_INCOMPLETE_REASONS = new Set(['network_interrupted', 'circuit_open'])
+const RETRYABLE_INCOMPLETE_REASONS = new Set(['network_interrupted', 'circuit_open', 'provider_error'])
 
 /** Continue / retry affordance for transient provider, stream, and circuit-open failures. */
 export function isRetryableTurnFailure(opts: {
@@ -187,6 +220,27 @@ export function formatError(err: unknown): string {
     return parts.filter(Boolean).join(' — ')
   }
   return scrubString(String(err))
+}
+
+/**
+ * Tool-result text for the model. `formatError` collapses absolute paths to a
+ * basename (PII scrub), which turned AppData escapes into `Path escapes
+ * workspace: vyotiq` — the model then treated a relative name as the failure.
+ */
+export function formatToolResultError(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? '')
+  if (/Path escapes workspace/i.test(raw)) {
+    const requested = raw.replace(/^Path escapes workspace:\s*/i, '').trim()
+    const looksAbsolute =
+      /^[A-Za-z]:[\\/]/.test(requested) ||
+      requested.startsWith('/') ||
+      requested.startsWith('\\\\')
+    if (looksAbsolute) {
+      return 'Path escapes workspace: requested path is outside the workspace root. Use a workspace-relative path; absolute home, AppData, and other-drive paths are rejected.'
+    }
+    return `Path escapes workspace: ${requested}. Stay inside the workspace root; do not use '..' to leave it.`
+  }
+  return formatError(err)
 }
 
 export function toAppError(

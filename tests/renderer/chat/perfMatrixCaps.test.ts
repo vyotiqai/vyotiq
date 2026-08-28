@@ -5,6 +5,8 @@
  * Verifies caps exist and hot paths stay bounded (no >2s freeze on synthetic workloads).
  */
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { buildTranscriptRows } from '@renderer/features/chat/utils/transcriptRows'
 import { DEFAULT_SNAPSHOT_CHARS } from '@main/app/browserUrl'
 import type { UiItem } from '@shared/transcript'
@@ -45,5 +47,15 @@ describe('perf matrix scenario 3 — long transcript row build', () => {
     const elapsed = performance.now() - start
     expect(rows.length).toBeGreaterThanOrEqual(VIRTUALIZE_MIN_ROWS)
     expect(elapsed).toBeLessThan(2000)
+  })
+})
+
+describe('live-early virtualization on the main transcript', () => {
+  it('passes virtualizeLiveEarly from ChatView and SessionChatColumn', () => {
+    const root = join(__dirname, '../../../src/renderer/src')
+    const chatView = readFileSync(join(root, 'features/chat/ChatView.tsx'), 'utf8')
+    const column = readFileSync(join(root, 'features/chat/SessionChatColumn.tsx'), 'utf8')
+    expect(chatView).toMatch(/virtualizeLiveEarly/)
+    expect(column).toMatch(/virtualizeLiveEarly/)
   })
 })

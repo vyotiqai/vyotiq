@@ -74,9 +74,9 @@ describe('SidebarTopBar layout', () => {
 
     expect(header).toBeTruthy()
 
-    expect(header!.className).toContain('border-b')
+    expect(header!.className).not.toContain('border-b')
 
-    expect(header!.className).toContain('border-border/30')
+    expect(header!.className).not.toContain('border-border/30')
 
     expect(container.querySelector('[data-sidebar-titlebar-strip]')).toBeNull()
 

@@ -36,7 +36,7 @@ export function SidebarTopBar({
 
   return (
     <header
-      className="app-region-drag shrink-0 flex flex-col border-b border-border/30"
+      className="app-region-drag shrink-0 flex flex-col"
       style={headerStyle}
     >
       <div
@@ -102,7 +102,7 @@ export function SidebarCollapsedHeader({
 
   return (
     <header
-      className="app-region-drag flex shrink-0 flex-col items-center border-b border-border/30 px-2 pb-1"
+      className="app-region-drag flex shrink-0 flex-col items-center px-2 pb-1"
       style={headerStyle}
     >
       <div

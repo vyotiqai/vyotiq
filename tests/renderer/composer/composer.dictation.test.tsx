@@ -227,10 +227,40 @@ describe('Composer dictation', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /^Send$/i })).toBeTruthy()
     })
-    expect(screen.queryByRole('button', { name: /^Dictate$/i })).toBeNull()
+    // Send takes the primary slot after the transcript lands, but the mic stays
+    // mounted so the user can keep dictating on top of the inserted text.
+    expect(screen.getByRole('button', { name: /^Dictate$/i })).toBeTruthy()
     const payload = vi.mocked(window.vyotiq.transcribeDictation).mock.calls[0]![0]
     expect(payload.data).toBeTruthy()
     expect(payload.pcm16k).toBeUndefined()
+  })
+
+  it('keeps Dictate usable with a non-empty draft and appends the next transcript', async () => {
+    const onDraftChange = vi.fn()
+    renderComposer({ draft: 'Summarize this', onDraftChange })
+
+    // Draft has content: Send is primary, but the mic stays mounted for more dictation.
+    expect(screen.getByRole('button', { name: /^Send$/i })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Dictate$/i })).toBeTruthy()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^Dictate$/i }))
+    })
+    expect(screen.getByRole('status', { name: /Listening/i })).toBeTruthy()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /^Stop dictation$/i }))
+    })
+
+    await waitFor(() => {
+      expect(window.vyotiq.transcribeDictation).toHaveBeenCalled()
+    })
+    await waitFor(() => {
+      const drafts = onDraftChange.mock.calls.map((call) => String(call[0]))
+      expect(
+        drafts.some((t) => t.includes('Summarize this') && t.includes('hello from mic'))
+      ).toBe(true)
+    })
   })
 
   it('preflight blocks recording when the OpenAI key is missing', async () => {
@@ -263,14 +293,14 @@ describe('Composer dictation', () => {
     const file = new File(['pixels'], 'shot.png', { type: 'image/png' })
     Object.defineProperty(fileInput, 'files', { value: [file] })
     fireEvent.change(fileInput)
-    const chip = await waitFor(() => screen.getByText(/Image 1/i))
+    const chip = await waitFor(() => screen.getByAltText(/Image 1/i))
 
     await act(async () => {
       fireEvent.keyDown(window, { key: 'm', ctrlKey: true })
     })
 
     expect(screen.getByRole('status', { name: /Listening/i })).toBeTruthy()
-    expect(screen.getByText(/Image 1/i)).toBeTruthy()
+    expect(screen.getByAltText(/Image 1/i)).toBeTruthy()
     expect(document.querySelector('[data-composer-shell]')?.contains(chip)).toBe(true)
   })
 

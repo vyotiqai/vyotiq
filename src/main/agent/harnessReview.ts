@@ -13,7 +13,6 @@ import {
 import {
   HARNESS_APPLY_SURFACE_NOTE,
   HARNESS_EVAL_TESTS,
-  upsertReceiptNotes,
   workspaceHasEditableHarness
 } from './harnessApply'
 import { workspaceHarnessPath, HARNESS_PROPOSALS_REL } from './harness'
@@ -257,6 +256,8 @@ export function summarizeWeaknesses(
     evidence: bucketMap.get(component) ?? []
   }))
 
+  // Suggestions come only from harness-owned (system prompt) evidence; tool,
+  // loop, and memory signals route to their runtime owners via the fallback.
   const suggestions: string[] = []
   for (const bucket of evidenceBuckets.filter((item) => item.component === 'system_prompt')) {
     const first = bucket.evidence[0]
@@ -285,22 +286,15 @@ export function buildProposalMarkdown(
   if (opts?.proposedBody?.trim()) {
     proposedBody = opts.proposedBody.trim()
   } else if (workspaceHasEditableHarness(workspacePath)) {
-    const current = readFileSync(workspaceHarnessPath(workspacePath), 'utf8')
-    proposedBody = upsertReceiptNotes(current, summary.bullets, summary.suggestions)
+    // Keep the current spine as the proposed body. Receipt findings belong in
+    // Evidence / Suggested harness edits — appending `## Receipt review notes`
+    // fails validateHarnessMarkdown and the apply-gate toolsSchema tests.
+    proposedBody = readFileSync(workspaceHarnessPath(workspacePath), 'utf8')
   } else {
     proposedBody = [
       '# Agent V',
       '',
       '_Workspace has no resources/harness/default.md — paste a full harness here before `/harness-apply`._',
-      '',
-      '## Receipt review notes',
-      '',
-      '_Auto-generated from run receipts. Edit or delete before commit._',
-      '',
-      ...summary.bullets.map((b) => `- ${b}`),
-      '',
-      'Suggested focus:',
-      ...summary.suggestions,
       ''
     ].join('\n')
   }

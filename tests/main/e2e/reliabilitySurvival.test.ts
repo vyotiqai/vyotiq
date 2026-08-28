@@ -98,6 +98,7 @@ vi.mock('@main/agent/tools', () => ({
 
 import { runAgent } from '@main/agent/loop'
 import {
+  MAX_ACTIVE_RUNS,
   registerRunAbort,
   resetActiveRunsForTests,
   tryRegisterRunAbort
@@ -318,13 +319,14 @@ describe('e2e: reliability survival', () => {
     TEST_TIMEOUT_MS
   )
 
-  it('allows many parallel run registrations', () => {
+  it('caps parallel run registrations at the global run cap', () => {
     resetActiveRunsForTests()
-    for (let i = 0; i < 12; i++) {
+    for (let i = 0; i < MAX_ACTIVE_RUNS; i++) {
       const res = tryRegisterRunAbort(`parallel-${i}`, workspace)
       expect(res.ok).toBe(true)
     }
     const extra = tryRegisterRunAbort('parallel-extra', workspace)
-    expect(extra.ok).toBe(true)
+    expect(extra.ok).toBe(false)
+    if (!extra.ok) expect(extra.code).toBe('RUN_LIMIT_REACHED')
   })
 })

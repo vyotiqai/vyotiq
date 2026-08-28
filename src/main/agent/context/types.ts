@@ -93,6 +93,12 @@ export type AssembleInput = {
   pluginRulesSection?: string
   /** User-global rules from settings; assembled before workspace rules. */
   userRules?: UserRule[]
+  /** Optional assistant identity override (settings.agentPersona). */
+  persona?: string
+  /** Preferred response language (settings.responseLanguage). Empty/omitted = auto. */
+  responseLanguage?: string
+  /** Default answer length (settings.responseVerbosity). */
+  responseVerbosity?: 'concise' | 'balanced' | 'detailed'
   modeSection?: string
   plan?: string
   /**
@@ -103,6 +109,8 @@ export type AssembleInput = {
   sessionEnv?: string
   /** Current run task list from todos.json (volatile; survives compaction folds). */
   taskList?: string
+  /** Long-lived goal overlay from goal.json. */
+  activeGoal?: string
 }
 
 export type ContextLayerBreakdown = {

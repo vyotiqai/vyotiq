@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { toolSearch } from '@main/agent/tools/search'
+import { minimalDocx } from './helpers/minimalDocx'
 
 describe('toolSearch chunking', () => {
   it('aborts during a large workspace scan', async () => {
@@ -33,5 +34,21 @@ describe('toolSearch chunking', () => {
       .split('\n')
       .filter((line) => line.trim() && !line.startsWith('…') && !line.startsWith('index='))
     expect(hitLines.length).toBeLessThanOrEqual(5)
+  })
+
+  it('searches extracted Word .docx text', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-search-docx-'))
+    writeFileSync(join(dir, 'notes.md.docx'), minimalDocx(['UniqueSearchDocxHit in architecture']))
+    const hits = await toolSearch(dir, 'UniqueSearchDocxHit', 10)
+    expect(hits).toContain('notes.md.docx')
+    expect(hits).toContain('UniqueSearchDocxHit')
+  })
+
+  it('regex mode treats ^ as the start of each line', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-search-caret-'))
+    writeFileSync(join(dir, 'webFetch.ts'), 'import { x } from "./y"\nexport function toolWebFetch() {}\n', 'utf8')
+    const hits = await toolSearch(dir, '^export', 10, undefined, true)
+    expect(hits).toContain('webFetch.ts:2:')
+    expect(hits).toContain('export function toolWebFetch')
   })
 })

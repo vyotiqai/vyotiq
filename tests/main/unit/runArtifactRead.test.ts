@@ -50,6 +50,24 @@ describe('run artifact files', () => {
       '{"version":1,"runId":"run-artifacts","writtenAt":"t","observed_only":true,"predictions":[]}\n',
       'utf8'
     )
+    writeFileSync(
+      join(runDir, 'goal.json'),
+      JSON.stringify({
+        objective: 'Ship',
+        status: 'active',
+        createdAt: 't',
+        updatedAt: 't'
+      })
+    )
+    writeFileSync(
+      join(runDir, 'loop.json'),
+      JSON.stringify({
+        prompt: 'check CI',
+        intervalMs: 30_000,
+        status: 'armed',
+        nextAt: 't'
+      })
+    )
 
     for (const name of [
       ...RunArtifactFixedNameSchema.options,

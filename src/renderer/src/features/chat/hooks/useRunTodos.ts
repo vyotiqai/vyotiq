@@ -13,13 +13,15 @@ export function useRunTodos(opts: {
   running?: boolean
   /** When false, skip polling unless the run is live (mounted but hidden). */
   active?: boolean
+  /** When false, never use the 500ms live cadence (compact rail chip). */
+  live?: boolean
 }): {
   data: TodoParsed | null
   loading: boolean
   error: string | null
   reload: (opts?: { quiet?: boolean }) => Promise<void>
 } {
-  const { workspacePath, runId, running = false, active = true } = opts
+  const { workspacePath, runId, running = false, active = true, live = true } = opts
   const [data, setData] = useState<TodoParsed | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -90,15 +92,16 @@ export function useRunTodos(opts: {
   }, [running, load])
 
   // Poll only while active (hidden Plan dock must not start intervals).
-  // Live runs poll faster so the ceiling band appears soon after todo_write.
+  // Live 500ms cadence only when todos UI has items to show.
+  const hasVisibleTodos = (data?.items.length ?? 0) > 0
   useEffect(() => {
     if (!active || !workspacePath || !runId) return
-    const ms = running ? LIVE_POLL_MS : POLL_MS
+    const ms = running && live && hasVisibleTodos ? LIVE_POLL_MS : POLL_MS
     const id = window.setInterval(() => {
       void load({ quiet: true })
     }, ms)
     return () => window.clearInterval(id)
-  }, [active, workspacePath, runId, running, load])
+  }, [active, workspacePath, runId, running, live, hasVisibleTodos, load])
 
   return { data, loading, error, reload: load }
 }

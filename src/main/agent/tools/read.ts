@@ -1,6 +1,11 @@
 import { resolveInsideWorkspace } from '../../workspace/safePath'
 import { existsSync, readdirSync, statSync, promises as fsp } from 'fs'
 import { basename, dirname, join } from 'path'
+import {
+  extractDocxText,
+  isDocxPath,
+  MAX_DOCX_ARCHIVE_BYTES
+} from './docxText'
 
 const SUGGEST_CAP = 8
 const LINE_STREAM_CHUNK = 64 * 1024
@@ -106,6 +111,31 @@ export function missingPathHint(workspaceRoot: string, relPath: string): string 
   return formatMissingFileHint(workspaceRoot, relPath)
 }
 
+/** list_dir missing-folder errors: workspace-relative, plus parent-dir names / glob hint. */
+export function missingDirectoryHint(
+  workspaceRoot: string,
+  pathArg: string,
+  relDir: string,
+  nestedRels: string[] = []
+): string {
+  const leaf = (relDir || pathArg).replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? pathArg
+  const lines = [
+    `Directory not found: ${pathArg}. Paths are relative to the workspace root.`
+  ]
+  if (nestedRels.length > 0) {
+    lines.push('Nested matches:', ...nestedRels.map((s) => `- ${s}`))
+  } else {
+    const suggestions = suggestSimilarPaths(workspaceRoot, relDir || pathArg)
+    if (suggestions.length > 0) {
+      lines.push('Similar names in parent directory:', ...suggestions.map((s) => `- ${s}`))
+    }
+  }
+  if (leaf && leaf !== '.' && !/[*?]/.test(leaf)) {
+    lines.push(`If it is nested, glob **/${leaf} or list_dir from '.' first.`)
+  }
+  return lines.join('\n')
+}
+
 export async function toolRead(
   workspaceRoot: string,
   pathArg: string,
@@ -123,6 +153,10 @@ export async function toolRead(
     throw new Error(`Not a file: ${pathArg}`)
   }
 
+  if (isDocxPath(pathArg)) {
+    return readDocx(resolved, pathArg, st.size, options)
+  }
+
   if (options.startLine !== undefined || options.endLine !== undefined) {
     return readLineRange(resolved, pathArg, st.size, options)
   }
@@ -136,6 +170,69 @@ export async function toolRead(
 
   const buf = await fsp.readFile(resolved)
   return decodeTextBuffer(buf, pathArg)
+}
+
+/** Word .docx is a zip; extract paragraph text, then apply line/byte windows. */
+async function readDocx(
+  resolved: string,
+  pathArg: string,
+  size: number,
+  options: ReadOptions
+): Promise<string> {
+  if (size > MAX_DOCX_ARCHIVE_BYTES) {
+    throw new Error(`Word .docx too large to extract: ${pathArg} (${size} bytes).`)
+  }
+  const buf = await fsp.readFile(resolved)
+  let text: string
+  try {
+    text = extractDocxText(buf)
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err)
+    throw new Error(
+      `Binary file detected: ${pathArg}. Word .docx text extraction failed (${reason}).`
+    )
+  }
+  if (!text.trim()) {
+    text = '(no extractable text in Word document)'
+  }
+  return applyTextReadWindows(text, pathArg, options)
+}
+
+function applyTextReadWindows(text: string, pathArg: string, options: ReadOptions): string {
+  if (options.startLine !== undefined || options.endLine !== undefined) {
+    return sliceTextLineRange(text, pathArg, options)
+  }
+  const offset = Math.max(0, Math.trunc(options.offset ?? 0))
+  const limit = options.limit === undefined ? undefined : Math.trunc(options.limit)
+  if (limit !== undefined || offset > 0) {
+    const buf = Buffer.from(text, 'utf8')
+    if (offset > buf.length) {
+      throw new Error(`offset ${offset} is past the end of ${pathArg} (${buf.length} bytes).`)
+    }
+    const remaining = Math.max(0, buf.length - offset)
+    const want = limit === undefined ? remaining : Math.min(Math.max(0, limit), remaining)
+    const header = `--- offset ${offset}${limit !== undefined ? `, limit ${limit}` : ''} of ${buf.length} bytes ---\n`
+    return header + buf.subarray(offset, offset + want).toString('utf8')
+  }
+  return text
+}
+
+function sliceTextLineRange(text: string, pathArg: string, options: ReadOptions): string {
+  const raw = text.split('\n')
+  const lines =
+    raw.length > 0 && text.endsWith('\n') && raw[raw.length - 1] === '' ? raw.slice(0, -1) : raw
+  const total = Math.max(1, lines.length)
+  const startRaw = Math.max(1, Math.trunc(options.startLine ?? 1))
+  const endRaw =
+    options.endLine == null ? Number.POSITIVE_INFINITY : Math.trunc(options.endLine)
+  const start = Number.isFinite(endRaw) && endRaw < startRaw ? Math.max(1, endRaw) : startRaw
+  const endLimit = Number.isFinite(endRaw) && endRaw < startRaw ? startRaw : endRaw
+  if (start > total) {
+    throw new Error(`startLine ${start} is past the end of ${pathArg} (${total} lines).`)
+  }
+  const actualEnd = Math.min(endLimit, total)
+  const collected = lines.slice(start - 1, actualEnd)
+  return `--- lines ${start}-${actualEnd} of ${total} ---\n` + collected.join('\n')
 }
 
 /**

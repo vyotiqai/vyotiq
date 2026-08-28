@@ -34,10 +34,16 @@ import type {
   IpcResult,
   ListModelsResult,
   ListRunsResult,
+  ListOlderRunsResult,
+  ExportRunResult,
   LoadRunResult,
   PersistedEvent,
   ProviderId,
   RunSummary,
+  SetGoalStatusRequest,
+  SetGoalStatusResult,
+  SetLoopRequest,
+  SetLoopResult,
   SecretProvider,
   SecretsStatus,
   Settings,
@@ -243,6 +249,11 @@ export interface VyotiqApi {
   }) => Promise<IpcResult<DictationRuntimeStatus>>
   onDictationStatus: (handler: (status: DictationRuntimeStatus) => void) => () => void
   listRuns: (workspacePath: string) => Promise<IpcResult<ListRunsResult>>
+  listOlderRuns: (
+    workspacePath: string,
+    olderThan: string,
+    limit?: number
+  ) => Promise<IpcResult<ListOlderRunsResult>>
   loadRun: (
     workspacePath: string,
     runId: string
@@ -257,11 +268,17 @@ export interface VyotiqApi {
     toolCallId: string
   ) => Promise<IpcResult<{ content: string }>>
   deleteRun: (workspacePath: string, runId: string) => Promise<IpcResult<true>>
+  exportRun: (
+    workspacePath: string,
+    runId: string
+  ) => Promise<IpcResult<ExportRunResult>>
   renameRun: (
     workspacePath: string,
     runId: string,
     goal: string
   ) => Promise<IpcResult<RunSummary>>
+  setGoalStatus: (payload: SetGoalStatusRequest) => Promise<IpcResult<SetGoalStatusResult>>
+  setLoop: (payload: SetLoopRequest) => Promise<IpcResult<SetLoopResult>>
   listActiveRuns: () => Promise<IpcResult<ActiveRunsResult>>
   /** Discriminated: ok | not_repo | unavailable (git missing from PATH). */
   gitStatus: (workspacePath: string) => Promise<IpcResult<GitStatusResult>>
@@ -387,7 +404,7 @@ export interface VyotiqApi {
   browserReload: (workspacePath?: string) => Promise<IpcResult<boolean>>
   browserTakeScreenshot: (payload: {
     workspacePath: string
-    runId: string
+    runId?: string
     tabId?: string
   }) => Promise<IpcResult<{ path: string }>>
   browserClearBrowsingData: (payload: {

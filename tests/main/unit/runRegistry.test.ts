@@ -25,9 +25,11 @@ import {
   streamSignalFor,
   chatCancelResult,
   tryBeginRunClosing,
+  reopenRunTurn,
   cancelRun,
   cancelAndWaitActiveRuns,
   tryRegisterRunAbort,
+  MAX_ACTIVE_RUNS,
   getRejectedRunStarts,
   resetRejectedRunStartsForTests
 } from '@main/agent/runRegistry'
@@ -135,6 +137,20 @@ describe('runRegistry follow-ups', () => {
     expect(tryBeginRunClosing(runId, handle2.invokeId)).toBe('has_followups')
     expect(drainFollowUps(runId)).toHaveLength(1)
     expect(tryBeginRunClosing(runId, handle2.invokeId)).toBe('closed')
+  })
+
+  it('reopenRunTurn allows follow-ups after auto-continue keeps the invoke', () => {
+    resetActiveRunsForTests()
+    const runId = 'goal-continue'
+    const handle = registerRunAbort(runId, '/ws')
+    expect(tryBeginRunClosing(runId, handle.invokeId)).toBe('closed')
+    expect(enqueueFollowUp(runId, { role: 'user', content: 'late' })).toEqual({
+      ok: false,
+      error: 'Run is finishing'
+    })
+    expect(reopenRunTurn(runId, handle.invokeId)).toBe(true)
+    const queued = enqueueFollowUp(runId, { role: 'user', content: 'late' })
+    expect(queued.ok).toBe(true)
   })
 
   it('preserves follow-ups across markRunTurnComplete and exposes them on listActiveRuns', () => {
@@ -413,14 +429,22 @@ describe('runRegistry capacity', () => {
     if (first.ok) clearRunAbort(runId, first.invokeId)
   })
 
-  it('allows many concurrent run registrations', () => {
+  it('caps concurrent run registrations and frees slots on clear', () => {
     resetActiveRunsForTests()
-    for (let i = 0; i < 12; i++) {
+    const runIds: string[] = []
+    for (let i = 0; i < MAX_ACTIVE_RUNS; i++) {
       const res = tryRegisterRunAbort(`run-${i}`, '/ws')
       expect(res.ok).toBe(true)
+      runIds.push(`run-${i}`)
     }
-    const again = tryRegisterRunAbort('run-13', '/ws')
-    expect(again.ok).toBe(true)
+    const over = tryRegisterRunAbort('run-over', '/ws')
+    expect(over.ok).toBe(false)
+    if (!over.ok) expect(over.code).toBe('RUN_LIMIT_REACHED')
+
+    clearRunAbort('run-0')
+    expect(tryRegisterRunAbort('run-over', '/ws').ok).toBe(true)
+    for (const runId of runIds) clearRunAbort(runId)
+    clearRunAbort('run-over')
   })
 })
 

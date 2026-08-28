@@ -7,7 +7,7 @@ type: guide
 audience: Plan and long-task users
 related:
   - agent/modes
-  - concepts/runs-sessions-state
+  - agent/goals
   - reference/tools
 ---
 

@@ -20,6 +20,17 @@ export default defineConfig({
     exclude: ['**/node_modules/**', '**/dist/**', 'tests/gui-e2e/**'],
     setupFiles: ['tests/setup.ts'],
     testTimeout: 30_000,
+    /**
+     * Force-exit bound once the run is over.
+     *
+     * On Windows the suite prints its summary and then hangs: a tinypool fork
+     * worker holding an open IPC channel keeps the event loop alive, and
+     * vitest's own force-exit never fires. This is tinypool's
+     * `terminateTimeout`, so a worker that will not shut down on its own gets
+     * terminated instead of wedging CI. scripts/test-exit-wrapper.cjs was the
+     * workaround (poll stdout, then taskkill /T); this fixes it at the source.
+     */
+    teardownTimeout: 15_000,
     pool: 'forks',
     poolOptions: {
       forks: {
@@ -37,7 +48,15 @@ export default defineConfig({
         'src/renderer/src/assets/**',
         'src/renderer/src/lib/icons/**',
         'src/renderer/src/lib/fileIcons/**'
-      ]
+      ],
+      // CI gate: dropping a test suite or shipping untested runtime paths must
+      // fail the coverage run instead of passing silently.
+      thresholds: {
+        lines: 40,
+        statements: 40,
+        functions: 35,
+        branches: 30
+      }
     }
   }
 })

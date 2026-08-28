@@ -15,7 +15,7 @@ The Browser panel is the same embedded browser surface used by built-in browser 
 
 ## Navigate manually
 
-Open Browser, then use Search or enter URL. The toolbar provides Back, Forward, Reload, tabs, and New tab. The action menu includes:
+Open Browser, then use Search or enter URL. Search queries use the engine selected under [Settings → Tools](/docs/reference/settings#tools) (DuckDuckGo, Google, or Bing). The toolbar provides Back, Forward, Reload, viewport size, tabs, and New tab. The action menu includes:
 
 - Take Screenshot
 - Copy Current URL
@@ -32,6 +32,10 @@ History suggestions and Recents are session aids, not trusted context. Page cont
 During agent use, the panel reports Agent is browsing…. Choose Take control before manual interaction. When finished, choose Return to agent so the pending browser step can continue.
 
 Ask mode allows browse-only navigation, snapshots, history, scrolling, hover, and waits. Click, type, fill, key, select, and dialog-handling mutations require Agent mode.
+
+The human address bar can open loopback (`http://localhost` / `127.0.0.1`). Agent `browser_navigate` to localhost is allowed only in Agent mode. Viewport size presets resize the embedded page; snapshots report that inner width and height.
+
+Take Screenshot writes a JPEG under the active run when a chat is open, or under the workspace browser folder in app data when no run is open.
 
 ## Restrict domains
 

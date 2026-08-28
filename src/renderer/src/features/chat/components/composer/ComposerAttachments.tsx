@@ -1,6 +1,7 @@
+import { useState } from 'react'
 import type { AttachedAudio, AttachedFile, AttachedNativeFile } from '@shared/ipc'
 import { parseOpenableAttachmentPath } from '@shared/utils/linkableWorkspacePath'
-import { FileChip, ImageChip } from '@renderer/lib/ui'
+import { FileChip, ImageChip, ImageLightbox } from '@renderer/lib/ui'
 import { useRunSession } from '../../RunSessionContext'
 
 export function ComposerAttachments({
@@ -33,6 +34,7 @@ export function ComposerAttachments({
   onRemoveAudio?: (index: number) => void
 }) {
   const { onOpenWorkspaceFile } = useRunSession()
+  const [lightbox, setLightbox] = useState<{ url: string; label: string } | null>(null)
   const notice = [imageError, fileError, audioError].filter(Boolean).join(' · ')
 
   const openAttachment = (name: string): (() => void) | undefined => {
@@ -53,8 +55,8 @@ export function ComposerAttachments({
               key={`${i}-${url.slice(0, 24)}`}
               url={url}
               label={`Image ${i + 1}`}
-              variant="compact"
               disabled={attachLocked}
+              onClick={() => setLightbox({ url, label: `Image ${i + 1}` })}
               onRemove={() => onRemove(i)}
             />
           ))}
@@ -98,6 +100,13 @@ export function ComposerAttachments({
         <p className="m-0 text-xs text-danger" role="alert">
           {notice}
         </p>
+      ) : null}
+      {lightbox ? (
+        <ImageLightbox
+          url={lightbox.url}
+          label={lightbox.label}
+          onClose={() => setLightbox(null)}
+        />
       ) : null}
     </div>
   )

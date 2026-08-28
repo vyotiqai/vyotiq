@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { cn, Switch, Tooltip } from '@renderer/lib/ui'
 import { isEditableShortcutTarget, matchShortcut, shortcutLabel } from '@renderer/lib/shortcuts'
 import { Icon, type IconName } from '@renderer/lib/icons'
@@ -6,6 +6,8 @@ import { CHAT_RIGHT_PANEL_BODY } from '@renderer/lib/utils/layout'
 import type { GitBranchEntry, GitChangedFile, GitLogEntry, GitStatus } from '@shared/ipc'
 import { namedGitBranch } from '@shared/utils/gitBranch'
 import type { UiItem } from '@shared/transcript'
+import type { ChatItemsStore } from '../chatStores'
+import { useChatLiveItems } from './ChatStreamLeaves'
 import { ChangeSummary } from './ChangeSummary'
 import {
   DOCK_PANEL_TOOLBAR,
@@ -131,8 +133,9 @@ const SCOPE_ICON: Record<ChangeScope, IconName> = {
 /**
  * Docked Changes panel: git working tree + agent Keep/Discard rollup.
  */
-export function ChangesPanel({
+export const ChangesPanel = memo(function ChangesPanel({
   items,
+  itemsStore,
   className,
   workspacePath,
   gitRevision = 0,
@@ -156,6 +159,7 @@ export function ChangesPanel({
   preferredScopeToken = 0
 }: {
   items: UiItem[]
+  itemsStore?: ChatItemsStore
   className?: string
   workspacePath?: string | null
   gitRevision?: number
@@ -192,18 +196,19 @@ export function ChangesPanel({
     0
   )
   const chrome = chromeProp ?? localChrome
-  const toolAgentFiles = useMemo(() => collectLastTurnChangedFiles(items), [items])
+  const liveItems = useChatLiveItems(itemsStore, items)
+  const toolAgentFiles = useMemo(() => collectLastTurnChangedFiles(liveItems), [liveItems])
   const agentFiles = useMemo(
     () => mergeCheckpointChangedFiles(toolAgentFiles, writeCheckpointFiles),
     [toolAgentFiles, writeCheckpointFiles]
   )
-  const agentDiffs = useMemo(() => collectLastTurnFileDiffs(items), [items])
-  const sessionToolAgentFiles = useMemo(() => collectSessionChangedFiles(items), [items])
+  const agentDiffs = useMemo(() => collectLastTurnFileDiffs(liveItems), [liveItems])
+  const sessionToolAgentFiles = useMemo(() => collectSessionChangedFiles(liveItems), [liveItems])
   const sessionAgentFiles = useMemo(
     () => mergeCheckpointChangedFiles(sessionToolAgentFiles, writeCheckpointFiles),
     [sessionToolAgentFiles, writeCheckpointFiles]
   )
-  const sessionAgentDiffs = useMemo(() => collectSessionFileDiffs(items), [items])
+  const sessionAgentDiffs = useMemo(() => collectSessionFileDiffs(liveItems), [liveItems])
   const agentCheckpointOnly = useMemo(
     () => checkpointOnlyChangedFiles(toolAgentFiles, writeCheckpointFiles),
     [toolAgentFiles, writeCheckpointFiles]
@@ -1448,4 +1453,4 @@ export function ChangesPanel({
       </div>
     </div>
   )
-}
+})

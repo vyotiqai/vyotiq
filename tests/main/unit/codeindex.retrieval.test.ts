@@ -4,6 +4,7 @@ import { join } from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   CodeIndexStore,
+  collectDocsLexicalHits,
   createLocalHashEmbedder,
   createOllamaEmbedder,
   searchCodeIndex,
@@ -14,6 +15,7 @@ import {
 import { DENSEON_ONNX_MODEL_ID, MDENSEON_MODEL_ID } from '@main/agent/codeindex/types'
 import { toolCodebaseSearch } from '@main/agent/tools/codebaseSearch'
 import { closeCodeIndex } from '@main/agent/codeindex'
+import { minimalDocx } from './helpers/minimalDocx'
 
 describe('codeindex sync + retrieval', () => {
   let dir: string
@@ -431,6 +433,52 @@ export function paintCosmetic() {
     expect(out).toMatch(/index:/)
     expect(out).toMatch(/fallback=hash/)
     expect(out.toLowerCase()).toMatch(/auth|validate/)
+  })
+
+  it('search-time matches Word .docx under docs/ that the source index omits', async () => {
+    dir = seedFixture()
+    mkdirSync(join(dir, 'docs', 'reference'), { recursive: true })
+    writeFileSync(
+      join(dir, 'docs', 'reference', '15-architecture.md.docx'),
+      minimalDocx(['UniqueArchDocxHit process model for the Electron agent'])
+    )
+    const out = await toolCodebaseSearch(dir, 'UniqueArchDocxHit', {
+      maxResults: 5,
+      mode: 'hybrid',
+      preferOllama: false
+    })
+    expect(out).toContain('docs/reference/15-architecture.md.docx')
+    expect(out).toContain('UniqueArchDocxHit')
+  })
+
+  it('docs overlap walks only workspace docs/, not landing markdown', async () => {
+    dir = seedFixture()
+    mkdirSync(join(dir, 'docs', 'reference'), { recursive: true })
+    mkdirSync(join(dir, 'landing', 'src', 'content', 'docs'), { recursive: true })
+    writeFileSync(
+      join(dir, 'docs', 'reference', '15-architecture.md'),
+      'UniqueArchDocxHit in architecture\n',
+      'utf8'
+    )
+    writeFileSync(
+      join(dir, 'landing', 'src', 'content', 'docs', 'guide.md'),
+      'UniqueArchDocxHit in landing\n',
+      'utf8'
+    )
+    const hits = await collectDocsLexicalHits(dir, 'UniqueArchDocxHit', {
+      limit: 5,
+      seenPaths: new Set()
+    })
+    expect(hits.map((h) => h.path)).toEqual(['docs/reference/15-architecture.md'])
+  })
+
+  it('docs overlap is a no-op when workspace has no docs/ directory', async () => {
+    dir = seedFixture()
+    const hits = await collectDocsLexicalHits(dir, 'UniqueArchDocxHit', {
+      limit: 5,
+      seenPaths: new Set()
+    })
+    expect(hits).toEqual([])
   })
 
   it('respects abort during search sync', async () => {

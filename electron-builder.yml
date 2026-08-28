@@ -24,6 +24,10 @@ files:
   # onnxruntime natives are trimmed per target OS (see win/mac/linux.files).
   # Grammars ship via extraResources/codeindex/wasm; skip full package (~49 MB).
   - '!**/tree-sitter-wasms/**'
+  # Drop dev-only weight from asar-packed node_modules (never loaded at runtime).
+  - '!**/node_modules/**/{test,tests,__tests__,doc,docs,examples}/**'
+  - '!**/node_modules/**/*.md'
+  - '!**/node_modules/**/*.map'
 extraResources:
   - from: resources/harness
     to: harness
@@ -36,13 +40,21 @@ extraResources:
     to: codeindex/wasm
 asarUnpack:
   - resources/**
-  # pnpm isolated linker nests packages under .pnpm; unpack both top-level and nested.
-  - '**/node_modules/onnxruntime-node/**'
-  - '**/node_modules/@huggingface/transformers/**'
+  # Native addons cannot load from asar. Unpack .node files and ORT shared libs
+  # (dll/so/dylib sit beside the binding). pnpm nests under .pnpm — use ** globs.
+  # Do not unpack @huggingface/transformers (JS/WASM only; no .node).
+  - '**/*.node'
+  - '**/node_modules/onnxruntime-node/bin/**'
 win:
   icon: resources/icon.ico
   target:
     - nsis
+  # Must match the code-signing certificate subject CN (CSC_LINK secret) so
+  # NSIS verifies the updater's signer. Ignored while builds are unsigned.
+  # Flip win.forceCodeSigning to true (and revisit mac.notarize) once the
+  # signing cert is always present in the release environment — release.yml
+  # currently falls back to unsigned packs when CSC_LINK is unset.
+  publisherName: Vyotiq
   # Win x64 only — drop other onnxruntime natives (~150 MB). macOS/Linux keep theirs.
   files:
     - '!**/onnxruntime-node/bin/napi-v6/darwin/**'

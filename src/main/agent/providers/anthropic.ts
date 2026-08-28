@@ -548,7 +548,7 @@ export const anthropicProvider: LlmProvider = {
       logProviderFailure('anthropic', 'http', {
         status: res.status
       })
-      yield { type: 'error', error: formatProviderHttpError(res.status, text, 'anthropic'), errorCode: 'PROVIDER_HTTP' }
+      yield { type: 'error', error: formatProviderHttpError(res.status, text, 'anthropic'), errorCode: 'PROVIDER_HTTP', httpStatus: res.status }
       return
     }
 

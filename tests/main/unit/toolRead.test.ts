@@ -2,7 +2,75 @@ import { describe, expect, it, beforeAll, afterAll, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, promises as fsp } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
+import { deflateRawSync } from 'zlib'
 import { toolRead } from '@main/agent/tools/read'
+import { extractDocxText } from '@main/agent/tools/docxText'
+
+function crc32(buf: Buffer): number {
+  let crc = ~0
+  for (const b of buf) {
+    crc ^= b
+    for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1))
+  }
+  return ~crc >>> 0
+}
+
+/** Minimal ZIP (stored or deflate) for Word-shaped fixtures. */
+function buildZip(entries: { name: string; data: Buffer; store?: boolean }[]): Buffer {
+  const locals: Buffer[] = []
+  const centrals: Buffer[] = []
+  let offset = 0
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, 'utf8')
+    const raw = entry.store ? entry.data : deflateRawSync(entry.data)
+    const method = entry.store ? 0 : 8
+    const crc = crc32(entry.data)
+    const local = Buffer.alloc(30 + name.length + raw.length)
+    local.writeUInt32LE(0x04034b50, 0)
+    local.writeUInt16LE(20, 4)
+    local.writeUInt16LE(0, 6)
+    local.writeUInt16LE(method, 8)
+    local.writeUInt32LE(crc, 14)
+    local.writeUInt32LE(raw.length, 18)
+    local.writeUInt32LE(entry.data.length, 22)
+    local.writeUInt16LE(name.length, 26)
+    name.copy(local, 30)
+    raw.copy(local, 30 + name.length)
+    const central = Buffer.alloc(46 + name.length)
+    central.writeUInt32LE(0x02014b50, 0)
+    central.writeUInt16LE(20, 4)
+    central.writeUInt16LE(20, 6)
+    central.writeUInt16LE(method, 10)
+    central.writeUInt32LE(crc, 16)
+    central.writeUInt32LE(raw.length, 20)
+    central.writeUInt32LE(entry.data.length, 24)
+    central.writeUInt16LE(name.length, 28)
+    central.writeUInt32LE(offset, 42)
+    name.copy(central, 46)
+    locals.push(local)
+    centrals.push(central)
+    offset += local.length
+  }
+  const cdSize = centrals.reduce((sum, b) => sum + b.length, 0)
+  const eocd = Buffer.alloc(22)
+  eocd.writeUInt32LE(0x06054b50, 0)
+  eocd.writeUInt16LE(entries.length, 8)
+  eocd.writeUInt16LE(entries.length, 10)
+  eocd.writeUInt32LE(cdSize, 12)
+  eocd.writeUInt32LE(offset, 16)
+  return Buffer.concat([...locals, ...centrals, eocd])
+}
+
+function wordDocumentXml(paragraphs: string[]): Buffer {
+  const body = paragraphs
+    .map((p) => `<w:p><w:r><w:t>${p}</w:t></w:r></w:p>`)
+    .join('')
+  return Buffer.from(
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}</w:body></w:document>`,
+    'utf8'
+  )
+}
+
 describe('toolRead', () => {
   let root: string
 
@@ -181,5 +249,43 @@ describe('toolRead', () => {
     } finally {
       spy.mockRestore()
     }
+  })
+
+  it('extracts Word .docx paragraph text instead of rejecting the zip as binary', async () => {
+    const xml = wordDocumentXml(['Hello architecture', 'Second para &amp; more'])
+    writeFileSync(join(root, 'notes.md.docx'), buildZip([{ name: 'word/document.xml', data: xml }]))
+    const out = await toolRead(root, 'notes.md.docx')
+    expect(out).toBe('Hello architecture\n\nSecond para & more')
+    expect(out).not.toMatch(/Binary file detected/)
+  })
+
+  it('extracts stored-method .docx and applies line/byte windows to the text', async () => {
+    const xml = wordDocumentXml(['alpha', 'bravo', 'charlie'])
+    writeFileSync(
+      join(root, 'stored.docx'),
+      buildZip([{ name: 'word/document.xml', data: xml, store: true }])
+    )
+    const lines = await toolRead(root, 'stored.docx', { startLine: 1, endLine: 1 })
+    expect(lines).toMatch(/^--- lines 1-1 of /)
+    expect(lines).toContain('alpha')
+    expect(lines).not.toContain('charlie')
+
+    const bytes = await toolRead(root, 'stored.DOCX', { offset: 0, limit: 5 })
+    expect(bytes).toMatch(/--- offset 0, limit 5 of \d+ bytes ---/)
+    expect(bytes).toContain('alpha')
+    expect(bytes).not.toContain('bravo')
+  })
+
+  it('rejects a .docx that is not a valid Word zip', async () => {
+    writeFileSync(join(root, 'fake.docx'), Buffer.from([0x41, 0x00, 0x42, 0x43]))
+    await expect(toolRead(root, 'fake.docx')).rejects.toThrow(
+      /Binary file detected: fake\.docx\. Word \.docx text extraction failed/
+    )
+  })
+
+  it('extractDocxText joins w:t runs from a deflated document.xml', () => {
+    const xml = wordDocumentXml(['Architecture overview'])
+    const buf = buildZip([{ name: 'word/document.xml', data: xml }])
+    expect(extractDocxText(buf)).toBe('Architecture overview')
   })
 })

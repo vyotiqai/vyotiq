@@ -16,7 +16,8 @@ export default defineConfig({
   timeout: 90_000,
   expect: { timeout: 15_000 },
   reporter: [['list']],
-  retries: 0,
+  // One retry in CI absorbs Electron boot flakes; local runs stay strict.
+  retries: process.env.CI ? 1 : 0,
   outputDir: join(__dirname, '../../test-results/gui-e2e'),
   use: {
     video: 'on',

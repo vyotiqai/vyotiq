@@ -1,5 +1,10 @@
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
+import { mkdirSync, rmSync, writeFileSync } from 'fs'
+import { join } from 'path'
+import { tmpdir } from 'os'
 import { assembleContext } from '@main/agent/context/assemble'
+import { clearRulesCache } from '@main/agent/context/rules'
+import { clearWorkspaceSnapshotCache } from '@main/agent/context/workspaceSnapshot'
 import { volatileSessionMessage } from '@main/agent/providers/systemZones'
 import type { LlmProvider } from '@main/agent/providers/types'
 import { SKILL_BODY_STUB } from '@shared/slashCommands'
@@ -243,49 +248,83 @@ describe('assembleContext integration', () => {
   })
 
   it('places stable instruction layers before volatile data', async () => {
-    const result = await assembleContext({
-      harness: '## Role\nAgent',
-      contract: '## Goal\nShip',
-      modeSection: '<mode>\nAgent mode. Full tools.\n</mode>',
-      skillsSection: '<available_skills>\n- **x**: y\n</available_skills>',
-      pluginRulesSection: '<plugin_rules>\n- **plugin-rule:a/b**: c\n</plugin_rules>',
-      sessionEnv: '<session>\nDate (UTC): 2026-08-01T12:00:00.000Z',
-      loopHint: 'tool failures',
-      priorCompaction: {
-        summary: 'Earlier work',
-        createdAt: '2026-01-01T00:00:00.000Z',
-        tokenEstimate: 10
-      },
-      messages: [{ role: 'user', content: 'hi' }],
-      workspacePath: null,
-      goal: 'hi',
-      model,
-      toolsJsonEstimate: 50,
-      providerId: 'ollama',
-      provider: mockProvider,
-      signal: new AbortController().signal
-    })
-    const role = result.system.indexOf('## Role')
-    const mode = result.system.indexOf('<mode>')
-    const contract = result.system.indexOf('<run_contract>')
-    const skills = result.system.indexOf('<available_skills>')
-    const plugins = result.system.indexOf('<plugin_rules>')
-    const session = result.system.indexOf('<session>')
-    const notice = result.system.indexOf('<run_notice>')
-    const prior = result.system.indexOf('<prior_session>')
-    expect(role).toBeGreaterThanOrEqual(0)
-    expect(mode).toBeGreaterThan(role)
-    expect(contract).toBeGreaterThan(mode)
-    expect(skills).toBeGreaterThan(contract)
-    expect(plugins).toBeGreaterThan(skills)
-    expect(prior).toBeGreaterThan(plugins)
-    expect(session).toBeGreaterThan(prior)
-    expect(notice).toBeGreaterThan(session)
-    expect(result.systemStable).toContain('<prior_session>')
-    expect(result.systemStable).toContain('Earlier work')
-    expect(result.systemVolatile).not.toContain('<prior_session>')
-    expect(result.systemVolatile).toContain('<session>')
-    expect(result.systemVolatile).toContain('<run_notice>')
+    const workspace = join(tmpdir(), `vyotiq-assemble-order-${process.pid}-${Date.now()}`)
+    mkdirSync(workspace, { recursive: true })
+    writeFileSync(join(workspace, 'AGENTS.md'), 'WORKSPACE_RULE_MARKER: keep tests green.\n', 'utf8')
+    try {
+      const result = await assembleContext({
+        harness: '## Role\nAgent',
+        contract: '## Goal\nShip',
+        plan: '# Plan\n\n1. PLAN_STEP_MARKER',
+        modeSection: '<mode>\nAgent mode. Full tools.\n</mode>',
+        skillsSection: '<available_skills>\n- **x**: y\n</available_skills>',
+        pluginRulesSection: '<plugin_rules>\n- **plugin-rule:a/b**: c\n</plugin_rules>',
+        userRules: [
+          {
+            id: 'house',
+            name: 'House style',
+            body: 'USER_RULE_MARKER: prefer named exports.',
+            enabled: true
+          }
+        ],
+        sessionEnv: '<session>\nDate (UTC): 2026-08-01T12:00:00.000Z',
+        taskList: '<task_list>\n1/1 complete\n[x] (1) Done',
+        loopHint: 'tool failures',
+        priorCompaction: {
+          summary: 'Earlier work',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          tokenEstimate: 10
+        },
+        messages: [{ role: 'user', content: 'hi' }],
+        workspacePath: workspace,
+        goal: 'hi',
+        model,
+        toolsJsonEstimate: 50,
+        providerId: 'ollama',
+        provider: mockProvider,
+        signal: new AbortController().signal
+      })
+      const role = result.system.indexOf('## Role')
+      const mode = result.system.indexOf('<mode>')
+      const contract = result.system.indexOf('<run_contract>')
+      const plan = result.system.indexOf('<plan>')
+      const skills = result.system.indexOf('<available_skills>')
+      const plugins = result.system.indexOf('<plugin_rules>')
+      const userRules = result.system.indexOf('<user_rules>')
+      const workspaceRules = result.system.indexOf('<workspace_rules>')
+      const prior = result.system.indexOf('<prior_session>')
+      const session = result.system.indexOf('<session>')
+      const snapshot = result.system.indexOf('<workspace>')
+      const tasks = result.system.indexOf('<task_list>')
+      const notice = result.system.indexOf('<run_notice>')
+      expect(role).toBeGreaterThanOrEqual(0)
+      expect(mode).toBeGreaterThan(role)
+      expect(contract).toBeGreaterThan(mode)
+      expect(plan).toBeGreaterThan(contract)
+      expect(skills).toBeGreaterThan(plan)
+      expect(plugins).toBeGreaterThan(skills)
+      expect(userRules).toBeGreaterThan(plugins)
+      expect(workspaceRules).toBeGreaterThan(userRules)
+      expect(prior).toBeGreaterThan(workspaceRules)
+      expect(session).toBeGreaterThan(prior)
+      expect(snapshot).toBeGreaterThan(session)
+      expect(tasks).toBeGreaterThan(snapshot)
+      expect(notice).toBeGreaterThan(tasks)
+      expect(result.system).toContain('PLAN_STEP_MARKER')
+      expect(result.system).toContain('USER_RULE_MARKER')
+      expect(result.system).toContain('WORKSPACE_RULE_MARKER')
+      expect(result.systemStable).toContain('<prior_session>')
+      expect(result.systemStable).toContain('Earlier work')
+      expect(result.systemStable).toContain('<workspace_rules>')
+      expect(result.systemVolatile).not.toContain('<prior_session>')
+      expect(result.systemVolatile).toContain('<session>')
+      expect(result.systemVolatile).toContain('<run_notice>')
+      expect(result.systemVolatile).toContain('<task_list>')
+    } finally {
+      rmSync(workspace, { recursive: true, force: true })
+      clearRulesCache(workspace)
+      clearWorkspaceSnapshotCache(workspace)
+    }
   })
 
   it('keeps tool result bodies when far under budget (re-read loop regression)', async () => {

@@ -2,11 +2,13 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, wri
 import { readFile, readdir, open } from 'fs/promises'
 import { join, basename } from 'path'
 import { atomicWriteFile, atomicWriteFileAsync, atomicWriteJson } from '../storage/atomicWrite'
-import { enqueueEventAppend, flushEventAppends } from './eventAppendQueue'
+import { enqueueEventAppend, flushEventAppends, listEventArchives } from './eventAppendQueue'
 import {
   enqueueMessageAppend,
   enqueueMessageRewrite,
   flushMessageAppends,
+  listMessageArchives,
+  listMessageArchivesSync,
   takeMessageAppendFailureNotice
 } from './messageAppendQueue'
 import { enqueueStatusPatch, flushStatusWrites, writeStatusImmediate } from './statusWriteQueue'
@@ -20,6 +22,7 @@ import {
   runErrorDedupeKey,
   type AgentInteractionMode,
   type ChatMessage,
+  type AgentEvent,
   type ListRunsResult,
   type MessageContent,
   type PersistedEvent,
@@ -29,6 +32,12 @@ import {
 import { logger } from '../../shared/logger'
 import { RUN_INTERRUPTED_ERROR } from '../../shared/runInterrupt'
 import { workspaceIdFromPath } from '../../shared/utils/workspaceId'
+import {
+  emptyStepUsageTotals,
+  mergeStepUsageTotals,
+  stepUsageFromEvent,
+  type StepUsageTotals
+} from '../../shared/utils/runTelemetry'
 import { toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { finalizeInterruptedTodos } from './tools/todo'
 import { readGoal } from './runGoal'
@@ -420,6 +429,41 @@ function parseMessagesJsonl(content: string): ChatMessage[] {
 }
 
 /**
+ * Live messages.jsonl content plus any rotated archive heads, oldest first.
+ * Rotation keeps only the recent tail in the live file, so readers must stitch
+ * archives back in or resumed runs would silently lose early transcript turns.
+ */
+function stitchedMessagesContentSync(dir: string): string | null {
+  const parts: string[] = []
+  for (const name of listMessageArchivesSync(dir)) {
+    try {
+      parts.push(readFileSync(join(dir, name), 'utf8'))
+    } catch {
+      // skip unreadable archive — the live file still carries the recent tail
+    }
+  }
+  const live = join(dir, 'messages.jsonl')
+  if (!existsSync(live)) return parts.length > 0 ? parts.join('') : null
+  parts.push(readFileSync(live, 'utf8'))
+  return parts.join('')
+}
+
+async function stitchedMessagesContentAsync(dir: string): Promise<string | null> {
+  const parts: string[] = []
+  for (const name of await listMessageArchives(dir)) {
+    try {
+      parts.push(await readFile(join(dir, name), 'utf8'))
+    } catch {
+      // skip unreadable archive — the live file still carries the recent tail
+    }
+  }
+  const live = join(dir, 'messages.jsonl')
+  if (!existsSync(live)) return parts.length > 0 ? parts.join('') : null
+  parts.push(await readFile(live, 'utf8'))
+  return parts.join('')
+}
+
+/**
  * Parse messages.jsonl but skip the first `skipCount` successfully-parsed
  * messages (fold watermark). Avoids retaining folded tool bodies as ChatMessage
  * objects — the dominant heap cost of a full reload after compaction.
@@ -460,9 +504,9 @@ function parseMessagesJsonlSkipping(content: string, skipCount: number): ChatMes
 
 export function loadMessages(workspacePath: string, runId: string): ChatMessage[] {
   const dir = resolveRunDir(workspacePath, runId)
-  const p = join(dir, 'messages.jsonl')
-  if (!existsSync(p)) return []
-  return parseMessagesJsonl(readFileSync(p, 'utf8'))
+  const content = stitchedMessagesContentSync(dir)
+  if (content == null) return []
+  return parseMessagesJsonl(content)
 }
 
 /**
@@ -476,10 +520,10 @@ export function loadMessagesAfterFold(
   foldedMessages: number
 ): ChatMessage[] {
   const dir = resolveRunDir(workspacePath, runId)
-  const p = join(dir, 'messages.jsonl')
-  if (!existsSync(p)) return []
+  const content = stitchedMessagesContentSync(dir)
+  if (content == null) return []
   const skip = Math.max(0, Math.floor(foldedMessages))
-  return parseMessagesJsonlSkipping(readFileSync(p, 'utf8'), skip)
+  return parseMessagesJsonlSkipping(content, skip)
 }
 
 export async function loadMessagesAsync(
@@ -488,10 +532,10 @@ export async function loadMessagesAsync(
 ): Promise<ChatMessage[]> {
   const dir = resolveRunDir(workspacePath, runId)
   await flushMessageAppends(dir)
-  const p = join(dir, 'messages.jsonl')
-  if (!existsSync(p)) return []
   try {
-    return parseMessagesJsonl(await readFile(p, 'utf8'))
+    const content = await stitchedMessagesContentAsync(dir)
+    if (content == null) return []
+    return parseMessagesJsonl(content)
   } catch (err) {
     logger.warn('Failed to read messages.jsonl', { scope: 'state', runId, err })
     return []
@@ -505,11 +549,11 @@ export async function loadMessagesAfterFoldAsync(
 ): Promise<ChatMessage[]> {
   const dir = resolveRunDir(workspacePath, runId)
   await flushMessageAppends(dir)
-  const p = join(dir, 'messages.jsonl')
-  if (!existsSync(p)) return []
   try {
+    const content = await stitchedMessagesContentAsync(dir)
+    if (content == null) return []
     const skip = Math.max(0, Math.floor(foldedMessages))
-    return parseMessagesJsonlSkipping(await readFile(p, 'utf8'), skip)
+    return parseMessagesJsonlSkipping(content, skip)
   } catch (err) {
     logger.warn('Failed to read messages.jsonl', { scope: 'state', runId, err })
     return []
@@ -751,6 +795,41 @@ export async function loadEventsAsync(
   return parseEventsFromText(text, inferredRunId, options)
 }
 
+/**
+ * Cumulative step_usage totals across the live events file AND rotated
+ * archives. Rotation drops old heads out of events.jsonl, so resume cost
+ * re-seeding must stitch archives back in or billed totals undercount.
+ */
+export async function loadStepUsageTotalsAsync(dir: string): Promise<StepUsageTotals> {
+  await flushEventAppends(dir)
+  const files: string[] = [...(await listEventArchives(dir)), 'events.jsonl']
+  let totals = emptyStepUsageTotals()
+  for (const name of files) {
+    const p = join(dir, name)
+    let text: string
+    try {
+      text = await readFile(p, 'utf8')
+    } catch {
+      continue
+    }
+    for (const line of text.split('\n')) {
+      if (!line) continue
+      try {
+        const json: unknown = JSON.parse(line)
+        const ev = (json as { event?: unknown }).event
+        if (!ev || typeof ev !== 'object' || (ev as { type?: unknown }).type !== 'step_usage') {
+          continue
+        }
+        const partial = stepUsageFromEvent(ev as AgentEvent)
+        if (partial) totals = mergeStepUsageTotals(totals, partial)
+      } catch {
+        // skip bad line
+      }
+    }
+  }
+  return totals
+}
+
 /** Default UI restore bound — full history stays on disk. */
 export const LOAD_EVENTS_UI_LIMIT = 500
 
@@ -961,6 +1040,74 @@ export async function listRuns(workspacePath: string): Promise<ListRunsResult> {
       capped: sortedParents.length > RUN_LIST_CAP
     }
   })
+}
+
+/**
+ * One older page of parent runs beyond the sidebar cap, strictly older than the
+ * supplied cursor. Archived runs are done/idle, so stale-run reconciliation is
+ * intentionally skipped here (listRuns owns it).
+ */
+export async function listRunsOlder(
+  workspacePath: string,
+  olderThanIso: string,
+  limit: number = RUN_LIST_CAP
+): Promise<{ runs: RunSummary[]; hasMore: boolean }> {
+  const { parents } = await collectRunsFromRoot(workspaceSessionsRoot(workspacePath))
+  const older = parents
+    .filter((r) => r.updatedAt < olderThanIso)
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  return {
+    runs: older.slice(0, limit),
+    hasMore: older.length > limit
+  }
+}
+
+/** Markdown export of a chat transcript — the file the user saves. */
+export async function buildRunMarkdownExport(
+  workspacePath: string,
+  runId: string
+): Promise<{ title: string; markdown: string }> {
+  const runDir = resolveRunDir(workspacePath, runId)
+  const status = loadStatus(runDir)
+  const title = status?.goal?.trim() || runId
+  const messages = await loadMessagesAsync(workspacePath, runId)
+  const lines: string[] = [
+    `# ${title}`,
+    '',
+    `Exported ${new Date().toISOString()}`
+  ]
+  for (const message of messages) {
+    const text = contentToText(message.content).trim()
+    if (!text && message.role !== 'assistant') continue
+    lines.push('')
+    if (message.role === 'user') {
+      lines.push('## User', '', text || '_(empty)_')
+    } else if (message.role === 'assistant') {
+      lines.push('## Agent', '', text || '_(no text — tool calls only)_')
+      if (message.thinking?.trim()) {
+        lines.push('', '<details><summary>Thinking</summary>', '', message.thinking.trim(), '', '</details>')
+      }
+      for (const call of message.toolCalls ?? []) {
+        let args = call.arguments
+        try {
+          args = JSON.stringify(JSON.parse(call.arguments), null, 2)
+        } catch {
+          // keep raw arguments when they are not complete JSON
+        }
+        lines.push('', `**Tool call: ${call.name}**`, '', '```json', args, '```')
+      }
+    } else if (message.role === 'tool') {
+      lines.push(
+        `## Tool result: ${message.toolName ?? 'tool'} (${message.ok === false ? 'error' : 'ok'})`,
+        '',
+        '```',
+        text,
+        '```'
+      )
+    }
+  }
+  lines.push('')
+  return { title, markdown: lines.join('\n') }
 }
 
 /** Persist failure stubs for tool calls that never received a result before interrupt. */

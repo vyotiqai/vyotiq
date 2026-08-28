@@ -45,6 +45,14 @@ export function resetRejectedRunStartsForTests(): void {
 }
 
 const active = new Map<string, RunEntry>()
+
+/**
+ * Global cap on concurrently live runs (chat starts and inline agent
+ * instances). Without it a runaway spawner registers unbounded slots, each
+ * holding model, terminal, and MCP resources. Resumes that re-enter through
+ * `registerRunAbort` directly are not gated so crash recovery is never blocked.
+ */
+export const MAX_ACTIVE_RUNS = 8
 /** Inline Agent V instance children keyed by parent run id (active abort map only). */
 const inlineChildrenByParent = new Map<string, Set<string>>()
 
@@ -146,6 +154,14 @@ export function tryRegisterRunAbort(
     rejectedRunStarts++
     return { ok: false, error: 'Run is already active' }
   }
+  if (active.size >= MAX_ACTIVE_RUNS) {
+    rejectedRunStarts++
+    return {
+      ok: false,
+      error: `Too many concurrent runs (max ${MAX_ACTIVE_RUNS})`,
+      code: 'RUN_LIMIT_REACHED'
+    }
+  }
   const handle = registerRunAbort(runId, workspacePath)
   return { ok: true, controller: handle.controller, invokeId: handle.invokeId }
 }
@@ -164,6 +180,15 @@ export function tryBeginRunClosing(
   entry.turnComplete = true
   entry.streamInterrupt = null
   return 'closed'
+}
+
+/** Re-open follow-up enqueue after auto-continue keeps the same invoke alive. */
+export function reopenRunTurn(runId: string, invokeId: number): boolean {
+  const entry = active.get(runId)
+  if (!entry || entry.invokeId !== invokeId) return false
+  if (entry.controller.signal.aborted) return false
+  entry.turnComplete = false
+  return true
 }
 
 /** Allow follow-up enqueue to close; run stays in `active` until `clearRunAbort`. */

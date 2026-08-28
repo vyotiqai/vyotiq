@@ -55,6 +55,20 @@ describe('resolveComposerMentions', () => {
               ? 'command: eslint\ndiagnostics: 1\n\nsrc/y.ts:2:1: error: lint-boom'
               : 'command: tsc\ndiagnostics: 1\n\nsrc/x.ts:1:1: error: boom'
         }
+      })),
+      browserGetState: vi.fn(async () => ({
+        ok: true as const,
+        data: {
+          open: true,
+          url: 'https://example.com/app',
+          title: 'App',
+          navigating: false,
+          tabs: []
+        }
+      })),
+      readRunArtifact: vi.fn(async () => ({
+        ok: false as const,
+        error: 'missing'
       }))
     }
   })
@@ -93,6 +107,31 @@ describe('resolveComposerMentions', () => {
     expect(result.text).toContain('Referenced branch diff')
     expect(result.text).toContain('diff --git')
     expect(result.text).toContain('Prefer browser_* tools')
+    expect(result.text).toContain('https://example.com/app')
+    expect(result.text).toContain('Referenced browser')
+    expect(result.images).toEqual([])
+  })
+
+  it('attaches the latest browser snapshot when @ Browser resolves with a run', async () => {
+    const jpeg = 'data:image/jpeg;base64,QQ=='
+    ;(window.vyotiq.readRunArtifact as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true as const,
+      data: { name: 'browser/snapshot.jpg', exists: true, content: jpeg }
+    })
+    const draft = mentionMarker({ kind: 'browser' })
+    const result = await resolveComposerMentions({
+      workspacePath: '/ws',
+      runId: 'run-1',
+      draft,
+      existingFiles: []
+    })
+    expect(result.images).toEqual([jpeg])
+    expect(result.text).toContain('Screenshot: attached browser/snapshot.jpg')
+    expect(window.vyotiq.readRunArtifact).toHaveBeenCalledWith({
+      workspacePath: '/ws',
+      runId: 'run-1',
+      name: 'browser/snapshot.jpg'
+    })
   })
 
   it('injects past chat excerpt', async () => {
@@ -236,6 +275,7 @@ describe('resolveComposerMentions', () => {
     const result = await pending
     expect(result.stale).toBe(true)
     expect(result.files).toEqual([])
+    expect(result.images).toEqual([])
     expect(result.text).toBe('')
   })
 })

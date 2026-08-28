@@ -1,40 +1,4 @@
 import type { ComponentType, CSSProperties } from 'react'
-import Anthropic from '@lobehub/icons/es/Anthropic/components/Mono'
-import { COLOR_PRIMARY as AnthropicColor } from '@lobehub/icons/es/Anthropic/style'
-import Arcee from '@lobehub/icons/es/Arcee/components/Mono'
-import { COLOR_PRIMARY as ArceeColor } from '@lobehub/icons/es/Arcee/style'
-import Cohere from '@lobehub/icons/es/Cohere/components/Mono'
-import { COLOR_PRIMARY as CohereColor } from '@lobehub/icons/es/Cohere/style'
-import DeepSeek from '@lobehub/icons/es/DeepSeek/components/Mono'
-import { COLOR_PRIMARY as DeepSeekColor } from '@lobehub/icons/es/DeepSeek/style'
-import Gemini from '@lobehub/icons/es/Gemini/components/Mono'
-import { COLOR_PRIMARY as GeminiColor } from '@lobehub/icons/es/Gemini/style'
-import Google from '@lobehub/icons/es/Google/components/Mono'
-import { COLOR_PRIMARY as GoogleColor } from '@lobehub/icons/es/Google/style'
-import Groq from '@lobehub/icons/es/Groq/components/Mono'
-import { COLOR_PRIMARY as GroqColor } from '@lobehub/icons/es/Groq/style'
-import Meta from '@lobehub/icons/es/Meta/components/Mono'
-import { COLOR_PRIMARY as MetaColor } from '@lobehub/icons/es/Meta/style'
-import Microsoft from '@lobehub/icons/es/Microsoft/components/Mono'
-import { COLOR_PRIMARY as MicrosoftColor } from '@lobehub/icons/es/Microsoft/style'
-import Mistral from '@lobehub/icons/es/Mistral/components/Mono'
-import { COLOR_PRIMARY as MistralColor } from '@lobehub/icons/es/Mistral/style'
-import Nvidia from '@lobehub/icons/es/Nvidia/components/Mono'
-import { COLOR_PRIMARY as NvidiaColor } from '@lobehub/icons/es/Nvidia/style'
-import Ollama from '@lobehub/icons/es/Ollama/components/Mono'
-import { COLOR_PRIMARY as OllamaColor } from '@lobehub/icons/es/Ollama/style'
-import OpenCode from '@lobehub/icons/es/OpenCode/components/Mono'
-import { COLOR_PRIMARY as OpenCodeColor } from '@lobehub/icons/es/OpenCode/style'
-import OpenAI from '@lobehub/icons/es/OpenAI/components/Mono'
-import { COLOR_PRIMARY as OpenAIColor } from '@lobehub/icons/es/OpenAI/style'
-import OpenRouter from '@lobehub/icons/es/OpenRouter/components/Mono'
-import { COLOR_PRIMARY as OpenRouterColor } from '@lobehub/icons/es/OpenRouter/style'
-import Perplexity from '@lobehub/icons/es/Perplexity/components/Mono'
-import { COLOR_PRIMARY as PerplexityColor } from '@lobehub/icons/es/Perplexity/style'
-import Qwen from '@lobehub/icons/es/Qwen/components/Mono'
-import { COLOR_PRIMARY as QwenColor } from '@lobehub/icons/es/Qwen/style'
-import XAI from '@lobehub/icons/es/XAI/components/Mono'
-import { COLOR_PRIMARY as XAIColor } from '@lobehub/icons/es/XAI/style'
 
 export type ProviderBrandData = {
   Component: ComponentType<{
@@ -45,28 +9,117 @@ export type ProviderBrandData = {
   colorPrimary: string
 }
 
-export type ProviderBrandSlug = keyof typeof PROVIDER_BRAND_DATA
+type BrandModule = { default: ProviderBrandData['Component'] }
+type BrandStyle = { COLOR_PRIMARY: string }
 
-export const PROVIDER_BRAND_DATA = {
-  anthropic: { Component: Anthropic, colorPrimary: AnthropicColor },
-  arcee: { Component: Arcee, colorPrimary: ArceeColor },
-  cohere: { Component: Cohere, colorPrimary: CohereColor },
-  deepseek: { Component: DeepSeek, colorPrimary: DeepSeekColor },
-  gemini: { Component: Gemini, colorPrimary: GeminiColor },
-  google: { Component: Google, colorPrimary: GoogleColor },
-  groq: { Component: Groq, colorPrimary: GroqColor },
-  meta: { Component: Meta, colorPrimary: MetaColor },
-  microsoft: { Component: Microsoft, colorPrimary: MicrosoftColor },
-  mistral: { Component: Mistral, colorPrimary: MistralColor },
-  nvidia: { Component: Nvidia, colorPrimary: NvidiaColor },
-  ollama: { Component: Ollama, colorPrimary: OllamaColor },
-  opencode: { Component: OpenCode, colorPrimary: OpenCodeColor },
-  openai: { Component: OpenAI, colorPrimary: OpenAIColor },
-  openrouter: { Component: OpenRouter, colorPrimary: OpenRouterColor },
-  perplexity: { Component: Perplexity, colorPrimary: PerplexityColor },
-  qwen: { Component: Qwen, colorPrimary: QwenColor },
-  xai: { Component: XAI, colorPrimary: XAIColor }
-} as const satisfies Record<string, ProviderBrandData>
+function loadBrand(
+  component: () => Promise<BrandModule>,
+  style: () => Promise<BrandStyle>
+): () => Promise<ProviderBrandData> {
+  return async () => {
+    const [mod, st] = await Promise.all([component(), style()])
+    return { Component: mod.default, colorPrimary: st.COLOR_PRIMARY }
+  }
+}
+
+const PROVIDER_BRAND_LOADERS = {
+  anthropic: loadBrand(
+    () => import('@lobehub/icons/es/Anthropic/components/Mono'),
+    () => import('@lobehub/icons/es/Anthropic/style')
+  ),
+  arcee: loadBrand(
+    () => import('@lobehub/icons/es/Arcee/components/Mono'),
+    () => import('@lobehub/icons/es/Arcee/style')
+  ),
+  cohere: loadBrand(
+    () => import('@lobehub/icons/es/Cohere/components/Mono'),
+    () => import('@lobehub/icons/es/Cohere/style')
+  ),
+  deepseek: loadBrand(
+    () => import('@lobehub/icons/es/DeepSeek/components/Mono'),
+    () => import('@lobehub/icons/es/DeepSeek/style')
+  ),
+  gemini: loadBrand(
+    () => import('@lobehub/icons/es/Gemini/components/Mono'),
+    () => import('@lobehub/icons/es/Gemini/style')
+  ),
+  google: loadBrand(
+    () => import('@lobehub/icons/es/Google/components/Mono'),
+    () => import('@lobehub/icons/es/Google/style')
+  ),
+  groq: loadBrand(
+    () => import('@lobehub/icons/es/Groq/components/Mono'),
+    () => import('@lobehub/icons/es/Groq/style')
+  ),
+  meta: loadBrand(
+    () => import('@lobehub/icons/es/Meta/components/Mono'),
+    () => import('@lobehub/icons/es/Meta/style')
+  ),
+  microsoft: loadBrand(
+    () => import('@lobehub/icons/es/Microsoft/components/Mono'),
+    () => import('@lobehub/icons/es/Microsoft/style')
+  ),
+  mistral: loadBrand(
+    () => import('@lobehub/icons/es/Mistral/components/Mono'),
+    () => import('@lobehub/icons/es/Mistral/style')
+  ),
+  nvidia: loadBrand(
+    () => import('@lobehub/icons/es/Nvidia/components/Mono'),
+    () => import('@lobehub/icons/es/Nvidia/style')
+  ),
+  ollama: loadBrand(
+    () => import('@lobehub/icons/es/Ollama/components/Mono'),
+    () => import('@lobehub/icons/es/Ollama/style')
+  ),
+  opencode: loadBrand(
+    () => import('@lobehub/icons/es/OpenCode/components/Mono'),
+    () => import('@lobehub/icons/es/OpenCode/style')
+  ),
+  openai: loadBrand(
+    () => import('@lobehub/icons/es/OpenAI/components/Mono'),
+    () => import('@lobehub/icons/es/OpenAI/style')
+  ),
+  openrouter: loadBrand(
+    () => import('@lobehub/icons/es/OpenRouter/components/Mono'),
+    () => import('@lobehub/icons/es/OpenRouter/style')
+  ),
+  perplexity: loadBrand(
+    () => import('@lobehub/icons/es/Perplexity/components/Mono'),
+    () => import('@lobehub/icons/es/Perplexity/style')
+  ),
+  qwen: loadBrand(
+    () => import('@lobehub/icons/es/Qwen/components/Mono'),
+    () => import('@lobehub/icons/es/Qwen/style')
+  ),
+  xai: loadBrand(
+    () => import('@lobehub/icons/es/XAI/components/Mono'),
+    () => import('@lobehub/icons/es/XAI/style')
+  )
+} as const
+
+export type ProviderBrandSlug = keyof typeof PROVIDER_BRAND_LOADERS
+
+const cache = new Map<ProviderBrandSlug, ProviderBrandData>()
+const inflight = new Map<ProviderBrandSlug, Promise<ProviderBrandData>>()
+
+export function getCachedProviderBrand(slug: ProviderBrandSlug): ProviderBrandData | undefined {
+  return cache.get(slug)
+}
+
+export function loadProviderBrand(slug: ProviderBrandSlug): Promise<ProviderBrandData> {
+  const hit = cache.get(slug)
+  if (hit) return Promise.resolve(hit)
+  let pending = inflight.get(slug)
+  if (!pending) {
+    pending = PROVIDER_BRAND_LOADERS[slug]().then((data) => {
+      cache.set(slug, data)
+      inflight.delete(slug)
+      return data
+    })
+    inflight.set(slug, pending)
+  }
+  return pending
+}
 
 export const PROVIDER_BRAND_ALIASES: Record<string, ProviderBrandSlug> = {
   'meta-llama': 'meta',
@@ -75,6 +128,6 @@ export const PROVIDER_BRAND_ALIASES: Record<string, ProviderBrandSlug> = {
 
 export function resolveProviderBrandSlug(key: string): ProviderBrandSlug | undefined {
   const normalized = key.toLowerCase()
-  if (normalized in PROVIDER_BRAND_DATA) return normalized as ProviderBrandSlug
+  if (normalized in PROVIDER_BRAND_LOADERS) return normalized as ProviderBrandSlug
   return PROVIDER_BRAND_ALIASES[normalized]
 }

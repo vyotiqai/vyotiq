@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { parseTerminalOutput, sanitizeTerminalDisplayText } from '@shared/utils/terminalFormat'
+import {
+  isTerminalSessionInProgress,
+  parseTerminalOutput,
+  sanitizeTerminalDisplayText
+} from '@shared/utils/terminalFormat'
 
 describe('parseTerminalOutput', () => {
   it('splits cwd, stdout, stderr, and exit code', () => {
@@ -48,6 +52,18 @@ describe('parseTerminalOutput', () => {
     expect(parsed.stdout).not.toContain('session_id')
     expect(parsed.stdout).not.toContain('command: sleep')
     expect(parsed.exitCode).toBe(-1)
+  })
+})
+
+describe('isTerminalSessionInProgress', () => {
+  it('treats live/pollable statuses as in-progress and finished ones as not', () => {
+    expect(isTerminalSessionInProgress('running')).toBe(true)
+    expect(isTerminalSessionInProgress('timeout')).toBe(true)
+    expect(isTerminalSessionInProgress('pattern_matched')).toBe(true)
+    expect(isTerminalSessionInProgress('done')).toBe(false)
+    expect(isTerminalSessionInProgress('aborted')).toBe(false)
+    expect(isTerminalSessionInProgress(null)).toBe(false)
+    expect(isTerminalSessionInProgress(undefined)).toBe(false)
   })
 })
 

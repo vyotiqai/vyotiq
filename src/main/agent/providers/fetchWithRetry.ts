@@ -147,23 +147,82 @@ async function discardBody(response: Response): Promise<void> {
   }
 }
 
-function isRetriableHttpStatus(status: number): boolean {
-  return status >= 500 || status === 429
+/**
+ * HTTP statuses worth another attempt. Shared with the stream-retry layer so a
+ * mid-stream failure is classified by the same rule as the connect layer.
+ * 408 Request Timeout joins 429/5xx — both are transient provider-side waits.
+ */
+export function isRetriableHttpStatus(status: number): boolean {
+  return status >= 500 || status === 429 || status === 408
+}
+
+/**
+ * Abort the attempt if response headers have not arrived within this window —
+ * a hung TLS/DNS/connect otherwise stalls the run until the user cancels.
+ * The timer stops the moment headers arrive; body streaming is never cut.
+ */
+export const CONNECT_TIMEOUT_MS = 30_000
+
+/** Connect timeout turned into a retriable network error (code matches ETIMEDOUT). */
+function connectTimeoutError(ms: number): Error {
+  const err = new Error(`Connect timed out waiting for response headers after ${ms}ms`)
+  ;(err as Error & { code?: string }).code = 'ETIMEDOUT'
+  return err
+}
+
+function isAbortLikeError(err: unknown): boolean {
+  return (
+    (err instanceof DOMException && err.name === 'AbortError') ||
+    (err instanceof Error && err.name === 'AbortError')
+  )
+}
+
+/** Race the caller signal against a per-attempt connect deadline without Node-version assumptions. */
+function connectDeadlineSignal(
+  callerSignal: AbortSignal | undefined,
+  timeoutMs: number
+): { signal: AbortSignal; dispose: () => void; fired: boolean } {
+  const controller = new AbortController()
+  let done = false
+  let fired = false
+  const onCallerAbort = (): void => {
+    done = true
+    clearTimeout(timer)
+    controller.abort(callerSignal?.reason)
+  }
+  const timer = setTimeout(() => {
+    done = true
+    fired = true
+    callerSignal?.removeEventListener('abort', onCallerAbort)
+    controller.abort(connectTimeoutError(timeoutMs))
+  }, timeoutMs)
+  callerSignal?.addEventListener('abort', onCallerAbort, { once: true })
+  function dispose(): void {
+    if (done) return
+    done = true
+    clearTimeout(timer)
+    callerSignal?.removeEventListener('abort', onCallerAbort)
+  }
+  return { signal: controller.signal, dispose, get fired(): boolean { return fired } }
 }
 
 export async function fetchWithRetry(
   url: string,
   init: RequestInit & { signal?: AbortSignal },
-  opts?: { maxAttempts?: number; circuitKey?: string | false }
+  opts?: { maxAttempts?: number; circuitKey?: string | false; connectTimeoutMs?: number }
 ): Promise<Response> {
   const maxAttempts = opts?.maxAttempts ?? DEFAULT_FETCH_MAX_ATTEMPTS
+  const connectTimeoutMs = opts?.connectTimeoutMs ?? CONNECT_TIMEOUT_MS
   const circuitKey = opts?.circuitKey === false ? undefined : (opts?.circuitKey ?? circuitKeyHttp(url))
   if (circuitKey) assertCircuitClosed(circuitKey)
   let lastError: unknown
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const deadline = connectDeadlineSignal(init.signal, connectTimeoutMs)
     try {
-      const response = await fetch(url, init)
+      const response = await fetch(url, { ...init, signal: deadline.signal })
+      // Headers arrived — stop the connect deadline; the body streams on freely.
+      deadline.dispose()
       if (isRetriableHttpStatus(response.status) && attempt < maxAttempts) {
         const retryAfter = retryAfterMs(response.headers?.get('retry-after') ?? null)
         await discardBody(response)
@@ -180,15 +239,19 @@ export async function fetchWithRetry(
       }
       return response
     } catch (err) {
-      lastError = err
+      deadline.dispose()
+      // The deadline aborted the fetch but the runtime surfaced a bare AbortError
+      // instead of our reason — normalize so the retry layer treats it as transient.
+      const timeoutErr = deadline.fired && isAbortLikeError(err) ? connectTimeoutError(connectTimeoutMs) : err
+      lastError = timeoutErr
       if (init.signal?.aborted) {
         if (circuitKey) releaseCircuitProbe(circuitKey)
         throw err
       }
-      if (isCircuitOpenError(err)) throw err
-      if (!isRetriableNetworkError(err) || attempt >= maxAttempts) {
-        if (circuitKey && isRetriableNetworkError(err)) recordCircuitFailure(circuitKey)
-        throw err
+      if (isCircuitOpenError(timeoutErr)) throw timeoutErr
+      if (!isRetriableNetworkError(timeoutErr) || attempt >= maxAttempts) {
+        if (circuitKey && isRetriableNetworkError(timeoutErr)) recordCircuitFailure(circuitKey)
+        throw timeoutErr
       }
       await sleepAbortable(httpRetryBackoffMs(attempt), init.signal)
       if (init.signal?.aborted) {

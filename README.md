@@ -3,7 +3,7 @@
 [![CI](https://github.com/vyotiqai/vyotiq-agent-v/actions/workflows/ci.yml/badge.svg)](https://github.com/vyotiqai/vyotiq-agent-v/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-111111.svg)](LICENSE)
 
-Coding workspace for real repositories: natural-language harness, workspace tools, multi-provider chat, live context management, and file-backed long-term memory. Includes a live agent browser (navigate, snapshot, click, type), interactive terminal dock (xterm + node-pty when available), git Changes panel, and optional GitHub pull-request panel via the gh CLI (`gh auth login` required). No embedding RAG.
+Coding workspace for real repositories: natural-language harness, workspace tools, multi-provider chat, live context management, and file-backed long-term memory. Includes a live agent browser (navigate, snapshot, click, type), interactive terminal dock (xterm + node-pty when available), git Changes panel, and optional GitHub pull-request panel via the gh CLI (`gh auth login` required). Memory is plain markdown — no embedding RAG for memory; `codebase_search` may use a local embedding model for semantic code search when configured.
 
 ## Stack
 
@@ -109,9 +109,11 @@ Run state (chat sessions) lives under AppData, not in the project folder:
       sessions/
         {runId}/
           contract.md
+          plan.md
           status.json
           messages.jsonl
           events.jsonl
+          receipt.json
 ```
 
 Project-local agent memory stays at `{workspace}/.vyotiq/memory/` only and is accessed through memory tools; it is not injected automatically. `resources/harness/default.md` is the canonical bundled system harness and `/harness-apply` target. A well-formed workspace copy is appended as capped, untrusted preferences; it never replaces the bundled security spine. Built-in tool details live in `src/main/agent/schemas/tools.ts`, not in a duplicated harness catalog.
@@ -148,6 +150,6 @@ VITE_SENTRY_DSN=https://<key>@o<org>.ingest.sentry.io/<project>
 
 ## Scope (kept lean)
 
-The built-in catalog has up to **59** tools (mode and code-indexing settings hide some at runtime; see `src/main/agent/schemas/tools.ts` for the canonical registry).
+The built-in catalog has up to **61** tools (mode and code-indexing settings hide some at runtime; see `src/main/agent/schemas/tools.ts` for the canonical registry).
 
 Core tools: `read` · `edit` · `search` · `glob` · `grep` · `codebase_search` · `list_dir` · `multi_edit` · `str_replace` · `delete` · `todo_write` · `create_plan` · `browser_search` · `browser_navigate` · `browser_snapshot` · `browser_click` · `browser_type` · `browser_scroll` · `browser_fill` · `browser_tabs` · `browser_back` · `browser_forward` · `browser_wait_for_selector` · `browser_wait_for_url` · `browser_press_key` · `browser_select_option` · `browser_hover` · `browser_wait_for_text` · `browser_handle_dialog` · `mcp_list_tools` · `request_mcp_tools` · `release_mcp_tools` · `mcp_list_resources` · `mcp_read_resource` · `mcp_list_prompts` · `mcp_get_prompt` · `ask_question` · `switch_mode` · `terminal` · `memory_list` · `memory_read` · `memory_write` · `Skill` · `git_status` · `git_diff` · `git_commit` · `git_apply` · `github_pr_create` · `github_pr_review` · `github_issue` · `lsp` · `edit_notebook` · `run_tests` · `spawn_agent_instance` · `await_agent_instance` · `pull_agent_instance` · `merge_agent_instance` · `cancel_agent_instance` · `diagnostics`. Side rail: Browser / Terminal / Changes / Plan panels. Agent browser tools allow unrestricted URLs (localhost, LAN, public).

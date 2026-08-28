@@ -56,7 +56,8 @@ function archiveFilename(): string {
   return `${EVENT_ARCHIVE_PREFIX}${stamp}.jsonl`
 }
 
-async function listEventArchives(dir: string): Promise<string[]> {
+/** Sorted oldest-first archive heads for events.jsonl (rotation-tolerant readers). */
+export async function listEventArchives(dir: string): Promise<string[]> {
   const names = await readdir(dir)
   return names
     .filter((name) => name.startsWith(EVENT_ARCHIVE_PREFIX) && name.endsWith('.jsonl'))
@@ -112,12 +113,11 @@ async function rotateEventsFileIfNeeded(path: string, dir: string): Promise<void
     const headLen = Math.min(size, targetSplit)
     const headBuf = Buffer.alloc(headLen)
     await handle.read(headBuf, 0, headLen, 0)
-    const headText = headBuf.toString('utf8')
-    const lastNl = headText.lastIndexOf('\n')
+    const lastNl = headBuf.lastIndexOf(0x0a)
     let splitAt = 0
     if (lastNl >= 0) {
       splitAt = lastNl + 1
-      head = headText.slice(0, splitAt)
+      head = headBuf.subarray(0, splitAt).toString('utf8')
       const tailLen = size - splitAt
       const tailBuf = Buffer.alloc(tailLen)
       await handle.read(tailBuf, 0, tailLen, splitAt)
@@ -126,12 +126,11 @@ async function rotateEventsFileIfNeeded(path: string, dir: string): Promise<void
       const restLen = size - targetSplit
       const restBuf = Buffer.alloc(restLen)
       await handle.read(restBuf, 0, restLen, targetSplit)
-      const restText = restBuf.toString('utf8')
-      const firstNl = restText.indexOf('\n')
+      const firstNl = restBuf.indexOf(0x0a)
       if (firstNl < 0) return
       splitAt = targetSplit + firstNl + 1
-      head = headText + restText.slice(0, firstNl + 1)
-      tail = restText.slice(firstNl + 1)
+      head = Buffer.concat([headBuf, restBuf.subarray(0, firstNl + 1)]).toString('utf8')
+      tail = restBuf.subarray(firstNl + 1).toString('utf8')
     }
     if (splitAt <= 0 || splitAt >= size) return
   } finally {

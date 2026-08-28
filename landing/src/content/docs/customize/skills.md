@@ -23,6 +23,8 @@ Agent V discovers:
 
 Project sources are scanned before personal sources. When names collide, the first discovered name wins. Discovery is bounded to 64 local skills.
 
+Bundled Marketplace skills that can be installed without a registry include the workflow pack (`implement-feature`, `fix-bug`, `review-code`, `write-tests`, `explain-code`, `create-skill`) plus `frontend-design`, `accessibility`, `api-design`, and `goal`. Install them from Marketplace → Browse or Manage; they appear without an app restart.
+
 ## Create a skill
 
 Use Marketplace → Manage → **Skills** or /create-skill. /create-skill personal targets the personal scope; the default command description creates under .vyotiq/skills/.

@@ -76,6 +76,7 @@ export type StartAgentRunAgentInput = {
   mode?: AgentInteractionMode
   messages?: ChatMessage[]
   newMessages?: ChatMessage[]
+  persistedMessageCount?: number
   focusedFile?: string | null
 }
 

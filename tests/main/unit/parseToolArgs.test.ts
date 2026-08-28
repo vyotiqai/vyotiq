@@ -20,6 +20,20 @@ describe('parseToolArgs dispatch', () => {
     expect(result.content).not.toContain('trim')
   })
 
+  it('executeTool rejects duplicate top-level path keys before JSON last-wins', async () => {
+    const result = await executeTool(
+      'read',
+      '{"path":"murmur-youtube-main/windows/global.json","path":"murmur-youtube-main/windows/Directory.Build.props"}',
+      '/tmp/ws',
+      new AbortController().signal
+    )
+    expect(result.ok).toBe(false)
+    expect(result.content).toMatch(/Duplicate JSON key "path"/)
+    expect(result.content).toContain('murmur-youtube-main/windows/global.json')
+    expect(result.content).toContain('murmur-youtube-main/windows/Directory.Build.props')
+    expect(result.content).toMatch(/Call the tool once per file/)
+  })
+
   it('executeTool with bare array JSON reports malformed args', async () => {
     const result = await executeTool(
       'read',

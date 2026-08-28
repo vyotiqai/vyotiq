@@ -27,7 +27,7 @@ Deleting or cleaning up a chat is different from closing a visible tab. Treat re
 
 ## Chat tab
 
-The session bar can keep multiple chats open inside one workspace. New chat opens another session. Closing a chat tab removes it from the visible tab set but does not mean “delete the persisted run.”
+The sidebar chat list and split panes keep multiple chats visible inside one workspace. New chat starts another session. Closing a chat tab or pane removes it from the visible set but does not delete the persisted run.
 
 Use Ctrl+W / ⌘W to close the active chat tab when focus is in the chat surface.
 
@@ -39,7 +39,7 @@ The chat pane host can display sessions in separate panes. A split is a layout c
 
 - Different project folder: open another workspace.
 - Unrelated task in the same project: start a new chat.
-- Compare or monitor two chats: open another chat tab or split.
+- Compare or monitor two chats: open another chat in the sidebar or split a pane.
 - Delegate independent implementation with a child run: use an Agent instance.
 
 Runs continue according to their run state, not according to which pane is visible. Review Background and interrupted runs before closing a view while work is active.

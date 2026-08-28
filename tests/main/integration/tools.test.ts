@@ -77,6 +77,22 @@ describe('tools', () => {
     expect(result.content).not.toMatch(/Agent mode requires todo_write/)
   })
 
+  it('does not collapse absolute path-escapes to a basename in tool results', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-tools-escape-'))
+    const signal = new AbortController().signal
+    const result = await executeTool(
+      'read',
+      JSON.stringify({ path: 'C:\\Users\\ajay\\AppData\\Roaming\\vyotiq' }),
+      dir,
+      signal,
+      { runDir: dir, agentMode: 'agent' }
+    )
+    expect(result.ok).toBe(false)
+    expect(result.content).toMatch(/outside the workspace root/i)
+    expect(result.content).not.toBe('Path escapes workspace: vyotiq')
+    expect(result.content).not.toMatch(/Roaming/i)
+  })
+
   it('rejects empty search query (would otherwise match everything)', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'vyotiq-search-empty-'))
     writeFileSync(join(dir, 'a.ts'), 'x\n', 'utf8')

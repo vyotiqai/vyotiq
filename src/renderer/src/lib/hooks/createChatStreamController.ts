@@ -1215,7 +1215,9 @@ const UI_SUSPEND_ALLOWED_EVENTS = new Set<AgentEvent['type']>([
   // Live tool chrome — not persisted; dropping loses output with no disk backfill.
   'terminal_output_delta',
   'tool_progress',
-  'agent_instance_update'
+  'agent_instance_update',
+  'goal_update',
+  'loop_update'
 ])
 
 export type CreateChatStreamControllerOptions = {
@@ -2257,6 +2259,8 @@ export function createChatStreamController(
       })
     } else if (event.type === 'mode_changed') {
       notifyAgentMode(event.mode)
+    } else if (event.type === 'goal_update' || event.type === 'loop_update') {
+      // Banner and sidebar poll artifacts / subscribe via onChatEvent.
     } else if (event.type === 'error') {
       lastRunErrorMessage = event.message
       lastRunErrorCode = event.code ?? null
@@ -2730,6 +2734,9 @@ export function createChatStreamController(
       ? {
           incremental: true as const,
           newMessages: [user],
+          // Everything the client held before this send is already on disk —
+          // lets main dedupe positionally (never drops a repeated identical text).
+          persistedMessageCount: nextMessages.length - 1,
           workspacePath,
           runId: continuingRunId,
           mode,

@@ -203,6 +203,17 @@ export const CODE_INDEX_EXTS = new Set(
   [...TEXT_EXTS].filter((ext) => !INDEX_EXCLUDE_EXTS.has(ext))
 )
 
+/** Docs still scanned by grep/search overlap even when trigram has source hits. */
+export const DOC_TEXT_EXTS = new Set([
+  '.md',
+  '.mdc',
+  '.mdx',
+  '.txt',
+  '.rst',
+  '.adoc',
+  '.docx'
+])
+
 const INDEX_CLUTTER_BASENAMES = new Set([
   'pnpm-lock.yaml',
   'package-lock.json',
@@ -349,6 +360,18 @@ function hasIndexSkipDirSegment(rel: string): boolean {
   return false
 }
 
+/**
+ * Files grep/search still scan when trigram already returned source hits.
+ * The source index omits `docs/` and `tests/` (and other skip dirs).
+ */
+export function isGrepOverlapRel(rel: string, full?: string): boolean {
+  const path = (full ?? rel).replace(/\\/g, '/')
+  const ext = extname(path).toLowerCase()
+  if (DOC_TEXT_EXTS.has(ext)) return true
+  if (!TEXT_EXTS.has(ext)) return false
+  return hasIndexSkipDirSegment(rel)
+}
+
 function isIndexSkipFileName(base: string): boolean {
   if (base.startsWith('.')) return true
   if (INDEX_SKIP_STUB_NAME_RE.test(base)) return true
@@ -447,7 +470,8 @@ export async function collectWorkspaceFilesPage(
   startAfter?: string,
   signal?: AbortSignal,
   exts?: ReadonlySet<string>,
-  skipDirNames?: ReadonlySet<string>
+  skipDirNames?: ReadonlySet<string>,
+  keepRel?: (rel: string, full: string) => boolean
 ): Promise<WorkspaceFilesPage> {
   const files: WalkedFile[] = []
   let lastRel: string | null = null
@@ -498,6 +522,7 @@ export async function collectWorkspaceFilesPage(
         queue.push({ dir: full, relDir: childRel })
       } else if (entry.isFile()) {
         if (exts && !exts.has(extname(entry.name).toLowerCase())) continue
+        if (keepRel && !keepRel(childRel, full)) continue
         if (isIndexClutterFileName(entry.name)) continue
         if (!pastCursor) {
           if (childRel === cursor) {
@@ -521,7 +546,8 @@ export async function collectWorkspaceFiles(
   cap?: number,
   signal?: AbortSignal,
   exts?: ReadonlySet<string>,
-  skipDirNames?: ReadonlySet<string>
+  skipDirNames?: ReadonlySet<string>,
+  keepRel?: (rel: string, full: string) => boolean
 ): Promise<WalkedFile[]> {
   const page = await collectWorkspaceFilesPage(
     workspaceRoot,
@@ -529,7 +555,8 @@ export async function collectWorkspaceFiles(
     undefined,
     signal,
     exts,
-    skipDirNames
+    skipDirNames,
+    keepRel
   )
   return page.files
 }

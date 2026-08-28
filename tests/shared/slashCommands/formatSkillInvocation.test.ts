@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { formatGoalInvocation } from '@shared/goalRuntime'
 import {
   formatSkillInvocation,
   formatWorkspaceCommand,
@@ -212,6 +213,10 @@ describe('userMessageDisplayText', () => {
 })
 
 describe('runGoalFromUserText', () => {
+  it('uses the /goal objective as the sidebar title', () => {
+    expect(runGoalFromUserText(formatGoalInvocation('fix flaky tests'))).toBe('fix flaky tests')
+  })
+
   it('uses skill display text for goals', () => {
     const skill = formatSkillInvocation('accessibility', 'LONG BODY', '')
     expect(runGoalFromUserText(skill)).toBe('/accessibility')

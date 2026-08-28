@@ -49,6 +49,12 @@ export const ToolCard = memo(function ToolCard({
     [tool, item.toolProgress]
   )
   /**
+   * Green only when the tool reported success AND no non-zero exit code. A
+   * masked shell (trailing string literal) reports exit_code 0 on a failed run,
+   * so `failed` is the authority, not the code alone.
+   */
+  const isReallyOk = !failed && (headerMeta.exitCode == null || headerMeta.exitCode === 0)
+  /**
    * Wall-clock only from groupTiming. Bare `item.at` invents a startedAt without
    * endedAt on non-lead tools, which hides TerminalBody cwd/shell and duration.
    */
@@ -114,11 +120,17 @@ export const ToolCard = memo(function ToolCard({
           <span
             className={cn(
               'rounded-sm px-1 text-2xs',
-              headerMeta.exitCode === 0 ? 'text-success' : 'text-danger'
+              // A failed tool is never green: a masked shell (trailing string
+              // literal) reports exit_code 0 while the run actually failed.
+              isReallyOk ? 'text-success' : 'text-danger'
             )}
-            title={`Exit code ${headerMeta.exitCode}`}
+            title={
+              isReallyOk
+                ? `Exit code ${headerMeta.exitCode}`
+                : `Exit code ${headerMeta.exitCode} — reported as failed`
+            }
           >
-            {headerMeta.exitCode === 0 ? 'exit 0' : `failed (${headerMeta.exitCode})`}
+            {isReallyOk ? 'exit 0' : `failed (${headerMeta.exitCode})`}
           </span>
         ) : null}
         {!failed && headerMeta.added != null && headerMeta.added > 0 ? (

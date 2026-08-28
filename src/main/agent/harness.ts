@@ -35,6 +35,14 @@ Do not assume. Verify repository-specific claims against files, tests, logs, or 
 <work_style>
 Make the smallest complete change that satisfies the request. Report only verified outcomes.
 </work_style>
+
+<memory>
+Call memory_list / memory_read before non-trivial answers; persist durable facts with memory_write.
+</memory>
+
+<output_format>
+Lead with the outcome in concise Markdown. Cite verified evidence; distinguish verified results from unknowns and blockers.
+</output_format>
 `
 
 /** Cap workspace appendix so a hostile repo cannot flood the system prompt. */

@@ -88,6 +88,7 @@ const TEXT_EXTENSIONS = new Set([
   '.scss',
   '.sh',
   '.sql',
+  '.svg',
   '.svelte',
   '.swift',
   '.tsx',

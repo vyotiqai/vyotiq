@@ -89,6 +89,34 @@ export async function estimateMessagesTokensAsync(
   model?: ModelInfo
 ): Promise<number> {
   const encoding = encodingForModel(model)
+
+  // Prefix total cache: when the previously counted array's last message object is
+  // still the last message and the array only grew, the prefix total is still valid
+  // — only newly appended messages need counting. This turns the per-step O(N) full
+  // re-walk into O(new messages), and collapses the redundant 3x assembleContext
+  // calls during a compaction step (same array -> instant hit). Assumes messages are
+  // immutable per www: the existing WeakMap cache already relies on this.
+  if (messages.length === 0) {
+    messagesTotalCache = { tail: null, length: 0, total: 0, encoding }
+    return 0
+  }
+  if (
+    messagesTotalCache &&
+    messagesTotalCache.encoding === encoding &&
+    messages.length >= messagesTotalCache.length &&
+    // Immutable messages: when the previously-counted tail is still at index
+    // cache.length-1, the whole prefix [0, cache.length) is unchanged (it moved
+    // because new messages were appended), so only the appended tail is re-counted.
+    messages[messagesTotalCache.length - 1] === messagesTotalCache.tail
+  ) {
+    let total = messagesTotalCache.total
+    for (let i = messagesTotalCache.length; i < messages.length; i++) {
+      total += estimateOneMessageTokens(messages[i]!, encoding)
+    }
+    messagesTotalCache = { tail: messages[messages.length - 1], length: messages.length, total, encoding }
+    return total
+  }
+
   // Single worker round-trip for all uncached messages (not one await per message).
   const texts: Array<{ text: string; encoding: EncodingName }> = []
   const spans: Array<{ message: ChatMessage; images: number; start: number; end: number }> = []
@@ -133,7 +161,15 @@ export async function estimateMessagesTokensAsync(
     spans.push({ message, images, start, end: texts.length })
   }
 
-  if (spans.length === 0) return total
+  if (spans.length === 0) {
+    messagesTotalCache = {
+      tail: messages[messages.length - 1],
+      length: messages.length,
+      total,
+      encoding
+    }
+    return total
+  }
 
   const counts = await countTextsTokensAsync(texts)
   for (const span of spans) {
@@ -142,10 +178,27 @@ export async function estimateMessagesTokensAsync(
     messageTokenCache.set(span.message, { encoding, tokens: n })
     total += n
   }
+  messagesTotalCache = {
+    tail: messages[messages.length - 1]!,
+    length: messages.length,
+    total,
+    encoding
+  }
   return total
 }
 
 const messageTokenCache = new WeakMap<object, { encoding: EncodingName; tokens: number }>()
+
+/**
+ * Tracks the last fully-counted messages array so a growing array only re-counts
+ * its appended tail. Keyed by the last message object reference (assumed immutable).
+ */
+let messagesTotalCache: {
+  tail: object | null
+  length: number
+  total: number
+  encoding: EncodingName
+} | null = null
 
 function estimateOneMessageTokens(message: ChatMessage, encoding: EncodingName): number {
   const cached = messageTokenCache.get(message)

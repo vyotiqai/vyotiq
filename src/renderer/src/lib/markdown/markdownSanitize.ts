@@ -110,22 +110,56 @@ function sanitizeOpenTag(tag: string, attrs: string): string {
   return cleaned.length > 0 ? `<${name} ${cleaned.join(' ')}>` : `<${name}>`
 }
 
+// Tags that must be removed along with their contents (script-bearing or able
+// to load external/active content). Shiki never emits these for code, so
+// dropping them cannot affect highlighting.
+const DANGEROUS_TAGS = [
+  'script',
+  'iframe',
+  'object',
+  'embed',
+  'svg',
+  'math',
+  'foreignObject',
+  'link',
+  'meta',
+  'base',
+  'form',
+  'input',
+  'button',
+  'textarea',
+  'select',
+  'template',
+  'style'
+]
+
 /**
  * Strip disallowed tags and dangerous attributes from Shiki-highlighted HTML
  * before `dangerouslySetInnerHTML`.
+ *
+ * NOTE: a regex sanitizer is inherently more brittle than a HAST-level one
+ * (rehype-sanitize). This covers the practical injection channels for code
+ * output (which Shiki HTML-escapes), but the highlighted-code path should
+ * eventually route through `hast-util-sanitize` like the markdown body does.
  */
 export function sanitizeHighlightedHtml(html: string): string {
-  return html
+  let out = html
     .replace(/<!--[\s\S]*?-->/g, '')
     .replace(/<!\[CDATA\[[\s\S]*?\]\]>/g, '')
-    .replace(/<script\b[\s\S]*?>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style\b[\s\S]*?>[\s\S]*?<\/style>/gi, '')
-    .replace(/<script\b[^>]*\/?>/gi, '')
-    .replace(/<style\b[^>]*\/?>/gi, '')
+    // Remove namespaced/active tags and their inner content (e.g. <svg:script>).
+    .replace(
+      new RegExp(`<(${DANGEROUS_TAGS.join('|')})\\b[\\s\\S]*?<\\/\\1>`, 'gi'),
+      ''
+    )
+    .replace(new RegExp(`<(${DANGEROUS_TAGS.join('|')})\\b[^>]*\\/?>`, 'gi'), '')
+    // Namespaced tags (e.g. svg:script) are not caught by the simple name match.
+    .replace(/<[a-z0-9-]+:[a-z0-9-]+(\s[^>]*)?\/?>/gi, '')
+    .replace(/<\/[a-z0-9-]+:[a-z0-9-]+>/gi, '')
     .replace(/<\/([a-z0-9-]+)\s*>/gi, (full, tag: string) =>
       ALLOWED_TAGS.has(tag.toLowerCase()) ? full : ''
     )
     .replace(/<([a-z0-9-]+)([^>]*)>/gi, (_full, tag: string, attrs: string) =>
       sanitizeOpenTag(tag, attrs ?? '')
     )
+  return out
 }

@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import { RetriableStreamError } from '@main/agent/providers/fetchWithRetry'
-import { CircuitOpenError, recordCircuitFailure, CIRCUIT_FAILURE_THRESHOLD } from '@main/agent/circuitBreaker'
+import {
+  CircuitOpenError,
+  recordCircuitFailure,
+  resetCircuitBreakersForTests,
+  setCircuitNowForTests,
+  CIRCUIT_FAILURE_THRESHOLD
+} from '@main/agent/circuitBreaker'
 import {
   MAX_STREAM_ATTEMPTS,
   decideStreamAttemptResult,
@@ -11,7 +17,10 @@ import {
   shouldRetryThrownStreamError,
   sleepStreamRetryBackoff,
   streamRetryBackoffMs,
-  STREAM_RETRY_BASE_MS
+  streamRetryBackoffMsFor,
+  STREAM_HTTP_RETRY_MAX_MS,
+  STREAM_RETRY_BASE_MS,
+  STREAM_RETRY_MAX_MS
 } from '@main/agent/streamRetry'
 
 describe('streamRetry', () => {
@@ -36,6 +45,27 @@ describe('streamRetry', () => {
     expect(shouldRetryStreamErrorChunk('PROVIDER_STREAM', 'fetch failed: other side closed', 1)).toBe(
       true
     )
+  })
+
+  it('retries transient mid-stream HTTP statuses only', () => {
+    expect(shouldRetryStreamErrorChunk('PROVIDER_HTTP', 'Rate limited (HTTP 429)', 1, 429)).toBe(true)
+    expect(shouldRetryStreamErrorChunk('PROVIDER_HTTP', 'HTTP 503', 4, 503)).toBe(true)
+    expect(shouldRetryStreamErrorChunk('PROVIDER_HTTP', 'Overloaded', 5, 529)).toBe(false)
+    expect(shouldRetryStreamErrorChunk('PROVIDER_HTTP', 'Authentication failed (HTTP 401)', 1, 401)).toBe(false)
+    expect(shouldRetryStreamErrorChunk('PROVIDER_HTTP', 'Insufficient credits', 1, 402)).toBe(false)
+    expect(shouldRetryStreamErrorChunk('PROVIDER_HTTP', 'Bad request', 1, 400)).toBe(false)
+    expect(shouldRetryStreamErrorChunk('PROVIDER_HTTP', 'Not found', 1, 404)).toBe(false)
+    // Without a status, fall back to the message-shape heuristic.
+    expect(shouldRetryStreamErrorChunk('PROVIDER_HTTP', 'fetch failed: other side closed', 1)).toBe(true)
+    expect(shouldRetryStreamErrorChunk('PROVIDER_HTTP', 'Insufficient credits', 1)).toBe(false)
+  })
+
+  it('uses the slower backoff curve for transient HTTP waits', () => {
+    const plain = streamRetryBackoffMsFor('PROVIDER_STREAM', 4)
+    const http = streamRetryBackoffMsFor('PROVIDER_HTTP', 4)
+    // 2^3 * 2s = 16s ceiling vs 8s plain ceiling — jitter keeps both under theirs.
+    expect(plain).toBeLessThanOrEqual(STREAM_RETRY_MAX_MS)
+    expect(http).toBeLessThanOrEqual(STREAM_HTTP_RETRY_MAX_MS)
   })
 
   it('classifies retriable provider and thrown stream errors', () => {
@@ -220,5 +250,54 @@ describe('streamRetry', () => {
       })
     ).rejects.toBeInstanceOf(CircuitOpenError)
     expect(runAttempt).not.toHaveBeenCalled()
+  })
+
+  it('releases the half-open probe when an attempt throws non-retriably', async () => {
+    resetCircuitBreakersForTests()
+    try {
+      const key = 'provider:probe-leak'
+      for (let i = 0; i < CIRCUIT_FAILURE_THRESHOLD; i++) recordCircuitFailure(key)
+      // Past openMs — the next assertCircuitClosed consumes the single probe slot.
+      setCircuitNowForTests(Date.now() + 61_000)
+      await expect(
+        runWithStreamRetry({
+          circuitKey: key,
+          onAttemptStart: vi.fn(),
+          runAttempt: vi.fn().mockRejectedValue(new Error('permanent provider bug'))
+        })
+      ).rejects.toThrow('permanent provider bug')
+      // The probe slot was released, so a later call can probe again and succeed.
+      const runAttempt = vi.fn().mockResolvedValue('complete')
+      await runWithStreamRetry({ circuitKey: key, onAttemptStart: vi.fn(), runAttempt })
+      expect(runAttempt).toHaveBeenCalledTimes(1)
+    } finally {
+      resetCircuitBreakersForTests()
+    }
+  })
+
+  it('runWithStreamRetryGen releases the half-open probe on a terminal throw', async () => {
+    resetCircuitBreakersForTests()
+    try {
+      const key = 'provider:probe-leak-gen'
+      for (let i = 0; i < CIRCUIT_FAILURE_THRESHOLD; i++) recordCircuitFailure(key)
+      setCircuitNowForTests(Date.now() + 61_000)
+      const gen = runWithStreamRetryGen({
+        circuitKey: key,
+        onAttemptStart: () => undefined,
+        waitBeforeRetry: function* () {
+          yield 'wait'
+        },
+        runAttempt: async function* () {
+          yield* []
+          throw new Error('permanent provider bug')
+        }
+      })
+      await expect(gen.next()).rejects.toThrow('permanent provider bug')
+      const runAttempt = vi.fn().mockResolvedValue('complete')
+      await runWithStreamRetry({ circuitKey: key, onAttemptStart: vi.fn(), runAttempt })
+      expect(runAttempt).toHaveBeenCalledTimes(1)
+    } finally {
+      resetCircuitBreakersForTests()
+    }
   })
 })

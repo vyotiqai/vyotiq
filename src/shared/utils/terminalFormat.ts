@@ -10,6 +10,15 @@ export type ParsedTerminalOutput = {
   command: string | null
 }
 
+/**
+ * Background-session statuses where the process is still alive (or still
+ * pollable). Their frames carry the placeholder `exit_code: -1`, which is not
+ * a failure — mirrors the main-process terminalResultOk rule.
+ */
+export function isTerminalSessionInProgress(status: string | null | undefined): boolean {
+  return status === 'running' || status === 'timeout' || status === 'pattern_matched'
+}
+
 const ESC = String.fromCharCode(0x1b)
 const BEL = String.fromCharCode(0x07)
 const ANSI_ESCAPE_RE = new RegExp(`${ESC}\\[[0-?]*[ -/]*[@-~]`, 'g')

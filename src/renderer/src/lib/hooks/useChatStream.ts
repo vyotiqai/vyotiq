@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useReducer, useRef, useSyncExternalStore } from 'react'
 import {
   createChatStreamController,
   type ChatStreamController
@@ -10,15 +10,28 @@ import {
  */
 export function useChatStream(workspacePath: string | null) {
   const controllerRef = useRef<ChatStreamController | null>(null)
-  const pathRef = useRef(workspacePath)
+  const pathRef = useRef<string | null>(null)
+  const [, forceRender] = useReducer((x: number) => x + 1, 0)
 
-  if (!controllerRef.current || pathRef.current !== workspacePath) {
-    controllerRef.current?.dispose()
-    controllerRef.current = createChatStreamController({
-      workspacePath: workspacePath ?? ''
-    })
+  // Create the controller once, lazily. Recreation on workspace switch happens
+  // in an effect (below) — never during render, because dispose() synchronously
+  // notifies subscribers and would run while React is still rendering.
+  if (controllerRef.current === null) {
+    controllerRef.current = createChatStreamController({ workspacePath: workspacePath ?? '' })
     pathRef.current = workspacePath
   }
+
+  useEffect(() => {
+    if (pathRef.current === workspacePath) return
+    controllerRef.current?.dispose()
+    controllerRef.current = createChatStreamController({ workspacePath: workspacePath ?? '' })
+    pathRef.current = workspacePath
+    forceRender()
+  }, [workspacePath])
+
+  useEffect(() => {
+    return () => controllerRef.current?.dispose()
+  }, [])
 
   const controller = controllerRef.current
 
@@ -51,10 +64,6 @@ export function useChatStream(workspacePath: string | null) {
       controllerRef.current?.handleQuestionRequest(request)
     })
   }, [controller])
-
-  useEffect(() => {
-    return () => controllerRef.current?.dispose()
-  }, [])
 
   return {
     items: controller.items,

@@ -26,11 +26,19 @@ export function ThinkingBlock({
   content,
   streaming,
   expanded,
+  repeatedCount = 0,
   onToggle
 }: {
   content: string
   streaming?: boolean
   expanded?: boolean
+  /**
+   * How many Thought rows this one follows back-to-back in the same turn.
+   * A chain of reasoning steps would otherwise render the same "Thought"
+   * header over and over with nothing to tell the steps apart; the row
+   * instead reads "Thought 3" so the sequence stays legible.
+   */
+  repeatedCount?: number
   onToggle?: (next: boolean) => void
 }) {
   // Cursor-style: open only while streaming so tools and the answer stay front
@@ -40,6 +48,14 @@ export function ThinkingBlock({
   const bodyRef = useRef<HTMLDivElement | null>(null)
   const pinnedRef = useRef(true)
   const preview = firstLinePreview(content, THINKING_PREVIEW_MAX)
+  // Disambiguate a run of thought rows: identical "Thought" headers stacked
+  // several deep give the reader no way to tell the steps apart.
+  const stepLabel = repeatedCount > 0 ? `${repeatedCount + 1}` : ''
+  const label = streaming
+    ? 'Thinking'
+    : stepLabel
+      ? `Thought ${stepLabel}`
+      : 'Thought'
 
   useEffect(() => {
     if (streaming) pinnedRef.current = true
@@ -71,15 +87,19 @@ export function ThinkingBlock({
         className={cn(DISCLOSURE_ROW, 'group w-full text-left text-secondary')}
         aria-expanded={isExpanded}
         aria-label={
-          streaming ? 'Thinking' : preview && !isExpanded ? `Thought: ${preview}` : 'Thought'
+          streaming
+            ? 'Thinking'
+            : preview && !isExpanded
+              ? `${label}: ${preview}`
+              : label
         }
         title={!streaming && !isExpanded && preview ? preview : undefined}
         onClick={toggle}
       >
         {streaming ? (
-          <TextShimmer className="font-medium text-secondary">Thinking</TextShimmer>
+          <TextShimmer className="font-medium text-secondary">{label}</TextShimmer>
         ) : (
-          <span className="font-medium text-secondary">Thought</span>
+          <span className="font-medium text-secondary">{label}</span>
         )}
         <Icon
           name="chevronRight"

@@ -49,10 +49,12 @@ export function scrubString(input: string): string {
     re.lastIndex = 0
     out = out.replace(re, '[redacted]')
   }
-  // Absolute path-like segments in free text (best-effort)
-  out = out.replace(
-    /(?:[A-Za-z]:\\|\\\\|\/(?:Users|home|root)\/)[^\s"',})\]]+/g,
-    (m) => scrubPath(m)
+  // Absolute path-like segments in free text (best-effort). Capture through
+  // spaces so a path like `C:\Users\John Doe\AppData\...` is matched whole
+  // (its basename, e.g. a filename, is kept while the username segment is
+  // dropped) instead of stopping at the first space and leaking `John`.
+  out = out.replace(/(?:[A-Za-z]:\\|\\\\|\/(?:Users|home|root)\/)[\w \\/.-]*/g, (m) =>
+    scrubPath(m)
   )
   return out
 }
@@ -103,6 +105,34 @@ const PATH_KEYS = new Set([
   'logpath'
 ])
 
+/**
+ * Substring fragments that indicate a secret-bearing key. Exact-match
+ * `SENSITIVE_KEYS` misses common names like `accessKey`, `secretKey`,
+ * `clientSecretId`, `dbPassword`, `privateKeyPem`, `apiKeySecret`. We match
+ * those by fragment while avoiding over-broad fragments (e.g. `auth` would also
+ * hit `author`).
+ */
+const SENSITIVE_KEY_SUBSTRINGS = [
+  'secret',
+  'token',
+  'password',
+  'passwd',
+  'privatekey',
+  'private_key',
+  'apikey',
+  'api_key',
+  'credential',
+  'cred',
+  'accesskey',
+  'access_key',
+  'dsn'
+]
+
+function isSensitiveKey(lower: string): boolean {
+  if (SENSITIVE_KEYS.has(lower)) return true
+  return SENSITIVE_KEY_SUBSTRINGS.some((s) => lower.includes(s))
+}
+
 /** Log fields that may keep semantic path hints without full home paths. */
 const SEMANTIC_PATH_KEYS = new Set(['logsdir'])
 
@@ -119,7 +149,7 @@ function isErrorLike(value: object): value is Error {
  * Serialize Error / AppError without relying on enumerable own keys
  * (Error.message / stack are typically non-enumerable).
  */
-function scrubErrorLike(value: Error, depth: number): Record<string, unknown> {
+function scrubErrorLike(value: Error, depth: number, seen: WeakSet<object>): Record<string, unknown> {
   const out: Record<string, unknown> = {
     name: value.name,
     message: scrubString(value.message)
@@ -140,43 +170,49 @@ function scrubErrorLike(value: Error, depth: number): Record<string, unknown> {
     'errno'
   ] as const) {
     if (k in rec && rec[k] !== undefined) {
-      out[k] = scrubValue(rec[k], depth + 1)
+      out[k] = scrubValue(rec[k], depth + 1, seen)
     }
   }
   if (value.cause !== undefined) {
-    out.cause = scrubValue(value.cause, depth + 1)
+    out.cause = scrubValue(value.cause, depth + 1, seen)
   }
   return out
 }
 
-export function scrubValue(value: unknown, depth = 0): unknown {
+export function scrubValue(
+  value: unknown,
+  depth = 0,
+  seen: WeakSet<object> = new WeakSet()
+): unknown {
   if (depth > 6) return '[truncated]'
   if (value == null) return value
   if (typeof value === 'string') return scrubString(value)
   if (typeof value === 'number' || typeof value === 'boolean') return value
   if (typeof value === 'bigint') return String(value)
   if (typeof value === 'symbol' || typeof value === 'function') return String(value)
-  if (Array.isArray(value)) return value.map((v) => scrubValue(v, depth + 1))
   if (typeof value === 'object') {
+    if (seen.has(value)) return '[circular]'
+    seen.add(value)
+    if (Array.isArray(value)) return value.map((v) => scrubValue(v, depth + 1, seen))
     if (isErrorLike(value)) {
-      return scrubErrorLike(value, depth)
+      return scrubErrorLike(value, depth, seen)
     }
     const out: Record<string, unknown> = {}
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       const lower = k.toLowerCase()
-      if (SENSITIVE_KEYS.has(k) || SENSITIVE_KEYS.has(lower)) {
+      if (SENSITIVE_KEYS.has(k) || isSensitiveKey(lower)) {
         out[k] = '[redacted]'
         continue
       }
       if (PATH_KEYS.has(lower)) {
-        out[k] = typeof v === 'string' ? scrubPath(v) : scrubValue(v, depth + 1)
+        out[k] = typeof v === 'string' ? scrubPath(v) : scrubValue(v, depth + 1, seen)
         continue
       }
       if (SEMANTIC_PATH_KEYS.has(lower) && typeof v === 'string') {
         out[k] = v.replace(/\\/g, '/').replace(/^.*\/vyotiq\//i, 'vyotiq/')
         continue
       }
-      out[k] = scrubValue(v, depth + 1)
+      out[k] = scrubValue(v, depth + 1, seen)
     }
     return out
   }

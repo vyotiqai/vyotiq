@@ -24,7 +24,8 @@ export function TasksRailChip({
     workspacePath,
     runId,
     running,
-    active: Boolean(workspacePath && runId)
+    active: Boolean(workspacePath && runId),
+    live: false
   })
 
   const items = data?.items ?? []

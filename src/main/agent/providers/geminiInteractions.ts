@@ -259,7 +259,7 @@ export async function* streamGeminiInteractions(
   if (!res.ok) {
     const text = await res.text().catch(() => '')
     logProviderFailure('gemini', 'http', { status: res.status })
-    yield { type: 'error', error: formatProviderHttpError(res.status, text, 'gemini'), errorCode: 'PROVIDER_HTTP' }
+    yield { type: 'error', error: formatProviderHttpError(res.status, text, 'gemini'), errorCode: 'PROVIDER_HTTP', httpStatus: res.status }
     return
   }
 

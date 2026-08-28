@@ -108,7 +108,7 @@ describe('Composer layout', () => {
     Object.defineProperty(fileInput, 'files', { value: [file] })
     fireEvent.change(fileInput)
 
-    const chip = await waitFor(() => screen.getByText(/Image 1/i))
+    const chip = await waitFor(() => screen.getByAltText(/Image 1/i))
     expect(shell?.contains(chip)).toBe(true)
   })
 

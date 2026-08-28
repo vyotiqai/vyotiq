@@ -14,18 +14,17 @@ import type {
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import type { ChatStreamController } from '@renderer/lib/hooks/createChatStreamController'
 import { Composer } from './components/composer'
-import { useChatLiveItems, useGitRevision, useHasChatItems } from './components/ChatStreamLeaves'
-import { useGitChrome } from './components/GitChrome'
+import { useHasChatItems, useHasTranscriptRunError } from './components/ChatStreamLeaves'
 import { RunSessionProvider } from './RunSessionContext'
 import { MessageList } from './components/MessageList'
 import { AgentInstancePane } from './components/AgentInstancePane'
 import { ChatTranscriptStage } from './components/ChatTranscriptStage'
+import { useRunGoal } from './hooks/useRunGoal'
 import { useInlineInstanceUi } from './hooks/useInlineInstanceUi'
 import {
   buildComposerSendProps,
   lastUserMessageIndex,
-  useComposerEditState,
-  useSuppressedChatError
+  useComposerEditState
 } from './hooks/composerShared'
 import type { ChatItemsStore, ChatMetaStore } from './chatStores'
 import type { WorkspaceFileOpenOptions } from './components/FilesPanel'
@@ -218,8 +217,8 @@ export function SessionChatColumn({
   } = useInlineInstanceUi(agentInstances, activeRunId, instanceOpenControlled)
 
   const hasItems = useHasChatItems(itemsStore, items)
-  const liveItems = useChatLiveItems(itemsStore, items)
-  const chatBannerError = useSuppressedChatError(liveItems, error)
+  const hasTranscriptRunError = useHasTranscriptRunError(itemsStore, items)
+  const chatBannerError = hasTranscriptRunError ? null : error
   const operationalBannerError = operationalError ?? null
   const turnFailed = isRetryableTurnFailure({
     errorCode,
@@ -233,8 +232,6 @@ export function SessionChatColumn({
         : null
   // Match ChatView: remount on workspace/epoch only — not draft→run (avoids composer wipe).
   const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
-  const [gitRevision, bumpGitRevision] = useGitRevision(workspacePath, running, liveItems)
-  const gitChrome = useGitChrome(workspacePath, gitRevision, Boolean(workspacePath))
 
   const {
     editingUserMessageIndex,
@@ -371,6 +368,13 @@ export function SessionChatColumn({
     [workspacePath, activeRunId, agentMode, agentInstances, openInstancePane, onOpenWorkspaceFile]
   )
 
+  const runGoal = useRunGoal({
+    workspacePath: workspacePath ?? null,
+    runId: activeRunId ?? null,
+    running,
+    active: true
+  })
+
   return (
     <>
       {showPageHeading ? (
@@ -398,10 +402,20 @@ export function SessionChatColumn({
               sideRailPad={sideRailPad}
               pendingGates={pendingGates}
               onOpenInstance={openInstancePane}
+              goal={runGoal.goal}
+              loop={runGoal.loop}
+              running={running}
+              onGoalPause={runGoal.pause}
+              onGoalResume={runGoal.resume}
+              onGoalComplete={runGoal.complete}
+              onStopLoop={runGoal.stopLoop}
+              onStopRun={onStop}
               transcript={
                 <MessageList
                   key={`transcript:${surfaceKey}`}
-                  items={liveItems}
+                  items={items}
+                  itemsStore={itemsStore}
+                  virtualizeLiveEarly
                   pendingRun={pendingRun}
                   running={running}
                   networkWait={networkWait}

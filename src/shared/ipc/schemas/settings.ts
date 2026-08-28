@@ -467,10 +467,23 @@ export const SettingsSchema = z.object({
   /** Offline connectivity wait budget (autonomousMode gates wait_forever). */
   offlineWaitMode: OfflineWaitModeSchema.default('default'),
   /**
+   * Per-run budget guards, checked at each step boundary against cumulative
+   * provider-reported cost (USD) and total tokens (billed input + output).
+   * 0 disables each cap.
+   */
+  runSpendLimitUsd: z.number().min(0).default(0),
+  runTokenLimit: z.number().int().min(0).default(0),
+  /**
    * User-global rules injected as `<user_rules>` on every agent step.
    * Disabled rules are omitted. Workspace rules override these on conflict.
    */
   userRules: z.array(UserRuleSchema).max(MAX_USER_RULES).default([]),
+  /** Optional assistant identity surfaced in the stable prompt zone. Empty = default. */
+  agentPersona: z.string().max(120).default(''),
+  /** Preferred response language. Empty = follow the user's language. */
+  responseLanguage: z.string().max(64).default(''),
+  /** Default answer length for conversational replies. */
+  responseVerbosity: z.enum(['concise', 'balanced', 'detailed']).default('concise'),
   /**
    * App-wide inbox + OS toast preferences. Not a workspace override.
    */
@@ -525,7 +538,12 @@ export const DEFAULT_SETTINGS: Settings = {
   autonomousMode: false,
   autonomousSkipQuestions: 'wait',
   offlineWaitMode: 'default',
+  runSpendLimitUsd: 0,
+  runTokenLimit: 0,
   userRules: [],
+  agentPersona: '',
+  responseLanguage: '',
+  responseVerbosity: 'concise',
   notifications: DEFAULT_NOTIFICATION_SETTINGS,
   tabAutocomplete: true
 }

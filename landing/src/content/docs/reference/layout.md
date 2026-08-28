@@ -44,7 +44,7 @@ Up to 5 files, 4 images, and 2 audio files. Files and native attachments cap at 
 
 ## Voice dictation
 
-[Settings → Voice](/docs/tools/voice-dictation). Engines: **OpenAI**, **OpenRouter**, **Local**.
+[Settings → Voice](/docs/tools/voice-dictation). Engines: **OpenAI**, **OpenRouter**, **Local**, **Qwen3-ASR (local server)**, **Qwen3-ASR (on-device)**.
 
 **OpenAI** and **OpenRouter** use gpt-transcribe and need that provider’s API key. **Local** is Whisper (English, Tiny/Small) and stays disabled until a model is installed. The mic does not require an **OpenAI** key. Shortcut Dictation (Ctrl+M / ⌘M).
 
@@ -59,4 +59,4 @@ Six docks:
 - Pull Request — gh + Connect GitHub
 - Plan — plan.md / contract.md / todos; Continue in Agent when ready
 
-Show/hide from the dock rail. Shortcuts: Terminal, Changes, Browser panel.
+Show/hide from the dock rail. Shortcuts: Files (Ctrl+Shift+E / ⌘⇧E), Browser, Terminal, Changes, Pull Request (Ctrl+Shift+G / ⌘⇧G), Plan (Ctrl+Shift+D / ⌘⇧D).

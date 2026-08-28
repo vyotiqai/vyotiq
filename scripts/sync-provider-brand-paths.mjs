@@ -40,23 +40,16 @@ const ALIASES = {
   'x-ai': 'xai'
 }
 
-const importLines = [
-  'import type { ComponentType, CSSProperties } from \'react\''
-]
-const dataEntries = []
-
-for (const [slug, lobehub] of BRANDS) {
-  const colorName = `${lobehub}Color`
-  importLines.push(`import ${lobehub} from '@lobehub/icons/es/${lobehub}/components/Mono'`)
-  importLines.push(
-    `import { COLOR_PRIMARY as ${colorName} } from '@lobehub/icons/es/${lobehub}/style'`
-  )
-  dataEntries.push(`  ${slug}: { Component: ${lobehub}, colorPrimary: ${colorName} }`)
-}
+const loaderEntries = BRANDS.map(([slug, lobehub]) => {
+  return `  ${slug}: loadBrand(
+    () => import('@lobehub/icons/es/${lobehub}/components/Mono'),
+    () => import('@lobehub/icons/es/${lobehub}/style')
+  )`
+})
 
 const aliasLines = Object.entries(ALIASES).map(([alias, slug]) => `  '${alias}': '${slug}'`)
 
-const content = `${importLines.join('\n')}
+const content = `import type { ComponentType, CSSProperties } from 'react'
 
 export type ProviderBrandData = {
   Component: ComponentType<{
@@ -67,11 +60,46 @@ export type ProviderBrandData = {
   colorPrimary: string
 }
 
-export type ProviderBrandSlug = keyof typeof PROVIDER_BRAND_DATA
+type BrandModule = { default: ProviderBrandData['Component'] }
+type BrandStyle = { COLOR_PRIMARY: string }
 
-export const PROVIDER_BRAND_DATA = {
-${dataEntries.join(',\n')}
-} as const satisfies Record<string, ProviderBrandData>
+function loadBrand(
+  component: () => Promise<BrandModule>,
+  style: () => Promise<BrandStyle>
+): () => Promise<ProviderBrandData> {
+  return async () => {
+    const [mod, st] = await Promise.all([component(), style()])
+    return { Component: mod.default, colorPrimary: st.COLOR_PRIMARY }
+  }
+}
+
+const PROVIDER_BRAND_LOADERS = {
+${loaderEntries.join(',\n')}
+} as const
+
+export type ProviderBrandSlug = keyof typeof PROVIDER_BRAND_LOADERS
+
+const cache = new Map<ProviderBrandSlug, ProviderBrandData>()
+const inflight = new Map<ProviderBrandSlug, Promise<ProviderBrandData>>()
+
+export function getCachedProviderBrand(slug: ProviderBrandSlug): ProviderBrandData | undefined {
+  return cache.get(slug)
+}
+
+export function loadProviderBrand(slug: ProviderBrandSlug): Promise<ProviderBrandData> {
+  const hit = cache.get(slug)
+  if (hit) return Promise.resolve(hit)
+  let pending = inflight.get(slug)
+  if (!pending) {
+    pending = PROVIDER_BRAND_LOADERS[slug]().then((data) => {
+      cache.set(slug, data)
+      inflight.delete(slug)
+      return data
+    })
+    inflight.set(slug, pending)
+  }
+  return pending
+}
 
 export const PROVIDER_BRAND_ALIASES: Record<string, ProviderBrandSlug> = {
 ${aliasLines.join(',\n')}
@@ -79,12 +107,12 @@ ${aliasLines.join(',\n')}
 
 export function resolveProviderBrandSlug(key: string): ProviderBrandSlug | undefined {
   const normalized = key.toLowerCase()
-  if (normalized in PROVIDER_BRAND_DATA) return normalized as ProviderBrandSlug
+  if (normalized in PROVIDER_BRAND_LOADERS) return normalized as ProviderBrandSlug
   return PROVIDER_BRAND_ALIASES[normalized]
 }
 `
 
 await writeFile(outFile, content, 'utf8')
 console.log(
-  `[sync-provider-brand-paths] wrote ${path.relative(root, outFile)} (${BRANDS.length} brands)`
+  `[sync-provider-brand-paths] wrote ${path.relative(root, outFile)} (${BRANDS.length} brands, dynamic import)`
 )

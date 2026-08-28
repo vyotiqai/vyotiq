@@ -9,6 +9,7 @@ import {
 } from '../skills'
 import { isSkillMdFilename, resolveSkillMdPath, SKILL_MD } from '../skills/paths'
 import { findWorkspaceSettingsOverride, getWorkspaces } from '../../workspace/workspaces'
+import { wrapUntrustedContent } from '../untrustedContent'
 import type { MarketplaceOverrides } from '../../../shared/ipc'
 
 function marketplaceOverridesFor(workspacePath: string): MarketplaceOverrides | null {
@@ -35,7 +36,11 @@ export function toolSkill(
 
   const pluginRule = findPluginRuleById(skillName, overrides)
   if (pluginRule) {
-    return loadPluginRuleBody(pluginRule)
+    return wrapUntrustedContent(loadPluginRuleBody(pluginRule), {
+      source: 'skill',
+      origin: skillName,
+      kind: 'plugin_rule'
+    })
   }
 
   const skill = findEnabledSkillByName(skillName, overrides, workspaceRoot)
@@ -78,8 +83,10 @@ export function toolSkill(
     const out = [
       `# Skill: ${skill.name}`,
       '',
-      body,
-      extras
+      wrapUntrustedContent(
+        [body, extras].filter(Boolean).join('\n'),
+        { source: 'skill', origin: skill.name, kind: 'skill_body' }
+      )
     ]
       .filter(Boolean)
       .join('\n')
@@ -110,7 +117,14 @@ export function toolSkill(
   }
   const content = readFileSync(abs, 'utf8')
   const header = `# Skill file: ${skill.name} / ${requested}\n\n`
-  return header + content
+  return (
+    header +
+    wrapUntrustedContent(content, {
+      source: 'skill',
+      origin: `${skill.name}/${requested}`,
+      kind: 'skill_file'
+    })
+  )
 }
 
 export function summarizeSkillArgs(name: string, path?: string): string {

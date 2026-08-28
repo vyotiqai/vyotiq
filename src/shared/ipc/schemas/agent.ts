@@ -155,6 +155,33 @@ const eventBase = {
   invokeId: z.number().int().min(1).optional()
 }
 
+export const RunGoalStatusSchema = z.enum(['active', 'paused', 'complete'])
+export type RunGoalStatus = z.infer<typeof RunGoalStatusSchema>
+
+export const RunGoalSchema = z.object({
+  objective: z.string().min(1),
+  status: RunGoalStatusSchema,
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  continueCount: z.number().int().min(0).optional()
+})
+export type RunGoal = z.infer<typeof RunGoalSchema>
+
+export const RunLoopStatusSchema = z.enum(['armed', 'stopped'])
+export type RunLoopStatus = z.infer<typeof RunLoopStatusSchema>
+
+export const LOOP_INTERVAL_MIN_MS = 30_000
+export const LOOP_INTERVAL_MAX_MS = 86_400_000
+
+export const RunLoopSchema = z.object({
+  prompt: z.string().min(1),
+  intervalMs: z.number().int().min(LOOP_INTERVAL_MIN_MS).max(LOOP_INTERVAL_MAX_MS),
+  status: RunLoopStatusSchema,
+  nextAt: z.string(),
+  lastTickAt: z.string().optional()
+})
+export type RunLoop = z.infer<typeof RunLoopSchema>
+
 const AgentEventUnionSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('text_delta'),
@@ -224,6 +251,14 @@ const AgentEventUnionSchema = z.discriminatedUnion('type', [
     toolCallId: z.string(),
     text: z.string(),
     stream: z.enum(['stdout', 'stderr']).optional()
+  }),
+  z.object({
+    /** Durable snapshot of in-flight assistant output (crash recovery; never yielded live). */
+    type: z.literal('stream_snapshot'),
+    ...eventBase,
+    step: z.number().int().min(0),
+    text: z.string(),
+    thinking: z.string().optional()
   }),
   z.object({
     type: z.literal('status'),
@@ -449,6 +484,17 @@ const AgentEventUnionSchema = z.discriminatedUnion('type', [
     ...eventBase,
     ids: z.array(z.string().min(1)).min(1),
     reason: z.string().min(1)
+  }),
+  z.object({
+    type: z.literal('goal_update'),
+    ...eventBase,
+    goal: RunGoalSchema.nullable(),
+    notice: z.string().min(1).optional()
+  }),
+  z.object({
+    type: z.literal('loop_update'),
+    ...eventBase,
+    loop: RunLoopSchema.nullable()
   })
 ])
 
@@ -529,6 +575,9 @@ export const RunSummarySchema = z.object({
   status: z.enum(['running', 'cancelled', 'error', 'done']),
   updatedAt: z.string(),
   goal: z.string().optional(),
+  /** Long-lived goal runtime status from goal.json — not the chat title. */
+  goalStatus: RunGoalStatusSchema.optional(),
+  loopArmed: z.boolean().optional(),
   resumable: z.literal(true).optional(),
   error: z.string().optional(),
   /** Present when this run is an inline agent instance nested under a parent chat. */
@@ -549,6 +598,20 @@ export const ListRunsResultSchema = z.object({
 })
 export type ListRunsResult = z.infer<typeof ListRunsResultSchema>
 
+export const ListOlderRunsRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  /** Return parent runs updated strictly before this ISO timestamp. */
+  olderThan: z.string().min(1),
+  limit: z.number().int().min(1).max(200).optional()
+})
+export type ListOlderRunsRequest = z.infer<typeof ListOlderRunsRequestSchema>
+
+export const ListOlderRunsResultSchema = z.object({
+  runs: z.array(RunSummarySchema),
+  hasMore: z.boolean()
+})
+export type ListOlderRunsResult = z.infer<typeof ListOlderRunsResultSchema>
+
 export const PersistedEventSchema = z.object({
   at: z.string(),
   event: z.unknown()
@@ -565,6 +628,11 @@ export const ChatStartRequestSchema = z
   .object({
     messages: z.array(ChatMessageSchema).optional(),
     newMessages: z.array(ChatMessageSchema).optional(),
+    /**
+     * Client-reported count of its messages already persisted on disk.
+     * Makes resume dedupe positional (index-based) instead of text-only.
+     */
+    persistedMessageCount: z.number().int().min(0).optional(),
     incremental: z.boolean().optional(),
     workspacePath: z.string().min(1),
     focusedFile: z.string().max(4_096).optional(),
@@ -771,6 +839,8 @@ export const RunArtifactFixedNameSchema = z.enum([
   'contract.md',
   'receipt.json',
   'todos.json',
+  'goal.json',
+  'loop.json',
   'trajectory.jsonl',
   'prediction.json'
 ])
@@ -838,7 +908,7 @@ export const PredictionManifestSchema = z.object({
 export type PredictionManifest = z.infer<typeof PredictionManifestSchema>
 
 /** Per-run loop checkpoint for survive-restart (step-boundary loop invariants). */
-export const LOOP_CHECKPOINT_VERSION = 1 as const
+export const LOOP_CHECKPOINT_VERSION = 2 as const
 
 export const LoopCheckpointSchema = z.object({
   version: z.literal(LOOP_CHECKPOINT_VERSION),
@@ -846,7 +916,13 @@ export const LoopCheckpointSchema = z.object({
   invokeId: z.number().int().min(1),
   updatedAt: z.string().min(1),
   truncationContinues: z.number().int().min(0).default(0),
-  overflowRetryUsed: z.boolean().default(false)
+  overflowRetryUsed: z.boolean().default(false),
+  /** Runaway-loop invariants, restored on interrupted resume (v2). */
+  identicalStepStreak: z.number().int().min(0).default(0),
+  lastStepFingerprint: z.string().max(64).default(''),
+  consecutiveToolFailureSteps: z.number().int().min(0).default(0),
+  emptyResponseContinues: z.number().int().min(0).default(0),
+  goalNoToolFinishes: z.number().int().min(0).default(0)
 })
 export type LoopCheckpoint = z.infer<typeof LoopCheckpointSchema>
 
@@ -977,6 +1053,52 @@ export const ReadRunArtifactResultSchema = z.object({
   content: z.string().nullable()
 })
 export type ReadRunArtifactResult = z.infer<typeof ReadRunArtifactResultSchema>
+
+export const SetGoalStatusRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  runId: RunIdSchema,
+  action: z.enum(['pause', 'resume', 'complete']),
+  objective: z.string().min(1).optional()
+})
+export type SetGoalStatusRequest = z.infer<typeof SetGoalStatusRequestSchema>
+
+export const SetGoalStatusResultSchema = z.object({
+  goal: RunGoalSchema.nullable()
+})
+export type SetGoalStatusResult = z.infer<typeof SetGoalStatusResultSchema>
+
+export const SetLoopRequestSchema = z
+  .object({
+    workspacePath: z.string().min(1),
+    runId: RunIdSchema,
+    action: z.enum(['arm', 'stop']),
+    intervalMs: z.number().int().min(LOOP_INTERVAL_MIN_MS).max(LOOP_INTERVAL_MAX_MS).optional(),
+    prompt: z.string().min(1).optional()
+  })
+  .superRefine((val, ctx) => {
+    if (val.action === 'arm') {
+      if (val.intervalMs == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'arm requires intervalMs',
+          path: ['intervalMs']
+        })
+      }
+      if (!(val.prompt && val.prompt.trim())) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'arm requires prompt',
+          path: ['prompt']
+        })
+      }
+    }
+  })
+export type SetLoopRequest = z.infer<typeof SetLoopRequestSchema>
+
+export const SetLoopResultSchema = z.object({
+  loop: RunLoopSchema.nullable()
+})
+export type SetLoopResult = z.infer<typeof SetLoopResultSchema>
 
 /**
  * A gated tool call waiting on the user. The loop is parked on this request, so
@@ -1122,6 +1244,19 @@ export const DeleteRunRequestSchema = z.object({
   runId: RunIdSchema
 })
 export type DeleteRunRequest = z.infer<typeof DeleteRunRequestSchema>
+
+export const ExportRunRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  runId: RunIdSchema
+})
+export type ExportRunRequest = z.infer<typeof ExportRunRequestSchema>
+
+export const ExportRunResultSchema = z.object({
+  saved: z.boolean(),
+  /** Absolute path of the written file when saved. */
+  path: z.string().optional()
+})
+export type ExportRunResult = z.infer<typeof ExportRunResultSchema>
 
 export const RenameRunRequestSchema = z.object({
   workspacePath: z.string().min(1),

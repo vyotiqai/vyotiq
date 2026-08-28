@@ -75,11 +75,11 @@ function tokenizeShellArgs(tail: string): string[] {
   return tokens
 }
 
-export function recordTerminalCommandPriors(
+export async function recordTerminalCommandPriors(
   workspaceRoot: string,
   command: string,
   context: { runDir?: string; skipWriteCheckpoint?: boolean }
-): void {
+): Promise<void> {
   if (context.skipWriteCheckpoint || !context.runDir) return
   const cp = getWriteCheckpoint(context.runDir)
   if (!cp) return
@@ -92,7 +92,7 @@ export function recordTerminalCommandPriors(
     }
     // Prefer delete semantics for rm/del; otherwise write (covers create + modify).
     const kind = isLikelyDeleteCommand(command, pathArg) ? 'delete' : 'write'
-    cp.recordPrior(pathArg, kind, kind === 'delete' ? { recursiveDir: true } : undefined)
+    await cp.recordPrior(pathArg, kind, kind === 'delete' ? { recursiveDir: true } : undefined)
   }
 }
 

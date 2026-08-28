@@ -73,7 +73,7 @@ describe('prepareRewindAndReplaceUserMessage', () => {
     await syncMessagesAsync(runDir, messages)
 
     const cp1 = beginWriteCheckpoint(runDir, workspace, 0)
-    cp1.recordPrior('a.txt', 'write')
+    await cp1.recordPrior('a.txt', 'write')
     writeFileSync(join(workspace, 'a.txt'), 'after-first\n', 'utf8')
     const meta1 = finalizeWriteCheckpoint(runDir)
     appendEvent(runDir, {
@@ -91,7 +91,7 @@ describe('prepareRewindAndReplaceUserMessage', () => {
     })
 
     const cp2 = beginWriteCheckpoint(runDir, workspace, 3)
-    cp2.recordPrior('a.txt', 'write')
+    await cp2.recordPrior('a.txt', 'write')
     writeFileSync(join(workspace, 'a.txt'), 'after-second\n', 'utf8')
     const meta2 = finalizeWriteCheckpoint(runDir)
     appendEvent(runDir, {
@@ -183,7 +183,7 @@ describe('prepareRewindToUserMessage', () => {
     await syncMessagesAsync(runDir, messages)
 
     const cp1 = beginWriteCheckpoint(runDir, workspace, 0)
-    cp1.recordPrior('a.txt', 'write')
+    await cp1.recordPrior('a.txt', 'write')
     writeFileSync(join(workspace, 'a.txt'), 'after-first\n', 'utf8')
     const meta1 = finalizeWriteCheckpoint(runDir)
     appendEvent(runDir, {
@@ -194,7 +194,7 @@ describe('prepareRewindToUserMessage', () => {
     })
 
     const cp2 = beginWriteCheckpoint(runDir, workspace, 3)
-    cp2.recordPrior('a.txt', 'write')
+    await cp2.recordPrior('a.txt', 'write')
     writeFileSync(join(workspace, 'a.txt'), 'after-second\n', 'utf8')
     const meta2 = finalizeWriteCheckpoint(runDir)
     appendEvent(runDir, {
@@ -343,7 +343,7 @@ describe('prepareRewindToUserMessage', () => {
     await syncMessagesAsync(runDir, messages)
 
     const cp = beginWriteCheckpoint(runDir, workspace, 2)
-    cp.recordPrior('a.txt', 'write')
+    await cp.recordPrior('a.txt', 'write')
     writeFileSync(join(workspace, 'a.txt'), 'after-second\n', 'utf8')
     finalizeWriteCheckpoint(runDir)
     writeFileSync(join(workspace, 'a.txt'), 'user-edit\n', 'utf8')

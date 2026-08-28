@@ -28,12 +28,16 @@ import {
   ClearSecretRequestSchema,
   ListModelsRequestSchema,
   ListRunsRequestSchema,
+  ListOlderRunsRequestSchema,
   LoadRunRequestSchema,
   LoadRunEventsRequestSchema,
   type LoadRunResult,
   LoadToolResultRequestSchema,
   DeleteRunRequestSchema,
+  ExportRunRequestSchema,
   RenameRunRequestSchema,
+  SetGoalStatusRequestSchema,
+  SetLoopRequestSchema,
   WorkspacesAddRequestSchema,
   WorkspacesRemoveRequestSchema,
   WorkspacesSetActiveRequestSchema,
@@ -159,7 +163,9 @@ import {
   type HarnessPreviewApplyResult,
   type HarnessApplyResult,
   type ListRunsResult,
+  type ListOlderRunsResult,
   type RunSummary,
+  type ExportRunResult,
   type SecretsStatus,
   type ListModelsResult,
   type PersistedEvent,
@@ -191,6 +197,7 @@ import {
 } from '../../shared/ipc'
 import { resolveProviderListBaseUrl } from '../../shared/providers'
 import { existsSync, mkdirSync, readFileSync } from 'fs'
+import { writeFile } from 'fs/promises'
 import { formatError, AppError, isAbortError, isAppError } from '../../shared/errors'
 import { scrubString } from '../../shared/utils/scrub'
 import { logger, logErrorSummary } from '../../shared/logger'
@@ -264,7 +271,7 @@ import {
 } from '../agent/compactRun'
 import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
 import { prepareRewindAndReplaceUserMessage, prepareRewindToUserMessage } from '../agent/rewindRun'
-import { resolveRunDir } from '@main/storage/paths'
+import { resolveRunDir, workspaceBrowserArtifactsDir } from '@main/storage/paths'
   import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState, selectBrowserTab, browserGoBack, browserGoForward, setAgentBrowserBounds, navigateUrl, clearAgentBrowserData, takeBrowserScreenshot, disposeAgentBrowserForWorkspace, takeBrowserControl, releaseBrowserControl, manageTabs } from '@main/app/agentBrowser'
 import { extractAttachment } from '../attachments/extract'
 import { transcribeDictation } from '../dictation/transcribe'
@@ -320,6 +327,8 @@ import {
 } from '../agent/followUpStore'
 import {
   listRuns,
+  listRunsOlder,
+  buildRunMarkdownExport,
   loadMessagesAsync,
   loadEventsForRunAsync,
   LOAD_EVENTS_UI_LIMIT,
@@ -330,6 +339,11 @@ import {
   runExists,
   appendEvent
 } from '../agent/state'
+import { pauseGoalIfActive, readGoal, updateGoalStatus } from '../agent/runGoal'
+import { emitGoalUpdate } from '../agent/goalEvents'
+import { armLoop, disarmLoop, readLoop } from '../agent/runLoopScheduler'
+import { launchRunFollowUpOrStart } from '../agent/launchRunInvoke'
+import { formatGoalContinueMessage } from '../../shared/goalRuntime'
 import {
   getWorkspaces,
   addWorkspace,
@@ -663,7 +677,7 @@ export function registerIpc(): void {
         await syncMcpServers(resolveMcpServersForSessionMap())
         const warmPath = next.activePath ?? req.path
         if (warmPath) {
-          warmWorkspaceIndexes(warmPath)
+          warmWorkspaceIndexes(warmPath, { warmCodeIndex: false })
           pruneStaleInstanceWorktreesBestEffort(
             warmPath,
             new Set(listActiveRuns().map((run) => run.runId))
@@ -718,7 +732,7 @@ export function registerIpc(): void {
         const { path } = WorkspacesSetActiveRequestSchema.parse(raw)
         const state = await enqueueWorkspaceMutation(() => setActiveWorkspace(path))
         setMcpStdioWorkspace(path)
-        warmWorkspaceIndexes(path)
+        warmWorkspaceIndexes(path, { warmCodeIndex: false })
         pruneStaleInstanceWorktreesBestEffort(
           path,
           new Set(listActiveRuns().map((run) => run.runId))
@@ -945,6 +959,7 @@ export function registerIpc(): void {
               workspacePath: req.workspacePath,
               resume,
               newMessages: req.newMessages,
+              persistedMessageCount: req.persistedMessageCount,
               mode: req.mode,
               focusedFile: req.focusedFile
             }
@@ -1282,6 +1297,8 @@ export function registerIpc(): void {
       const workspace = getRunWorkspace(runId)
       if (!workspace || !isOpenWorkspace(workspace)) return fail('Run not found')
       logger.info('Chat cancel', { scope: 'ipc', correlationId: runId })
+      // Stopping a run is independent of the goal: it must not pause the goal
+      // or disarm the loop. Pause/Stop-loop are explicit, separate actions.
       const result = chatCancelResult(runId)
       if (result.ok && workspace) {
         clearFollowUpsOnDisk(resolveRunDir(workspace, runId))
@@ -1686,6 +1703,20 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle(
+    IPC.listOlderRuns,
+    async (event, raw): Promise<IpcResult<ListOlderRunsResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ListOlderRunsRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        return ok(await listRunsOlder(req.workspacePath, req.olderThan, req.limit))
+      } catch (err) {
+        return failFrom(err, IPC.listOlderRuns)
+      }
+    }
+  )
+
+  ipcMain.handle(
     IPC.loadRun,
     async (event, raw): Promise<IpcResult<LoadRunResult>> => {
       if (!senderOk(event)) return fail('Invalid sender')
@@ -1762,6 +1793,37 @@ export function registerIpc(): void {
   })
 
   ipcMain.handle(
+    IPC.runsExport,
+    async (event, raw): Promise<IpcResult<ExportRunResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ExportRunRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        if (!runExists(req.workspacePath, req.runId)) return fail('Run not found')
+        const { title, markdown } = await buildRunMarkdownExport(req.workspacePath, req.runId)
+        const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
+        // File-name sanitization: strip path/hostile chars, cap length.
+        const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 60) || req.runId
+        const options: Electron.SaveDialogOptions = {
+          title: 'Export chat as Markdown',
+          defaultPath: `${safeTitle}.md`,
+          filters: [{ name: 'Markdown', extensions: ['md'] }]
+        }
+        const dialogResult = parent
+          ? await dialog.showSaveDialog(parent, options)
+          : await dialog.showSaveDialog(options)
+        if (dialogResult.canceled || !dialogResult.filePath) {
+          return ok({ saved: false })
+        }
+        await writeFile(dialogResult.filePath, markdown, 'utf8')
+        return ok({ saved: true, path: dialogResult.filePath })
+      } catch (err) {
+        return failFrom(err, IPC.runsExport)
+      }
+    }
+  )
+
+  ipcMain.handle(
     IPC.runsRename,
     async (event, raw): Promise<IpcResult<RunSummary>> => {
       if (!senderOk(event)) return fail('Invalid sender')
@@ -1776,6 +1838,121 @@ export function registerIpc(): void {
           return fail(msg)
         }
         return failFrom(err, IPC.runsRename)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.runsSetGoalStatus,
+    async (event, raw): Promise<IpcResult<{ goal: import('../../shared/ipc').RunGoal | null }>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = SetGoalStatusRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        if (!runExists(req.workspacePath, req.runId)) return fail('Run not found')
+        const runDir = resolveRunDir(req.workspacePath, req.runId)
+        if (loadStatus(runDir)?.inlineInstance) {
+          return fail('Goals are only available on the root chat.')
+        }
+        const wc = event.sender
+        if (req.action === 'pause') {
+          const current = readGoal(runDir)
+          if (!current) return fail('No goal on this run.')
+          if (current.status === 'complete') return fail('Goal is already complete.')
+          const goal = pauseGoalIfActive(runDir)
+          // Emit only on a real active→paused transition; re-pausing is silent.
+          if (goal?.status === 'paused' && current.status === 'active') {
+            emitGoalUpdate({
+              workspacePath: req.workspacePath,
+              runId: req.runId,
+              runDir,
+              goal,
+              notice: 'Goal paused',
+              wc
+            })
+          }
+          return ok({ goal })
+        }
+        if (req.action === 'resume') {
+          const goal = updateGoalStatus(runDir, 'active')
+          emitGoalUpdate({
+            workspacePath: req.workspacePath,
+            runId: req.runId,
+            runDir,
+            goal,
+            wc
+          })
+          const loop = readLoop(runDir)
+          // Don't spawn a one-off run when a loop is already armed to continue;
+          // doing both would launch overlapping runs toward the same goal.
+          if (!isActive(req.runId) && (!loop || loop.status !== 'armed')) {
+            const launched = launchRunFollowUpOrStart({
+              workspacePath: req.workspacePath,
+              runId: req.runId,
+              mode: 'agent',
+              wc,
+              message: {
+                role: 'user',
+                content: formatGoalContinueMessage(goal.objective)
+              }
+            })
+            if (!launched.ok) return fail(launched.error)
+          }
+          return ok({ goal })
+        }
+        // Complete (updateGoalStatus is idempotent for an already-complete goal).
+        const prior = readGoal(runDir)
+        const goal = updateGoalStatus(runDir, 'complete')
+        // Emit only on a real transition; a repeat Mark-complete stays silent.
+        if (prior?.status !== 'complete') {
+          emitGoalUpdate({
+            workspacePath: req.workspacePath,
+            runId: req.runId,
+            runDir,
+            goal,
+            wc
+          })
+        }
+        return ok({ goal })
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/no goal|cannot resume|requires objective/i.test(msg)) return fail(msg)
+        return failFrom(err, IPC.runsSetGoalStatus)
+      }
+    }
+  )
+
+  ipcMain.handle(
+    IPC.runsSetLoop,
+    async (event, raw): Promise<IpcResult<{ loop: import('../../shared/ipc').RunLoop | null }>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = SetLoopRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        if (!runExists(req.workspacePath, req.runId)) return fail('Run not found')
+        const runDir = resolveRunDir(req.workspacePath, req.runId)
+        if (loadStatus(runDir)?.inlineInstance) {
+          return fail('Loops are only available on the root chat.')
+        }
+        const wc = event.sender
+        if (req.action === 'stop') {
+          const loop = disarmLoop(runDir, req.runId, {
+            workspacePath: req.workspacePath,
+            wc
+          })
+          return ok({ loop })
+        }
+        const loop = armLoop({
+          workspacePath: req.workspacePath,
+          runId: req.runId,
+          runDir,
+          prompt: req.prompt ?? '',
+          intervalMs: req.intervalMs ?? 0,
+          wc
+        })
+        return ok({ loop })
+      } catch (err) {
+        return failFrom(err, IPC.runsSetLoop)
       }
     }
   )
@@ -3586,8 +3763,13 @@ export function registerIpc(): void {
       try {
         const payload = BrowserTakeScreenshotRequestSchema.parse(raw)
         if (!isOpenWorkspace(payload.workspacePath)) return fail('Workspace is not open')
-        if (!runExists(payload.workspacePath, payload.runId)) return fail('Run not found')
-        const runDir = resolveRunDir(payload.workspacePath, payload.runId)
+        let runDir: string
+        if (payload.runId) {
+          if (!runExists(payload.workspacePath, payload.runId)) return fail('Run not found')
+          runDir = resolveRunDir(payload.workspacePath, payload.runId)
+        } else {
+          runDir = workspaceBrowserArtifactsDir(payload.workspacePath)
+        }
         const result = await takeBrowserScreenshot({
           runDir,
           tabId: payload.tabId,

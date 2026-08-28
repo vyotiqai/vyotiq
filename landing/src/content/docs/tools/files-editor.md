@@ -31,6 +31,8 @@ Opening a file creates an editor tab. A dirty text tab can use:
 - Auto Save
 - Format on Save
 
+For images (PNG, JPEG, GIF, WebP, SVG) the tab opens a rendered preview. Markdown and HTML files keep the source editor and add a Preview control. HTML preview is sandboxed (no scripts, no same-origin). Binary files that are not images still use the hex editor.
+
 Discard/Reload abandons the editor buffer or reloads a file changed on disk. It is not the same as checkpoint Discard in Changes.
 
 ## Resolve an external change

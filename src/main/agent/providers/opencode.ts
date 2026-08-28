@@ -38,16 +38,28 @@ export const opencodeProvider: LlmProvider = {
       yield { type: 'error', error: 'OpenCode Go API key not set' }
       return
     }
+    // Every model in the `opencode-go` registry is reasoning-capable, so OpenCode
+    // Go always requests thinking (the models.dev `reasoning: true` contract).
+    // Respect only an explicit disable; default to a visible, summarized summary.
+    const thinking =
+      req.thinking?.enabled === false
+        ? req.thinking
+        : {
+            enabled: true,
+            effort: req.thinking?.effort ?? 'medium',
+            display: req.thinking?.display ?? 'summarized'
+          }
+    const reqWithThinking: ProviderChatRequest = { ...req, thinking }
     const shape = opencodeEndpointFor(req.model)
     if (shape === 'responses') {
-      yield* streamOpenAiResponses(req, `${OPENCODE_GO_BASE}/responses`)
+      yield* streamOpenAiResponses(reqWithThinking, `${OPENCODE_GO_BASE}/responses`)
       return
     }
     if (shape === 'messages') {
-      yield* streamAnthropicMessages(req, `${OPENCODE_GO_BASE}/messages`)
+      yield* streamAnthropicMessages(reqWithThinking, `${OPENCODE_GO_BASE}/messages`)
       return
     }
-    yield* opencodeChat.streamChat(req)
+    yield* opencodeChat.streamChat(reqWithThinking)
   },
   async listModels(req: ListModelsRequest): Promise<ModelInfo[]> {
     // Errors propagate so listProviderModels surfaces actionable warnings and

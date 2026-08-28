@@ -12,6 +12,7 @@ export const OVERLAY_SECTION_TAGS = [
   'session',
   'workspace',
   'task_list',
+  'active_goal',
   'run_notice',
   'prior_session',
   'live_session'

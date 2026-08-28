@@ -18,6 +18,8 @@ import {
 import { getWorkspaces } from '../workspace/workspaces'
 import {
   collectProcessMetricsSnapshot,
+  PROCESS_METRICS_RSS_WARN_MB,
+  readAppProcessMetrics,
   shouldLogProcessMetrics,
   type ProcessMetricsSnapshot
 } from './processMetrics'
@@ -93,7 +95,15 @@ export function collectLoadSnapshot(): LoadSnapshot {
 
 export function collectProcessMetrics(): ProcessMetricsSnapshot {
   refreshEmbedUtilityPerfStatsBestEffort()
-  return collectProcessMetricsSnapshot(getEmbedUtilityPerfStats())
+  return collectProcessMetricsSnapshot(getEmbedUtilityPerfStats(), readAppProcessMetrics())
+}
+
+/** Cheap RSS proxy so the 5s timer can skip `app.getAppMetrics()` when idle. */
+function cheapWorkingSetOverWarn(): boolean {
+  const rssMb = Math.round(process.memoryUsage().rss / 1024 / 1024)
+  if (rssMb > PROCESS_METRICS_RSS_WARN_MB) return true
+  const utilityRss = getEmbedUtilityPerfStats().rssMb ?? 0
+  return utilityRss > PROCESS_METRICS_RSS_WARN_MB
 }
 
 function sampleProcessMetricsAndMaybeLog(): void {
@@ -123,13 +133,19 @@ export function logLoadSnapshot(): void {
 }
 
 function tickLoadPerfMonitor(): void {
-  sampleProcessMetricsAndMaybeLog()
+  // getAppMetrics is Chromium-wide and not free — only when VYOTIQ_PERF=1 or
+  // cheap RSS already exceeds the 1GB warn. CPU-only spikes without high RSS
+  // are not sampled unless perf debug is on (IPC collectProcessMetrics is
+  // still on-demand for settings).
+  if (isPerfDebugEnabled() || cheapWorkingSetOverWarn()) {
+    sampleProcessMetricsAndMaybeLog()
+  }
   logLoadSnapshot()
 }
 
 /**
- * Always-on process RSS/CPU sampler (logs when combined working set > 1GB or
- * any process CPU > 15%, at most every 30s). Verbose 5s load dump still needs
+ * Cheap 5s RSS probe. `app.getAppMetrics()` runs only when VYOTIQ_PERF=1 or
+ * when main/utility RSS is already over 1GB. Verbose 5s load dump needs
  * VYOTIQ_PERF=1.
  */
 export function startLoadPerfMonitor(): void {

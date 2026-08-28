@@ -8,6 +8,7 @@ import {
   parseUnifiedDiff
 } from '@renderer/features/chat/toolUi'
 import { countLines, splitLines, splitLinesTail } from '@renderer/features/chat/toolUi/parsers/common'
+import { truncateMiddle } from '@shared/utils/displayPath'
 import type { UiToolRow } from '@shared/transcript'
 
 function tool(overrides: Partial<UiToolRow> & Pick<UiToolRow, 'name'>): UiToolRow {
@@ -464,5 +465,32 @@ describe('countLines', () => {
     expect(countLines('hello\n')).toBe(1)
     expect(countLines('a\nb\nc')).toBe(3)
     expect(countLines('a\nb\nc\n')).toBe(3)
+  })
+})
+
+describe('truncateMiddle', () => {
+  it('cuts at a separator instead of fusing two commands into one', () => {
+    // The old head+tail slice produced `Get-ChildItem -P…D 7720`, which reads
+    // as a single invented command made of two unrelated fragments.
+    const out = truncateMiddle('Get-ChildItem -Path out; taskkill /PID 7720 /T /F', 30)
+    expect(out).toContain(' … ')
+    const [head, tail] = out.split(' … ')
+    expect(head.endsWith(' ')).toBe(false)
+    expect(tail.startsWith(' ')).toBe(false)
+    // Each half must be a whole token, never a mid-identifier fragment.
+    expect(out).not.toMatch(/[A-Za-z]…[A-Za-z]/)
+  })
+
+  it('leaves short text untouched', () => {
+    expect(truncateMiddle('pnpm test', 56)).toBe('pnpm test')
+  })
+})
+
+describe('command header labels', () => {
+  it('cuts at a pipeline separator rather than mid-token', () => {
+    const command = 'pnpm exec vitest run tests/renderer 2>&1 | Select-Object -Last 8'
+    const label = formatTerminalHeaderTarget({ command, shell: 'powershell' })
+    expect(label.length).toBeLessThanOrEqual(60)
+    expect(label).toMatch(/…$/)
   })
 })

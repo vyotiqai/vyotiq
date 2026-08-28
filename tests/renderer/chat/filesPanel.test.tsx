@@ -277,7 +277,44 @@ describe('FilesPanel', () => {
     await act(async () => {
       vi.advanceTimersByTime(2_000)
     })
-    expect(api.workspaceFileRead).toHaveBeenCalledTimes(1)
+    expect(api.workspaceFileRead).not.toHaveBeenCalled()
+  })
+
+  it('polls disk every 2s while the active tab is dirty and focused', async () => {
+    api.workspaceFileRead.mockResolvedValue({
+      ok: true,
+      data: {
+        path: 'src/note.ts',
+        kind: 'binary',
+        content: binaryContent,
+        encoding: 'binary',
+        eol: 'none',
+        bom: false,
+        size: 3,
+        version: {
+          size: 3,
+          mtimeMs: 1,
+          sha256: 'a'.repeat(64)
+        },
+        truncated: false
+      }
+    })
+    render(<FilesPanel workspacePath={workspacePath} active />)
+    await screen.findByText('README.md')
+    fireEvent.click(screen.getByText('src'))
+    fireEvent.click(await screen.findByText('note.ts'))
+    await screen.findByRole('tab', { name: /note\.ts/i })
+    fireEvent.click(screen.getByRole('button', { name: 'Editor actions' }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: 'Auto Save' }))
+    const byte = await screen.findByRole('textbox', { name: 'Byte 0' })
+    vi.useFakeTimers()
+    fireEvent.change(byte, { target: { value: 'ff' } })
+    api.workspaceFileRead.mockClear()
+    await act(async () => {
+      vi.advanceTimersByTime(2_000)
+      await Promise.resolve()
+    })
+    expect(api.workspaceFileRead).toHaveBeenCalled()
   })
 
   it('autosaves an accepted edit after one second of idle time', async () => {
@@ -892,6 +929,74 @@ describe('FilesPanel', () => {
         })
       })
     )
+  })
+
+  it('opens find in files when findInFilesNonce increments', async () => {
+    const view = render(<FilesPanel workspacePath={workspacePath} active findInFilesNonce={0} />)
+    await screen.findByText('README.md')
+    expect(screen.queryByPlaceholderText('Find in files')).toBeNull()
+    view.rerender(<FilesPanel workspacePath={workspacePath} active findInFilesNonce={1} />)
+    expect(await screen.findByPlaceholderText('Find in files')).toBeTruthy()
+  })
+
+  it('opens a PNG as an image preview', async () => {
+    const png =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    api.workspaceFileList.mockImplementation(({ path }: { path: string }) =>
+      Promise.resolve({
+        ok: true,
+        data:
+          path === ''
+            ? {
+                path: '',
+                entries: [
+                  {
+                    name: 'logo.png',
+                    path: 'logo.png',
+                    kind: 'file',
+                    size: 70,
+                    mtimeMs: 1,
+                    hidden: false,
+                    symlinkTargetInsideWorkspace: null
+                  }
+                ],
+                total: 1,
+                nextOffset: null,
+                truncated: false
+              }
+            : { path, entries: [], total: 0, nextOffset: null, truncated: false }
+      })
+    )
+    api.workspaceFileRead.mockResolvedValue({
+      ok: true,
+      data: {
+        path: 'logo.png',
+        kind: 'binary',
+        content: png,
+        encoding: 'binary',
+        eol: 'none',
+        bom: false,
+        size: 70,
+        version: { size: 70, mtimeMs: 1, sha256: 'c'.repeat(64) },
+        truncated: false
+      }
+    })
+    render(<FilesPanel workspacePath={workspacePath} active />)
+    fireEvent.click(await screen.findByText('logo.png'))
+    await waitFor(() => {
+      expect(document.querySelector('[data-file-preview="image"]')).toBeTruthy()
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Show source' }))
+    expect(await screen.findByRole('textbox', { name: 'Byte 0' })).toBeTruthy()
+  })
+
+  it('toggles markdown preview from the source editor', async () => {
+    render(<FilesPanel workspacePath={workspacePath} active />)
+    await screen.findByText('README.md')
+    fireEvent.click(screen.getByText('README.md'))
+    await screen.findByRole('tab', { name: /README\.md/i })
+    fireEvent.click(screen.getByRole('button', { name: 'Show preview' }))
+    expect(document.querySelector('[data-file-preview="markdown"]')).toBeTruthy()
   })
 })
 
