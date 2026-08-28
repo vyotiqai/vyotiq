@@ -14,6 +14,7 @@ import {
 } from '../../../shared/utils/agentQuestionForm'
 import type { ToolDefinition } from '../providers/types'
 import { toolCallArgumentsUnusable, wireToolCallArguments } from '../toolArgWire'
+import { duplicateTopLevelJsonKeyError } from '../../../shared/utils/jsonish'
 import { zodToJsonSchema } from './zodToJsonSchema'
 
 /** Default wait for await_agent_instance when timeout_ms is omitted (15 minutes). */
@@ -75,12 +76,6 @@ const readArgs = z
       .optional()
   })
   .transform(coerceReadWindow)
-  .refine(
-    (args) =>
-      (args.startLine == null && args.endLine == null) ||
-      (args.offset == null && args.limit == null),
-    { message: 'offset/limit cannot be combined with startLine/endLine', path: ['offset'] }
-  )
 
 const editArgs = z
   .object({
@@ -213,7 +208,9 @@ const globArgs = z
       .string()
       .trim()
       .min(1)
-      .describe('Glob over workspace-relative paths, e.g. src/**/*.ts or **/{README,LICENSE}*'),
+      .describe(
+        'Glob over workspace-relative paths from the workspace root (not a nested folder name), e.g. src/**/*.ts or **/{README,LICENSE}*'
+      ),
     maxResults: z
       .number()
       .int()
@@ -279,7 +276,7 @@ const listDirArgs = z
   .object({
     path: z
       .string()
-      .describe('Workspace-relative directory (default workspace root)')
+      .describe('Workspace-relative directory from the workspace root (default workspace root)')
       .optional()
   })
 
@@ -977,10 +974,20 @@ const lspArgs = z.object({
     .optional()
 })
 
-const TOOL_REGISTRY = {
+const createGoalArgs = z.object({
+  objective: z.string().trim().min(1).describe('Long-lived objective for this chat')
+})
+
+const updateGoalArgs = z.object({
+  status: z
+    .enum(['active', 'complete'])
+    .describe('active resumes a paused goal; complete ends it. Never pause.')
+})
+
+export const TOOL_REGISTRY = {
   read: {
     description:
-      'Read a file under the workspace root (text only). Directories return a shallow listing. Prefer startLine/endLine for a line window and omit offset/limit then — offset/limit is a byte window, not lines. For .ipynb cell edits use edit_notebook. Cite as [[path]] or [[path:line]].',
+      'Read a file under the workspace root (text only; Word .docx returns extracted document text — do not unzip it in the terminal). Directories return a shallow listing. Prefer startLine/endLine for a line window and omit offset/limit then — offset/limit is a byte window, not lines. For .ipynb cell edits use edit_notebook. Cite as [[path]] or [[path:line]].',
     schema: readArgs
   },
   edit: {
@@ -990,26 +997,27 @@ const TOOL_REGISTRY = {
   },
   search: {
     description:
-      'Filename-or-content substring lookup (first hit per file). Text files only; binaries are skipped. Cite hits as [[path]] or [[path:line]].',
+      'Filename-or-content substring lookup (first hit per file). Text files and Word .docx (extracted text); other binaries are skipped. Cite hits as [[path]] or [[path:line]].',
     schema: searchArgs
   },
   glob: {
     description:
-      'List workspace-relative paths matching a glob (**, *, ?, {a,b}). Prefer over search when you need paths only. Gitignore-aware.',
+      'List workspace-relative paths matching a glob (**, *, ?, {a,b}). Patterns are relative to the workspace root, not a nested project folder. Prefer over search when you need paths only. Gitignore-aware.',
     schema: globArgs
   },
   grep: {
     description:
-      'Regex search with every matching line and optional context. Text files only; binaries are skipped. Cite hits as [[path]] or [[path:line]].',
+      'Regex search with every matching line and optional context. Text files (including tests/) and Word .docx (extracted text); other binaries are skipped. Cite hits as [[path]] or [[path:line]].',
     schema: grepArgs
   },
   codebase_search: {
     description:
-      'Local codebase search over the indexed repository. Prefers dense semantic ranking when an embedding model is configured (Ollama or a downloaded model); otherwise it transparently falls back to lexical/FTS matching. Use for conceptual questions; use grep/search for exact identifiers or regex. The tool result states which mode was used. Not memory RAG. Cite hits as [[path]] or [[path:line]].',
+      'Local codebase search over the indexed repository. Prefers dense semantic ranking when an embedding model is configured (Ollama or a downloaded model); otherwise it transparently falls back to lexical/FTS matching. Workspace docs/ and Word .docx are matched at search time (extracted text), not stored in the index. Use for conceptual questions; use grep/search for exact identifiers or regex. The tool result states which mode was used. Not memory RAG. Cite hits as [[path]] or [[path:line]].',
     schema: codebaseSearchArgs
   },
   list_dir: {
-    description: 'List one directory level with sizes. Gitignore- and build-dir-aware.',
+    description:
+      'List one directory level with sizes. Workspace-relative path from the workspace root, not a nested project folder. Gitignore- and build-dir-aware.',
     schema: listDirArgs
   },
   multi_edit: {
@@ -1036,6 +1044,16 @@ const TOOL_REGISTRY = {
     description:
       'Publish this run plan.md (Plan mode). title is the H1. plan markdown should cover Goal, Steps, and Done when. Optional todos merge into todo_write. Copies Done when into contract.md. Do not put the plan only in chat.',
     schema: createPlanArgs
+  },
+  create_goal: {
+    description:
+      'Create or replace this chat\'s long-lived goal (goal.json). Call only when the user explicitly asked for a goal. Work until update_goal complete or the user pauses. Never pause yourself.',
+    schema: createGoalArgs
+  },
+  update_goal: {
+    description:
+      'Set this chat\'s goal to active (resume after a user pause) or complete (objective done, no required work left). Requires an existing goal from create_goal; rejects pause — only the user can pause.',
+    schema: updateGoalArgs
   },
   browser_search: {
     description:
@@ -1310,6 +1328,8 @@ const TOOL_NAME_ALIASES = new Map<string, AgentToolName>([
   ['listfiles', 'list_dir'],
   ['ls', 'list_dir'],
   ['todo', 'todo_write'],
+  ['creategoal', 'create_goal'],
+  ['updategoal', 'update_goal'],
   ['writeplan', 'create_plan'],
   ['semanticsearch', 'codebase_search'],
   ['searchreplace', 'str_replace'],
@@ -1450,6 +1470,9 @@ export function validateToolArgs(
   if (toolCallArgumentsUnusable(canonical, rawJson)) {
     return { ok: false, error: formatMalformedToolArgsError(canonical) }
   }
+
+  const duplicateKey = duplicateTopLevelJsonKeyError(rawJson || '')
+  if (duplicateKey) return { ok: false, error: duplicateKey }
 
   const wired = wireToolCallArguments(canonical, rawJson || '{}')
   try {

@@ -31,6 +31,7 @@ import { RUN_INTERRUPTED_ERROR } from '../../shared/runInterrupt'
 import { workspaceIdFromPath } from '../../shared/utils/workspaceId'
 import { toolResultEventForPersistence } from '../../shared/utils/toolResultIpc'
 import { finalizeInterruptedTodos } from './tools/todo'
+import { readGoal } from './runGoal'
 import { finalizeTodoContentOnRunEnd, type TodoFinalizeOutcome } from '../../shared/utils/todoContent'
 import { DEFAULT_PLAN_STUB, stripPlanStubChrome } from '../../shared/planStub'
 import { ensureWorkspaceStorage, resolveRunDir, workspaceSessionsRoot } from '../storage/paths'
@@ -698,7 +699,12 @@ function readFileTailSync(path: string, byteBudget: number): string {
     let text = buf.toString('utf8')
     if (start > 0) {
       const firstNl = text.indexOf('\n')
-      text = firstNl >= 0 ? text.slice(firstNl + 1) : text
+      // The window starts mid-line (stale size vs. a concurrently rotated file,
+      // or a clamped read of an in-flight tail line). Without a newline in the
+      // buffer there is no COMPLETE line to parse — returning the partial text
+      // made every load log "Skipping invalid events.jsonl line (json) line 1"
+      // while a run was actively appending (33x observed on 2026-08-27).
+      text = firstNl >= 0 ? text.slice(firstNl + 1) : ''
     }
     return text
   } finally {
@@ -896,11 +902,23 @@ async function collectRunsFromRoot(root: string): Promise<{
         continue
       }
       const status = parsed.data
+      const goal = readGoal(dir)
+      let loopArmed = false
+      try {
+        const loopRaw = JSON.parse(readFileSync(join(dir, 'loop.json'), 'utf8')) as {
+          status?: unknown
+        }
+        loopArmed = loopRaw.status === 'armed'
+      } catch {
+        loopArmed = false
+      }
       const summary: RunSummary = {
         runId: entry.name,
         status: status.status,
         updatedAt: status.updatedAt,
         goal: status.goal,
+        ...(goal ? { goalStatus: goal.status } : {}),
+        ...(loopArmed ? { loopArmed: true as const } : {}),
         ...(status.resumable ? { resumable: true as const } : {}),
         ...(status.error ? { error: status.error } : {}),
         ...(status.parentRunId ? { parentRunId: status.parentRunId } : {}),

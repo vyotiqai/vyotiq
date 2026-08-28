@@ -135,6 +135,45 @@ describe('listRuns / interruptOrphanRuns', () => {
     expect(events[1]?.event).toMatchObject({ type: 'tool_start', name: 'read', runId: 'event-run' })
   })
 
+  it('tail read with no complete line returns no events instead of parsing a partial line', () => {
+    // Regression: while a run actively appends, a tail window can contain only
+    // an in-flight partial line (no '\n'). The old fallback parsed that partial
+    // text and logged "Skipping invalid events.jsonl line (json) line 1" on
+    // every load (33x observed 2026-08-27). Window must yield zero events.
+    const dir = resolveRunDir(workspace, 'tail-partial-run')
+    mkdirSync(dir, { recursive: true })
+    // One huge single line > the 64KB byte budget — no newline inside the tail window.
+    const bigEvent = JSON.stringify({
+      at: '2026-01-01T00:00:00.000Z',
+      event: { type: 'context_usage', runId: 'tail-partial-run', pad: 'x'.repeat(120_000) }
+    })
+    writeFileSync(join(dir, 'events.jsonl'), bigEvent, 'utf8')
+
+    // 64KB budget via limit (eventsTailByteBudget floor) into a 120KB+ file:
+    // start > 0, and the window is entirely inside the single line (no '\n').
+    const events = loadEvents(dir, 'tail-partial-run', { limit: 10 })
+    expect(events).toHaveLength(0)
+
+    // Sanity: a window that contains complete lines still parses them.
+    const small = writeFileSync2(dir, 'tail-ok-run')
+    expect(small).toHaveLength(1)
+  })
+
+  /** Helper: two complete small events; tail window must return exactly the last one. */
+  function writeFileSync2(dir: string, runId: string): ReturnType<typeof loadEvents> {
+    const d = resolveRunDir(workspace, runId)
+    mkdirSync(d, { recursive: true })
+    writeFileSync(
+      join(d, 'events.jsonl'),
+      [
+        JSON.stringify({ at: '2026-01-01T00:00:00.000Z', event: { type: 'status', status: 'running' } }),
+        JSON.stringify({ at: '2026-01-01T00:00:01.000Z', event: { type: 'status', status: 'done' } })
+      ].join('\n'),
+      'utf8'
+    )
+    return loadEvents(d, runId, { limit: 1 })
+  }
+
   it('marks orphan running status as cancelled on interrupt', async () => {
     const wsDir = resolveRunDir(workspace, 'orphan-ws')
     writeStatus(wsDir, {

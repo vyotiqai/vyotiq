@@ -256,6 +256,29 @@ describe('executeCompactEvents extractive gate', () => {
     if (existsSync(root)) rmSync(root, { recursive: true, force: true })
   })
 
+  it('retries once with flattened request when the first summarizer returns an empty response', async () => {
+    // Regression: session d8883185 died at step ~200 with
+    // "The model returned no summary" after ONE empty summarizer response.
+    // The timeout path already retried; the empty-response path must too.
+    const runId = 'run-empty-then-ok'
+    const dir = createRun(workspace, runId, 'Rewrite auth to JWT')
+    // Call 1: empty response (no text chunks) -> retry; Call 2: faithful summary.
+    const plan = makePlan(
+      dir,
+      runId,
+      mockProviderPerCall([() => [], () => [{ type: 'text', text: FAITHFUL }]])
+    )
+
+    const { events, result } = await drain(plan)
+    expect(events.map((e) => e.type)).toEqual([
+      'compaction_started',
+      'compaction_verifying',
+      'compaction'
+    ])
+    expect(result).toMatchObject({ verified: true })
+    expect(String((result as { summary: string }).summary)).toContain('Use JWT')
+  })
+
   it('pins omitted extractive facts so an amnesic summary verifies without retry', async () => {
     const runId = 'run-ok'
     const dir = createRun(workspace, runId, 'Rewrite auth to JWT')

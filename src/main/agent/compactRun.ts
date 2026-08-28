@@ -381,6 +381,25 @@ async function summarizeWithTimeoutRetry(
     }
   }
 
+  // A transient empty model response (no timeout, no abort) must not terminate a
+  // long run — session d8883185 hit this once and the run died. One flattened
+  // retry, mirroring the timeout path above; still terminal if the retry is empty.
+  if (!record && !plan.abort.signal.aborted && !plan.abort.timedOut() && !plan.abort.userAborted()) {
+    logger.info('Compaction returned no summary; retrying flattened tools=[] path', {
+      scope: 'agent',
+      code: 'COMPACTION',
+      correlationId: plan.runId
+    })
+    const retryAbort = createCompactAbort(plan.userSignal)
+    record = await invokeCompactionLlm(plan, focus, retryAbort, false, { allowFork: false })
+    if (!record && retryAbort.timedOut()) {
+      throw new CompactionUnavailableError(compactTimeoutUserMessage())
+    }
+    if (!record && retryAbort.userAborted()) {
+      throwCompactionAbort(retryAbort)
+    }
+  }
+
   if (!record) {
     if (plan.abort.signal.aborted || plan.abort.timedOut() || plan.abort.userAborted()) {
       throwCompactionAbort(plan.abort)
