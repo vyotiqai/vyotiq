@@ -118,7 +118,8 @@ describe('reindexCodeIndex', () => {
     dir = mkdtempSync(join(tmpdir(), 'vyotiq-reindex-sparse-'))
     mkdirSync(join(dir, 'src'), { recursive: true })
     writeFileSync(join(dir, 'src', 'a.ts'), 'export const reindexMarker = 1\n', 'utf8')
-    const sync = await reindexCodeIndex(dir)
+    // Hermetic: hash embedder needs no ONNX weights; reindex must honor the override.
+    const sync = await reindexCodeIndex(dir, { embedderId: 'hash' })
     expect(sync).not.toBeNull()
     const sparse = SparseGrepStore.open(dir)
     try {

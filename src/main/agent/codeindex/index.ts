@@ -992,7 +992,7 @@ export function disposeCodeIndexWorkspace(workspaceRoot: string): void {
 /** Force reindex for active settings (settings UI). */
 export async function reindexCodeIndex(
   workspaceRoot: string,
-  opts: { signal?: AbortSignal } = {}
+  opts: { signal?: AbortSignal; embedderId?: CodeIndexEmbedderId } = {}
 ): Promise<SyncResult | null> {
   const key = workspaceKey(workspaceRoot)
   return enqueueIndexJob({
@@ -1003,7 +1003,8 @@ export async function reindexCodeIndex(
       clearEmbedderFailCache()
       const { sync } = await ensureCodeIndexSynced(workspaceRoot, {
         force: true,
-        signal: opts.signal
+        signal: opts.signal,
+        embedderId: opts.embedderId
       })
       // Dynamic import: codeindex barrel must not statically import sparsegrep
       // (tools → codeindex → sparsegrep → ... → electron window named exports break Vitest).
