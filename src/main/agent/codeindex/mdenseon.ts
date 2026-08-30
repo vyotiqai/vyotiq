@@ -291,7 +291,9 @@ export async function ensureMDenseOnModel(
           modelId: art.modelId,
           modelDir,
           progress: 0,
-          message: `Downloading ${art.modelId}`,
+          // Name the artifact actually being fetched — under family scoping
+          // this can be the public DenseOn bootstrap, not the mDenseOn target.
+          message: `Downloading ${art.artifactId}`,
           error: null
         })
         const ok = await downloadModelFiles(modelDir, art.files, {
