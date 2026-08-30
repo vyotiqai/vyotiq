@@ -229,6 +229,24 @@ function lspUri(workspacePath: string, path: string): string {
   return pathToFileURL(join(workspacePath, ...path.split('/'))).toString()
 }
 
+/**
+ * Canonical comparison form for LSP document URIs. Servers normalize Windows
+ * URIs differently than Node's pathToFileURL: e.g. tls 6.0.0 publishes
+ * `file:///c%3A/Users/...` (lowercase drive, percent-encoded colon) where we
+ * sent `file:///C:/Users/...`. Diagnostics keyed by the raw wire form never
+ * match our lookups, so both sides are canonicalized at every map boundary.
+ */
+function canonicalLspUri(uri: string): string {
+  let out = uri
+  try {
+    out = decodeURIComponent(out)
+  } catch {
+    // Malformed escapes: fall back to the raw form.
+  }
+  // Lowercase a lone drive letter after file:/// (Windows only shape).
+  return out.replace(/^(file:\/\/\/)([A-Za-z])([:|])/, (_m, scheme, drive, sep) => `${scheme}${drive.toLowerCase()}:`)
+}
+
 function severity(value: unknown): StoredDiagnostic['severity'] {
   switch (value) {
     case 1:
@@ -480,10 +498,11 @@ class LspClient {
       const uri = stringValue(params?.uri)
       if (uri) {
         this.capabilities.add('diagnostics')
-        this.diagnostics.set(uri, parseDiagnostics(message.params))
-        const waiters = this.diagnosticWaiters.get(uri)
+        this.diagnostics.set(canonicalLspUri(uri), parseDiagnostics(message.params))
+        const key = canonicalLspUri(uri)
+        const waiters = this.diagnosticWaiters.get(key)
         if (waiters) {
-          this.diagnosticWaiters.delete(uri)
+          this.diagnosticWaiters.delete(key)
           for (const waiter of waiters) {
             clearTimeout(waiter.timer)
             waiter.resolve()
@@ -562,7 +581,7 @@ class LspClient {
 
   async open(path: string, content: string): Promise<string> {
     await this.start()
-    const uri = lspUri(this.workspacePath, path)
+    const uri = canonicalLspUri(lspUri(this.workspacePath, path))
     const existing = this.opened.get(uri)
     if (!existing) {
       this.opened.set(uri, { version: 1, content })
@@ -585,6 +604,11 @@ class LspClient {
     if (this.diagnostics.has(uri)) return Promise.resolve()
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
+        // A publish may have landed between the last waiter check and this timer.
+        if (this.diagnostics.has(uri)) {
+          resolve()
+          return
+        }
         const waiters = this.diagnosticWaiters.get(uri)
         if (waiters) {
           this.diagnosticWaiters.set(
