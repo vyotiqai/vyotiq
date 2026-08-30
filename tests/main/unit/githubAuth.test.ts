@@ -83,6 +83,7 @@ import {
   resetGithubAuthForTests,
   resolveGhTokenForCli,
   resolveGithubClientId,
+  setupGithubGitAuth,
   startGithubAuth
 } from '@main/git/githubAuth'
 
@@ -132,6 +133,11 @@ describe('githubAuth helpers', () => {
 
     vi.mocked(clearGithubAccessToken)()
     expect(resolveGhTokenForCli()).toBeUndefined()
+  })
+
+  it('setupGithubGitAuth error mentions gh auth login remediation when setup-git fails', async () => {
+    execFileAsync.mockRejectedValue(new Error('not logged in'))
+    await expect(setupGithubGitAuth()).rejects.toThrow(/gh auth login/)
   })
 
   it('reports pending false when the device code expired', async () => {

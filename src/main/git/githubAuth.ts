@@ -551,7 +551,9 @@ export async function setupGithubGitAuth(): Promise<void> {
     })
   } catch (err) {
     logger.warn('gh auth setup-git failed', { scope: 'github-auth', err })
-    throw new Error('GitHub authentication could not be configured for Git pushes')
+    throw new Error(
+      'GitHub authentication could not be configured for Git pushes. Run `gh auth login` in a terminal (or add a token in Settings → GitHub), then retry.'
+    )
   }
 }
 
