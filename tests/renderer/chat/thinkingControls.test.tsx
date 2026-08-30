@@ -1,11 +1,13 @@
 /**
  * @vitest-environment jsdom
  */
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { ThinkingControls, modelShowsThinkingControls } from '@renderer/features/chat/components/composer/ThinkingControls'
 import type { EffectiveChatSettings } from '@shared/effectiveSettings'
 import { seedModelsFor } from '@shared/providers'
+import type { ModelInfo } from '@shared/ipc/schemas/providers'
+import { loadOpenCodeGoCatalog } from '@shared/domain/opencodeGoCatalog'
 
 afterEach(() => {
   cleanup()
@@ -550,7 +552,16 @@ describe('ThinkingControls', () => {
   })
 
   describe('OpenCode Go (opencode)', () => {
-    const goMeta = new Map(seedModelsFor('opencode').map((m) => [m.id, m]))
+    // The Go catalog (ids + effort ladders) resolves live from models.dev with a
+    // module-level cache that is EMPTY in a fresh vitest process. Seed it before
+    // reading seedModelsFor, and build goMeta after seeding — collection-time
+    // evaluation would capture an empty model list (documented pitfall; see
+    // seedModelsPlaceholder.test.ts / opencodeProvider.test.ts).
+    let goMeta: Map<string, ModelInfo>
+    beforeAll(async () => {
+      await loadOpenCodeGoCatalog()
+      goMeta = new Map(seedModelsFor('opencode').map((m) => [m.id, m]))
+    })
     const goSettings: EffectiveChatSettings = {
       ...chatSettings,
       provider: 'opencode',
