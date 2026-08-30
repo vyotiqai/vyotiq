@@ -50,7 +50,7 @@ test('live edit stream: empty window then early lines before late', async () => 
     await expand.click()
   }
 
-  const composer = window.getByRole('textbox', { name: 'Message' })
+  const composer = window.getByRole('combobox', { name: 'Message' })
   await expect(composer).toBeVisible({ timeout: 20_000 })
   await composer.fill('Stream a live edit diff')
 

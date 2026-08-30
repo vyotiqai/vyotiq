@@ -50,7 +50,7 @@ test('streams T1 tool cards: unknown tool not titled placeholder; ask humanized'
     await expand.click()
   }
 
-  const composer = window.getByRole('textbox', { name: 'Message' })
+  const composer = window.getByRole('combobox', { name: 'Message' })
   await expect(composer).toBeVisible({ timeout: 20_000 })
   await composer.fill('Replay screenshot audit tools')
   await window.getByRole('button', { name: /^send$/i }).click()

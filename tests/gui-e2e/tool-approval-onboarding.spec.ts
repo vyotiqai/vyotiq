@@ -49,7 +49,7 @@ test('first send opens tool approval onboarding then streams fixture', async () 
     await expand.click()
   }
 
-  const composer = window.getByRole('textbox', { name: 'Message' })
+  const composer = window.getByRole('combobox', { name: 'Message' })
   await expect(composer).toBeVisible({ timeout: 20_000 })
   await composer.fill('First send with onboarding')
 

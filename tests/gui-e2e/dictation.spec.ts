@@ -82,7 +82,7 @@ test('Mic stop inserts fixture transcript into Message', async () => {
     await expand.click()
   }
 
-  const composer = window.getByRole('textbox', { name: 'Message' })
+  const composer = window.getByRole('combobox', { name: 'Message' })
   await expect(composer).toBeVisible({ timeout: 20_000 })
 
   const dictate = window.getByRole('button', { name: /^Dictate$/i })

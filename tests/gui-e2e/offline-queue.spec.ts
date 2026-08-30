@@ -57,6 +57,10 @@ test('shows queued hint and flushes persisted offline messages on load', async (
         {
           id: 'seed-1',
           text: 'Persisted offline message',
+          // Flushes are run-bound since the anti-cross-pane hardening: entries
+          // without a runId are deliberately never flushed to the focused pane.
+          runId: 'seed-run-1',
+          workspacePath: path,
           queuedAt: new Date().toISOString()
         }
       ])

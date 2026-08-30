@@ -41,7 +41,7 @@ test('marketplace browse exposes search and kind filter', async () => {
   await expect(search).toHaveValue('whisper')
   await search.fill('')
 
-  await expect(window.getByRole('button', { name: /filter by kind/i })).toBeVisible()
+  await expect(window.getByRole('combobox', { name: /filter by kind/i })).toBeVisible()
 })
 
 test('manage tab reveals registry settings panel', async () => {
