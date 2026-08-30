@@ -1413,6 +1413,7 @@ export async function deleteRun(
 }
 
 const GOAL_SECTION_RE = /(## Goal\s*\n)([\s\S]*?)(\n## )/
+export { GOAL_SECTION_RE }
 
 export function renameRun(workspacePath: string, runId: string, goal: string): RunSummary {
   if (isActive(runId)) {

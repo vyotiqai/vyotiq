@@ -243,6 +243,27 @@ export function blendInputTokens(estimated: number, lastUsage?: TokenUsage): num
   return Math.max(estimated, Math.min(provider, Math.ceil(estimated * 1.1)))
 }
 
+/**
+ * Auto-compact trigger decision against a hard window threshold.
+ *
+ * Prefers the provider-reported input token count when available: the local
+ * estimator counts per-message replay fields (reasoningState) that some
+ * upstreams never process, so the estimated figure can exceed the real wire
+ * size severalfold. When no provider figure exists (first step, or a provider
+ * that reports no usage), fall back to the local estimate — safe over-triggers
+ * only cost an occasional summarizer call, while under-triggers overflow.
+ */
+export function shouldTriggerAutoCompact(
+  estimatedTokens: number,
+  triggerTokens: number,
+  providerInputTokens?: number | null
+): { trigger: boolean; source: 'provider' | 'estimate' } {
+  if (providerInputTokens != null && providerInputTokens > 0) {
+    return { trigger: providerInputTokens >= triggerTokens, source: 'provider' }
+  }
+  return { trigger: estimatedTokens >= triggerTokens, source: 'estimate' }
+}
+
 export function messagePreview(message: ChatMessage): string {
   return contentToText(message.content).slice(0, 200)
 }

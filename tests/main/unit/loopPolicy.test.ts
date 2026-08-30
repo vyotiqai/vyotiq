@@ -18,6 +18,7 @@ import {
   isNonMutatingWriteFailure,
   normalizeWorkspaceRelPath,
   readPathFromToolCall,
+  runBudgetStopMessage,
   seedKnownPathsFromMessages,
   summarizeRecentToolFailure,
   toolArgsFromCall,
@@ -455,5 +456,40 @@ export function validateAuthToken`
         { role: 'tool', toolName: 'edit', content: 'path: Required', ok: false }
       ])
     ).toEqual({ tool: 'edit', summary: 'path: Required' })
+  })
+})
+
+describe('runBudgetStopMessage', () => {
+  const totals = {
+    billedCost: 5,
+    billedInputTokens: 1_000_000,
+    outputTokens: 10_000
+  }
+
+  it('returns undefined when both limits are 0 (disabled)', () => {
+    expect(runBudgetStopMessage({ runSpendLimitUsd: 0, runTokenLimit: 0 }, totals)).toBeUndefined()
+    expect(runBudgetStopMessage({}, totals)).toBeUndefined()
+  })
+
+  it('stops at the spend limit and names both limit and billed amount', () => {
+    const msg = runBudgetStopMessage({ runSpendLimitUsd: 4, runTokenLimit: 0 }, totals)
+    expect(msg).toMatch(/spend limit \(\$4\.00; \$5\.00 billed\)/)
+    expect(msg).toMatch(/budget guard/)
+  })
+
+  it('keeps running below the spend limit', () => {
+    expect(
+      runBudgetStopMessage({ runSpendLimitUsd: 10, runTokenLimit: 0 }, totals)
+    ).toBeUndefined()
+  })
+
+  it('stops at the token limit counting billed input + output', () => {
+    const msg = runBudgetStopMessage({ runSpendLimitUsd: 0, runTokenLimit: 1_000_000 }, totals)
+    expect(msg).toMatch(/token limit \(1,000,000 tokens; 1,010,000 used\)/)
+  })
+
+  it('checks spend before tokens when both are exceeded', () => {
+    const msg = runBudgetStopMessage({ runSpendLimitUsd: 1, runTokenLimit: 100 }, totals)
+    expect(msg).toMatch(/spend limit/)
   })
 })

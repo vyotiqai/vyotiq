@@ -52,6 +52,7 @@ import {
   loopHintForDeferredBuiltins,
   loopHintForDeferredMcpTools,
   toolsBudgetTokens,
+  shouldTriggerAutoCompact,
   type CompactionRecord
 } from './context'
 import { autoCompactLlmEvents } from './compactRun'
@@ -116,7 +117,7 @@ import {
 } from './runRegistry'
 import { syncFollowUpsToDisk } from './followUpStore'
 import { clearLoopCheckpoint, loadLoopCheckpoint, saveLoopCheckpoint } from './loopCheckpoint'
-import { LOOP_CHECKPOINT_VERSION } from '../../shared/ipc/schemas/agent'
+import { LOOP_CHECKPOINT_VERSION, type LoopCheckpoint } from '../../shared/ipc/schemas/agent'
 import {
   appendEvent,
   appendMessage,
@@ -145,8 +146,10 @@ import {
   takeMessageAppendFailureNotice,
   flushStatusWrites,
   loadMessagesAsync,
-  patchLatestTodoWriteMessage
+  patchLatestTodoWriteMessage,
+  GOAL_SECTION_RE
 } from './state'
+import { atomicWriteFile } from '../storage/atomicWrite'
 import { writeRunReceiptBestEffort } from './runReceipt'
 import { writeTrajectoryArtifactsBestEffort } from './runTrajectory'
 import {
@@ -197,7 +200,8 @@ import {
 } from './tools/modePolicy'
 import { INLINE_OMIT_BUILTIN } from './tools/classify'
 import { dedupeToolCalls, ensureToolCallIds } from './dedupeToolCalls'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
+import { join } from 'path'
 import { resolveRunDir } from '../storage/paths'
 import { isSafeInstanceWorktreePath } from '../git/instanceWorktree'
 import { ensurePlanStub } from './planArtifacts'
@@ -211,6 +215,19 @@ function lastUserMessageIndex(messages: ChatMessage[]): number | undefined {
     if (messages[i]?.role === 'user') return i
   }
   return undefined
+}
+
+/**
+ * Full-transcript index of the latest user message. Write-checkpoint anchors are
+ * consumed by rewindWritesFrom against FULL messages.jsonl indices (the renderer
+ * sends editMessageIndex from the stitched transcript), so after mid-run
+ * compaction the working-set index must be offset by the folded watermark or
+ * rewinds would skip restoring the turn's writes.
+ */
+function lastUserAnchorIndex(messages: ChatMessage[], foldedMessages: number): number | undefined {
+  const workingIndex = lastUserMessageIndex(messages)
+  if (workingIndex === undefined) return undefined
+  return workingIndex + Math.max(0, foldedMessages)
 }
 
 function loopHintWhenContextStillLarge(
@@ -792,6 +809,15 @@ export async function* runAgent(input: {
       loadEvents: () => events,
       readContract
     })
+    // Keep the observational flight recorder current on long runs — the final
+    // write only happens in the terminal `finally`, so a multi-hour run would
+    // otherwise have no trajectory until it ends.
+    writeTrajectoryArtifactsBestEffort({
+      runDir,
+      runId,
+      loadEvents: () => events,
+      receipt: null
+    })
     lastReceiptPersistedStep = step
   }
   const writeStatus = (patch: Parameters<typeof updateStatus>[1]): void => {
@@ -871,10 +897,22 @@ export async function* runAgent(input: {
         messages = diskMessages.map((m) => ({ ...m }))
       }
       await syncMessagesAsync(runDir, messages)
-      // Seed cumulative billed totals from durable step_usage so resume does not
-      // undercount vs the full events.jsonl series (OTel: accumulate per invocation).
-      // Reads rotated archives too — old step_usage rows leave the live file.
-      costTotals = await loadStepUsageTotalsAsync(runDir)
+      // Seed cumulative billed totals. Prefer the durable loopCheckpoint
+      // usageTotals: events.jsonl archives rotate (oldest deleted), so
+      // re-summing step_usage rows loses billed tokens once history rotates —
+      // the checkpoint is written every step and is monotonic. Fall back to
+      // the archive sum when no checkpoint totals exist (legacy runs).
+      const archivedTotals = await loadStepUsageTotalsAsync(runDir)
+      const checkpointTotals = resumedLoopCheckpoint?.usageTotals
+      if (
+        checkpointTotals &&
+        checkpointTotals.steps >= archivedTotals.steps &&
+        checkpointTotals.billedInputTokens >= archivedTotals.billedInputTokens
+      ) {
+        costTotals = { ...emptyStepUsageTotals(), ...checkpointTotals, inputTokens: checkpointTotals.lastStepInputTokens }
+      } else {
+        costTotals = archivedTotals
+      }
     } else {
       messages = (input.messages ?? []).map((m) => ensureUserMessageAt({ ...m }))
       if (runExists(workspace, runId)) {
@@ -923,6 +961,38 @@ export async function* runAgent(input: {
           goal: seeded
         })
       }
+      // A follow-up message on a run whose goal is still the seeded trivial
+      // first prompt ("hi", "chat") means the real task never became the goal.
+      // Refresh status + contract.md from this invoke's instruction so the
+      // goal sidebar, contract "Done when", and loop governance reflect the
+      // actual task. Deliberate renames and longer seeded goals are kept.
+      const persisted = loadStatus(runDir)
+      const seededGoal = persisted?.goal?.trim() ?? ''
+      const isTrivialSeed =
+        seededGoal.length > 0 &&
+        seededGoal.length <= 12 &&
+        !seededGoal.includes(' ') &&
+        seededGoal.toLowerCase() !== 'chat' // 'chat' is the createRun default, already meaningful
+      const candidate = runGoalFromUserText(displayText)
+      const candidateMeaningful =
+        candidate !== 'chat' && candidate.trim().length > 12 && candidate.includes(' ')
+      if (
+        isTrivialSeed &&
+        candidateMeaningful &&
+        candidate.toLowerCase() !== seededGoal.toLowerCase()
+      ) {
+        writeStatus({ goal: candidate.slice(0, 200) })
+        const contractPath = join(runDir, 'contract.md')
+        try {
+          const contract = readFileSync(contractPath, 'utf8')
+          const updated = GOAL_SECTION_RE.test(contract)
+            ? contract.replace(GOAL_SECTION_RE, `$1${candidate.slice(0, 200)}$3`)
+            : contract
+          atomicWriteFile(contractPath, updated)
+        } catch {
+          // No contract.md (or unreadable) — goal refresh alone is fine.
+        }
+      }
     }
 
     // Fresh invoke — do not inherit a prior LOOP_SAFETY failure streak.
@@ -932,6 +1002,8 @@ export async function* runAgent(input: {
       invokeId,
       error: undefined
     })
+    // messages is still the FULL transcript here — the compaction fold below has
+    // not run yet, so the plain working index is already a full-transcript index.
     beginWriteCheckpoint(runDir, toolWorkspace, lastUserMessageIndex(messages))
 
     if (agentMode === 'plan') {
@@ -1058,6 +1130,55 @@ export async function* runAgent(input: {
     let truncationContinues = resumedLoopCheckpoint?.truncationContinues ?? 0
     let overflowRetryUsed = resumedLoopCheckpoint?.overflowRetryUsed ?? false
     let goalNoToolFinishes = resumedLoopCheckpoint?.goalNoToolFinishes ?? 0
+    /** Current cumulative usage as the checkpoint's optional v3 payload. */
+    const persistUsageTotalsCheckpointPayload = (): LoopCheckpoint['usageTotals'] => {
+      if (costTotals.steps === 0) return undefined
+      return {
+        billedInputTokens: costTotals.billedInputTokens,
+        peakInputTokens: costTotals.peakInputTokens,
+        outputTokens: costTotals.outputTokens,
+        billedCachedInputTokens: costTotals.billedCachedInputTokens,
+        cacheCreationInputTokens: costTotals.cacheCreationInputTokens,
+        reasoningTokens: costTotals.reasoningTokens,
+        steps: costTotals.steps,
+        stepsWithCacheReport: costTotals.stepsWithCacheReport,
+        billedCost: costTotals.billedCost,
+        billedCostSaved: costTotals.billedCostSaved,
+        stepsWithCostReport: costTotals.stepsWithCostReport,
+        generationMs: costTotals.generationMs,
+        lastStepInputTokens: costTotals.inputTokens
+      }
+    }
+    /**
+     * Merge cumulative usage into loopCheckpoint.json. events.jsonl archives
+     * rotate (oldest deleted, MAX_EVENT_ARCHIVES=5), so re-summing step_usage
+     * rows on resume silently loses billed tokens once history rotates — the
+     * durable checkpoint is the only monotonic source. Cheap (single atomic
+     * JSON write) and called once per agent step.
+     */
+    const persistUsageTotalsCheckpoint = (): void => {
+      if (!runDir || !isCurrentInvoke(runId, invokeId)) return
+      const usageTotals = persistUsageTotalsCheckpointPayload()
+      if (!usageTotals) return
+      try {
+        saveLoopCheckpoint(runDir, {
+          version: LOOP_CHECKPOINT_VERSION,
+          step,
+          invokeId,
+          updatedAt: new Date().toISOString(),
+          truncationContinues,
+          overflowRetryUsed,
+          identicalStepStreak,
+          lastStepFingerprint,
+          consecutiveToolFailureSteps,
+          emptyResponseContinues,
+          goalNoToolFinishes,
+          usageTotals
+        })
+      } catch {
+        // Checkpoint write is best-effort; the run must not fail on it.
+      }
+    }
     const persistLoopCheckpoint = (): void => {
       if (!runDir || !isCurrentInvoke(runId, invokeId)) return
       try {
@@ -1072,7 +1193,11 @@ export async function* runAgent(input: {
           lastStepFingerprint,
           consecutiveToolFailureSteps,
           emptyResponseContinues,
-          goalNoToolFinishes
+          goalNoToolFinishes,
+          // Carry the durable usage totals so this write never erases them.
+          ...(persistUsageTotalsCheckpointPayload()
+            ? { usageTotals: persistUsageTotalsCheckpointPayload() }
+            : {})
         })
       } catch (err) {
         logger.warn('Loop checkpoint persist failed', {
@@ -1487,6 +1612,15 @@ export async function* runAgent(input: {
     let toolFailureLoopHint: string | undefined
     /** Estimated tokens left by the last auto-compaction (re-compaction throttle). */
     let postCompactEstimateFloor: number | null = null
+    /**
+     * Last provider-reported input tokens for this run. The local estimator
+     * counts replay-only fields (reasoningState) that some upstreams never
+     * process, inflating the estimate ~2.9× vs the wire (run b0d72041:
+     * 433k estimated vs 148k billed). Anchoring the auto-compact decision on
+     * the provider number prevents compaction firing far too early on such
+     * providers. Local estimate still governs overflow and all UI estimates.
+     */
+    let providerInputTokens: number | null = null
     let lastCompactVerifyFailed = false
     let loopSafetyEmitted = false
     const stopForLoopSafety = function* (stop: LoopStop): Generator<AgentEvent, void, unknown> {
@@ -1512,6 +1646,12 @@ export async function* runAgent(input: {
     }
     const knownPaths = seedKnownPathsFromMessages(messages)
     const mutationPaths = seedMutationPathsFromMessages(messages)
+    /**
+     * Run-scoped recency map for the re-read soft note: successful inspect
+     * tools stamp the current step; a `read` inside the stale window gets a
+     * cheap steering note appended to its result (executeStepTools).
+     */
+    const recentReadPaths = new Map<string, number>()
     /** Plan-mode chat-essay nudges this invoke (cap 2). */
     let planUnreadyNudges = 0
     /** Empty-response auto-continues this invoke (unbounded, same class as truncation). */
@@ -1776,9 +1916,13 @@ export async function* runAgent(input: {
       const proactiveSuppressed =
         postCompactEstimateFloor !== null &&
         assembled.estimatedTokens < postCompactEstimateFloor + regrowthNeeded
+      const proactiveDecision = shouldTriggerAutoCompact(
+        assembled.estimatedTokens,
+        proactiveThreshold,
+        providerInputTokens
+      )
       const needsAutoCompact =
-        assembled.overflow ||
-        (assembled.estimatedTokens >= proactiveThreshold && !proactiveSuppressed)
+        assembled.overflow || (proactiveDecision.trigger && !proactiveSuppressed)
 
       const reloadCompactionWatermark = (): void => {
         if (!runDir) return
@@ -1799,6 +1943,8 @@ export async function* runAgent(input: {
           correlationId: runId,
           step,
           estimatedTokens: assembled.estimatedTokens,
+          providerInputTokens: providerInputTokens ?? undefined,
+          triggerSource: assembled.overflow ? 'overflow' : proactiveDecision.source,
           proactiveThreshold,
           overflow: assembled.overflow
         })
@@ -2273,6 +2419,9 @@ export async function* runAgent(input: {
             if (chunk.stopReason) stepStopReason = chunk.stopReason
             if (chunk.usage) {
               lastUsage = chunk.usage
+              if (chunk.usage.inputTokens && chunk.usage.inputTokens > 0) {
+                providerInputTokens = chunk.usage.inputTokens
+              }
               const generationMs = Math.max(0, Date.now() - streamStartedAt)
               const cacheFieldsPresent =
                 chunk.usage.cachedInputTokens != null ||
@@ -2307,6 +2456,7 @@ export async function* runAgent(input: {
                   stepPartial.stepsWithCacheReport = 1
                 }
                 costTotals = mergeStepUsageTotals(costTotals, stepPartial)
+                persistUsageTotalsCheckpoint()
               }
               const usageEv: AgentEvent = {
                 type: 'step_usage',
@@ -2868,7 +3018,25 @@ export async function* runAgent(input: {
               content: 'Your previous response was empty. Reply with your answer or tool calls.'
             }
             messages.push(continueUser)
-            await syncMessagesAsync(runDir, messages)
+            // Rewrite from DISK, not the working set: after mid-run compaction the
+            // working list is post-fold and a sync here would permanently drop the
+            // folded head from messages.jsonl (breaking rewind indices and the
+            // stitched transcript). Replicate the same edit against the full history.
+            if (foldedMessages > 0) {
+              const diskMessages = await loadMessagesAsync(workspace, runId)
+              const diskLast = diskMessages[diskMessages.length - 1]
+              if (
+                diskLast?.role === 'assistant' &&
+                !contentToText(diskLast.content).trim() &&
+                !diskLast.toolCalls?.length &&
+                !(diskLast.thinking ?? '').trim()
+              ) {
+                diskMessages.pop()
+              }
+              await syncMessagesAsync(runDir, [...diskMessages, continueUser])
+            } else {
+              await syncMessagesAsync(runDir, messages)
+            }
             continue
           }
         }
@@ -2927,8 +3095,10 @@ export async function* runAgent(input: {
         const closeTurn = tryBeginRunClosing(runId, invokeId)
         if (closeTurn === 'has_followups') {
           checkpointFlushed = false
-          beginWriteCheckpoint(runDir, toolWorkspace, lastUserMessageIndex(messages))
+          // Anchor AFTER draining so the checkpoint covers the follow-up turn's
+          // own prompt (rewind/edit of that prompt must restore its writes).
           yield* applyDrainedFollowUps(runId, runDir, messages, 'next')
+          beginWriteCheckpoint(runDir, toolWorkspace, lastUserAnchorIndex(messages, foldedMessages))
           continue
         }
         if (!incomplete && !isInlineInstance && closeTurn === 'closed') {
@@ -2950,7 +3120,7 @@ export async function* runAgent(input: {
             messages.push(continueUser)
             appendMessage(runDir, continueUser)
             checkpointFlushed = false
-            beginWriteCheckpoint(runDir, toolWorkspace, lastUserMessageIndex(messages))
+            beginWriteCheckpoint(runDir, toolWorkspace, lastUserAnchorIndex(messages, foldedMessages))
             continue
           }
           if (decision === 'stop_wait' && activeGoal) {
@@ -3095,6 +3265,8 @@ export async function* runAgent(input: {
         invokeId,
         knownPaths,
         mutationPaths,
+        recentReadPaths,
+        readStampStep: step,
         appendMessage: async (msg: ChatMessage) => {
           await appendMessage(runDir!, msg)
           // Surface persist failures before the next tool mutates the workspace.

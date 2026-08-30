@@ -182,3 +182,114 @@ describe('runAgent goal auto-continue', () => {
     expect(readGoal(resolveRunDir(workspace, runId))?.status).toBe('active')
   })
 })
+
+describe('runAgent trivial-seed goal refresh', () => {
+  let workspace: string
+
+  beforeEach(() => {
+    workspace = join(tmpdir(), `vyotiq-goal-refresh-${process.pid}-${Date.now()}`)
+    mkdirSync(workspace, { recursive: true })
+    resetActiveRunsForTests()
+    streamChat.mockReset()
+  })
+
+  afterEach(() => {
+    if (existsSync(userData)) rmSync(userData, { recursive: true, force: true })
+    if (existsSync(workspace)) rmSync(workspace, { recursive: true, force: true })
+  })
+
+  function fakeStream(): AsyncGenerator<StreamChunk> {
+    return (async function* () {
+      yield { type: 'text', text: 'ok' }
+      yield { type: 'done', stopReason: 'stop' }
+    })()
+  }
+
+  function readContract(runId: string): string {
+    return readFileSync(join(resolveRunDir(workspace, runId), 'contract.md'), 'utf8')
+  }
+
+  function readStatusGoal(runId: string): string | undefined {
+    const raw = JSON.parse(
+      readFileSync(join(resolveRunDir(workspace, runId), 'status.json'), 'utf8')
+    ) as { goal?: string }
+    return raw.goal
+  }
+
+  it('refreshes a trivial seeded goal from a meaningful follow-up message', async () => {
+    streamChat.mockImplementation(() => fakeStream())
+
+    const runId = 'goal-refresh-hi'
+    // Invoke 1: trivial "hi" seeds the goal.
+    for await (const _ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'hi' }],
+      workspacePath: workspace
+    })) {
+      // drain
+    }
+    expect(readStatusGoal(runId)).toBe('hi')
+
+    // Invoke 2 (resume of the same run): real task arrives.
+    const realTask =
+      'Audit and check the indexing and embedding pipeline end to end, find all the issues.'
+    for await (const _ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: realTask }],
+      workspacePath: workspace
+    })) {
+      // drain
+    }
+    const goal = readStatusGoal(runId)
+    expect(goal).toBeTruthy()
+    expect(goal!.length).toBeGreaterThan(12)
+    expect(goal).toContain('indexing')
+    expect(readContract(runId)).toContain('indexing')
+  })
+
+  it('keeps a deliberate longer goal untouched on follow-up invokes', async () => {
+    streamChat.mockImplementation(() => fakeStream())
+
+    const runId = 'goal-refresh-keep'
+    for await (const _ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'Refactor the storage layer for durability' }],
+      workspacePath: workspace
+    })) {
+      // drain
+    }
+    expect(readStatusGoal(runId)).toBe('Refactor the storage layer for durability')
+
+    for await (const _ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'now also add tests for it' }],
+      workspacePath: workspace
+    })) {
+      // drain
+    }
+    expect(readStatusGoal(runId)).toBe('Refactor the storage layer for durability')
+  })
+
+  it('does not downgrade the goal when the follow-up is itself trivial', async () => {
+    streamChat.mockImplementation(() => fakeStream())
+
+    const runId = 'goal-refresh-trivial-followup'
+    for await (const _ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'Plan the migration carefully and completely' }],
+      workspacePath: workspace
+    })) {
+      // drain
+    }
+    const before = readStatusGoal(runId)
+
+    for await (const _ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'ok' }],
+      workspacePath: workspace
+    })) {
+      // drain
+    }
+    expect(readStatusGoal(runId)).toBe(before)
+  })
+})

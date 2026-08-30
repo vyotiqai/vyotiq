@@ -107,6 +107,75 @@ describe('executeStepToolCalls', () => {
     expect(order).toEqual(['read', 'edit', 'read'])
   })
 
+  describe('re-read soft note', () => {
+    function makeCtxWithReads() {
+      const { ctx } = makeCtx(new AbortController().signal)
+      const recentReadPaths = new Map<string, number>([['a.ts', 10]])
+      const withReads = {
+        ...ctx,
+        recentReadPaths,
+        readStampStep: 11
+      } as unknown as TestCtx
+      return { ctx: withReads, recentReadPaths }
+    }
+
+    it('appends a note when a full-file read repeats within the stale window', async () => {
+      executeTool.mockImplementation(async () => ({
+        ok: true,
+        summary: 'read',
+        content: 'file body'
+      }))
+      const { ctx } = makeCtxWithReads()
+      const outcome = await executeStepToolCalls(
+        [{ id: 'r1', name: 'read', arguments: '{"path":"a.ts"}' }],
+        ctx
+      )
+      expect(outcome.messages[0]?.content).toContain('[Note: a.ts was already read 1 step ago')
+      expect(outcome.messages[0]?.content).toContain('file body')
+    })
+
+    it('does not note first-time, ranged, or stale reads', async () => {
+      executeTool.mockImplementation(async () => ({
+        ok: true,
+        summary: 'read',
+        content: 'file body'
+      }))
+      const { ctx, recentReadPaths } = makeCtxWithReads()
+      recentReadPaths.set('ranged.ts', 10)
+      recentReadPaths.set('old.ts', 3)
+      const outcome = await executeStepToolCalls(
+        [
+          { id: 'r1', name: 'read', arguments: '{"path":"new.ts"}' },
+          { id: 'r2', name: 'read', arguments: '{"path":"ranged.ts","startLine":1,"endLine":5}' },
+          { id: 'r3', name: 'read', arguments: '{"path":"old.ts"}' }
+        ],
+        ctx
+      )
+      for (const msg of outcome.messages) {
+        expect(msg.content).not.toContain('[Note:')
+      }
+    })
+
+    it('records fresh reads and drops them after a successful mutation', async () => {
+      executeTool.mockImplementation(async () => ({
+        ok: true,
+        summary: 'read',
+        content: 'file body'
+      }))
+      const { ctx, recentReadPaths } = makeCtxWithReads()
+      await executeStepToolCalls(
+        [{ id: 'r1', name: 'read', arguments: '{"path":"fresh.ts"}' }],
+        ctx
+      )
+      expect(recentReadPaths.get('fresh.ts')).toBe(11)
+      await executeStepToolCalls(
+        [{ id: 'e1', name: 'edit', arguments: '{"path":"fresh.ts","contents":"next"}' }],
+        ctx
+      )
+      expect(recentReadPaths.has('fresh.ts')).toBe(false)
+    })
+  })
+
   it('remaps invented Write onto edit before dispatch', async () => {
     executeTool.mockImplementation(async (name: string) => {
       return { ok: true, summary: name, content: `ok:${name}` }
@@ -1006,5 +1075,45 @@ describe('groupStepToolCalls', () => {
     )
     expect(spy.mock.calls.length).toBeGreaterThanOrEqual(3)
     spy.mockRestore()
+  })
+
+  it('logs the real error line (not the args summary) when a tool fails', async () => {
+    const { logger } = await import('@shared/logger')
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    executeTool.mockResolvedValue({
+      ok: false,
+      summary: '2 tasks',
+      content: 'todos.0.content: Required; todos.1.content: Required'
+    })
+    const { ctx } = makeCtx(new AbortController().signal)
+    await executeStepToolCalls(
+      [{ id: 't1', name: 'todo_write', arguments: '{"todos":[{},{}]}' }],
+      ctx
+    )
+    const failLog = warnSpy.mock.calls.find(([msg]) => msg === 'Tool returned failure')
+    expect(failLog).toBeDefined()
+    const fields = failLog?.[1] as { tool: string; reason?: string }
+    expect(fields.tool).toBe('todo_write')
+    expect(fields.reason).toBe('todos.0.content: Required; todos.1.content: Required')
+    warnSpy.mockRestore()
+  })
+
+  it('bounds a multi-line failure log to its first line and falls back to summary', async () => {
+    const { logger } = await import('@shared/logger')
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    executeTool.mockResolvedValue({
+      ok: false,
+      summary: 'cmd',
+      content: 'first line\nsecond line\nthird line'
+    })
+    const { ctx } = makeCtx(new AbortController().signal)
+    await executeStepToolCalls(
+      [{ id: 'x1', name: 'terminal', arguments: '{"command":"false"}' }],
+      ctx
+    )
+    const failLog = warnSpy.mock.calls.find(([msg]) => msg === 'Tool returned failure')
+    const fields = failLog?.[1] as { reason?: string }
+    expect(fields.reason).toBe('first line')
+    warnSpy.mockRestore()
   })
 })

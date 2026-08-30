@@ -8,7 +8,7 @@ vi.mock('@main/app/window', () => ({
 }))
 
 import { executeTool } from '@main/agent/tools'
-import { toolTodoWrite } from '@main/agent/tools/todo'
+import { readTodos, toolTodoWrite } from '@main/agent/tools/todo'
 import { wireToolCallArguments } from '@main/agent/toolArgWire'
 
 describe('parseToolArgs dispatch', () => {
@@ -168,6 +168,79 @@ describe('parseToolArgs dispatch', () => {
       )
       expect(unclosed.ok).toBe(true)
       expect(JSON.parse(readFileSync(join(runDir, 'todos.json'), 'utf8'))).toMatchObject({ todos })
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects whitespace-only todo content instead of falling back to the id', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'vyotiq-todo-blank-'))
+    try {
+      const result = await executeTool(
+        'todo_write',
+        JSON.stringify({ todos: [{ id: 't1', content: '   ', status: 'pending' }] }),
+        runDir,
+        new AbortController().signal,
+        { runDir }
+      )
+      expect(result.ok).toBe(false)
+      expect(result.content).toContain('todos.0.content')
+      expect(existsSync(join(runDir, 'todos.json'))).toBe(false)
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+    }
+  })
+
+  it('rejects whitespace-only todo ids', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'vyotiq-todo-blank-id-'))
+    try {
+      const result = await executeTool(
+        'todo_write',
+        JSON.stringify({ todos: [{ id: '  ', content: 'Real task text', status: 'pending' }] }),
+        runDir,
+        new AbortController().signal,
+        { runDir }
+      )
+      expect(result.ok).toBe(false)
+      expect(result.content).toContain('todos.0.id')
+      expect(existsSync(join(runDir, 'todos.json'))).toBe(false)
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+    }
+  })
+
+  it('trims padded todo ids and content instead of storing surrounding whitespace', async () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'vyotiq-todo-pad-'))
+    try {
+      const result = await executeTool(
+        'todo_write',
+        JSON.stringify({
+          todos: [{ id: '  t1  ', content: '  Padded task text  ', status: 'pending' }]
+        }),
+        runDir,
+        new AbortController().signal,
+        { runDir }
+      )
+      expect(result.ok).toBe(true)
+      expect(readTodos(runDir)).toEqual([
+        { id: 't1', content: 'Padded task text', status: 'pending' }
+      ])
+    } finally {
+      rmSync(runDir, { recursive: true, force: true })
+    }
+  })
+
+  it('direct toolTodoWrite merge with blank content leaves the stored task untouched', () => {
+    const runDir = mkdtempSync(join(tmpdir(), 'vyotiq-todo-merge-guard-'))
+    try {
+      toolTodoWrite(runDir, [{ id: 't1', content: 'Implement the parser fix', status: 'in_progress' }])
+      // Bypasses the Zod schema (library callers): a blank merge must be a
+      // no-op — never overwrite the stored text, never rename to the id,
+      // never write an item todos.json cannot read back.
+      toolTodoWrite(runDir, [{ id: 't1', content: '   ', status: 'completed' }], true)
+      expect(readTodos(runDir)).toEqual([
+        { id: 't1', content: 'Implement the parser fix', status: 'in_progress' }
+      ])
     } finally {
       rmSync(runDir, { recursive: true, force: true })
     }

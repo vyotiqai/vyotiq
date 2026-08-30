@@ -345,9 +345,14 @@ const todoWriteArgs = z
       .array(
         z
           .object({
-            id: z.string().min(1).describe('Stable id'),
+            id: z
+              .string()
+              .trim()
+              .min(1)
+              .describe('Stable id'),
             content: z
               .string()
+              .trim()
               .min(1)
               .describe('Task text (whitespace collapsed)'),
             status: z
@@ -389,8 +394,16 @@ const createPlanArgs = z.object({
   todos: z
     .array(
       z.object({
-        id: z.string().min(1).describe('Stable id'),
-        content: z.string().min(1).describe('Task text'),
+        id: z
+          .string()
+          .trim()
+          .min(1)
+          .describe('Stable id'),
+        content: z
+          .string()
+          .trim()
+          .min(1)
+          .describe('Task text'),
         status: z
           .enum(['pending', 'in_progress', 'completed', 'cancelled'])
           .describe('pending, in_progress, completed, or cancelled')

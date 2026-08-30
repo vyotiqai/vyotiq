@@ -21,15 +21,116 @@ import { resolveInsideWorkspace } from '../workspace/safePath'
 import {
   applyToolCallToKnownPaths,
   applyToolCallToMutationPaths,
+  deletePathFromToolCall,
+  editPathsFromToolCall,
+  isConcreteWorkspacePath,
   isFileMutationToolName,
+  isInspectToolName,
+  normalizeWorkspaceRelPath,
   toolArgsFromCall,
   unreadExistingEditPaths
 } from './loopPolicy'
+import { searchHitPathsFromResult } from './tools/search'
+import { codebaseSearchHitPathsFromResult } from './codeindex/search'
+import { readPathArg } from './tools/argAccess'
 import { hasJavaScriptProject, hasTypeScriptProject } from './tools/diagnostics'
 import { ensureToolCallIds } from './dedupeToolCalls'
 import { yieldToEventLoop } from './tools/walk'
 export const SOFT_WARN_MUTATION_WITHOUT_DIAGNOSTICS =
   '[Soft warning: this step mutated file(s) without calling diagnostics. Run diagnostics (typecheck/lint) before treating the change as done.]'
+
+/**
+ * A read is "recent" if the same path was returned within this many agent
+ * steps. Beyond that, workspace state may plausibly have moved on.
+ */
+const RECENT_READ_STALE_STEPS = 4
+
+/**
+ * Soft note when the model re-reads a path whose contents are already in its
+ * recent context. Deliberately non-blocking: re-reads are sometimes legitimate
+ * (file may have changed, targeted startLine/endLine window). Mirrors the
+ * soft-warning pattern used for unread-edit and missing-diagnostics nudges.
+ */
+export function recentRereadNote(
+  recentReadPaths: Map<string, number> | undefined,
+  readStampStep: number | undefined,
+  name: string,
+  args: Record<string, unknown>
+): string | undefined {
+  if (!recentReadPaths || readStampStep == null) return undefined
+  if (name !== 'read') return undefined
+  const path = readPathArg(args) ? normalizeWorkspaceRelPath(readPathArg(args)!) : ''
+  if (!path) return undefined
+  // A ranged read targets a specific window — not the full-file restatement
+  // the guard exists for.
+  if (args.startLine !== undefined || args.endLine !== undefined) return undefined
+  const lastReadAt = recentReadPaths.get(path)
+  if (lastReadAt == null) return undefined
+  const age = readStampStep - lastReadAt
+  if (age < 0 || age > RECENT_READ_STALE_STEPS) return undefined
+  return `[Note: ${path} was already read ${age === 0 ? 'this step' : `${age} step${age === 1 ? '' : 's'} ago`} and its contents are in your context. Re-read only if you expect it changed.]`
+}
+
+/** Record inspect-tool paths after a successful call. */
+function recordRecentReads(
+  recentReadPaths: Map<string, number> | undefined,
+  readStampStep: number | undefined,
+  name: string,
+  args: Record<string, unknown>,
+  ok: boolean,
+  resultContent: string | undefined
+): void {
+  if (!recentReadPaths || readStampStep == null) return
+  // A mutation makes every prior read of the target stale — a following re-read
+  // is legitimate and must not be noted. Delete also removes descendants.
+  if (ok && isFileMutationToolName(name)) {
+    for (const path of editPathsFromToolCall(name, args)) recentReadPaths.delete(path)
+    const deleted = deletePathFromToolCall(name, args)
+    if (deleted) {
+      const prefix = normalizeWorkspaceRelPath(deleted)
+      recentReadPaths.delete(prefix)
+      const dirPrefix = `${prefix}/`
+      for (const key of [...recentReadPaths.keys()]) {
+        if (key.startsWith(dirPrefix)) recentReadPaths.delete(key)
+      }
+    }
+    return
+  }
+  if (!ok) return
+  if (!isInspectToolName(name)) return
+  const stampStep = readStampStep
+  if (name === 'read' || name === 'list_dir') {
+    const path = readPathArg(args) ? normalizeWorkspaceRelPath(readPathArg(args)!) : ''
+    if (path) recentReadPaths.set(path, stampStep)
+    return
+  }
+  if (name === 'grep') {
+    const raw = typeof args.include === 'string' ? args.include : args.path
+    if (typeof raw === 'string' && isConcreteWorkspacePath(raw)) {
+      recentReadPaths.set(normalizeWorkspaceRelPath(raw), stampStep)
+    }
+    return
+  }
+  if (name === 'glob') {
+    const pattern = typeof args.pattern === 'string' ? args.pattern : ''
+    if (isConcreteWorkspacePath(pattern)) {
+      recentReadPaths.set(normalizeWorkspaceRelPath(pattern), stampStep)
+    }
+    return
+  }
+  // search / codebase_search: stamp concrete hit paths from the result text.
+  if (typeof resultContent === 'string' && resultContent) {
+    const hits =
+      name === 'search'
+        ? searchHitPathsFromResult(resultContent)
+        : codebaseSearchHitPathsFromResult(resultContent)
+    for (const hit of hits) {
+      const path = normalizeWorkspaceRelPath(hit)
+      if (isConcreteWorkspacePath(path)) recentReadPaths.set(path, stampStep)
+    }
+  }
+}
+
 
 export type ToolStepContext = {
   runId: string
@@ -90,6 +191,14 @@ export type ToolStepContext = {
   invalidateMcpToolCatalogCache?: () => void
   /** Run-scoped MCP not-in-catalog rejection counts (per full tool name). */
   mcpNotInCatalogCounts?: Map<string, number>
+  /**
+   * Run-scoped paths returned by a recent successful read/list_dir/grep/glob.
+   * A read of an already-read path gets a soft note (cheap steering) instead of
+   * burning a full step on re-inspection the model already has in context.
+   */
+  recentReadPaths?: Map<string, number>
+  /** Current agent step — stamps recentReadPaths entries. */
+  readStampStep?: number
 }
 
 type ToolOutcome = {
@@ -217,6 +326,12 @@ async function runSingleTool(
     }
 
     const toolArgs = toolArgsFromCall(call.arguments)
+    const rereadNote = recentRereadNote(
+      ctx.recentReadPaths,
+      ctx.readStampStep,
+      call.name,
+      toolArgs
+    )
     const unreadPaths =
       ctx.knownPaths != null
         ? unreadExistingEditPaths(ctx.knownPaths, call.name, toolArgs, (rel) => {
@@ -282,6 +397,9 @@ async function runSingleTool(
     if (result.ok && unreadPaths.length > 0) {
       content = `${content}\n\n[Soft warning: edited existing file(s) without a prior read/grep/glob/codebase_search inspect: ${unreadPaths.join(', ')}]`
     }
+    if (result.ok && rereadNote) {
+      content = `${content}\n\n${rereadNote}`
+    }
     if (
       result.ok &&
       stepFlags?.softDiagnosticsNudge &&
@@ -301,6 +419,14 @@ async function runSingleTool(
     if (ctx.mutationPaths) {
       applyToolCallToMutationPaths(ctx.mutationPaths, call.name, toolArgs, result.ok)
     }
+    recordRecentReads(
+      ctx.recentReadPaths,
+      ctx.readStampStep,
+      call.name,
+      toolArgs,
+      result.ok,
+      result.ok ? result.content : undefined
+    )
     const resultSummary = result.summary || summary
     const toolMsg: ChatMessage = {
       role: 'tool',
@@ -319,12 +445,17 @@ async function runSingleTool(
       content
     })
     if (!result.ok && !result.failureLogged) {
+      // The args summary (e.g. "2 tasks") is not a failure reason. The real
+      // error text lives in content — log its first line, bounded, so logs
+      // and chips are actionable without dumping full tool output.
+      const firstLine = result.content.split('\n', 1)[0]!.trim()
+      const failureReason = (firstLine || result.summary).slice(0, 300)
       logger.warn('Tool returned failure', {
         scope: 'agent',
         code: 'TOOL_EXEC',
         correlationId: ctx.runId,
         tool: call.name,
-        reason: result.summary === 'error' ? undefined : result.summary
+        reason: failureReason === 'error' ? undefined : failureReason
       })
     }
     return {

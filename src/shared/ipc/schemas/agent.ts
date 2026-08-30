@@ -908,7 +908,7 @@ export const PredictionManifestSchema = z.object({
 export type PredictionManifest = z.infer<typeof PredictionManifestSchema>
 
 /** Per-run loop checkpoint for survive-restart (step-boundary loop invariants). */
-export const LOOP_CHECKPOINT_VERSION = 2 as const
+export const LOOP_CHECKPOINT_VERSION = 3 as const
 
 export const LoopCheckpointSchema = z.object({
   version: z.literal(LOOP_CHECKPOINT_VERSION),
@@ -922,7 +922,30 @@ export const LoopCheckpointSchema = z.object({
   lastStepFingerprint: z.string().max(64).default(''),
   consecutiveToolFailureSteps: z.number().int().min(0).default(0),
   emptyResponseContinues: z.number().int().min(0).default(0),
-  goalNoToolFinishes: z.number().int().min(0).default(0)
+  goalNoToolFinishes: z.number().int().min(0).default(0),
+  /**
+   * Durable cumulative usage (v3). events.jsonl rotates its archives
+   * (MAX_EVENT_ARCHIVES) and deletes the oldest, so re-summing step_usage
+   * rows on resume silently loses billed tokens/cost once history rotates.
+   * This checkpoint is monotonic and survives rotation.
+   */
+  usageTotals: z
+    .object({
+      billedInputTokens: z.number().int().min(0),
+      peakInputTokens: z.number().int().min(0),
+      outputTokens: z.number().int().min(0),
+      billedCachedInputTokens: z.number().int().min(0),
+      cacheCreationInputTokens: z.number().int().min(0),
+      reasoningTokens: z.number().int().min(0),
+      steps: z.number().int().min(0),
+      stepsWithCacheReport: z.number().int().min(0),
+      billedCost: z.number(),
+      billedCostSaved: z.number(),
+      stepsWithCostReport: z.number().int().min(0),
+      generationMs: z.number().int().min(0),
+      lastStepInputTokens: z.number().int().min(0)
+    })
+    .optional()
 })
 export type LoopCheckpoint = z.infer<typeof LoopCheckpointSchema>
 

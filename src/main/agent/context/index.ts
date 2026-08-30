@@ -22,7 +22,8 @@ export {
   estimateMessagesTokensAsync,
   estimateTextTokens,
   estimateTextTokensAsync,
-  effectiveInputTokens
+  effectiveInputTokens,
+  shouldTriggerAutoCompact
 } from './estimate'
 export {
   countTextTokens,

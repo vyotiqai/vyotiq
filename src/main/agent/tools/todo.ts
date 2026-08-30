@@ -129,10 +129,18 @@ export function sanitizeTodoItemContent(content: string): string {
 function normalizeTodoItems(todos: TodoItem[]): TodoItem[] {
   const byId = new Map<string, TodoItem>()
   for (const todo of todos) {
-    byId.set(todo.id, {
-      ...todo,
-      content: sanitizeTodoItemContent(todo.content) || todo.content.trim() || todo.id
-    })
+    // Defense-in-depth for callers that bypass the Zod schema (direct
+    // toolTodoWrite calls): schema-validated args are already trimmed and
+    // non-empty. Every stored item must keep non-empty id and content so
+    // todos.json always round-trips through TodoFileSchema — an item with
+    // no usable text is not a task, so it is dropped rather than stored
+    // with content:"" (unreadable) or the id as text (silent rename).
+    const id = todo.id.trim()
+    if (!id) continue
+    const sanitized = sanitizeTodoItemContent(todo.content)
+    const content = sanitized || todo.content.trim()
+    if (!content) continue
+    byId.set(id, { id, content, status: todo.status })
   }
   return [...byId.values()]
 }

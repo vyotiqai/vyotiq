@@ -55,7 +55,7 @@ export const TERMINAL_MAX_OUTPUT = 64 * 1024
  */
 export const TERMINAL_MAX_TIMEOUT_MS = 1_800_000
 /** Default wait for a new command when timeoutMs / block_until_ms are omitted. */
-export const TERMINAL_DEFAULT_TIMEOUT_MS = 60_000
+export const TERMINAL_DEFAULT_TIMEOUT_MS = 300_000
 const SESSION_POLL_DEFAULT_MS = 30_000
 
 /** New-command wait: timeoutMs wins over block_until_ms unless background-now (0). */

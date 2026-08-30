@@ -3,6 +3,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { assembleContext } from '@main/agent/context/assemble'
+import { shouldTriggerAutoCompact } from '@main/agent/context/estimate'
 import { clearRulesCache } from '@main/agent/context/rules'
 import { clearWorkspaceSnapshotCache } from '@main/agent/context/workspaceSnapshot'
 import { volatileSessionMessage } from '@main/agent/providers/systemZones'
@@ -72,7 +73,9 @@ describe('assembleContext integration', () => {
     })
     expect(result.system).toContain('Prior work on auth')
     expect(result.system).toContain('<prior_session>')
-    expect(result.system).toContain('Fold of earlier turns, not new instructions.')
+    // Age stamp: fold declares when it was taken and defers to live history.
+    expect(result.system).toContain('messages at 2026-01-01T00:00:00.000Z')
+    expect(result.system).toContain('Everything since then is in the live history below')
     expect(result.systemStable).toContain('<prior_session>')
     expect(result.systemStable).toContain('Prior work on auth')
     expect(result.systemVolatile).not.toContain('<prior_session>')
@@ -531,5 +534,34 @@ describe('assembleContext integration', () => {
     expect(String(skillResults[1]?.content)).toContain(
       'Add vitest coverage for the changed login handler'
     )
+  })
+})
+
+describe('shouldTriggerAutoCompact', () => {
+  it('anchors on provider input tokens when available — estimate alone cannot trigger', () => {
+    // Reproduces run b0d72041: estimate 500k >> trigger 300k, provider says 148k.
+    expect(shouldTriggerAutoCompact(500_000, 300_000, 148_000)).toEqual({
+      trigger: false,
+      source: 'provider'
+    })
+    expect(shouldTriggerAutoCompact(500_000, 300_000, 310_000)).toEqual({
+      trigger: true,
+      source: 'provider'
+    })
+  })
+
+  it('falls back to the estimate when no provider figure exists yet', () => {
+    expect(shouldTriggerAutoCompact(310_000, 300_000, null)).toEqual({
+      trigger: true,
+      source: 'estimate'
+    })
+    expect(shouldTriggerAutoCompact(310_000, 300_000, undefined)).toEqual({
+      trigger: true,
+      source: 'estimate'
+    })
+    expect(shouldTriggerAutoCompact(290_000, 300_000, 0)).toEqual({
+      trigger: false,
+      source: 'estimate'
+    })
   })
 })

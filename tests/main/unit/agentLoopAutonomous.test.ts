@@ -103,7 +103,9 @@ describe('agentLoopAutonomous', () => {
     mkdirSync(workspace, { recursive: true })
     streamChat.mockReset()
     executeTool.mockReset()
-    executeTool.mockResolvedValue('file contents')
+    // ToolResult contract (src/main/agent/tools/index.ts): { ok, summary, content }.
+    // A bare string here crashes runSingleTool's failure-log path (result.content.split).
+    executeTool.mockResolvedValue({ ok: true, summary: 'read', content: 'file contents' })
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       const n = streamChat.mock.calls.length
       if (n === 1) {

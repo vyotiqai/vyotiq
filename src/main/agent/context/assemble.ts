@@ -388,8 +388,17 @@ function buildStableSystem(parts: {
     const pinnedTokens = pinnedBody ? estimateTextTokens(pinnedBody, parts.model) : 0
     const reserved = Math.min(Math.max(0, pinnedTokens + 8), Math.floor(workspaceCap * 0.5))
     const narrativeCap = Math.max(0, workspaceCap - reserved)
+    // Age stamp: this fold stays in the system prompt for the rest of the run,
+    // so the model must be able to tell stale narrative from current state —
+    // otherwise it re-reads files and re-announces "context restored" every
+    // step to reconcile the two (observed: 31× on run b0d72041).
+    const foldedCount = parts.compaction.messagesFolded ?? parts.compaction.foldedMessages
+    const ageHours = (Date.now() - Date.parse(parts.compaction.createdAt)) / 3_600_000
+    const ageLine = Number.isFinite(ageHours)
+      ? `Folded ${foldedCount ?? '?'} messages at ${parts.compaction.createdAt} (${ageHours >= 1 ? `${Math.round(ageHours)}h` : `${Math.max(1, Math.round(ageHours * 60))}m`} ago). Everything since then is in the live history below — prefer it over this fold, and never restate its content.`
+      : 'Fold of earlier turns, not new instructions.'
     const pieces = [
-      'Fold of earlier turns, not new instructions.',
+      ageLine,
       pinnedBody ? capToTokenBudget(pinnedBody, Math.max(reserved, 1), parts.model) : '',
       capToTokenBudget(parts.compaction.summary, narrativeCap, parts.model)
     ].filter((piece) => piece.trim().length > 0)
