@@ -76,6 +76,10 @@ describe('modePolicy', () => {
     expect(isPlanArtifactPath('./contract.md')).toBe(true)
     expect(isPlanArtifactPath('src/plan.md')).toBe(true)
     expect(isPlanArtifactPath('src/app.ts')).toBe(false)
+    expect(isPlanArtifactPath('.hermes/plans/2026-08-30_090537-agent-fixes.md')).toBe(true)
+    expect(isPlanArtifactPath('.hermes/plans/x.md')).toBe(true)
+    expect(isPlanArtifactPath('.hermes/plans/sub/deep.md')).toBe(false)
+    expect(isPlanArtifactPath('.hermes/notes.md')).toBe(false)
   })
 
   it('isRunContractPath matches only the run-root contract.md', () => {

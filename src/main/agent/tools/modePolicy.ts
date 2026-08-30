@@ -1,4 +1,4 @@
-import { basename, normalize } from 'path'
+import { basename } from 'path'
 import type { AgentInteractionMode } from '../../../shared/ipc'
 import { parseMcpToolName } from '../mcp'
 import { wrapPromptSection } from '../promptSections'
@@ -70,8 +70,9 @@ const PLAN_EXTRA_BUILTIN = new Set([
 export const PLAN_ARTIFACT_NAMES = new Set(['contract.md', 'plan.md'])
 
 export function isPlanArtifactPath(pathArg: string): boolean {
-  const base = basename(normalize(pathArg.replace(/\\/g, '/')))
-  return PLAN_ARTIFACT_NAMES.has(base)
+  const p = pathArg.replace(/\\/g, '/').replace(/^\.\//, '')
+  if (PLAN_ARTIFACT_NAMES.has(basename(p))) return true
+  return /^\.hermes\/plans\/[^/]+\.md$/i.test(p)
 }
 
 /** Workspace-relative path with `./` stripped — not nested `src/contract.md`. */
