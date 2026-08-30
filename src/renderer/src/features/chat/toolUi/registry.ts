@@ -352,9 +352,17 @@ const BUILTIN_REGISTRY: Record<string, ToolRegistryEntry> = {
     hasBody: todoHasBody,
     headerMeta: (tool) => {
       const data = parseTodoData(tool)
+      // On failure the summary is the args label ("2 tasks"); the actionable
+      // text is the validation error in content. Surface its first line.
+      const target =
+        tool.status !== 'fail'
+          ? data.total > 0
+            ? `${data.done}/${data.total} complete`
+            : tool.summary
+          : (tool.content?.split('\n', 1)[0]?.trim() || tool.summary)
       return {
         verb: toolLabel(tool.name, tool.status),
-        target: data.total > 0 ? `${data.done}/${data.total} complete` : tool.summary,
+        target,
         icon: 'listTodo'
       }
     }

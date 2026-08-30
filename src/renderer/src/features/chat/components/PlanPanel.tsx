@@ -8,6 +8,7 @@ import type { RunReceipt } from '@shared/ipc'
 import { RunReceiptSchema } from '@shared/ipc'
 import { EmptyPanel, PANEL_SUBTAB_BAR, panelSubtabClass } from './PanelChrome'
 import { TodoChecklist } from './TodoChecklist'
+import { TodoProgressBar } from './TasksCeilingBand'
 import { isPlanDraftReady } from '../utils/planDraft'
 import { useRunTodos } from '../hooks/useRunTodos'
 import type { WorkspaceFileOpenOptions } from './FilesPanel'
@@ -572,7 +573,10 @@ export const PlanPanel = memo(function PlanPanel({
         {todosError ? (
           <p className="m-0 text-caption text-danger">{todosError}</p>
         ) : (
-          <TodoChecklist items={todoItems} />
+          <>
+            <TodoProgressBar done={todosData!.done} total={todosData!.total} />
+            <TodoChecklist items={todoItems} className="mt-1.5" />
+          </>
         )}
       </div>
     ) : null

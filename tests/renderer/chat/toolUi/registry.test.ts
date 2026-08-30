@@ -247,6 +247,42 @@ describe('tool UI registry coverage', () => {
     })
   })
 
+  it('todo_write headerMeta shows progress on success', () => {
+    expect(
+      getToolHeaderMeta({
+        id: 'td1',
+        name: 'todo_write',
+        summary: '8 tasks',
+        status: 'done',
+        content: '4/8 complete\n[x] (1) Map architecture\n[~] (7) Benchmark'
+      })
+    ).toMatchObject({ verb: 'Updated tasks', target: '4/8 complete' })
+  })
+
+  it('todo_write headerMeta surfaces the validation error, not "2 tasks", on failure', () => {
+    expect(
+      getToolHeaderMeta({
+        id: 'td2',
+        name: 'todo_write',
+        summary: '2 tasks',
+        status: 'fail',
+        content: 'todos.0.content: Required; todos.1.content: Required'
+      })
+    ).toMatchObject({ verb: 'Failed', target: 'todos.0.content: Required; todos.1.content: Required' })
+  })
+
+  it('todo_write headerMeta falls back to summary when failed content is empty', () => {
+    expect(
+      getToolHeaderMeta({
+        id: 'td3',
+        name: 'todo_write',
+        summary: '2 tasks',
+        status: 'fail',
+        content: ''
+      })
+    ).toMatchObject({ target: '2 tasks' })
+  })
+
   it('unknown tool fallback headerMeta omits path placeholder target', () => {
     expect(
       getToolHeaderMeta({

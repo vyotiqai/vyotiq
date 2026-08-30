@@ -2634,8 +2634,6 @@ export function useWorkspaceManager(options?: {
             clearError: activeController.clearError.bind(activeController),
             applyManualCompaction: activeController.applyManualCompaction.bind(activeController),
             setCompacting: activeController.setCompacting.bind(activeController),
-            markWriteCheckpointUndone:
-              activeController.markWriteCheckpointUndone.bind(activeController),
             applyWriteCheckpointResolution:
               activeController.applyWriteCheckpointResolution.bind(activeController)
           }

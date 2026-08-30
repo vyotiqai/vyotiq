@@ -826,10 +826,16 @@ function turnOutcomeFromPersisted(
 }
 
 function writeCheckpointFromPersisted(events: PersistedEvent[]): WriteCheckpointState | null {
-  const unresolved: Extract<AgentEvent, { type: 'writes_checkpoint' }>[] = []
-  for (let i = events.length - 1; i >= 0; i--) {
-    const event = events[i]?.event
+  // A checkpoint id can appear in MULTIPLE rows: the turn's original append plus a
+  // later persistWriteCheckpointEvent row (Keep/Discard/Undo) that carries the
+  // resolution. Scan oldest→newest and let the newest row per checkpoint id win so
+  // a stale unresolved row cannot resurrect a resolved/undone banner after reload.
+  const resolvedIds = new Set<string>()
+  const unresolvedRows: Extract<AgentEvent, { type: 'writes_checkpoint' }>[] = []
+  for (const row of events) {
+    const event = row?.event
     if (!isAgentEvent(event) || event.type !== 'writes_checkpoint') continue
+    if (resolvedIds.has(event.checkpointId)) continue
     const files = event.files.map((f) => ({
       path: f.path,
       action: f.action,
@@ -838,9 +844,17 @@ function writeCheckpointFromPersisted(events: PersistedEvent[]): WriteCheckpoint
     }))
     const fullyResolved =
       files.length > 0 && files.every((f) => Boolean(f.resolved) || !f.undoable)
-    if (event.undone === true || fullyResolved) continue
-    unresolved.push(event)
+    if (event.undone === true || fullyResolved) {
+      resolvedIds.add(event.checkpointId)
+      continue
+    }
+    unresolvedRows.push(event)
   }
+  // Newest unresolved rows first, and only for ids never resolved by a later row.
+  const unresolved = unresolvedRows
+    .slice()
+    .reverse()
+    .filter((event) => !resolvedIds.has(event.checkpointId))
   if (unresolved.length === 0) return null
 
   const latest = unresolved[0]
@@ -1165,8 +1179,6 @@ export type ChatStreamController = ChatStreamState & {
   }) => void
   /** Mark compacting in-flight for manual Compact (IPC has no live stream). */
   setCompacting: (compacting: boolean) => void
-  /** Mark the live write checkpoint as undone after a successful IPC undo. */
-  markWriteCheckpointUndone: (checkpointId?: string) => void
   /** Apply Keep/Discard results onto the live write checkpoint state. */
   applyWriteCheckpointResolution: (result: {
     checkpointId: string
@@ -4101,22 +4113,6 @@ export function createChatStreamController(
     patch({ compacting: next })
   }
 
-  const markWriteCheckpointUndone = (checkpointId?: string): void => {
-    if (disposed) return
-    const current = state.writeCheckpoint
-    if (!current) return
-    if (checkpointId && current.checkpointId !== checkpointId) return
-    patch({
-      writeCheckpoint: {
-        ...current,
-        undone: true,
-        files: current.files.map((f) =>
-          f.resolved ? f : { ...f, resolved: 'discarded' as const }
-        )
-      }
-    })
-  }
-
   const applyWriteCheckpointResolution = (result: {
     checkpointId: string
     kept: string[]
@@ -4253,7 +4249,6 @@ export function createChatStreamController(
     syncFromDisk,
     applyManualCompaction,
     setCompacting,
-    markWriteCheckpointUndone,
     applyWriteCheckpointResolution,
     handleEvent,
     setUiSuspended,

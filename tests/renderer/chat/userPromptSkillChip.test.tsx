@@ -163,7 +163,7 @@ describe('UserPrompt slash chips', () => {
       />
     )
     // Same fallback MessageFooter copy and sidebar row actions already carry.
-    for (const label of ['Edit message', 'Revert back']) {
+    for (const label of ['Edit message', 'Revert to before this prompt']) {
       const button = screen.getByRole('button', { name: label })
       expect(button.className).toMatch(/\[@media\(hover:none\)\]:opacity-100/)
       expect(button.className).toMatch(/opacity-0/)

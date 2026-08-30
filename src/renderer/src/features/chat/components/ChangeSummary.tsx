@@ -226,7 +226,7 @@ export const ChangeSummary = memo(function ChangeSummary({
                   variant="subtle"
                   className="ml-2 h-6 px-2 text-xs"
                   disabled={resolveDisabled}
-                  title={resolveBlockedReason ?? undefined}
+                  title={resolveBlockedReason ?? 'Keep every listed file as-is'}
                   onClick={() => {
                     void onKeepAll()
                   }}
@@ -236,15 +236,18 @@ export const ChangeSummary = memo(function ChangeSummary({
               ) : null}
               {onDiscardAll ? (
                 <Button
-                  variant="subtle"
+                  variant="danger"
                   className="h-6 px-2 text-xs"
                   disabled={resolveDisabled}
-                  title={resolveBlockedReason ?? undefined}
+                  title={
+                    resolveBlockedReason ??
+                    'Restore every listed file to its state before the agent ran'
+                  }
                   onClick={() => {
                     void onDiscardAll()
                   }}
                 >
-                  {resolveBusy ? 'Working…' : 'Discard all'}
+                  {resolveBusy ? 'Working…' : 'Undo all'}
                 </Button>
               ) : null}
             </>
@@ -308,7 +311,7 @@ export const ChangeSummary = memo(function ChangeSummary({
                           variant="subtle"
                           className="h-5 px-1.5 text-2xs"
                           disabled={resolveDisabled}
-                          title={resolveBlockedReason ?? undefined}
+                          title={resolveBlockedReason ?? 'Keep this file as the agent wrote it'}
                           onClick={() => {
                             void onKeepFile(file.path)
                           }}
@@ -319,14 +322,17 @@ export const ChangeSummary = memo(function ChangeSummary({
                       {onDiscardFile ? (
                         <Button
                           variant="subtle"
-                          className="h-5 px-1.5 text-2xs"
+                          className="h-5 px-1.5 text-2xs text-danger"
                           disabled={resolveDisabled}
-                          title={resolveBlockedReason ?? undefined}
+                          title={
+                            resolveBlockedReason ??
+                            'Restore this file to its state before the agent wrote it'
+                          }
                           onClick={() => {
                             void onDiscardFile(file.path)
                           }}
                         >
-                          Discard
+                          Undo
                         </Button>
                       ) : null}
                     </>

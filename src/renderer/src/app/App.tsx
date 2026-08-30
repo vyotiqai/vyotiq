@@ -12,6 +12,7 @@ import { useSettings } from '@renderer/lib/hooks/useSettings'
 import { useWorkspaceManager, resolveComposerDraft } from '@renderer/lib/hooks/useWorkspaceManager'
 import { ErrorBoundary } from '@renderer/lib/ErrorBoundary'
 import { ToastHost, pushToast } from '@renderer/lib/ui'
+import { useConfirm } from '@renderer/lib/hooks/useConfirm'
 import { focusComposerMessage } from '@renderer/lib/shortcuts'
 import { useLiveAnnouncer } from '@renderer/lib/a11y'
 import type {
@@ -702,9 +703,30 @@ function App() {
     []
   )
 
-  const onChatRevertToUserMessage = useCallback(async (userMessageIndex: number) => {
-    return chatActionsRef.current?.revertToUserMessage?.(userMessageIndex) ?? false
-  }, [])
+  const { confirm, dialog: confirmDialog } = useConfirm()
+
+  const onChatRevertToUserMessage = useCallback(
+    async (userMessageIndex: number) => {
+      const count = Math.max(0, chat.messages.length - userMessageIndex - 1)
+      const ok = await confirm(
+        count === 1
+          ? 'Revert to before this prompt? The reply and any workspace edits made after it are undone and the turn is removed from the chat.'
+          : `Revert to before this prompt? ${count} turns and any workspace edits made after it are undone and removed from the chat.`,
+        {
+          title: 'Revert to earlier prompt',
+          confirmLabel: 'Revert',
+          danger: true
+        }
+      )
+      if (!ok) return false
+      const done = await (chatActionsRef.current?.revertToUserMessage?.(userMessageIndex) ?? false)
+      if (done) {
+        pushToast('Reverted to the earlier prompt. Later turns were removed.', 'success')
+      }
+      return done
+    },
+    [confirm, chat.messages]
+  )
 
   const onChatStop = useCallback(() => {
     void chatActionsRef.current?.stop()
@@ -1967,6 +1989,7 @@ function App() {
       )}
       <LiveRegion />
       <ToastHost />
+      {confirmDialog}
       <ToolApprovalOnboardingModal
         open={approvalOnboardingOpen}
         error={settingsError}

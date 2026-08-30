@@ -143,7 +143,7 @@ export function UserPrompt({
         </Tooltip>
       ) : null}
       {revertable ? (
-        <Tooltip content="Revert back to this prompt">
+        <Tooltip content="Restore files and chat as they were before this prompt">
           <button
             type="button"
             className={cn(
@@ -154,7 +154,7 @@ export function UserPrompt({
               'group-hover/prompt:opacity-100 group-focus-within/prompt:opacity-100',
               'focus-visible:opacity-100 focus-visible:vy-focus-ring'
             )}
-            aria-label="Revert back"
+            aria-label="Revert to before this prompt"
             data-no-prompt-edit
             onClick={(e) => {
               e.stopPropagation()

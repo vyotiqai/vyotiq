@@ -35,7 +35,8 @@ import type {
 } from '@shared/ipc'
 import { isRetryableTurnFailure } from '@shared/errors'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
-import { Alert, PanelResizeHandle } from '@renderer/lib/ui'
+import { Alert, PanelResizeHandle, pushToast } from '@renderer/lib/ui'
+import { useConfirm } from '@renderer/lib/hooks/useConfirm'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
 import { usePersistedNumber } from '@renderer/lib/hooks/usePersistedNumber'
 import { setDockImmersive } from '@renderer/lib/hooks/dockImmersiveStore'
@@ -655,10 +656,24 @@ const runGoal = useRunGoal({
     const ok = await onKeepAllWrites?.()
     if (ok !== false) notifyGitMutated()
   }, [onKeepAllWrites, notifyGitMutated])
+  const { confirm, dialog: confirmDialog } = useConfirm()
+
   const discardAllWrites = useCallback(async () => {
-    const ok = await onUndoWrites?.()
-    if (ok !== false) notifyGitMutated()
-  }, [onUndoWrites, notifyGitMutated])
+    const ok = await confirm(
+      'Undo all agent edits? Every listed file is restored to its state before the agent ran. Files you edited yourself are untouched.',
+      {
+        title: 'Undo all agent edits',
+        confirmLabel: 'Undo all',
+        danger: true
+      }
+    )
+    if (!ok) return
+    const okDone = await onUndoWrites?.()
+    if (okDone !== false) {
+      notifyGitMutated()
+      pushToast('All agent edits were undone.', 'success')
+    }
+  }, [onUndoWrites, notifyGitMutated, confirm])
 
   // Prefer the shared mutating-tool revision (same clock as composer chrome), not
   // a per-done-tool + fileCount formula that over-fetches and races the status cache.
@@ -1420,6 +1435,7 @@ const runGoal = useRunGoal({
           />
         </div>
       ) : null}
+      {confirmDialog}
     </>
   )
 

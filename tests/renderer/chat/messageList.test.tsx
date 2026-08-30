@@ -1358,7 +1358,7 @@ describe('MessageList', () => {
     expect(onBegin).toHaveBeenCalledWith(0)
   })
 
-  it('shows Revert back only when later transcript content exists', () => {
+  it('shows revert-to-prompt control only when later transcript content exists', () => {
     const onRevert = vi.fn()
     const items: UiItem[] = [
       { kind: 'message', id: 'user-0', role: 'user', content: 'first prompt' },
@@ -1375,7 +1375,7 @@ describe('MessageList', () => {
       />
     )
 
-    expect(screen.getAllByLabelText('Revert back')).toHaveLength(2)
+    expect(screen.getAllByLabelText('Revert to before this prompt')).toHaveLength(2)
 
     rerender(
       <MessageList
@@ -1384,7 +1384,7 @@ describe('MessageList', () => {
         onRevertUserMessage={onRevert}
       />
     )
-    expect(screen.queryByLabelText('Revert back')).toBeNull()
+    expect(screen.queryByLabelText('Revert to before this prompt')).toBeNull()
 
     rerender(
       <MessageList
@@ -1394,10 +1394,10 @@ describe('MessageList', () => {
         onRevertUserMessage={onRevert}
       />
     )
-    expect(screen.queryByLabelText('Revert back')).toBeNull()
+    expect(screen.queryByLabelText('Revert to before this prompt')).toBeNull()
   })
 
-  it('clicking Revert back calls onRevertUserMessage with its message index', () => {
+  it('clicking revert calls onRevertUserMessage with its message index', () => {
     const onRevert = vi.fn()
     const items: UiItem[] = [
       { kind: 'message', id: 'user-0', role: 'user', content: 'first prompt' },
@@ -1408,7 +1408,7 @@ describe('MessageList', () => {
       <MessageList items={items} messageCount={2} onRevertUserMessage={onRevert} />
     )
 
-    fireEvent.click(screen.getByLabelText('Revert back'))
+    fireEvent.click(screen.getByLabelText('Revert to before this prompt'))
     expect(onRevert).toHaveBeenCalledWith(0)
   })
 

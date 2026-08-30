@@ -76,6 +76,34 @@ describe('TasksCeilingBand', () => {
 
     expect(screen.getByText('Map project')).toBeTruthy()
     expect(screen.getByRole('button', { name: /Collapse tasks/i })).toBeTruthy()
+    expect(document.querySelector('[data-tasks-ceiling-progress]')).toBeTruthy()
+    expect(screen.getByRole('progressbar')).toBeTruthy()
+  })
+
+  it('shows a skipped count when cancelled tasks exist', async () => {
+    readRunArtifact.mockResolvedValue({
+      ok: true,
+      data: {
+        name: 'todos.json',
+        exists: true,
+        content: JSON.stringify({
+          updatedAt: '2026-01-01T00:00:00.000Z',
+          todos: [
+            { id: '1', content: 'Map project', status: 'completed' },
+            { id: '2', content: 'Abandoned path', status: 'cancelled' },
+            { id: '3', content: 'Run tests', status: 'in_progress' }
+          ]
+        })
+      }
+    })
+
+    renderBand(<TasksCeilingBand running />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Run tests')).toBeTruthy()
+    })
+    expect(screen.getByText('1 skipped')).toBeTruthy()
+    expect(screen.getByText('1/3')).toBeTruthy()
   })
 
   it('hides when todos.json is missing', async () => {

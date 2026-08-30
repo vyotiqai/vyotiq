@@ -112,8 +112,9 @@ describe('ChangeSummary resolve mode', () => {
       />
     )
     expect(screen.getByRole('button', { name: 'Keep all' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Discard all' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Undo all' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Keep' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeTruthy()
   })
 
   it('uses Changes-panel chrome matching the uncommitted file list', () => {

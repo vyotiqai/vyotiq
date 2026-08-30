@@ -51,8 +51,8 @@ export const ACTIVE_PROVIDER_OPTIONS = PROVIDER_DEFAULTS.map((p) => ({
 }))
 
 export const CODEINDEX_EMBEDDER_OPTIONS = [
-  { value: 'lfm2', label: 'LFM2.5-Embedding-350M (local / Ollama, 1024-dim)' },
-  { value: 'mdenseon', label: 'LightOn dense (mDenseOn / DenseOn ONNX)' },
+  { value: 'mdenseon', label: 'LightOn dense ONNX (default — batched, utility process)' },
+  { value: 'lfm2', label: 'LFM2.5-Embedding-350M (llama.cpp / Ollama, 1024-dim)' },
   { value: 'ollama', label: 'Ollama' },
   { value: 'hash', label: 'Local hash (offline bag-of-tokens fallback)' }
 ]

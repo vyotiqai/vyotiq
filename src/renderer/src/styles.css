@@ -897,6 +897,18 @@
   }
 }
 
+/*
+ * Transcript rows: keep a scrolled-to row clear of the scrollport's top edge.
+ *
+ * Find-in-transcript and turn-panel jumps land a row at the very top of the
+ * container, which sliced the first text line through the glyphs. Reserving
+ * scroll margin places the row fully inside the viewport instead.
+ */
+[data-transcript-row] {
+  scroll-margin-top: 0.5rem;
+  scroll-margin-bottom: 0.5rem;
+}
+
 /* Plan dock: wide tables scroll horizontally (readable cells); task lists status-only. */
 [data-plan-panel] .markdown-body {
   h1,

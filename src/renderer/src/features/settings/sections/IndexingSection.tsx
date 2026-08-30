@@ -114,7 +114,7 @@ function processMetricsLabel(snap: ProcessMetricsSnapshot): string {
 export function IndexingSection({ form }: { form: SettingsFormState }) {
   const codeIndex = form.settings.codeIndex ?? {
     enabled: true,
-    embedder: 'lfm2' as const,
+    embedder: 'mdenseon' as const,
     autoDownload: true,
     ollamaModel: 'nomic-embed-text',
     lfm2OllamaModel: 'hf.co/LiquidAI/LFM2.5-Embedding-350M-GGUF'
@@ -198,8 +198,8 @@ export function IndexingSection({ form }: { form: SettingsFormState }) {
         <SettingsField
           id="codeindex-embedder"
           title="Embedder"
-          hint="LFM2.5-Embedding-350M (default) · LightOn dense ONNX · Ollama · hash fallback. Reindex after changing."
-          help="Default is LFM2.5-Embedding-350M (LiquidAI, 2026 — 1024-dim, 11 languages). It resolves to your local exported ONNX first, then a bundled llama.cpp (node-llama-cpp) that pulls the GGUF straight from Hugging Face — no Ollama server and no manual export, fully local. If that is unavailable it tries a local Ollama GGUF, then falls back to LightOn DenseOn so retrieval stays semantic. LFM2.5 ONNX export (scripts/export-lfm2-embedding-onnx.py) is optional and takes precedence. LightOn DenseOn auto-downloads its INT8 ONNX (~150MB); mDenseOn is used only if its ONNX is already on disk. Hash is offline bag-of-tokens. Closing open indexes happens automatically; click Reindex workspace to rebuild under the new embedder."
+          hint="LightOn dense ONNX (default — batched) · LFM2.5-Embedding-350M · Ollama · hash fallback. Reindex after changing."
+          help="Default is LightOn dense ONNX, which batches chunks and runs in a utility process (~10× faster than llama.cpp). LFM2.5-Embedding-350M (1024-dim, 11 languages) is selectable: it resolves to your local exported ONNX first, then a bundled llama.cpp (node-llama-cpp) that pulls the GGUF straight from Hugging Face — no Ollama server and no manual export, fully local — then a local Ollama GGUF, then LightOn DenseOn so retrieval stays semantic. LFM2.5 ONNX export (scripts/export-lfm2-embedding-onnx.py) is optional and takes precedence. LightOn DenseOn auto-downloads its INT8 ONNX (~150MB); mDenseOn is used only if its ONNX is already on disk. Hash is offline bag-of-tokens. Closing open indexes happens automatically; click Reindex workspace to rebuild under the new embedder."
         >
           <Menu
             aria-label="Codebase embedder"
@@ -215,8 +215,8 @@ export function IndexingSection({ form }: { form: SettingsFormState }) {
         <SettingsField
           id="codeindex-auto-download"
           title="Auto-download model"
-          hint="Fetch DenseOn ONNX on first use (covers the LFM2 fallback)."
-          help="When on, the LFM2/DenseOn paths auto-fetch DenseOn INT8 bootstrap weights under userData/codeindex/models/ so retrieval stays semantic even without LFM2 weights. mDenseOn and LFM2.5-Embedding-350M are never auto-fetched (no public ONNX; you export LFM2's, or serve it via Ollama). When off, an unavailable neural model falls back to hash until weights are present."
+          hint="Fetch DenseOn ONNX on first use (default embedder; also covers the LFM2 fallback)."
+          help="When on, the DenseOn/LFM2 paths auto-fetch DenseOn INT8 bootstrap weights under userData/codeindex/models/ so retrieval stays semantic even without LFM2 weights. mDenseOn and LFM2.5-Embedding-350M are never auto-fetched (no public ONNX; you export LFM2's, or serve it via Ollama). When off, an unavailable neural model falls back to hash until weights are present."
         >
           <Switch
             size="md"
