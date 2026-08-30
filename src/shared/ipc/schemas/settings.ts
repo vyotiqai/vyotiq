@@ -197,10 +197,11 @@ export type CodeIndexEmbedderSetting = z.infer<typeof CodeIndexEmbedderSchema>
 export const CodeIndexSettingsSchema = z.object({
   enabled: z.boolean().default(true),
   /**
-   * Default: LFM2.5-Embedding-350M (LiquidAI, 2026 — 1024-dim, 11 languages).
-   * Resolves to local ONNX export → local Ollama/llama.cpp GGUF → DenseOn fallback.
+   * Default: LightOn dense ONNX — batched inference in the utilityProcess
+   * (~10× the throughput of sequential llama.cpp). LFM2.5-Embedding-350M
+   * resolves to local ONNX export → llama.cpp GGUF → DenseOn fallback.
    */
-  embedder: CodeIndexEmbedderSchema.default('lfm2'),
+  embedder: CodeIndexEmbedderSchema.default('mdenseon'),
   /** Download ONNX weights into userData on first use. */
   autoDownload: z.boolean().default(true),
   /** Ollama embedding model when embedder=ollama. */
@@ -212,7 +213,7 @@ export type CodeIndexSettings = z.infer<typeof CodeIndexSettingsSchema>
 
 export const DEFAULT_CODE_INDEX_SETTINGS: CodeIndexSettings = {
   enabled: true,
-  embedder: 'lfm2',
+  embedder: 'mdenseon',
   autoDownload: true,
   ollamaModel: 'nomic-embed-text',
   lfm2OllamaModel: 'hf.co/LiquidAI/LFM2.5-Embedding-350M-GGUF'

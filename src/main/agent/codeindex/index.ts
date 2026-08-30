@@ -172,7 +172,7 @@ function readCodeIndexSettings(): {
     const ci = s.codeIndex
     return {
       enabled: ci?.enabled !== false,
-      embedder: ci?.embedder ?? 'lfm2',
+      embedder: ci?.embedder ?? 'mdenseon',
       // Unit tests must not hit Hugging Face.
       autoDownload: inVitest ? false : ci?.autoDownload !== false,
       ollamaModel: ci?.ollamaModel?.trim() || 'nomic-embed-text',
@@ -182,7 +182,7 @@ function readCodeIndexSettings(): {
   } catch {
     return {
       enabled: true,
-      embedder: 'lfm2',
+      embedder: 'mdenseon',
       autoDownload: inVitest ? false : true,
       ollamaModel: 'nomic-embed-text',
       ollamaBaseUrl: 'http://127.0.0.1:11434',
@@ -528,9 +528,10 @@ async function runCodeIndexSync(
   files?: WalkedFile[],
   preserveNeural?: boolean
 ): Promise<SyncResult> {
-  // llama.cpp embedders run in-process (native binding); keep them out of the
-  // ONNX utility child, which only knows transformers.js / ORT graphs.
-  if (canUseIndexSyncUtility() && embedderKindFor(embedder) !== 'llamacpp') {
+  // All embedder kinds route through the utility child (llamacpp included —
+  // the child loads its own llama.cpp context, keeping the native model and
+  // VRAM out of main). In-process path = tests / utility unavailable.
+  if (canUseIndexSyncUtility()) {
     closeCodeIndex(workspaceRoot)
     const client = getEmbedUtilityClient()
     const kind = embedderKindFor(embedder)
@@ -566,7 +567,7 @@ async function runCodeIndexSearch(
     ollama?: OllamaEmbedOptions
   }
 ): Promise<{ hits: CodebaseSearchHit[]; status: IndexStatus }> {
-  if (canUseIndexSearchUtility() && embedderKindFor(entry.embedder) !== 'llamacpp') {
+  if (canUseIndexSearchUtility()) {
     closeCodeIndex(workspaceRoot)
     const kind = embedderKindFor(entry.embedder)
     return await getEmbedUtilityClient().searchCode({

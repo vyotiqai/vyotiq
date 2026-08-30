@@ -665,12 +665,14 @@ export function setSettings(
   if (partial.codeIndex !== undefined && prevEmbedder !== nextEmbedder) {
     try {
       // Lazy require avoids circular import with codeindex → settings.
-      const { closeCodeIndex, clearMDenseOnSession } = require('../agent/codeindex') as {
+      const { closeCodeIndex, clearMDenseOnSession, clearLfm2LlamaCppCache } = require('../agent/codeindex') as {
         closeCodeIndex: (workspaceRoot?: string) => void
         clearMDenseOnSession: () => void
+        clearLfm2LlamaCppCache: () => void
       }
       closeCodeIndex()
       clearMDenseOnSession()
+      clearLfm2LlamaCppCache()
     } catch {
       // ignore if codeindex unavailable in early boot / tests without electron
     }

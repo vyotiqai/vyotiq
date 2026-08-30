@@ -107,8 +107,8 @@ describe('codeindex LFM2.5-Embedding-350M integration', () => {
     expect(resolved.embedder.dimensions).toBe(1024)
   })
 
-  it('default embedder setting is LFM2.5-Embedding-350M', () => {
-    expect(DEFAULT_CODE_INDEX_SETTINGS.embedder).toBe('lfm2')
+  it('default embedder setting is LightOn dense ONNX (utilityProcess batched)', () => {
+    expect(DEFAULT_CODE_INDEX_SETTINGS.embedder).toBe('mdenseon')
     expect(DEFAULT_CODE_INDEX_SETTINGS.lfm2OllamaModel).toBe('hf.co/LiquidAI/LFM2.5-Embedding-350M-GGUF')
   })
 

@@ -20,6 +20,7 @@ import {
   type IndexStatus
 } from './types'
 import { createLocalHashEmbedder, createOllamaEmbedder, type Embedder } from './embed'
+import { clearLfm2LlamaCppCache, createLfm2LlamaCppEmbedder } from './lfm2LlamaCpp'
 import { CodeIndexStore } from './store'
 import { syncCodeIndex, type SyncResult } from './sync'
 import { searchCodeIndex } from './search'
@@ -292,12 +293,13 @@ async function ensureChildSession(signal?: AbortSignal): Promise<LoadedSession> 
   throw new Error('ONNX session not loaded — call ensure first')
 }
 
-function resolveSyncEmbedder(msg: UtilityRequest): Embedder {
+async function resolveSyncEmbedder(msg: UtilityRequest): Promise<Embedder> {
   const kind = msg.embedderKind ?? 'session'
   if (kind === 'llamacpp') {
-    // llama.cpp embeddings must stay in-process (native lib, no GGUF staging in
-    // the child); callers exclude this kind before reaching the utility.
-    throw new Error('llamacpp embedder is not supported in the index utility child process')
+    // Child-side llama.cpp: keeps the native model (and its VRAM) out of the
+    // main process. In-process fallback lives in index.ts for tests / when
+    // the utility is unavailable.
+    return createLfm2LlamaCppEmbedder()
   }
   if (kind === 'hash') {
     return createLocalHashEmbedder(msg.dimensions ?? DEFAULT_EMBED_DIM, msg.modelId)
@@ -369,6 +371,7 @@ async function handle(msg: UtilityRequest): Promise<void> {
     if (op === 'dispose') {
       session?.dispose()
       session = null
+      clearLfm2LlamaCppCache()
       disposeChunkParsers()
       post({ id, ok: true })
       return
@@ -419,7 +422,7 @@ async function handle(msg: UtilityRequest): Promise<void> {
       if (!workspaceRoot || !dbPath || dimensions == null) {
         throw new Error('syncCode requires workspaceRoot, dbPath, dimensions')
       }
-      const embedder = resolveSyncEmbedder(msg)
+      const embedder = await resolveSyncEmbedder(msg)
       const store = CodeIndexStore.openDbPath(dbPath, dimensions)
       try {
         const sync = await syncCodeIndex(workspaceRoot, store, embedder, {
@@ -464,7 +467,7 @@ async function handle(msg: UtilityRequest): Promise<void> {
       if (!workspaceRoot || !dbPath || dimensions == null) {
         throw new Error('searchCode requires workspaceRoot, dbPath, dimensions')
       }
-      const embedder = resolveSyncEmbedder(msg)
+      const embedder = await resolveSyncEmbedder(msg)
       const { hits, status } = await withSqliteBusyRetry(async () => {
         const store = CodeIndexStore.openDbPath(dbPath, dimensions)
         try {

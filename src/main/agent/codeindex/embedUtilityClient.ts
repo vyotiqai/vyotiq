@@ -614,6 +614,7 @@ export class EmbedUtilityClient {
       op === 'syncSparse' ||
       op === 'syncCode' ||
       body.embedderKind === 'hash' ||
+      body.embedderKind === 'llamacpp' ||
       body.embedderKind === 'ollama'
     ) {
       return
