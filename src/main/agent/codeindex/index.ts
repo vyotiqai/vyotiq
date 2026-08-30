@@ -34,6 +34,7 @@ import {
   LFM2_EMBEDDING_MODEL_ID,
   LFM2_OLLAMA_MODEL,
   MDENSEON_MODEL_ID,
+  denseModelIdsCompatible,
   isHashEmbedderModelId
 } from './types'
 import { markCodeIndexEmbedder, setCodeIndexRuntimeStatus } from './modelStatus'
@@ -743,6 +744,35 @@ type CodebaseSearchResult = {
   queryModelId: string
 }
 
+/**
+ * True when the indexed model cannot serve the query embedder's space: the
+ * store holds non-neural (hash) vectors, or holds a *different* neural family.
+ * Same-family and same-id stores are compatible and never self-heal.
+ */
+function indexModelMismatch(statusModelId: string, embedder: Embedder): boolean {
+  const stored = statusModelId.trim()
+  if (!stored || isHashEmbedderModelId(embedder.modelId)) return false
+  return !denseModelIdsCompatible(stored, embedder.modelId)
+}
+
+/**
+ * Query embedder was explicitly selected (never a silent hash fallback), so a
+ * mismatched index can be re-embedded under it: one forced sync, retry once.
+ * A fallback embedder must never trigger a destructive re-sync (keptNeural).
+ */
+function shouldSelfHealIndex(
+  usedFallback: boolean,
+  status: IndexStatus,
+  embedder: Embedder
+): boolean {
+  return (
+    !usedFallback &&
+    status.ready &&
+    status.chunkCount > 0 &&
+    indexModelMismatch(status.modelId, embedder)
+  )
+}
+
 function formatCodebaseSearchResult(
   hits: CodebaseSearchHit[],
   status: IndexStatus,
@@ -778,7 +808,7 @@ export async function runCodebaseSearch(
   const searchSignal = ws.workspaceIndexSearchSignal(workspaceRoot, opts.signal)
   let skipWarm = false
 
-  const runQueuedInteractiveSearch = (): Promise<CodebaseSearchResult> =>
+  const runQueuedInteractiveSearch = (runOpts: { forceResync?: boolean } = {}): Promise<CodebaseSearchResult> =>
     enqueueIndexJob({
       priority: 'interactive',
       signal: searchSignal,
@@ -799,7 +829,8 @@ export async function runCodebaseSearch(
           // refresh=true forces a sync in this slot. Otherwise serve whatever is
           // already indexed and enqueue a warm sync after we release the queue —
           // a cold full sync inside interactive would starve every later search.
-          if (opts.refresh === true) {
+          // forceResync (self-heal from the fast path) takes the same slot.
+          if (opts.refresh === true || runOpts.forceResync === true) {
             const { entry, disabled } = await ensureCodeIndexSyncedUnlocked(workspaceRoot, {
               signal: searchSignal,
               preferOllama: opts.preferOllama,
@@ -829,7 +860,7 @@ export async function runCodebaseSearch(
             return disabledResult
           }
 
-          const { embedder } = await resolveEmbedder({
+          const { embedder, usedFallback } = await resolveEmbedder({
             preferOllama: opts.preferOllama,
             embedderId: opts.embedderId
           })
@@ -872,6 +903,30 @@ export async function runCodebaseSearch(
             }
           }
 
+          // Self-heal: ready store indexed under a different non-fallback embedder.
+          // Inline (we already hold the workspace lock) — never re-enqueue from
+          // inside a running job.
+          if (shouldSelfHealIndex(usedFallback, status, embedder)) {
+            const { entry: healedEntry } = await ensureCodeIndexSyncedUnlocked(workspaceRoot, {
+              signal: searchSignal,
+              preferOllama: opts.preferOllama,
+              embedderId: opts.embedderId,
+              force: true
+            })
+            const searchEntry = healedEntry ?? entry
+            const retried = await runCodeIndexSearch(workspaceRoot, searchEntry, query, {
+              limit: opts.limit,
+              mode: opts.mode,
+              signal: searchSignal
+            })
+            return {
+              hits: retried.hits,
+              status: retried.status,
+              formatted: formatSearchHits(retried.hits),
+              queryModelId: searchEntry.embedder.modelId
+            }
+          }
+
           return formatCodebaseSearchResult(hits, status, entry.embedder.modelId)
         })
     })
@@ -888,7 +943,7 @@ export async function runCodebaseSearch(
     existsSync(codeindexDbPath(workspaceRoot))
   ) {
     try {
-      const { embedder } = await resolveEmbedder({
+      const { embedder, usedFallback } = await resolveEmbedder({
         preferOllama: opts.preferOllama,
         embedderId: opts.embedderId
       })
@@ -900,6 +955,16 @@ export async function runCodebaseSearch(
         signal: searchSignal
       })
       if (status.ready || status.chunkCount !== 0) {
+        // Self-heal: the ready store was indexed under a different (non-fallback)
+        // embedder — re-embed once in this slot, then retry the search. Cold or
+        // fallback cases keep their existing paths below.
+        if (shouldSelfHealIndex(usedFallback, status, embedder)) {
+          const healed = await runQueuedInteractiveSearch({ forceResync: true })
+          if (!skipWarm) {
+            schedulePostSearchWarm(workspaceRoot)
+          }
+          return healed
+        }
         const result = formatCodebaseSearchResult(hits, status, entry.embedder.modelId)
         if (!skipWarm) {
           schedulePostSearchWarm(workspaceRoot)
