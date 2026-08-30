@@ -2,6 +2,7 @@ import { app } from 'electron'
 import { readFileSync, existsSync, mkdirSync } from 'fs'
 import { join } from 'path'
 import { DEFAULT_SETTINGS, SETTINGS_FORMAT_VERSION, SettingsSchema, type Settings } from '../../shared/ipc'
+import { DEFAULT_THINKING_EFFORT, LEGACY_THINKING_EFFORT } from '../../shared/ipc/schemas/providers'
 import {
   DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO,
   LEGACY_AUTO_COMPACT_THRESHOLD_RATIO
@@ -384,6 +385,12 @@ function migratePersistedSettingsDefaults(raw: Record<string, unknown>): {
   const next: Record<string, unknown> = { ...raw, settingsVersion: SETTINGS_FORMAT_VERSION }
   if (raw.autoCompactThresholdRatio === LEGACY_AUTO_COMPACT_THRESHOLD_RATIO) {
     next.autoCompactThresholdRatio = DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO
+  }
+  // Same contract: rewrite only the exact effort the previous format version
+  // seeded; anything else (including an intentional 'medium' after this stamp)
+  // is a user choice and survives.
+  if (raw.thinkingEffort === LEGACY_THINKING_EFFORT) {
+    next.thinkingEffort = DEFAULT_THINKING_EFFORT
   }
   return { data: next, persist: true }
 }

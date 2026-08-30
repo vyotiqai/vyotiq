@@ -1,5 +1,8 @@
 import type { ProviderId, ServiceTier, Settings } from '../ipc'
-import type { ThinkingEffort } from '../ipc/schemas/settings'
+import {
+  DEFAULT_THINKING_EFFORT,
+  type ThinkingEffort
+} from '../ipc/schemas/providers'
 
 export function modelSelectionKey(provider: ProviderId, model: string): string {
   return `${provider}::${model}`
@@ -39,5 +42,5 @@ export type ThinkingPrefs = {
 
 export const DEFAULT_THINKING_PREFS: ThinkingPrefs = {
   thinkingEnabled: true,
-  thinkingEffort: 'medium'
+  thinkingEffort: DEFAULT_THINKING_EFFORT
 }

@@ -11,6 +11,7 @@ import {
 } from '../../appearance'
 import type { ThemeId } from '../../theme'
 import {
+  DEFAULT_THINKING_EFFORT,
   ProviderIdSchema,
   ServiceTierSchema,
   ThinkingEffortSchema,
@@ -368,7 +369,7 @@ export const DictationDeleteCacheRequestSchema = z.object({
 export type DictationDeleteCacheRequest = z.infer<typeof DictationDeleteCacheRequestSchema>
 
 /** Current persisted settings format. Bump with a matching load-time rewrite. */
-export const SETTINGS_FORMAT_VERSION = 1
+export const SETTINGS_FORMAT_VERSION = 2
 
 export const SettingsSchema = z.object({
   provider: ProviderIdSchema,
@@ -397,7 +398,7 @@ export const SettingsSchema = z.object({
    */
   settingsVersion: z.number().int().min(0).default(SETTINGS_FORMAT_VERSION),
   thinkingEnabled: z.boolean().default(true),
-  thinkingEffort: ThinkingEffortSchema.default('medium'),
+  thinkingEffort: ThinkingEffortSchema.default(DEFAULT_THINKING_EFFORT),
   showThinking: z.boolean().default(true),
   favoriteModels: z.array(z.string()).default([]),
   recentModels: z.array(z.string()).max(5).default([]),
@@ -514,7 +515,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoCompactThresholdRatio: DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO,
   settingsVersion: SETTINGS_FORMAT_VERSION,
   thinkingEnabled: true,
-  thinkingEffort: 'medium',
+  thinkingEffort: DEFAULT_THINKING_EFFORT,
   showThinking: true,
   favoriteModels: [],
   recentModels: [],

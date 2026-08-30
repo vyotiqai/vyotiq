@@ -37,6 +37,16 @@ export const ThinkingEffortSchema = z.enum([
 ])
 export type ThinkingEffort = z.infer<typeof ThinkingEffortSchema>
 
+/** Fresh-install default effort: laser-focused runs (used where no per-model ladder applies). */
+export const DEFAULT_THINKING_EFFORT: ThinkingEffort = 'low'
+/**
+ * Top-level effort value written by the previous format version's seed.
+ * The settings loader rewrites exactly this value to the new default on
+ * version-stamp upgrade; any other stored effort is a deliberate choice
+ * and is left untouched.
+ */
+export const LEGACY_THINKING_EFFORT: ThinkingEffort = 'medium'
+
 export const ThinkingModeSchema = z.enum(['adaptive', 'manual', 'effort', 'boolean'])
 export type ThinkingMode = z.infer<typeof ThinkingModeSchema>
 

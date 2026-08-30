@@ -27,6 +27,7 @@ import {
   LoadToolResultRequestSchema,
   SettingsSchema,
   DEFAULT_SETTINGS,
+  DEFAULT_THINKING_EFFORT,
   DEFAULT_NOTIFICATION_SETTINGS,
   NotificationItemSchema,
   NotificationMutateRequestSchema,
@@ -751,7 +752,9 @@ describe('ipc schemas', () => {
     expect(parsed.accentPreset).toBe('neutral')
     expect(parsed.telemetryEnabled).toBe(false)
     expect(parsed.autoCompactThresholdRatio).toBe(0.55)
-    expect(parsed.settingsVersion).toBe(1)
+    expect(parsed.settingsVersion).toBe(2)
+    expect(parsed.thinkingEffort).toBe(DEFAULT_THINKING_EFFORT)
+    expect(parsed.thinkingEffort).toBe('low')
     expect(parsed.autoModeSwitch).toBe(false)
     expect(parsed.notifications).toEqual(DEFAULT_NOTIFICATION_SETTINGS)
     // Legacy settings files omit telemetryEnabled — default fills it
@@ -763,7 +766,8 @@ describe('ipc schemas', () => {
     })
     expect(legacy.telemetryEnabled).toBe(false)
     expect(legacy.autoCompactThresholdRatio).toBe(0.55)
-    expect(legacy.settingsVersion).toBe(1)
+    expect(legacy.settingsVersion).toBe(2)
+    expect(legacy.thinkingEffort).toBe('low')
     expect(legacy.autoModeSwitch).toBe(false)
     expect(legacy.offlineWaitMode).toBe('default')
     expect(legacy.fontScale).toBe('default')
