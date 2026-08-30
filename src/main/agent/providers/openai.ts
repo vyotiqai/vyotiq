@@ -19,6 +19,10 @@ import {
 } from '../../../shared/reasoning'
 import { serviceTierForApiBody } from '../../../shared/domain/serviceTier'
 import {
+  getCachedOpenCodeGoEffortLadder,
+  clampEffortToOpenCodeGoLadder
+} from '../../../shared/domain/opencodeGoCatalog'
+import {
   baseModelInfo,
   contextWindowFromOllamaShow,
   extractContextWindowFromCatalogRow,
@@ -1283,7 +1287,14 @@ export function buildOpenAiCompatBody(
     } else if (providerId === 'opencode') {
       // Go's chat/completions mount is a generic OpenAI-compatible gateway:
       // widest-overlap reasoning_effort (+ include_reasoning), same as custom.
-      body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(effort, 'xai')
+      // Models with a declared per-model ladder (models.dev reasoning_options)
+      // reject unlisted levels with "[1210] cannot be disabled" — clamp to the
+      // ladder first (opencode.ts already normalized the request for known
+      // models; this guard covers stale caches/unknown callers).
+      const goLadder = getCachedOpenCodeGoEffortLadder(req.model)
+      body.reasoning_effort = goLadder
+        ? clampEffortToOpenCodeGoLadder(effort, goLadder)
+        : normalizeEffortForOpenAiCompatReasoning(effort, 'xai')
       if (req.thinking.display !== 'omitted') {
         body.include_reasoning = true
       }

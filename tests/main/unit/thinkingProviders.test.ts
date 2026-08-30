@@ -1,7 +1,9 @@
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { buildOpenAiCompatBody } from '@main/agent/providers/openai'
+import { opencodeThinkingFor } from '@main/agent/providers/opencode'
 import { streamOpenAiResponses } from '@main/agent/providers/openaiResponses'
 import { anthropicThinkingFields } from '@main/agent/providers/thinkingPolicy'
+import { loadOpenCodeGoCatalog } from '@shared/domain/opencodeGoCatalog'
 import type { ProviderChatRequest } from '@main/agent/providers/types'
 
 const baseReq = (partial: Partial<ProviderChatRequest> = {}): ProviderChatRequest => ({
@@ -769,5 +771,99 @@ describe('anthropic thinking fields', () => {
       })
     )
     expect(fields.thinking).toEqual({ type: 'enabled', budget_tokens: 16384 })
+  })
+})
+
+describe('opencode go chat thinking body', () => {
+  // Regression: glm-5.3-flash on the Go chat mount rejects reasoning_effort
+  // 'medium' with "[1210] This model always engages in thinking and cannot be
+  // disabled; please use low, high, or max" (live-verified 2026-08-30).
+  // Ladder assertions read the cached live catalog — warm it before asserting.
+  beforeAll(async () => {
+    await loadOpenCodeGoCatalog()
+  })
+
+  it('clamps medium to the declared ladder on glm-5.3-flash', () => {
+    const body = buildOpenAiCompatBody(
+      baseReq({ model: 'glm-5.3-flash', thinking: { enabled: true, effort: 'medium' } }),
+      { defaultBaseUrl: 'https://opencode.ai/zen/go/v1' },
+      'opencode'
+    )
+    expect(body.reasoning_effort).toBe('high')
+    expect(body.include_reasoning).toBe(true)
+  })
+
+  it('keeps declared rungs and maps xhigh to the top tier', () => {
+    const high = buildOpenAiCompatBody(
+      baseReq({ model: 'glm-5.3-flash', thinking: { enabled: true, effort: 'high' } }),
+      { defaultBaseUrl: 'https://opencode.ai/zen/go/v1' },
+      'opencode'
+    )
+    expect(high.reasoning_effort).toBe('high')
+    const xhigh = buildOpenAiCompatBody(
+      baseReq({ model: 'glm-5.3-flash', thinking: { enabled: true, effort: 'xhigh' } }),
+      { defaultBaseUrl: 'https://opencode.ai/zen/go/v1' },
+      'opencode'
+    )
+    expect(xhigh.reasoning_effort).toBe('max')
+  })
+
+  it('clamps below-floor requests to the weakest rung', () => {
+    const body = buildOpenAiCompatBody(
+      baseReq({
+        model: 'glm-5.2',
+        thinking: { enabled: true, effort: 'minimal' }
+      }),
+      { defaultBaseUrl: 'https://opencode.ai/zen/go/v1' },
+      'opencode'
+    )
+    expect(body.reasoning_effort).toBe('high')
+  })
+
+  it('keeps the xai-style mapping for models without a declared ladder', () => {
+    const body = buildOpenAiCompatBody(
+      baseReq({ model: 'glm-5', thinking: { enabled: true, effort: 'max' } }),
+      { defaultBaseUrl: 'https://opencode.ai/zen/go/v1' },
+      'opencode'
+    )
+    expect(body.reasoning_effort).toBe('high')
+  })
+
+  it('normalizes disable requests to the floor effort with display omitted', () => {
+    const thinking = opencodeThinkingFor('glm-5.3-flash', { enabled: false })
+    expect(thinking).toEqual({ enabled: true, effort: 'low', display: 'omitted' })
+  })
+
+  it('passes disable through on models without a declared ladder', () => {
+    const thinking = opencodeThinkingFor('glm-5', { enabled: false })
+    expect(thinking).toEqual({ enabled: false })
+  })
+
+  it('clamps enabled requests and defaults effort on ladder models', () => {
+    expect(opencodeThinkingFor('glm-5.3-flash', { enabled: true, effort: 'medium' })).toEqual({
+      enabled: true,
+      effort: 'high',
+      display: 'summarized'
+    })
+    expect(opencodeThinkingFor('glm-5.3-flash', undefined)).toEqual({
+      enabled: true,
+      effort: 'high',
+      display: 'summarized'
+    })
+  })
+
+  it('does not apply chat ladders to Responses/Messages transport models', () => {
+    // grok-4.5 routes to /responses; its normalizer owns the mapping.
+    expect(opencodeThinkingFor('grok-4.5', { enabled: true, effort: 'medium' })).toEqual({
+      enabled: true,
+      effort: 'medium',
+      display: 'summarized'
+    })
+    // minimax-m3 routes to /messages; minimax-m2.5 (live-catalog-only) too.
+    expect(opencodeThinkingFor('minimax-m2.5', { enabled: true, effort: 'medium' })).toEqual({
+      enabled: true,
+      effort: 'medium',
+      display: 'summarized'
+    })
   })
 })

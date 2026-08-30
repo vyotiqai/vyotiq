@@ -2,10 +2,12 @@ import type { ModelInfo, ProviderId } from '../ipc/schemas/providers'
 import type { SecretProvider } from '../ipc/types/secrets'
 import { knownContextWindow } from './modelContextWindows'
 import {
-  withOpenCodeGoMeta,
+  getCachedOpenCodeGoEffortLadder,
+  getCachedOpenCodeGoModelIds,
+  mergeOpenCodeGoMeta,
   opencodeGoEffortsFor,
   opencodeGoTransportFor
-} from './opencodeGoModels'
+} from './opencodeGoCatalog'
 import {
   modelSupportsThinking,
   thinkingApiFor,
@@ -29,31 +31,16 @@ const SEED_MODEL_IDS: Record<ProviderId, string[]> = {
   xai: ['grok-4-latest'],
   mistral: ['mistral-large-latest'],
   custom: ['gpt-oss-120b', 'llama3.2', 'qwen2.5'],
-  opencode: [
-    'kimi-k3',
-    'kimi-k2.7-code',
-    'kimi-k2.6',
-    'glm-5.3',
-    'glm-5.2',
-    'glm-5.1',
-    'longcat-2.0',
-    'deepseek-v4-pro',
-    'deepseek-v4-flash',
-    'deepseek-v4-flash-vision-exp',
-    'mimo-v2.5',
-    'mimo-v2.5-pro',
-    'hy3',
-    'ox-alpha-free',
-    'grok-4.5',
-    'gpt-5.6-luna',
-    'muse-spark-1.2-contributor',
-    'minimax-m3',
-    'minimax-m2.7',
-    'qwen3.8-max',
-    'qwen3.7-max',
-    'qwen3.7-plus',
-    'qwen3.6-plus'
-  ]
+  // OpenCode Go model ids are NOT hardcoded: they come from the live models.dev
+  // `opencode-go` registry (see opencodeGoCatalog). `seedIdsFor` resolves them
+  // from the cached catalog, which `preloadOpenCodeGoCatalog()` warms at startup.
+  opencode: []
+}
+
+/** Resolve seed model ids for a provider; OpenCode Go is sourced live. */
+function seedIdsFor(provider: ProviderId): string[] {
+  if (provider === 'opencode') return getCachedOpenCodeGoModelIds()
+  return SEED_MODEL_IDS[provider]
 }
 
 function seedModelInfo(id: string, providerId: ProviderId): ModelInfo {
@@ -65,7 +52,15 @@ function seedModelInfo(id: string, providerId: ProviderId): ModelInfo {
       ? ollamaThinkingHeuristicFields(id)
       : undefined
   const goTransport = providerId === 'opencode' ? opencodeGoTransportFor(id) : undefined
-  const merged = withOpenCodeGoMeta({
+  // Chat models with a declared per-model ladder use it (and cannot disable —
+  // the Go mount rejects unlisted effort levels and still thinks when the
+  // field is omitted). Other transports keep their endpoint vocabulary. The
+  // ladder comes from the live models.dev registry (cached after startup).
+  const goLadder =
+    providerId === 'opencode' && goTransport === 'chat'
+      ? getCachedOpenCodeGoEffortLadder(id)
+      : undefined
+  const merged = mergeOpenCodeGoMeta({
     id,
     displayName: id,
     inputModalities: supportsVision ? ['text', 'image'] : ['text'],
@@ -81,7 +76,10 @@ function seedModelInfo(id: string, providerId: ProviderId): ModelInfo {
       ? {
           thinkingMode: 'effort' as const,
           thinkingCanDisable: true,
-          supportedThinkingEfforts: opencodeGoEffortsFor(goTransport)
+          supportedThinkingEfforts: opencodeGoEffortsFor(goTransport),
+          ...(goLadder
+            ? { thinkingCanDisable: false, supportedThinkingEfforts: [...goLadder] }
+            : {})
         }
       : {}),
     ...(ollamaThinking ?? {}),
@@ -106,15 +104,15 @@ export const PROVIDER_DEFAULTS: ProviderDefault[] = [
   { id: 'xai', label: 'xAI', models: SEED_MODEL_IDS.xai },
   { id: 'mistral', label: 'Mistral', models: SEED_MODEL_IDS.mistral },
   { id: 'custom', label: 'Custom OpenAI-compatible', models: SEED_MODEL_IDS.custom },
-  { id: 'opencode', label: 'OpenCode Go', models: SEED_MODEL_IDS.opencode }
+  { id: 'opencode', label: 'OpenCode Go', models: seedIdsFor('opencode') }
 ]
 
 export function seedModelsFor(provider: ProviderId): ModelInfo[] {
-  return SEED_MODEL_IDS[provider].map((id) => seedModelInfo(id, provider))
+  return seedIdsFor(provider).map((id) => seedModelInfo(id, provider))
 }
 
 export function defaultModelFor(provider: ProviderId): string {
-  return SEED_MODEL_IDS[provider][0]!
+  return seedIdsFor(provider)[0]!
 }
 
 export function providerLabel(provider: ProviderId): string {

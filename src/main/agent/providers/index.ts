@@ -29,6 +29,12 @@ import {
 } from './openai'
 import { opencodeProvider } from './opencode'
 import type { ListModelsRequest, LlmProvider } from './types'
+import { preloadOpenCodeGoCatalog } from '../../../shared/domain/opencodeGoCatalog'
+
+// OpenCode Go publishes its catalog without auth; warm the runtime models.dev
+// registry at startup so seed/merge paths resolve real context windows and
+// reasoning-effort ladders instead of placeholder defaults.
+preloadOpenCodeGoCatalog()
 
 const providers: Record<ProviderId, LlmProvider> = {
   openai: openaiProvider,

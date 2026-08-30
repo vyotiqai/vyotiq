@@ -12,7 +12,7 @@ import { inferSupportedServiceTiers } from '../../../shared/domain/serviceTier'
 import {
   opencodeGoTransportFor,
   opencodeGoEffortsFor
-} from '../../../shared/domain/opencodeGoModels'
+} from '../../../shared/domain/opencodeGoCatalog'
 
 const NON_CHAT =
   /embed|embedding|tts|whisper|dall-e|dalle|imagen|veo|imagine|moderation|transcribe|realtime|audio|video|coding\.|computer-use/i

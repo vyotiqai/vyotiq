@@ -9,11 +9,16 @@ import { createOpenAiCompatibleProvider } from './openai'
 import { streamOpenAiResponses } from './openaiResponses'
 import { streamAnthropicMessages } from './anthropic'
 import {
+  clampEffortToOpenCodeGoLadder,
+  getCachedOpenCodeGoEffortLadder,
+  mergeOpenCodeGoMeta,
   normalizeOpenCodeGoModelId,
+  opencodeGoEffortLadderFor,
+  opencodeGoFloorEffort,
   opencodeGoTransportFor,
-  withOpenCodeGoMeta,
+  loadOpenCodeGoCatalog,
   type OpenCodeTransport
-} from '../../../shared/domain/opencodeGoModels'
+} from '../../../shared/domain/opencodeGoCatalog'
 
 const OPENCODE_GO_BASE = 'https://opencode.ai/zen/go/v1'
 
@@ -26,9 +31,57 @@ export function opencodeEndpointFor(model: string): OpenCodeTransport {
   return opencodeGoTransportFor(model)
 }
 
-function mergeGoMeta(m: ModelInfo): ModelInfo {
+/**
+ * Exported for tests — merge live catalog rows with runtime registry thinking
+ * ladders. The registry (models.dev `opencode-go`) is fetched live, so this is
+ * async; callers await it.
+ */
+export async function mergeGoMeta(m: ModelInfo): Promise<ModelInfo> {
+  await loadOpenCodeGoCatalog()
   const bare: ModelInfo = { ...m, id: normalizeOpenCodeGoModelId(m.id) }
-  return withOpenCodeGoMeta(bare)
+  const merged = mergeOpenCodeGoMeta(bare)
+  // Registry ladders are authoritative where declared (models.dev
+  // reasoning_options). These models reject unlisted reasoning_effort levels,
+  // and every one with a declared ladder also rejects a disable (the mount
+  // still thinks when the field is omitted) — so clamp UI choices to the
+  // ladder and mark disable unsupported.
+  const ladder = await opencodeGoEffortLadderFor(merged.id)
+  if (!ladder || merged.supportsThinking !== true) return merged
+  return {
+    ...merged,
+    thinkingMode: merged.thinkingMode ?? 'effort',
+    thinkingCanDisable: false,
+    supportedThinkingEfforts: [...ladder]
+  }
+}
+
+/**
+ * Resolve the outgoing ThinkingConfig for a Go request. Chat-mount ladders
+ * apply where declared (models.dev reasoning_options); Responses/Messages
+ * request normalizers own the mapping for their transports. On ladder-declared
+ * models an explicit disable is impossible — the mount rejects unlisted effort
+ * levels ("[1210] cannot be disabled") and still thinks when the field is
+ * omitted (live-verified) — so a disable request becomes the model's floor
+ * effort with display omitted.
+ */
+export function opencodeThinkingFor(
+  model: string,
+  thinking: ProviderChatRequest['thinking']
+): ProviderChatRequest['thinking'] {
+  const shape = opencodeEndpointFor(model)
+  const ladder = shape === 'chat' ? getCachedOpenCodeGoEffortLadder(model) : undefined
+  if (thinking?.enabled === false) {
+    return ladder
+      ? { enabled: true, effort: opencodeGoFloorEffort(ladder), display: 'omitted' }
+      : thinking
+  }
+  return {
+    enabled: true,
+    effort: ladder
+      ? clampEffortToOpenCodeGoLadder(thinking?.effort ?? 'medium', ladder)
+      : (thinking?.effort ?? 'medium'),
+    display: thinking?.display ?? 'summarized'
+  }
 }
 
 export const opencodeProvider: LlmProvider = {
@@ -38,18 +91,10 @@ export const opencodeProvider: LlmProvider = {
       yield { type: 'error', error: 'OpenCode Go API key not set' }
       return
     }
-    // Every model in the `opencode-go` registry is reasoning-capable, so OpenCode
-    // Go always requests thinking (the models.dev `reasoning: true` contract).
-    // Respect only an explicit disable; default to a visible, summarized summary.
-    const thinking =
-      req.thinking?.enabled === false
-        ? req.thinking
-        : {
-            enabled: true,
-            effort: req.thinking?.effort ?? 'medium',
-            display: req.thinking?.display ?? 'summarized'
-          }
-    const reqWithThinking: ProviderChatRequest = { ...req, thinking }
+    const reqWithThinking: ProviderChatRequest = {
+      ...req,
+      thinking: opencodeThinkingFor(req.model, req.thinking)
+    }
     const shape = opencodeEndpointFor(req.model)
     if (shape === 'responses') {
       yield* streamOpenAiResponses(reqWithThinking, `${OPENCODE_GO_BASE}/responses`)
@@ -65,6 +110,6 @@ export const opencodeProvider: LlmProvider = {
     // Errors propagate so listProviderModels surfaces actionable warnings and
     // applies its generic seed fallback instead of failing silently here.
     const live = await opencodeChat.listModels(req)
-    return live.map(mergeGoMeta)
+    return Promise.all(live.map((m) => mergeGoMeta(m)))
   }
 }

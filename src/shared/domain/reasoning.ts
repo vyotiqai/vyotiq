@@ -9,7 +9,7 @@ import {
   type ThinkingMode
 } from '../ipc/schemas/providers'
 import { normalizeModelIdForHeuristics } from './serviceTier'
-import { opencodeGoTransportFor } from './opencodeGoModels'
+import { opencodeGoTransportFor } from './opencodeGoCatalog'
 
 export {
   ThinkingApiSchema,
