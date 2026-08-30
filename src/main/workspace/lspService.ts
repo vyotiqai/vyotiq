@@ -1,5 +1,5 @@
-import { existsSync } from 'fs'
-import { extname, join, relative } from 'path'
+import { existsSync, statSync } from 'fs'
+import { dirname, extname, join, relative } from 'path'
 import { execFile as execFileCallback } from 'child_process'
 import spawn from 'cross-spawn'
 import { promisify } from 'util'
@@ -93,6 +93,64 @@ function record(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : null
+}
+
+/**
+ * True when `path` resolves to a real tsserver.js file (the marker of a usable
+ * TS language-service SDK). TypeScript 7 workspaces ship `tsc.js` only, so this
+ * is what distinguishes a usable SDK from a workspace typescript install.
+ */
+function isTsserverSdkFile(path: string): boolean {
+  try {
+    return statSync(path).isFile()
+  } catch {
+    return false
+  }
+}
+
+/** Workspace SDK at `{workspace}/node_modules/typescript/lib/tsserver.js`, if usable. */
+export function workspaceTsserverSdkPath(workspacePath: string): string | null {
+  const candidate = join(workspacePath, 'node_modules', 'typescript', 'lib', 'tsserver.js')
+  return isTsserverSdkFile(candidate) ? candidate : null
+}
+
+/**
+ * Global npm TypeScript SDK for the typescript-language-server fallback:
+ * sibling `node_modules` next to the tls executable first (global npm layout),
+ * then the npm appdata root (`%APPDATA%\npm`). Injectable root keeps tests
+ * hermetic; pass `appdataNpmRoot` only from tests.
+ */
+export function globalTsserverSdkPath(
+  tlsExecutable: string | null,
+  appdataNpmRoot?: string
+): string | null {
+  const candidates: string[] = []
+  if (tlsExecutable) {
+    candidates.push(
+      join(dirname(tlsExecutable), 'node_modules', 'typescript', 'lib', 'tsserver.js')
+    )
+  }
+  const appdata = appdataNpmRoot ?? (process.platform === 'win32' ? process.env.APPDATA : undefined)
+  if (appdata) {
+    candidates.push(join(appdata, 'npm', 'node_modules', 'typescript', 'lib', 'tsserver.js'))
+  }
+  return candidates.find((candidate) => isTsserverSdkFile(candidate)) ?? null
+}
+
+/**
+ * initializationOptions for typescript-language-server. Set ONLY when the
+ * workspace TypeScript lacks a usable tsserver.js (TypeScript 7 ships tsc only)
+ * and a global SDK exists — tls then skips its broken workspace probe and uses
+ * the global language-service SDK. Never set when the workspace SDK is valid:
+ * tls gives `tsserver.path` precedence over the workspace.
+ */
+export function tsserverInitOptionsFromPaths(
+  workspaceTsserverPath: string | null,
+  globalTsserverPath: string | null
+): Record<string, unknown> | undefined {
+  if (workspaceTsserverPath) return undefined
+  if (!globalTsserverPath) return undefined
+  return { tsserver: { path: globalTsserverPath } }
 }
 
 function stringValue(value: unknown): string | null {
@@ -348,10 +406,18 @@ class LspClient {
     child.stderr?.on('data', () => undefined)
     child.once('error', (error) => this.fail(error))
     child.once('exit', () => this.fail(new Error('LSP server exited')))
+    const initializationOptions =
+      this.server.id === 'typescript'
+        ? tsserverInitOptionsFromPaths(
+            workspaceTsserverSdkPath(this.workspacePath),
+            globalTsserverSdkPath(this.server.executable)
+          )
+        : undefined
     const result = await this.request('initialize', {
       processId: process.pid,
       rootUri: pathToFileURL(this.workspacePath).toString(),
       rootPath: this.workspacePath,
+      ...(initializationOptions ? { initializationOptions } : {}),
       capabilities: {
         textDocument: {
           hover: { contentFormat: ['markdown', 'plaintext'] },
