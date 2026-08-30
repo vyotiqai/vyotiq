@@ -2066,9 +2066,36 @@ async function waitForUrlUnlocked(
     if (ok) return `URL matched: ${url}`
     await new Promise((r) => setTimeout(r, 100))
   }
+  // Best-effort page title, only on the error path (no per-poll cost).
+  const title = await tabContents(tab)
+    .executeJavaScript('document.title', true)
+    .catch(() => null)
   throw new Error(
-    `Timed out after ${timeoutMs}ms waiting for URL matching ${opts.regex ? '/' + needle + '/' : JSON.stringify(needle)} (last: ${tabContents(tab).getURL()})`
+    formatWaitTimeoutMessage({
+      timeoutMs,
+      needle,
+      regex: opts.regex === true,
+      url: tabContents(tab).getURL(),
+      title
+    })
   )
+}
+
+/**
+ * Pure formatter for browser_wait_for_url timeout diagnostics.
+ * JSON.stringify quoting for url and title; title segment omitted when unavailable.
+ */
+export function formatWaitTimeoutMessage(input: {
+  timeoutMs: number
+  needle: string
+  regex: boolean
+  url: string
+  title?: string | null
+}): string {
+  const matcher = input.regex ? `/${input.needle}/` : JSON.stringify(input.needle)
+  const hasTitle = typeof input.title === 'string' && input.title.trim() !== ''
+  const titlePart = hasTitle ? `, title: ${JSON.stringify(input.title)}` : ''
+  return `Timed out after ${input.timeoutMs}ms waiting for URL matching ${matcher} (last: ${JSON.stringify(input.url)}${titlePart})`
 }
 
 export async function pressKey(

@@ -46,21 +46,25 @@ const waitForUrl = vi.fn(async () => 'url matched /dashboard')
 const pressKey = vi.fn(async () => 'pressed Enter')
 const selectOption = vi.fn(async () => 'selected v1')
 
-vi.mock('@main/app/agentBrowser', () => ({
-  manageTabs: (...args: unknown[]) => manageTabs(...args),
-  navigateUrl: (...args: unknown[]) => navigateUrl(...args),
-  snapshotPage: (...args: unknown[]) => snapshotPage(...args),
-  clickSelector: (...args: unknown[]) => clickSelector(...args),
-  typeText: (...args: unknown[]) => typeText(...args),
-  scrollPage: (...args: unknown[]) => scrollPage(...args),
-  fillSelector: (...args: unknown[]) => fillSelector(...args),
-  goBack: (...args: unknown[]) => goBack(...args),
-  goForward: (...args: unknown[]) => goForward(...args),
-  waitForSelector: (...args: unknown[]) => waitForSelector(...args),
-  waitForUrl: (...args: unknown[]) => waitForUrl(...args),
-  pressKey: (...args: unknown[]) => pressKey(...args),
-  selectOption: (...args: unknown[]) => selectOption(...args)
-}))
+vi.mock('@main/app/agentBrowser', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@main/app/agentBrowser')>()
+  return {
+    formatWaitTimeoutMessage: actual.formatWaitTimeoutMessage,
+    manageTabs: (...args: unknown[]) => manageTabs(...args),
+    navigateUrl: (...args: unknown[]) => navigateUrl(...args),
+    snapshotPage: (...args: unknown[]) => snapshotPage(...args),
+    clickSelector: (...args: unknown[]) => clickSelector(...args),
+    typeText: (...args: unknown[]) => typeText(...args),
+    scrollPage: (...args: unknown[]) => scrollPage(...args),
+    fillSelector: (...args: unknown[]) => fillSelector(...args),
+    goBack: (...args: unknown[]) => goBack(...args),
+    goForward: (...args: unknown[]) => goForward(...args),
+    waitForSelector: (...args: unknown[]) => waitForSelector(...args),
+    waitForUrl: (...args: unknown[]) => waitForUrl(...args),
+    pressKey: (...args: unknown[]) => pressKey(...args),
+    selectOption: (...args: unknown[]) => selectOption(...args)
+  }
+})
 
 const toolWebFetch = vi.fn(async () => '# Fetched page')
 
@@ -546,6 +550,32 @@ describe('executeTool browser action handlers', () => {
       'example.com',
       expect.objectContaining({ regex: false, timeoutMs: undefined, tabId: undefined })
     )
+  })
+
+  it('formatWaitTimeoutMessage quotes url, includes title, and omits a null title', async () => {
+    const { formatWaitTimeoutMessage } = await import('@main/app/agentBrowser')
+
+    expect(
+      formatWaitTimeoutMessage({
+        timeoutMs: 10000,
+        needle: 'secure',
+        regex: true,
+        url: 'https://example.com/login',
+        title: 'Sign in'
+      })
+    ).toBe(
+      'Timed out after 10000ms waiting for URL matching /secure/ (last: "https://example.com/login", title: "Sign in")'
+    )
+
+    expect(
+      formatWaitTimeoutMessage({
+        timeoutMs: 5000,
+        needle: '/dashboard',
+        regex: false,
+        url: 'https://example.com/home',
+        title: null
+      })
+    ).toBe('Timed out after 5000ms waiting for URL matching "/dashboard" (last: "https://example.com/home")')
   })
 
   it('browser_press_key maps key/modifiers/tab_id/settleMs', async () => {
