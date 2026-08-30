@@ -59,10 +59,11 @@ test('context meter: low fill + tipCue without warning chrome (E4/R1)', async ()
 
   const meter = window.getByRole('button', { name: /context window/i })
   await expect(meter).toBeVisible({ timeout: 15_000 })
-  // ~8% fill after align-to-model (ollama default 32k → ~28k content budget).
-  await expect(meter).toContainText(/2\.3k/i)
-  await expect(meter).toContainText(/28k/i)
-  await expect(meter).toContainText(/99% cached/i)
+  // The meter renders a ring + sr-free label: numbers live in aria-label/title.
+  const meterLabel = (await meter.getAttribute('aria-label')) ?? ''
+  expect(meterLabel).toMatch(/2\.3k/i)
+  expect(meterLabel).toMatch(/28k/i)
+  expect(meterLabel).toMatch(/99% cached/i)
 
   const className = await meter.getAttribute('class')
   expect(className ?? '').not.toMatch(/bg-warning/)

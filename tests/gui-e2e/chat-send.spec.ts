@@ -59,11 +59,14 @@ test('send message streams fixture assistant text and can stop', async () => {
 
   await expect(window.getByText(FIXTURE_ASSISTANT_TEXT)).toBeVisible({ timeout: 15_000 })
 
+  // Merged primary action: while a run streams the button is Stop; once the run
+  // completes with an empty composer, the mic becomes primary (Send unmounts).
   const stop = window.getByRole('button', { name: /^stop$/i })
   if (await stop.isVisible().catch(() => false)) {
     await stop.click()
     await expect(stop).toBeHidden({ timeout: 10_000 })
   } else {
-    await expect(window.getByRole('button', { name: /^send$/i })).toBeVisible({ timeout: 10_000 })
+    // Run already finished — the composer returned to idle (Dictate primary).
+    await expect(window.getByRole('button', { name: /^dictate$/i })).toBeVisible({ timeout: 10_000 })
   }
 })
