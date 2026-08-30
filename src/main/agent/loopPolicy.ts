@@ -293,6 +293,28 @@ export function loopHintForConsecutiveToolFailures(
     lines.push(
       'PowerShell member access cannot have a space before the dot. Write $_.Line not $_ .Line. To scan a log file, Get-Content $path first — do not -split the path string.'
     )
+  } else if (recent?.tool === 'browser_hover' && /Unknown snapshot ref/i.test(recent.summary)) {
+    lines.push(
+      'Snapshot refs reset on every navigation. Call browser_snapshot again and use a fresh @eN ref from the new snapshot — do not reuse the old ref.'
+    )
+  } else if (
+    recent?.tool === 'browser_wait_for_url' &&
+    /Timed out .* waiting for URL/i.test(recent.summary)
+  ) {
+    lines.push(
+      'Do not repeat the same wait. Call browser_snapshot to see the actual page state (the error shows the last URL and title), fix the cause, then wait for the new URL.'
+    )
+  } else if (recent?.tool === 'github_pr_create' && /denied|not authenticated/i.test(recent.summary)) {
+    lines.push(
+      'Do not retry a denied PR. Report the ready branch and commits and let the user create the PR; if auth is the cause, run `gh auth login` outside the app.'
+    )
+  } else if (
+    recent?.tool === 'codebase_search' &&
+    /does not match the indexed model|lexical-only|fallback=hash/i.test(recent.summary)
+  ) {
+    lines.push(
+      'Search fell back to lexical because the query embedder does not match the indexed model. Re-sync the index (refresh:true) or align Settings → Indexing with the indexed embedder; retry after re-indexing completes.'
+    )
   }
 
   if (streak >= 6) {

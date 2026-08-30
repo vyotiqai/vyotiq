@@ -187,6 +187,48 @@ describe('loopPolicy', () => {
     expect(hint).toMatch(/todos: \[\{ id, content, status \}\]/i)
   })
 
+  it('hints snapshot refresh instead of reusing stale browser refs', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'browser_hover',
+      summary: 'Unknown snapshot ref @e5. Call browser_snapshot first and use a listed @eN ref.'
+    })
+    expect(hint).toMatch(/refs reset on every navigation/i)
+    expect(hint).toMatch(/browser_snapshot/i)
+    expect(hint).toMatch(/fresh @eN/i)
+  })
+
+  it('hints page-state check instead of repeating blind URL waits', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'browser_wait_for_url',
+      summary:
+        'Timed out after 10000ms waiting for URL matching "/secure" (last: "https://the-internet.herokuapp.com/login", title: "The Internet")'
+    })
+    expect(hint).toMatch(/do not repeat the same wait/i)
+    expect(hint).toMatch(/browser_snapshot/i)
+    expect(hint).toMatch(/last URL/i)
+  })
+
+  it('hints stop-and-report instead of retrying denied PR creation', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'github_pr_create',
+      summary:
+        'The user denied permission to run github_pr_create. Do not retry it; ask what to do instead or continue without it.'
+    })
+    expect(hint).toMatch(/do not retry/i)
+    expect(hint).toMatch(/branch/i)
+    expect(hint).toMatch(/gh auth login/i)
+  })
+
+  it('hints re-sync or Settings alignment for lexical-only codebase search', () => {
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'codebase_search',
+      summary:
+        'index: 1234 chunks / 89 files · model=lighton-denseon · lexical-only · hits=5\nQuery embedder does not match the indexed model; hits are lexical only (not dense semantic search).'
+    })
+    expect(hint).toMatch(/re-sync|re-index/i)
+    expect(hint).toMatch(/embedder|Settings → Indexing/i)
+  })
+
   it('does not specialize mixed read offset/limit errors (line-range already wins at Zod)', () => {
     const hint = loopHintForConsecutiveToolFailures(2, {
       tool: 'read',
