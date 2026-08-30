@@ -22,6 +22,7 @@ import {
   addInstanceWorktree,
   instanceWorktreePath,
   isInstanceWorktreeDir,
+  mergeInstanceBranch,
   removeInstanceWorktree,
   resetInstanceWorktreeCleanupForTests
 } from '@main/git/instanceWorktree'
@@ -95,6 +96,97 @@ describe.skipIf(!canGit)('instanceWorktree concurrent add', () => {
     expect(existsSync(a.worktreePath)).toBe(true)
     expect(existsSync(b.worktreePath)).toBe(true)
     expect(a.worktreePath).not.toBe(b.worktreePath)
+  }, 30_000)
+})
+
+describe.skipIf(!canGit)('instanceWorktree merge gate', () => {
+  let repo = ''
+
+  afterEach(() => {
+    if (repo && existsSync(repo)) {
+      rmSync(repo, { recursive: true, force: true })
+    }
+    repo = ''
+    if (existsSync(userData)) {
+      rmSync(userData, { recursive: true, force: true })
+    }
+    resetInstanceWorktreeCleanupForTests()
+  })
+
+  function initRepo(): void {
+    repo = mkdtempSync(join(tmpdir(), 'vyotiq-wt-merge-'))
+    git(repo, 'init', '--initial-branch=main')
+    writeFileSync(join(repo, 'README.md'), 'base\n', 'utf8')
+    git(repo, 'add', 'README.md')
+    git(
+      repo,
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'user.name=Test',
+      'commit',
+      '-m',
+      'init'
+    )
+  }
+
+  function addBranch(name: string): void {
+    git(repo, 'branch', name, 'main')
+    git(
+      repo,
+      '-c',
+      'user.email=test@example.com',
+      '-c',
+      'user.name=Test',
+      'commit',
+      '--allow-empty',
+      '-m',
+      `${name} seed`
+    )
+    git(repo, 'branch', '--force', name, 'HEAD')
+  }
+
+  it('allows merging when the parent tree has only untracked files', async () => {
+    initRepo()
+    const branch = `vyotiq/instance/run-a-${process.pid}`
+    addBranch(branch)
+    writeFileSync(join(repo, 'scratch.txt'), 'untracked\n', 'utf8')
+
+    const result = await mergeInstanceBranch(repo, branch)
+    expect(result.ok).toBe(true)
+    if (result.ok) expect(result.detail).toContain(branch)
+  }, 30_000)
+
+  it('refuses merging when the parent has a tracked modification', async () => {
+    initRepo()
+    const branch = `vyotiq/instance/run-b-${process.pid}`
+    addBranch(branch)
+    writeFileSync(join(repo, 'README.md'), 'modified\n', 'utf8')
+
+    const result = await mergeInstanceBranch(repo, branch)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/uncommitted tracked changes.*README\.md/s)
+  }, 30_000)
+
+  it('refuses merging when the parent has a staged addition', async () => {
+    initRepo()
+    const branch = `vyotiq/instance/run-c-${process.pid}`
+    addBranch(branch)
+    writeFileSync(join(repo, 'staged.ts'), 'export const s = 1\n', 'utf8')
+    git(repo, 'add', 'staged.ts')
+
+    const result = await mergeInstanceBranch(repo, branch)
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toMatch(/uncommitted tracked changes.*staged\.ts/s)
+  }, 30_000)
+
+  it('allows merging a clean parent tree', async () => {
+    initRepo()
+    const branch = `vyotiq/instance/run-d-${process.pid}`
+    addBranch(branch)
+
+    const result = await mergeInstanceBranch(repo, branch)
+    expect(result.ok).toBe(true)
   }, 30_000)
 })
 

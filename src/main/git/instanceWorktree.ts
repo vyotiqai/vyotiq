@@ -1046,14 +1046,24 @@ async function mergeInstanceBranchUnlocked(
   }
 
   try {
-    const dirty = (
-      await git(['status', '--porcelain'], workspacePath, READ_TIMEOUT_MS)
-    ).trim()
-    if (dirty) {
+    const status = await git(
+      ['status', '--porcelain=v1', '-uall'],
+      workspacePath,
+      READ_TIMEOUT_MS
+    )
+    const blocked: string[] = []
+    for (const line of status.split(/\r?\n/)) {
+      if (line.length < 4) continue
+      const xy = line.slice(0, 2)
+      if (xy === '??' || xy.trim() === '') continue // untracked: merge cannot overwrite it (git aborts if it would)
+      blocked.push(line.trim())
+    }
+    if (blocked.length > 0) {
+      const shown =
+        blocked.slice(0, 5).join(', ') + (blocked.length > 5 ? `, +${blocked.length - 5} more` : '')
       return {
         ok: false,
-        error:
-          'Parent worktree has uncommitted changes. Commit or stash them, then merge one instance branch at a time.'
+        error: `Parent worktree has uncommitted tracked changes (${shown}). Commit or stash them, then merge one instance branch at a time.`
       }
     }
   } catch (err) {

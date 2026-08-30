@@ -922,11 +922,12 @@ describe('agentInstances worktree', () => {
     writeFileSync(join(status!.worktreePath!, 'child.txt'), 'x\n')
     await updateStatus(resolveRunDir(workspacePath, child.runId), { status: 'done' }, { sync: true })
     await handleInlineInstanceFinished(workspacePath, child.runId, 'done')
-    writeFileSync(join(workspacePath, 'parent-dirty.txt'), 'dirty\n')
+    // Tracked modification (not untracked): untracked-only parents are allowed by the merge gate.
+    writeFileSync(join(workspacePath, 'README.md'), 'dirty\n')
     const merged = await mergeAgentInstanceBranch(workspacePath, parentRunId, child.runId)
     expect(merged.ok).toBe(false)
     if (!merged.ok) {
-      expect(merged.error).toMatch(/uncommitted changes/i)
+      expect(merged.error).toMatch(/uncommitted tracked changes/i)
     }
     clearRunAbort(child.runId)
   })
