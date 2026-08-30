@@ -267,8 +267,20 @@ export async function ensureMDenseOnModel(
 
     const autoDownload = opts.autoDownload !== false
 
+    // Same neural family = same embedding space (denseModelIdsCompatible), so
+    // the ensure loop may satisfy a family request with any of its artifacts:
+    // prefer an already-cached one (e.g. mDenseOn), else auto-download the
+    // public bootstrap (DenseOn INT8). Exact-model filtering here previously
+    // made the public bootstrap unreachable — on fresh machines the default
+    // embedder silently degraded to hash even with autoDownload enabled.
+    // LFM2 keeps its exact target (user-exported, never hub-fetched).
+    const targetFamily =
+      targetModelId == null ? null : neuralModelFamily(targetModelId)
     for (const art of ARTIFACTS.filter(
-      (a) => targetModelId == null || a.modelId === targetModelId
+      (a) =>
+        targetFamily == null
+          ? true
+          : neuralModelFamily(a.modelId) === targetFamily
     )) {
       const modelDir = codeIndexModelDir(art.artifactId)
       const present = modelFilesPresent(modelDir, art.files)
