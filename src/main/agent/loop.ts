@@ -115,7 +115,7 @@ import {
   setLateFollowUpDropped,
   takePendingMode
 } from './runRegistry'
-import { syncFollowUpsToDisk } from './followUpStore'
+import { saveFollowUps, syncFollowUpsToDisk } from './followUpStore'
 import { clearLoopCheckpoint, loadLoopCheckpoint, saveLoopCheckpoint } from './loopCheckpoint'
 import { LOOP_CHECKPOINT_VERSION, type LoopCheckpoint } from '../../shared/ipc/schemas/agent'
 import {
@@ -420,7 +420,9 @@ async function* yieldNetworkInterruptedTerminal(
   }
   appendEvent(runDir, incompleteEv)
   yield incompleteEv
-  yield* dropPendingFollowUps(runId, runDir, incompleteReason)
+  // Keep the queued follow-ups on disk — the run stops resumable, and a
+  // Continue / auto-resume re-applies the queue instead of discarding it.
+  yield* dropPendingFollowUps(runId, runDir, 'resumable_preserved', { preserveOnDisk: true })
   yield* emitTerminalRunError({
     runId,
     invokeId,
@@ -505,7 +507,8 @@ function* applyPendingModeChange(
 function* dropPendingFollowUps(
   runId: string,
   runDir: string | null | undefined,
-  reason: string
+  reason: string,
+  opts?: { preserveOnDisk?: boolean }
 ): Generator<AgentEvent> {
   const pending = peekFollowUps(runId)
   if (pending.length === 0) {
@@ -514,6 +517,12 @@ function* dropPendingFollowUps(
   }
   const ids = pending.map((entry) => entry.id)
   clearFollowUps(runId)
+  if (opts?.preserveOnDisk) {
+    // Resumable stop: keep followups.json so a Continue / auto-resume re-applies
+    // the queue. No dropped event — the tasks are preserved, not discarded.
+    if (runDir) saveFollowUps(runDir, pending)
+    return
+  }
   if (runDir) syncFollowUpsToDisk(runDir, runId)
   const dropped: AgentEvent = {
     type: 'follow_up_dropped',
@@ -2590,6 +2599,12 @@ export async function* runAgent(input: {
                 ? chunk.errorCode
                 : 'PROVIDER_STREAM'
             lastStreamFailureHttpStatus = chunk.httpStatus
+            if (errorCode === 'PROVIDER_NETWORK') {
+              // Retriable at the stream layer now — record so a final exhaust
+              // classifies as networkRelated (interrupted, not hard error).
+              lastStreamFailureMessage = message
+              lastStreamFailureCode = errorCode
+            }
             if (shouldRetryStreamErrorChunk(errorCode, message, attempt, chunk.httpStatus)) {
               lastStreamFailureMessage = message
               lastStreamFailureCode = errorCode

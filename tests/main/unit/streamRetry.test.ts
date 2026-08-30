@@ -39,8 +39,9 @@ describe('streamRetry', () => {
     expect(shouldRetryThrownStreamError(new DOMException('Aborted', 'AbortError'), 1)).toBe(false)
   })
 
-  it('does not multiply connection retries at the stream layer', () => {
-    expect(shouldRetryStreamErrorChunk('PROVIDER_NETWORK', 'fetch failed', 1)).toBe(false)
+  it('gives PROVIDER_NETWORK one deliberate stream-layer retry', () => {
+    expect(shouldRetryStreamErrorChunk('PROVIDER_NETWORK', 'Connect timed out', 1)).toBe(true)
+    expect(shouldRetryStreamErrorChunk('PROVIDER_NETWORK', 'Connect timed out', 2)).toBe(false)
     expect(shouldRetryStreamErrorChunk('CIRCUIT_OPEN', 'Circuit open', 1)).toBe(false)
     expect(shouldRetryStreamErrorChunk('PROVIDER_STREAM', 'fetch failed: other side closed', 1)).toBe(
       true

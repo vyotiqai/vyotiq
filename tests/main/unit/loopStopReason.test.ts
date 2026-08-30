@@ -103,7 +103,7 @@ vi.mock('@main/agent/state', async (importOriginal) => {
 })
 
 import { runAgent } from '@main/agent/loop'
-import { resetActiveRunsForTests } from '@main/agent/runRegistry'
+import { enqueueFollowUp, resetActiveRunsForTests } from '@main/agent/runRegistry'
 import { appendMessage, createRun, flushMessageAppends } from '@main/agent/state'
 
 type CapturedEvent = {
@@ -675,6 +675,57 @@ describe('runAgent partial persistence', () => {
         (e) => e.type === 'incomplete' && e.reason === 'network_interrupted'
       )
     ).toBe(true)
+  })
+
+  it('retries a PROVIDER_NETWORK error chunk once and finishes the step', async () => {
+    let attempt = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      attempt += 1
+      if (attempt === 1) {
+        yield {
+          type: 'error',
+          error: 'Connect timed out waiting for response headers after 30000ms',
+          errorCode: 'PROVIDER_NETWORK'
+        }
+        return
+      }
+      yield { type: 'text', text: 'recovered after reconnect' }
+      yield { type: 'done', stopReason: 'stop' }
+    })
+
+    const events = await collect('network-chunk-retry', workspace)
+
+    expect(attempt).toBe(2)
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+    expect(events.some((e) => e.type === 'incomplete')).toBe(false)
+  })
+
+  it('stops resumable after PROVIDER_NETWORK exhausts retries and keeps queued follow-ups on disk', async () => {
+    const runId = 'network-chunk-exhausted'
+    let calls = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      calls += 1
+      if (calls === 1) {
+        const queued = enqueueFollowUp(runId, { role: 'user', content: 'queued before outage' })
+        expect(queued.ok).toBe(true)
+      }
+      yield {
+        type: 'error',
+        error: 'Connect timed out waiting for response headers after 30000ms',
+        errorCode: 'PROVIDER_NETWORK'
+      }
+    })
+
+    const events = await collect(runId, workspace)
+
+    expect(
+      events.some((e) => e.type === 'incomplete' && e.reason === 'network_interrupted')
+    ).toBe(true)
+    expect(events.some((e) => e.type === 'follow_up_dropped')).toBe(false)
+    expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
+
+    const followUps = readFileSync(join(resolveRunDir(workspace, runId), 'followups.json'), 'utf8')
+    expect(followUps).toContain('queued before outage')
   })
 
   it('emits stream_reset so the UI drops output from a retried attempt', async () => {

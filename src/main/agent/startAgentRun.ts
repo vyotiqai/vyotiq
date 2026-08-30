@@ -11,6 +11,7 @@ import {
 import { isAbortError, formatError } from '../../shared/errors'
 import { getMainWindow } from '../app/window'
 import { isChatFixtureReplayEnabled, replayChatFixture } from '../e2e/chatFixtureReplay'
+import { formatGoalContinueMessage } from '../../shared/goalRuntime'
 import {
   ChatEventBatcher,
   getChatEventBatchStats,
@@ -32,10 +33,14 @@ import {
 } from './agentQuestion'
 import { publishLifecycleNotification } from '../notifications/bus'
 import {
+  isActive,
   markRunTurnComplete,
   takeLateFollowUpDropped,
   takeLateWriteCheckpoint
 } from './runRegistry'
+import { readGoal } from './runGoal'
+import { launchRunFollowUpOrStart } from './launchRunInvoke'
+import { emitGoalUpdate } from './goalEvents'
 
 export function isTerminalAgentRunEvent(ev: AgentEvent): boolean {
   return (
@@ -191,10 +196,47 @@ export function startAgentRunInBackground(input: StartAgentRunInput): void {
       releaseIpcSender()
       cancelPendingApprovals(runId, invokeId)
       cancelPendingQuestions(runId, invokeId)
-      const persisted = loadStatus(resolveRunDir(workspacePath, runId))
+      const runDir = resolveRunDir(workspacePath, runId)
+      const persisted = loadStatus(runDir)
+      // A goal run stopped resumably (network / provider outage) must not sit
+      // dead until the user notices — relaunch it the same way app-restart goal
+      // resume does. The stop is resumable: status was written with resumable
+      // and the loop checkpoint + followups.json are intact.
+      let relaunchedActiveGoal = false
+      if (
+        terminalStatus === 'error' &&
+        persisted?.status === 'error' &&
+        persisted.resumable === true &&
+        persisted.inlineInstance !== true
+      ) {
+        const goal = readGoal(runDir)
+        if (goal?.status === 'active' && !isActive(runId)) {
+          logger.info('Relaunching goal run after resumable stop', {
+            scope: 'goal',
+            correlationId: runId
+          })
+          relaunchedActiveGoal = true
+          launchRunFollowUpOrStart({
+            workspacePath,
+            runId,
+            wc,
+            mode: 'agent',
+            message: { role: 'user', content: formatGoalContinueMessage(goal.objective) }
+          })
+          emitGoalUpdate({
+            workspacePath,
+            runId,
+            runDir,
+            goal,
+            notice: `Connection lost — resuming goal: ${goal.objective}`,
+            wc
+          })
+        }
+      }
       if (
         !persisted?.inlineInstance &&
-        (terminalStatus === 'done' || terminalStatus === 'error')
+        (terminalStatus === 'done' || terminalStatus === 'error') &&
+        !relaunchedActiveGoal
       ) {
         const goal = persisted?.goal?.trim() ?? ''
         const failed = terminalStatus === 'error'

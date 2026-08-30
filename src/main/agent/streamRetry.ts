@@ -14,6 +14,14 @@ import {
 } from './providers/fetchWithRetry'
 
 export const MAX_STREAM_ATTEMPTS = 5
+/**
+ * Run-level retries for connect-class network failures (PROVIDER_NETWORK).
+ * fetchWithRetry already burns its 5-attempt connect budget inside one stream
+ * call; one extra stream attempt (with a fresh fetch budget plus a network
+ * wait) lets a longer outage or a flaky tunnel recover instead of ending the
+ * run. Beyond that the failure surfaces as a resumable network-interrupted stop.
+ */
+export const PROVIDER_NETWORK_MAX_ATTEMPTS = 2
 export const STREAM_RETRY_BASE_MS = 1000
 export const STREAM_RETRY_MAX_MS = 8000
 /** Slower curve for provider-side wait failures (429/5xx) — they need real cool-down. */
@@ -44,7 +52,14 @@ export function shouldRetryStreamErrorChunk(
   attempt: number,
   httpStatus?: number
 ): boolean {
-  if (errorCode === 'CIRCUIT_OPEN' || errorCode === 'PROVIDER_NETWORK') return false
+  if (errorCode === 'CIRCUIT_OPEN') return false
+  if (errorCode === 'PROVIDER_NETWORK') {
+    // The fetch layer already retried connect failures to exhaustion inside
+    // this attempt (5 × ~30s connect budget). One deliberate stream-level
+    // retry — fresh fetch budget plus the network-wait backoff — recovers a
+    // longer outage without ending the run mid-task.
+    return attempt < PROVIDER_NETWORK_MAX_ATTEMPTS
+  }
   if (errorCode === 'PROVIDER_HTTP') {
     if (httpStatus != null) return attempt < MAX_STREAM_ATTEMPTS && isRetriableHttpStatus(httpStatus)
     return attempt < MAX_STREAM_ATTEMPTS && isRetriableProviderMessage(message)
