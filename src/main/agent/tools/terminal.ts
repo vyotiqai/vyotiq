@@ -624,6 +624,40 @@ export function isCommandProbeNoTargetContent(command: string, content: string):
 }
 
 /**
+ * Remote grep no-match over SSH (run 1de9344a invoke 2): `ssh … grep -q …`
+ * exiting 1 with empty stdout/stderr means "pattern not found (yet)" — a
+ * polling answer, not a tool fault, exactly like cmd's findstr no-match.
+ * Guards: exit 1 only (2 = usage/grep error stays a failure), last pipeline
+ * stage is ssh, the remote command actually invokes grep (bare-ssh failures
+ * stay real), empty stdout AND stderr (connection/auth errors print to
+ * stderr and stay real), and not a ssh -V/-G version probe.
+ * Retry-once quirks in the harness / a flaky tunnel produce the same shape;
+ * the stamp text keeps the model informed and the tool is already
+ * rate-neutral, so a bounded informative outcome is correct here.
+ */
+export function isRemoteGrepNoMatch(
+  command: string,
+  exitCode: number | null | undefined,
+  stdout: string,
+  stderr: string
+): boolean {
+  if (exitCode !== 1) return false
+  if (primaryCommandToken(command) !== 'ssh') return false
+  if (stdout.trim().length > 0 || stderr.trim().length > 0) return false
+  if (/ssh\s+(-[A-Za-z]*[VG]\b|\s--[a-z-]*version)/i.test(command)) return false
+  // Remote command = the ssh argument following the destination; require grep.
+  // Preceding char includes ( and ` — real invocations are $(grep …) / `grep …`.
+  return /(?:^|[\s"'`(])grep(?:\s|["')]|$)/.test(command)
+}
+
+/** Parse terminal tool content for the remote grep no-match soft success. Exported for tests. */
+export function isRemoteGrepNoMatchContent(command: string, content: string): boolean {
+  const parsed = parseTerminalFrame(content)
+  if (parsed.exitCode == null) return false
+  return isRemoteGrepNoMatch(parsed.command || command, parsed.exitCode, parsed.stdout, parsed.stderr)
+}
+
+/**
  * Windows elevation denials (run 1de9344a): the request was refused before any
  * system state changed — winget `0x80073d28` ("administrator privileges are
  * required"), a declined/dismissed UAC dialog (`Start-Process -Verb RunAs` →
@@ -724,7 +758,10 @@ function formatTerminalOutput(
   // result so the model reads the verdict even though exit_code stays
   // non-zero; terminalResultOk classifies these as ok.
   const probeNoTarget = isCommandProbeNoTarget(command, code, stdout, stderr)
-  const elevationDenied = !probeNoTarget && isElevationDenied(command, code, stdout, stderr)
+  const remoteGrepNoMatch =
+    !probeNoTarget && isRemoteGrepNoMatch(command, code, stdout, stderr)
+  const elevationDenied =
+    !probeNoTarget && !remoteGrepNoMatch && isElevationDenied(command, code, stdout, stderr)
   let out = [
     `cwd: ${cwd}`,
     `shell: ${resolved}`,
@@ -738,6 +775,9 @@ function formatTerminalOutput(
       : '',
     elevationDenied
       ? 'elevation: denied (informative — one admin/UAC action is required; ask the user or use a non-elevated fallback, do not retry the same command)'
+      : '',
+    remoteGrepNoMatch
+      ? 'remote-grep: no match (informative — the remote grep found nothing yet, not a failure; poll later or change the search)'
       : '',
     `exit_code: ${code ?? -1}`
   ]

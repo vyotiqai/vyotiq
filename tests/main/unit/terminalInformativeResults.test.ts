@@ -15,6 +15,8 @@ import {
   isCommandProbeNoTargetContent,
   isElevationDenied,
   isElevationDeniedContent,
+  isRemoteGrepNoMatch,
+  isRemoteGrepNoMatchContent,
   formatTerminalSessionOutput
 } from '@main/agent/tools/terminal'
 import { terminalResultOk } from '@main/agent/tools'
@@ -191,6 +193,54 @@ describe('isElevationDenied', () => {
     ].join('\n')
     expect(isElevationDeniedContent('Start-Process -Verb RunAs', content)).toBe(true)
     expect(terminalResultOk('Start-Process -Verb RunAs', content)).toBe(true)
+  })
+})
+
+describe('isRemoteGrepNoMatch', () => {
+  // Fixtures verbatim from run 1de9344a invoke 2 (steps 119-122): ssh-polling
+  // an Alpine VM for a pattern that had not appeared yet — grep exit 1, empty
+  // streams. The loop stopped after 4 such "failures" in a row.
+  const sshGrepNoMatch =
+    "ssh -i .vmkey\\id_ed25519 -p 2222 -o StrictHostKeyChecking=no -o UserKnownHostsFile=NUL -o ConnectTimeout=30 root@127.0.0.1 'n1=$(grep -c PASS_DESKTOP /var/log/console.log 2>/dev/null); echo n1='$n1"
+
+  it('classifies ssh-wrapped grep exit 1 with empty streams as informative', () => {
+    expect(isRemoteGrepNoMatch(sshGrepNoMatch, 1, '', '')).toBe(true)
+  })
+
+  it('classifies through the terminal frame and terminalResultOk', () => {
+    const content = [
+      `session_id: a2971168-bc95-4f30-9a93-1866afd502c2`,
+      'status: done',
+      `command: ${sshGrepNoMatch} 2>&1`,
+      'cwd: C:\\ws',
+      'shell: powershell',
+      '',
+      '',
+      'exit_code: 1'
+    ].join('\n')
+    expect(isRemoteGrepNoMatchContent('session', content)).toBe(true)
+    expect(terminalResultOk('session', content)).toBe(true)
+  })
+
+  it('keeps ssh failures WITH output or stderr as real failures', () => {
+    expect(isRemoteGrepNoMatch(sshGrepNoMatch, 1, 'some output', '')).toBe(false)
+    expect(
+      isRemoteGrepNoMatch(sshGrepNoMatch, 1, '', 'ssh: connect to host 127.0.0.1 port 2222: Connection refused')
+    ).toBe(false)
+  })
+
+  it('keeps grep usage errors (exit 2) and quoting bugs as real failures', () => {
+    expect(isRemoteGrepNoMatch(sshGrepNoMatch, 2, '', 'grep: error: No such file or directory')).toBe(false)
+  })
+
+  it('keeps non-ssh and non-grep remote commands as real failures', () => {
+    expect(isRemoteGrepNoMatch('cargo test --release', 101, '', '')).toBe(false)
+    expect(isRemoteGrepNoMatch('ssh host "systemctl status agentsd"', 1, '', '')).toBe(false)
+  })
+
+  it('does not fire on exit 0 or null', () => {
+    expect(isRemoteGrepNoMatch(sshGrepNoMatch, 0, 'hit', '')).toBe(false)
+    expect(isRemoteGrepNoMatch(sshGrepNoMatch, null, '', '')).toBe(false)
   })
 })
 

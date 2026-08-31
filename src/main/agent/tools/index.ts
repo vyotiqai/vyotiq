@@ -58,6 +58,7 @@ import {
   isFindstrNoMatchContent,
   isDirMissingPathContent,
   isCommandProbeNoTargetContent,
+  isRemoteGrepNoMatchContent,
   isElevationDeniedContent,
   toolTerminal,
   TERMINAL_DEFAULT_TIMEOUT_MS,
@@ -358,6 +359,7 @@ export function terminalResultOk(command: string, content: string): boolean {
   // are evidence, not tool faults. Counting them as failures made runs stop
   // on LOOP_SAFETY while probing a machine's toolchain (run 1de9344a).
   if (isCommandProbeNoTargetContent(command, content)) return true
+  if (isRemoteGrepNoMatchContent(command, content)) return true
   if (isElevationDeniedContent(command, content)) return true
   // Soft-success helpers are cmd-oriented only.
   const shellLine = /^shell:\s*(\S+)/m.exec(content)
