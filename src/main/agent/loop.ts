@@ -95,7 +95,9 @@ import { requestMaxOutputTokens } from './providers/requestLimits'
 import type { ProviderReasoningState } from '../../shared/reasoning'
 import {
   catalogThinkingAllowed,
+  isScriptCorruptedReasoning,
   parseProviderReasoningState,
+  quarantineReasoningState,
   thinkingFromReasoningState
 } from '../../shared/reasoning'
 import type { StopReason, TokenUsage, ToolCall } from './providers/types'
@@ -700,6 +702,9 @@ function* flushPartialAssistant(
   step: number,
   interruption: 'cancelled' | 'interrupted'
 ): Generator<AgentEvent> {
+  const quarantined = quarantineReasoningState(reasoningState)
+  if (quarantined !== reasoningState) logReasoningQuarantine(runId, step)
+  reasoningState = quarantined
   const toolCalls = resolveStepToolCalls(completedToolCalls, streamedToolCalls, step)
   const scrubbedText = stripToolShapedAssistantText(assistantText)
   if (!scrubbedText && !thinkingText && toolCalls.length === 0) return
@@ -755,6 +760,16 @@ function* flushPartialAssistant(
     appendEvent(runDir, toolResultEventForPersistence(resultEv))
     yield toolResultEventForIpc(resultEv)
   }
+}
+
+/** Quarantine a glitched reasoning payload before persist/replay; warn once. */
+function logReasoningQuarantine(runId: string, step: number): void {
+  logger.warn('Quarantined script-corrupted reasoning block', {
+    scope: 'agent',
+    code: 'REASONING_QUARANTINED',
+    correlationId: runId,
+    step
+  })
 }
 
 export async function* runAgent(input: {
@@ -2899,6 +2914,20 @@ export async function* runAgent(input: {
         )
         yield* applyDrainedFollowUps(runId, runDir, messages)
         continue
+      }
+
+      // Quarantine a script-corrupted `done` payload before persist/replay;
+      // clear the display buffer to match. The live thinking_done event already
+      // streamed to the UI is unavoidable — corruption is only detectable once
+      // the block is complete.
+      const quarantined = quarantineReasoningState(stepReasoningState)
+      if (quarantined !== stepReasoningState) {
+        logReasoningQuarantine(runId, step)
+        stepReasoningState = quarantined
+        if (isScriptCorruptedReasoning(thinkingText)) {
+          thinkingText = ''
+          thinkingDoneEmitted = true
+        }
       }
 
       const uniqueToolCalls = resolveStepToolCalls(toolCalls, streamedToolCalls, step)

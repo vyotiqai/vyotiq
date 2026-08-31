@@ -29,10 +29,19 @@ const OPENCODE_GO_BASE = 'https://opencode.ai/zen/go/v1'
  * (measured 2026-08-31: 3.8–10% overall hit rate, binary 0%/100% alternation,
  * run 72d5df60). Hosts that reject the field retry once without it
  * (shouldRetryOmitCacheKey).
+ *
+ * `stripReasoningReplay: true` drops prior-turn reasoning from history.
+ * These hosts regenerate thinking from context; feeding each step its own
+ * replayed reasoning self-conditions ritual thinking and makes one corrupted
+ * block persist for the whole run (measured 2026-08-31, run 6265fa90: ritual
+ * openers in 21/24 steps — 98% of thinking bytes — and a mid-stream
+ * script-glitch replayed verbatim into every later step). Display text is
+ * unaffected; only the wire history changes.
  */
 export const OPENCODE_CHAT_OPTS = {
   defaultBaseUrl: OPENCODE_GO_BASE,
-  enablePromptCache: true
+  enablePromptCache: true,
+  stripReasoningReplay: true
 } as const
 
 const opencodeChat = createOpenAiCompatibleProvider('opencode', OPENCODE_CHAT_OPTS)

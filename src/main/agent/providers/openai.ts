@@ -288,6 +288,12 @@ export type OpenAiCompatOptions = {
   convIdHeader?: boolean
   /** DeepSeek: enable thinking mode via extra_body fields. */
   deepseekThinking?: boolean
+  /**
+   * Drop prior-turn reasoning from history on the wire (off by default).
+   * DeepSeek documents that prior-turn reasoning_content must not be replayed;
+   * Anthropic (which requires thinking blocks on continuation turns) never opts in.
+   */
+  stripReasoningReplay?: boolean
   /** OpenRouter: unified reasoning parameter. */
   openRouterReasoning?: boolean
   /** Allow chat/catalog without an API key (local custom gateways). */
@@ -1173,6 +1179,7 @@ export function buildOpenAiCompatBody(
     }
   }))
   const stripReasoningReplay =
+    opts.stripReasoningReplay ||
     opts.openRouterReasoning ||
     providerId === 'openrouter' ||
     (providerId === 'custom' && req.thinking?.display === 'omitted')
@@ -1739,10 +1746,11 @@ export const openaiProvider: LlmProvider = {
     yield* base.streamChat(req)
   }
 }
-/** DeepSeek thinking is enabled via extra_body fields; caching is automatic (no key field). */
-const DEEPSEEK_OPTS: OpenAiCompatOptions = {
+/** DeepSeek thinking is enabled via extra_body fields; caching is automatic (no key field). Prior-turn reasoning is never replayed (DeepSeek API guidance). */
+export const DEEPSEEK_OPTS: OpenAiCompatOptions = {
   defaultBaseUrl: 'https://api.deepseek.com/v1',
-  deepseekThinking: true
+  deepseekThinking: true,
+  stripReasoningReplay: true
 }
 const OLLAMA_OPTS: OpenAiCompatOptions = {
   defaultBaseUrl: 'http://127.0.0.1:11434/v1',

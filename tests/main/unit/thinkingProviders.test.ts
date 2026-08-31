@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { buildOpenAiCompatBody } from '@main/agent/providers/openai'
+import { buildOpenAiCompatBody, DEEPSEEK_OPTS } from '@main/agent/providers/openai'
 import { opencodeThinkingFor } from '@main/agent/providers/opencode'
 import { streamOpenAiResponses } from '@main/agent/providers/openaiResponses'
 import { anthropicThinkingFields } from '@main/agent/providers/thinkingPolicy'
@@ -32,7 +32,7 @@ describe('openai compat thinking body', () => {
     expect(body.reasoning).toEqual({ effort: 'high' })
   })
 
-  it('replays reasoning_content on assistant tool-call messages', () => {
+  it('strips prior-turn reasoning_content on assistant tool-call messages (DeepSeek docs: replaying prior reasoning must be avoided; live 6265fa90 replay self-conditioned ritual thinking in 21/24 steps)', () => {
     const body = buildOpenAiCompatBody(
       baseReq({
         messages: [
@@ -45,13 +45,14 @@ describe('openai compat thinking body', () => {
           }
         ]
       }),
-      { defaultBaseUrl: 'https://api.deepseek.com/v1', deepseekThinking: true },
+      DEEPSEEK_OPTS,
       'deepseek'
     )
     const assistant = (body.messages as Array<Record<string, unknown>>).find(
       (m) => m.role === 'assistant'
     )
-    expect(assistant?.reasoning_content).toBe('internal')
+    expect(assistant?.reasoning_content).toBeUndefined()
+    expect(assistant?.tool_calls).toBeDefined()
   })
 
   it('adds Groq reasoning fields when enabled', () => {

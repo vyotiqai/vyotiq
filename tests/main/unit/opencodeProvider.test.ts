@@ -162,6 +162,10 @@ describe('opencode chat transport prompt-cache wiring', () => {
     expect(OPENCODE_CHAT_OPTS.enablePromptCache).toBe(true)
   })
 
+  it('ships stripReasoningReplay so prior-turn reasoning never re-enters history (live 6265fa90: ritual openers 21/24 steps, 98% of thinking bytes, zero compactions)', () => {
+    expect(OPENCODE_CHAT_OPTS.stripReasoningReplay).toBe(true)
+  })
+
   it('chat bodies carry prompt_cache_key for cache affinity (live 72d5df60: 0%/100% shard bounce)', () => {
     const body = buildOpenAiCompatBody(
       {
@@ -175,6 +179,31 @@ describe('opencode chat transport prompt-cache wiring', () => {
       'opencode'
     )
     expect(body.prompt_cache_key).toBe('run-xyz')
+  })
+
+  it('chat bodies omit prior-turn reasoning_content while the wire body still carries everything else', () => {
+    const body = buildOpenAiCompatBody(
+      {
+        model: 'glm-5.3-flash',
+        messages: [
+          {
+            role: 'assistant',
+            content: '',
+            reasoningState: { kind: 'openai_compat', reasoningContent: 'stale thinking' },
+            toolCalls: [{ id: 'c1', name: 'read', arguments: '{}' }]
+          },
+          { role: 'tool', toolCallId: 'c1', content: '{}' }
+        ],
+        tools: [],
+        signal: new AbortController().signal
+      },
+      OPENCODE_CHAT_OPTS,
+      'opencode'
+    )
+    const wire = body.messages as Array<Record<string, unknown>>
+    const assistant = wire.find((m) => m.role === 'assistant')
+    expect(assistant?.reasoning_content).toBeUndefined()
+    expect(assistant?.tool_calls).toBeDefined()
   })
 })
 
