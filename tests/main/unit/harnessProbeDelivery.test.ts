@@ -28,4 +28,15 @@ describe('canonical harness delivers tool-selection guidance', () => {
     expect(toolPolicy!.text).toContain('Respect tool prerequisites')
     expect(toolPolicy!.text).toContain('Budget blocking tools')
   })
+
+  it('tool_policy directs multi-file batches to multi_edit with its one-entry contract', () => {
+    const loaded = loadHarness(repoRoot)
+    const toolPolicy = splitHarnessSections(loaded).find((c) => c.name === 'tool_policy')
+    expect(toolPolicy).toBeTruthy()
+    expect(toolPolicy!.text).toContain(
+      'When several workspace files change together in one step, prefer one multi_edit call'
+    )
+    expect(toolPolicy!.text).toContain('list each path once')
+    expect(toolPolicy!.text).toContain('either contents or diff, never both')
+  })
 })
