@@ -8,10 +8,12 @@ import { TextShimmer } from './TextShimmer'
 
 /**
  * Cap the open thought body so long reasoning cannot dominate the transcript.
- * Scales with the viewport, clamped for short and tall windows.
+ * Scales with the viewport, clamped for short and tall windows. `pr-2.5`
+ * reserves the 10px Windows overlay-scrollbar gutter so wrapped text never
+ * sits under the thumb (overlay scrollbars float above content here).
  */
 const THINKING_BODY_MAX =
-  'max-h-[min(12rem,28vh)] sm:max-h-[min(14rem,32vh)] overflow-y-auto overscroll-contain'
+  'max-h-[min(12rem,28vh)] sm:max-h-[min(14rem,32vh)] overflow-y-auto overscroll-contain pr-2.5'
 
 /** Dimmer than answer text-fg; same size so expanded thought stays readable. */
 const THINKING_INK =

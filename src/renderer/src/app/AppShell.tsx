@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactElement,
@@ -28,6 +29,8 @@ import { ErrorBoundary } from '@renderer/lib/ErrorBoundary'
 import { focusComposerMessage, useAppShortcuts } from '@renderer/lib/shortcuts'
 import { TitleBar } from './TitleBar'
 import { CommandPalette } from '@renderer/features/commandPalette/CommandPalette'
+import { formatWorkspaceName } from '@renderer/lib/utils/formatWorkspaceName'
+import { workspacePathsEqual } from '@shared/workspacePathMatch'
 
 function AppShellInner({
   view,
@@ -44,6 +47,7 @@ function AppShellInner({
   onOpenMarketplace,
   onOpenChat,
   onNewChat,
+  onNewChatInWorkspace,
   onSelectRunInWorkspace,
   onRenameRunInWorkspace,
   onDeleteRunInWorkspace,
@@ -78,6 +82,7 @@ function AppShellInner({
   onOpenMarketplace: () => void
   onOpenChat: () => void
   onNewChat: () => void
+  onNewChatInWorkspace?: (path: string) => void
   onSelectRunInWorkspace?: (path: string, runId: string) => void
   onRenameRunInWorkspace?: (path: string, runId: string, goal: string) => void
   onDeleteRunInWorkspace?: (path: string, runId: string) => void
@@ -242,6 +247,26 @@ function AppShellInner({
     searchRef.current?.blur()
   }, [onSessionQuery])
 
+  const switchWorkspaceByIndex = useCallback(
+    (index: number): void => {
+      const path = openWorkspaces?.[index]
+      if (!path) return
+      onSwitchWorkspace?.(path)
+      onOpenChat()
+    },
+    [openWorkspaces, onSwitchWorkspace, onOpenChat]
+  )
+
+  /** Slot-ordered open workspace names for the command palette (index 0 = Ctrl+1). */
+  const paletteWorkspaces = useMemo(
+    () =>
+      (openWorkspaces ?? []).map((path) => ({
+        name: formatWorkspaceName(path),
+        current: workspacePath != null && workspacePathsEqual(workspacePath, path)
+      })),
+    [openWorkspaces, workspacePath]
+  )
+
   const isSearchFocused = useCallback(
     (): boolean => document.activeElement === searchRef.current,
     []
@@ -258,6 +283,7 @@ function AppShellInner({
     onClearSearchFocus: clearSearchFocus,
     isSearchFocused,
     onNewChat,
+    onSwitchWorkspaceByIndex: switchWorkspaceByIndex,
     onOpenSettings,
     chatViewActive: view === 'chat',
     running,
@@ -292,6 +318,7 @@ function AppShellInner({
     onOpenMarketplace,
     onOpenChat,
     onNewChat,
+    onNewChatInWorkspace,
     onSelectRunInWorkspace,
     onRenameRunInWorkspace,
     onDeleteRunInWorkspace,
@@ -382,6 +409,7 @@ function AppShellInner({
       </div>
       <CommandPalette
         open={commandPaletteOpen}
+        workspaces={paletteWorkspaces}
         onClose={() => setCommandPaletteOpen(false)}
         onSelect={(id) => {
           if (id === 'settings') onOpenSettings()
@@ -393,6 +421,12 @@ function AppShellInner({
           else if (id === 'stop') onChatStop?.()
           else if (id === 'closeChat') onCloseChat?.()
           else if (id === 'commandPalette') setCommandPaletteOpen(true)
+          else if (/^workspace[1-9]$/.test(id))
+            switchWorkspaceByIndex(Number(id.slice('workspace'.length)) - 1)
+          else if (/^newchat[1-9]$/.test(id)) {
+            const path = openWorkspaces?.[Number(id.slice('newchat'.length)) - 1]
+            if (path) onNewChatInWorkspace?.(path)
+          }
           else window.dispatchEvent(new CustomEvent('vyotiq:command', { detail: { id } }))
         }}
       />

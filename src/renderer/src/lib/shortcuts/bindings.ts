@@ -19,6 +19,15 @@ export type ShortcutId =
   | 'closeChat'
   | 'findInFiles'
   | 'commandPalette'
+  | 'workspace1'
+  | 'workspace2'
+  | 'workspace3'
+  | 'workspace4'
+  | 'workspace5'
+  | 'workspace6'
+  | 'workspace7'
+  | 'workspace8'
+  | 'workspace9'
 
 export type ShortcutShift = 'forbid' | 'allow' | 'require'
 
@@ -51,5 +60,27 @@ export const SHORTCUT_BINDINGS: Record<ShortcutId, ShortcutBinding> = {
   panelPr: { id: 'panelPr', key: 'g', mod: true, shift: 'require' },
   closeChat: { id: 'closeChat', key: 'w', mod: true },
   findInFiles: { id: 'findInFiles', key: 'f', mod: true, shift: 'require' },
-  commandPalette: { id: 'commandPalette', key: 'p', mod: true, shift: 'require' }
+  commandPalette: { id: 'commandPalette', key: 'p', mod: true, shift: 'require' },
+  workspace1: { id: 'workspace1', key: '1', mod: true },
+  workspace2: { id: 'workspace2', key: '2', mod: true },
+  workspace3: { id: 'workspace3', key: '3', mod: true },
+  workspace4: { id: 'workspace4', key: '4', mod: true },
+  workspace5: { id: 'workspace5', key: '5', mod: true },
+  workspace6: { id: 'workspace6', key: '6', mod: true },
+  workspace7: { id: 'workspace7', key: '7', mod: true },
+  workspace8: { id: 'workspace8', key: '8', mod: true },
+  workspace9: { id: 'workspace9', key: '9', mod: true }
 }
+
+/** Ctrl/Cmd+1..9 — index into the sidebar's open-workspace order. */
+export const WORKSPACE_SWITCH_IDS = [
+  'workspace1',
+  'workspace2',
+  'workspace3',
+  'workspace4',
+  'workspace5',
+  'workspace6',
+  'workspace7',
+  'workspace8',
+  'workspace9'
+] as const

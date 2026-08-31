@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { WORKSPACE_SWITCH_IDS } from './bindings'
 import { shouldDeferAppEscapeStop } from './escape'
 import {
   COMPOSER_MESSAGE_SELECTOR,
@@ -15,6 +16,8 @@ export type AppShortcutHandlers = {
   onClearSearchFocus: () => void
   isSearchFocused: () => boolean
   onNewChat: () => void
+  /** Ctrl/Cmd+1..9 — switch to the nth open workspace (0-based index). */
+  onSwitchWorkspaceByIndex?: (index: number) => void
   onOpenSettings: () => void
   /** Close the current chat tab (no-op when drafting). */
   onCloseChat?: () => void
@@ -40,6 +43,7 @@ export function useAppShortcuts(handlers: AppShortcutHandlers): void {
     onClearSearchFocus,
     isSearchFocused,
     onNewChat,
+    onSwitchWorkspaceByIndex,
     onOpenSettings,
     onCloseChat,
     chatViewActive,
@@ -79,6 +83,15 @@ export function useAppShortcuts(handlers: AppShortcutHandlers): void {
         return
       }
 
+      for (const [index, id] of WORKSPACE_SWITCH_IDS.entries()) {
+        if (!matchShortcut(e, id)) continue
+        if (!onSwitchWorkspaceByIndex) return
+        if (shouldBlockAppShortcut(e.target)) return
+        e.preventDefault()
+        onSwitchWorkspaceByIndex(index)
+        return
+      }
+
       if (matchShortcut(e, 'settings')) {
         if (shouldBlockAppShortcut(e.target)) return
         e.preventDefault()
@@ -108,6 +121,11 @@ export function useAppShortcuts(handlers: AppShortcutHandlers): void {
 
       if (matchShortcut(e, 'stop')) {
         if (!chatViewActive || !running || !onStop) return
+        // Same editable-target guard as every other chord: Escape typed into a
+        // text field (commit message, xterm, search, rename) must not bubble up
+        // and silently cancel a streaming run. The main composer stays exempt —
+        // Esc-to-stop from the composer is a designed action.
+        if (shouldBlockAppShortcut(e.target)) return
         if (e.defaultPrevented) return
         if (
           shouldDeferAppEscapeStop({
@@ -142,6 +160,7 @@ export function useAppShortcuts(handlers: AppShortcutHandlers): void {
     onClearSearchFocus,
     isSearchFocused,
     onNewChat,
+    onSwitchWorkspaceByIndex,
     onOpenSettings,
     onCloseChat,
     chatViewActive,

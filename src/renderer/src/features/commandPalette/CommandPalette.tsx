@@ -1,16 +1,46 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { shortcutCatalog, type ShortcutCatalogEntry } from '@renderer/lib/shortcuts'
+import {
+  shortcutCatalog,
+  shortcutLabel,
+  type ShortcutCatalogEntry,
+  type ShortcutId
+} from '@renderer/lib/shortcuts'
+
+/** Slot-ordered open workspaces (index 0 = Ctrl+1) driving per-workspace commands. */
+export type PaletteWorkspace = { name: string; current: boolean }
 
 export function CommandPalette({
   open,
   onClose,
-  onSelect
+  onSelect,
+  workspaces
 }: {
   open: boolean
   onClose: () => void
   onSelect: (id: string) => void
+  /** When provided, replaces the generic workspace1..9 rows with real per-slot commands. */
+  workspaces?: PaletteWorkspace[]
 }) {
-  const entries = useMemo(() => shortcutCatalog(), [])
+  const entries = useMemo(() => {
+    if (!workspaces) return shortcutCatalog()
+    const base = shortcutCatalog().filter((entry) => !/^workspace[1-9]$/.test(entry.id))
+    const dynamic: ShortcutCatalogEntry[] = []
+    workspaces.slice(0, 9).forEach((ws, i) => {
+      const slot = i + 1
+      const id = `workspace${slot}` as ShortcutId
+      dynamic.push({
+        id,
+        title: `Switch to workspace ${slot}: ${ws.name}${ws.current ? ' — current' : ''}`,
+        label: shortcutLabel(id)
+      })
+      dynamic.push({
+        id: `newchat${slot}`,
+        title: `New chat in ${ws.name}`,
+        label: ''
+      })
+    })
+    return [...base, ...dynamic]
+  }, [workspaces])
   const [query, setQuery] = useState('')
   const [index, setIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)

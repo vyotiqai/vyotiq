@@ -163,6 +163,7 @@ function App() {
     collapsedTurns,
     openRunTab,
     openRunInWorkspace,
+    newChatInWorkspace,
     closeRunTab,
     purgeDeletedRunUi,
     setSessionQuery,
@@ -525,6 +526,23 @@ function App() {
       })
     )
   }, [focusedParentRunId, openRunTab, setOpenInstanceForParent])
+
+  // Async when the target workspace differs (switch IPC runs first): bounded
+  // retry so focus lands once the composer mounts (AppShell search-focus pattern).
+  const onNewChatInWorkspace = useCallback(
+    (path: string): void => {
+      setOpenInstanceByParent({})
+      void newChatInWorkspace(path)
+      setView('chat')
+      let attempts = 0
+      const tryFocus = (): void => {
+        if (focusComposerMessage()) return
+        if (attempts++ < 10) window.setTimeout(tryFocus, 0)
+      }
+      window.setTimeout(tryFocus, 0)
+    },
+    [newChatInWorkspace]
+  )
 
   const onPickWorkspace = (): void => {
     void pickWorkspace().then(async (res) => {
@@ -1270,12 +1288,18 @@ function App() {
       if (seen.has(key)) return
       seen.add(key)
       if (status.state === 'available') {
+        // autoDownload is always on, so the download starts immediately.
         pushToast(
-          `${status.message ?? 'An update is available.'} Install from Settings → About.`
+          `${status.message ?? 'An update is available.'} Downloading in the background…`
         )
       } else {
         pushToast(
-          `${status.message ?? 'Update downloaded.'} Restart to install — Settings → About.`
+          `${status.message ?? 'Update downloaded.'} Click to restart and install now.`,
+          'success',
+          12000,
+          () => {
+            void window.vyotiq?.installAppUpdate()
+          }
         )
       }
     })
@@ -1728,6 +1752,7 @@ function App() {
     },
     onCloseWorkspace,
     onAddWorkspace: onPickWorkspace,
+    onNewChatInWorkspace,
     workspaceHasBackgroundRun,
     expandedByPath: workspace.workspaceExpandedByPath,
     onSetWorkspaceExpanded: workspace.setWorkspaceExpanded,

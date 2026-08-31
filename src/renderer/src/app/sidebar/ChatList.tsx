@@ -153,6 +153,7 @@ function WorkspaceHeader({
   hasActivity,
   onToggle,
   onSelectWorkspace,
+  onNewChat,
   onCloseWorkspace
 }: {
   name: string
@@ -162,6 +163,7 @@ function WorkspaceHeader({
   hasActivity: boolean
   onToggle: () => void
   onSelectWorkspace: () => void
+  onNewChat?: () => void
   onCloseWorkspace: () => void
 }) {
   const [confirmingClose, setConfirmingClose] = useState(false)
@@ -213,6 +215,21 @@ function WorkspaceHeader({
       >
         <span className="truncate font-medium">{name}</span>
       </button>
+      {onNewChat ? (
+        <Tooltip content={`New chat in ${name}`}>
+          <button
+            type="button"
+            className="app-region-no-drag inline-grid size-6 place-items-center rounded-md text-muted opacity-0 vy-transition hover:bg-surface/70 hover:text-fg group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100"
+            aria-label={`New chat in ${name}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              onNewChat()
+            }}
+          >
+            <Icon name="plus" size={12} />
+          </button>
+        </Tooltip>
+      ) : null}
       {confirmingClose ? (
         <div className="app-region-no-drag">
           <InlineConfirmActions
@@ -254,6 +271,7 @@ export function ChatList({
   onSwitchWorkspace,
   onCloseWorkspace,
   onAddWorkspace,
+  onNewChatInWorkspace,
   activeRuns,
   workspaceHasBackgroundRun,
   onDismissRunsError,
@@ -275,6 +293,7 @@ export function ChatList({
   onSwitchWorkspace: (path: string) => void
   onCloseWorkspace: (path: string) => void
   onAddWorkspace: () => void
+  onNewChatInWorkspace?: (path: string) => void
   activeRuns: { runId: string; workspacePath: string }[]
   workspaceHasBackgroundRun: (path: string) => boolean
   onDismissRunsError?: (path?: string) => void
@@ -414,6 +433,11 @@ export function ChatList({
                   }
                   onToggle={() => onToggleWorkspace(workspace.path)}
                   onSelectWorkspace={() => onSwitchWorkspace(workspace.path)}
+                  onNewChat={
+                    onNewChatInWorkspace
+                      ? () => onNewChatInWorkspace(workspace.path)
+                      : undefined
+                  }
                   onCloseWorkspace={() => onCloseWorkspace(workspace.path)}
                 />
 

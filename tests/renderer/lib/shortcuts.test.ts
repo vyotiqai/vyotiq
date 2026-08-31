@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { renderHook } from '@testing-library/react'
 import {
   extraShortcutCatalog,
   focusBrowserUrlIfOpen,
@@ -12,7 +13,8 @@ import {
   shouldBlockPanelShortcut,
   shouldDeferAppEscapeStop,
   shortcutCatalog,
-  shortcutLabel
+  shortcutLabel,
+  useAppShortcuts
 } from '@renderer/lib/shortcuts'
 
 afterEach(() => {
@@ -95,6 +97,18 @@ describe('matchShortcut', () => {
     expect(matchShortcut(keyEvent('b', { ctrlKey: true }), 'panelBrowser')).toBe(false)
     expect(matchShortcut(keyEvent('b', { ctrlKey: true, shiftKey: true }), 'sidebar')).toBe(false)
   })
+
+  it('matches workspace switch chords Ctrl/Cmd+1..9', () => {
+    expect(matchShortcut(keyEvent('1', { ctrlKey: true }), 'workspace1')).toBe(true)
+    expect(matchShortcut(keyEvent('9', { metaKey: true }), 'workspace9')).toBe(true)
+    expect(matchShortcut(keyEvent('1', { ctrlKey: true, altKey: true }), 'workspace1')).toBe(
+      false
+    )
+    expect(matchShortcut(keyEvent('1', { ctrlKey: true, shiftKey: true }), 'workspace1')).toBe(
+      false
+    )
+    expect(matchShortcut(keyEvent('1'), 'workspace1')).toBe(false)
+  })
 })
 
 describe('shortcutLabel', () => {
@@ -115,6 +129,8 @@ describe('shortcutLabel', () => {
     expect(shortcutLabel('panelPlan')).toBe('Ctrl+Shift+D')
     expect(shortcutLabel('panelPr')).toBe('Ctrl+Shift+G')
     expect(shortcutLabel('closeChat')).toBe('Ctrl+W')
+    expect(shortcutLabel('workspace1')).toBe('Ctrl+1')
+    expect(shortcutLabel('workspace9')).toBe('Ctrl+9')
     expect(shortcutCatalog().some((row) => row.id === 'search' && row.label === 'Ctrl+K')).toBe(
       true
     )
@@ -313,5 +329,84 @@ describe('focusBrowserUrlIfOpen', () => {
     expect(document.activeElement).toBe(other)
     wrap.remove()
     other.remove()
+  })
+})
+
+describe('useAppShortcuts escape stop', () => {
+  function setup(onStop: ReturnType<typeof vi.fn>): void {
+    renderHook(() =>
+      useAppShortcuts({
+        onToggleSidebar: () => {},
+        onFocusSearch: () => {},
+        onClearSearchFocus: () => {},
+        isSearchFocused: () => false,
+        onNewChat: () => {},
+        onOpenSettings: () => {},
+        chatViewActive: true,
+        running: true,
+        onStop
+      })
+    )
+  }
+
+  it('stops from plain focus but ignores Escape typed into an editable target', () => {
+    const onStop = vi.fn()
+    setup(onStop)
+
+    // Body focus — Esc stops the run (last-resort contract).
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))
+    expect(onStop).toHaveBeenCalledTimes(1)
+
+    // Commit message / search / xterm input focus — Esc belongs to the field,
+    // it must not silently cancel a streaming run.
+    const input = document.createElement('input')
+    document.body.appendChild(input)
+    input.focus()
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(onStop).toHaveBeenCalledTimes(1)
+    input.remove()
+  })
+
+  it('still stops when focus is in the main composer', () => {
+    const onStop = vi.fn()
+    setup(onStop)
+
+    const composer = document.createElement('div')
+    composer.setAttribute('role', 'textbox')
+    composer.setAttribute('aria-label', 'Message')
+    composer.contentEditable = 'true'
+    document.body.appendChild(composer)
+    composer.focus()
+    composer.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    expect(onStop).toHaveBeenCalledTimes(1)
+    composer.remove()
+  })
+})
+
+describe('useAppShortcuts workspace switching', () => {
+  it('routes Ctrl/Cmd+1..9 to onSwitchWorkspaceByIndex and rejects unmodified/alt/shift digits', () => {
+    const onSwitchWorkspaceByIndex = vi.fn()
+    renderHook(() =>
+      useAppShortcuts({
+        onToggleSidebar: () => {},
+        onFocusSearch: () => {},
+        onClearSearchFocus: () => {},
+        isSearchFocused: () => false,
+        onNewChat: () => {},
+        onOpenSettings: () => {},
+        onSwitchWorkspaceByIndex
+      })
+    )
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', ctrlKey: true }))
+    expect(onSwitchWorkspaceByIndex).toHaveBeenCalledTimes(1)
+    expect(onSwitchWorkspaceByIndex).toHaveBeenCalledWith(1)
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '2' }))
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: '2', ctrlKey: true, altKey: true }))
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: '2', ctrlKey: true, shiftKey: true })
+    )
+    expect(onSwitchWorkspaceByIndex).toHaveBeenCalledTimes(1)
   })
 })

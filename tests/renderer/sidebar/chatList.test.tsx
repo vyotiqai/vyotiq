@@ -319,4 +319,31 @@ describe('ChatList', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Second chat' }))
     expect(onSelectRun).toHaveBeenCalledWith('/ws/demo', 'run-b')
   })
+
+  it('offers a per-workspace new chat action on the workspace header', () => {
+    const onNewChatInWorkspace = vi.fn()
+    const onSwitchWorkspace = vi.fn()
+    render(
+      <ChatList
+        workspaceReady
+        sessionQuery=""
+        filteredRunsCount={0}
+        workspaceGroups={[workspaceGroup()]}
+        onToggleWorkspace={noop}
+        onSwitchWorkspace={onSwitchWorkspace}
+        onCloseWorkspace={noop}
+        onAddWorkspace={noop}
+        onNewChatInWorkspace={onNewChatInWorkspace}
+        activeRuns={[]}
+        workspaceHasBackgroundRun={() => false}
+        onSelectRun={noop}
+        onRenameRun={noop}
+        onDeleteRun={noop}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'New chat in demo' }))
+    expect(onNewChatInWorkspace).toHaveBeenCalledWith('/ws/demo')
+    expect(onSwitchWorkspace).not.toHaveBeenCalled()
+  })
 })

@@ -28,6 +28,8 @@ export type SidebarProps = {
   onOpenMarketplace: () => void
   onOpenChat: () => void
   onNewChat: () => void
+  /** Open a fresh chat in a specific workspace (switches there when needed). */
+  onNewChatInWorkspace?: (path: string) => void
   onSelectRunInWorkspace?: (path: string, runId: string) => void
   onRenameRunInWorkspace?: (path: string, runId: string, goal: string) => void
   onDeleteRunInWorkspace?: (path: string, runId: string) => void

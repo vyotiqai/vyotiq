@@ -60,6 +60,7 @@ import {
   type DockImmersiveTabId
 } from '@renderer/lib/utils/layout'
 import { cn } from '@renderer/lib/ui/cn'
+import { formatWorkspaceName } from '@renderer/lib/utils/formatWorkspaceName'
 import { matchShortcut, shouldBlockPanelShortcut } from '@renderer/lib/shortcuts'
 import type { ChatItemsStore, ChatMetaStore } from './chatStores'
 import type { StepUsageTotals } from '@shared/utils/runTelemetry'
@@ -187,10 +188,15 @@ function TranscriptPane({
     }),
     [workspacePath, activeRunId, agentMode, agentInstances, onOpenAgentInstance, onOpenWorkspaceFile]
   )
+  const emptyLabel =
+    activeRunId == null && workspacePath
+      ? `New chat in ${formatWorkspaceName(workspacePath)}`
+      : undefined
   return (
     <RunSessionProvider value={runSession}>
       <MessageList
         key={`transcript:${surfaceKey}`}
+        emptyLabel={emptyLabel}
         items={items}
         itemsStore={itemsStore}
         virtualizeLiveEarly

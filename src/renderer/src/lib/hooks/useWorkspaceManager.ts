@@ -2046,6 +2046,19 @@ export function useWorkspaceManager(options?: {
     [activeWorkspace, commitPaneLayout, openRunTabInWorkspace, switchWorkspace]
   )
 
+  /** New chat (runId null) in a specific workspace; switches there first when needed. */
+  const newChatInWorkspace = useCallback(
+    async (path: string): Promise<void> => {
+      if (!activeWorkspace || !workspacePathsEqual(activeWorkspace, path)) {
+        await switchWorkspace(path)
+      }
+      // Same session-replacement semantics as the top-bar + button (openRunTab(null)):
+      // single pane syncs to (path, null); multi-pane replaces the focused pane.
+      openRunTabInWorkspace(path, null)
+    },
+    [activeWorkspace, openRunTabInWorkspace, switchWorkspace]
+  )
+
   const openSessionInFocusedPane = useCallback(
     (workspacePath: string, runId: string): void => {
       openRunTabInWorkspace(workspacePath, runId, { syncLayout: false })
@@ -2659,6 +2672,7 @@ export function useWorkspaceManager(options?: {
     loadRunIntoTab,
     openRunTab,
     openRunInWorkspace,
+    newChatInWorkspace,
     closeRunTab,
     setSessionQuery,
     refreshActiveRuns,

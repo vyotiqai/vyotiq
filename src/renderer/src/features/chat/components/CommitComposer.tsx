@@ -75,7 +75,12 @@ export function CommitComposer({
             if (event.metaKey || event.ctrlKey) onCommit(hasRemote)
             else onCommit(false)
           }
-          if (event.key === 'Escape') onCancel?.()
+          if (event.key === 'Escape') {
+            // Esc here cancels the commit field only — never the running agent.
+            event.preventDefault()
+            event.stopPropagation()
+            onCancel?.()
+          }
         }}
       />
       {generating ? (

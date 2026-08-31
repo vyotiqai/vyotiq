@@ -119,4 +119,20 @@ describe('ThinkingBlock', () => {
     rerender(<ThinkingBlock content={`${base}More reasoning. Even more.`} streaming />)
     expect(body.scrollTop).toBe(1000)
   })
+
+  it('numbers steps in a chain so identical Thought headers stay distinguishable', () => {
+    const { container } = render(<ThinkingBlock content="first step" repeatedCount={0} />)
+    expect(container.textContent).toContain('Thought')
+    const second = render(<ThinkingBlock content="second step" repeatedCount={1} />)
+    expect(second.container.textContent).toMatch(/Thought 2/)
+    const third = render(<ThinkingBlock content="third step" repeatedCount={2} />)
+    expect(third.container.textContent).toMatch(/Thought 3/)
+  })
+
+  it('reserves the overlay-scrollbar gutter in the scrollable body', () => {
+    const long = 'Plan step. '.repeat(80)
+    const { container } = render(<ThinkingBlock content={long} streaming />)
+    const body = container.querySelector('[data-testid="thinking-body"]') as HTMLElement
+    expect(body.className).toMatch(/pr-2\.5/)
+  })
 })

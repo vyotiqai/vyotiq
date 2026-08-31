@@ -55,6 +55,29 @@ function toolGroup(groupKey: string, summaries: string[]): UiItem[] {
 }
 
 describe('MessageList', () => {
+  it('shows the workspace-scoped empty state for a fresh chat', () => {
+    render(<MessageList items={[]} emptyLabel="New chat in demo" />)
+
+    expect(screen.getByText('New chat in demo')).toBeTruthy()
+    expect(document.querySelector('[data-chat-empty-state]')).not.toBeNull()
+  })
+
+  it('hides the empty state while a send is pending or the run is live', () => {
+    const { rerender } = render(
+      <MessageList items={[]} pendingRun emptyLabel="New chat in demo" />
+    )
+    expect(document.querySelector('[data-chat-empty-state]')).toBeNull()
+
+    rerender(<MessageList items={[]} running emptyLabel="New chat in demo" />)
+    expect(document.querySelector('[data-chat-empty-state]')).toBeNull()
+  })
+
+  it('keeps the transcript bare when no empty label is provided', () => {
+    render(<MessageList items={[]} />)
+
+    expect(document.querySelector('[data-chat-empty-state]')).toBeNull()
+  })
+
   it('keeps the narration between tool batches on the page', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'a1', role: 'assistant', content: 'First look.' },
@@ -342,6 +365,149 @@ describe('MessageList', () => {
     await vi.waitFor(() => {
       expect(setSpy.mock.calls.some((call) => call[0] === 0)).toBe(true)
     })
+  })
+
+  it('pins a live restore to the tail instead of the stale saved top', async () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'msg-1', role: 'assistant', content: 'Streaming', streaming: true }
+    ]
+
+    const { rerender } = render(
+      <MessageList items={items} running restoreScrollTop={100} scrollRestoreToken={1} />
+    )
+
+    const container = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    expect(container).toBeTruthy()
+
+    let scrollTop = 0
+    const scrollTopSet = vi.fn((value: number) => {
+      scrollTop = value
+    })
+    Object.defineProperty(container, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(container, 'scrollHeight', { configurable: true, value: 4000 })
+    Object.defineProperty(container, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: scrollTopSet
+    })
+
+    // Tail grew past the saved top while the pane was away: land on the tail.
+    await vi.waitFor(() => {
+      expect(scrollTopSet).toHaveBeenCalledWith(4000)
+    })
+    expect(scrollTop).toBe(4000)
+
+    // Follow stays engaged: later stream growth follows without manual scroll.
+    rerender(
+      <MessageList
+        items={[
+          {
+            kind: 'message',
+            id: 'msg-1',
+            role: 'assistant',
+            content: 'Streaming more',
+            streaming: true
+          }
+        ]}
+        running
+        restoreScrollTop={100}
+        scrollRestoreToken={1}
+      />
+    )
+    Object.defineProperty(container, 'scrollHeight', { configurable: true, value: 4800 })
+    await vi.waitFor(() => {
+      expect(scrollTop).toBe(4800)
+    })
+  })
+
+  it('keeps non-live restore on the saved top instead of pinning to the tail', async () => {
+    const items: UiItem[] = [
+      { kind: 'message', id: 'msg-1', role: 'assistant', content: 'Earlier reply' },
+      { kind: 'message', id: 'msg-2', role: 'assistant', content: 'Later reply' }
+    ]
+
+    render(<MessageList items={items} restoreScrollTop={250} scrollRestoreToken={1} />)
+
+    const container = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    expect(container).toBeTruthy()
+
+    let scrollTop = 0
+    const scrollTopSet = vi.fn((value: number) => {
+      scrollTop = value
+    })
+    Object.defineProperty(container, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(container, 'scrollHeight', { configurable: true, value: 4000 })
+    Object.defineProperty(container, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: scrollTopSet
+    })
+
+    await vi.waitFor(() => {
+      expect(scrollTopSet).toHaveBeenCalledWith(250)
+    })
+    expect(scrollTop).toBe(250)
+    expect(scrollTopSet).not.toHaveBeenCalledWith(4000)
+  })
+
+  it('keeps a pinned reader at the tail across the hybrid layout flip', async () => {
+    class ResizeObserverStub {
+      observe(): void {}
+      unobserve(): void {}
+      disconnect(): void {}
+    }
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub)
+
+    const mountItems: UiItem[] = Array.from({ length: 10 }, (_, i) => ({
+      kind: 'message' as const,
+      id: `m-${i}`,
+      role: 'assistant' as const,
+      content: `Line ${i}`
+    }))
+
+    const { rerender } = render(<MessageList items={mountItems} />)
+    const container = document.querySelector('[data-transcript-scroll]') as HTMLDivElement
+    expect(container).toBeTruthy()
+
+    let height = 4000
+    let scrollTop = 0
+    const scrollTopSet = vi.fn((value: number) => {
+      scrollTop = value
+    })
+    Object.defineProperty(container, 'clientHeight', { configurable: true, value: 400 })
+    Object.defineProperty(container, 'scrollHeight', { configurable: true, get: () => height })
+    Object.defineProperty(container, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: scrollTopSet
+    })
+
+    // User scroll to the tail: pins and records the layout-change anchor.
+    scrollTop = 3600
+    fireEvent.scroll(container)
+
+    // Stream grows below the fold without any scroll event.
+    height = 6000
+
+    const liveItems: UiItem[] = [
+      { kind: 'message', id: 'u-live', role: 'user', content: 'keep going' },
+      ...Array.from({ length: 170 }, (_, i) => ({
+        kind: 'message' as const,
+        id: `live-${i}`,
+        role: 'assistant' as const,
+        content: `Live line ${i}`,
+        streaming: i === 169
+      }))
+    ]
+    rerender(<MessageList items={liveItems} running />)
+
+    // The flow→hybrid flip must keep the tail, not yank to the stale anchor.
+    await vi.waitFor(() => {
+      expect(scrollTopSet).toHaveBeenCalledWith(6000)
+    })
+    expect(scrollTop).toBe(6000)
+
+    vi.unstubAllGlobals()
   })
 
   it('renders every row in a long transcript', () => {

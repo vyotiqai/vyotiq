@@ -118,6 +118,14 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
   const canCheck = state !== 'dev' && state !== 'checking' && state !== 'downloading'
   const canDownload = state === 'available'
   const canInstall = state === 'ready'
+  const updateVersionShown =
+    info?.version != null &&
+    updater?.version != null &&
+    (state === 'available' || state === 'downloading' || state === 'ready')
+  const downloadPct =
+    state === 'downloading' && updater?.progress != null
+      ? Math.max(0, Math.min(100, Math.round(updater.progress * 100)))
+      : null
 
   const runUpdater = (fn: () => Promise<{ ok: boolean; error?: string }> | undefined): void => {
     const task = fn()
@@ -207,7 +215,7 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
         <SettingsField
           id="about-auto-check"
           title="Automatic checks"
-          hint="Look for GitHub Releases when the app starts."
+          hint="Look for GitHub Releases at startup and every 6 hours."
         >
           <Switch
             size="md"
@@ -220,6 +228,26 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
           />
         </SettingsField>
         <SettingsField id="about-updater" title="App updates" hint={updaterHint(updater)}>
+          {updateVersionShown ? (
+            <p className="m-0 text-xs tabular-nums tracking-[var(--vy-tracking)] text-muted">
+              {info?.version} <span aria-hidden="true">→</span> {updater?.version}
+            </p>
+          ) : null}
+          {downloadPct != null ? (
+            <div
+              className="h-1.5 w-full overflow-hidden rounded-sm bg-border"
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={downloadPct}
+              aria-label="Update download progress"
+            >
+              <div
+                className="h-full bg-accent transition-[width] duration-100 ease-linear"
+                style={{ width: `${downloadPct}%` }}
+              />
+            </div>
+          ) : null}
           <div className="flex flex-wrap justify-end gap-1.5">
             <Button
               variant="subtle"
@@ -241,7 +269,7 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
             ) : null}
             {canInstall ? (
               <Button
-                variant="subtle"
+                variant="primary"
                 disabled={updaterBusy || !window.vyotiq?.installAppUpdate}
                 onClick={() => runUpdater(() => window.vyotiq?.installAppUpdate())}
               >

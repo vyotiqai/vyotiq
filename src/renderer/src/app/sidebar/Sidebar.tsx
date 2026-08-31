@@ -40,6 +40,7 @@ export function Sidebar({
   onOpenMarketplace,
   onOpenChat,
   onNewChat,
+  onNewChatInWorkspace,
   onSelectRunInWorkspace,
   onRenameRunInWorkspace,
   onDeleteRunInWorkspace,
@@ -193,6 +194,14 @@ export function Sidebar({
             activeRuns={activeRuns ?? []}
             workspaceHasBackgroundRun={(path) => workspaceHasBackgroundRun?.(path) ?? false}
             onDismissRunsError={(path) => onDismissRunsError?.(path)}
+            onNewChatInWorkspace={
+              onNewChatInWorkspace
+                ? (path) => {
+                    setExpanded(path, true)
+                    onNewChatInWorkspace(path)
+                  }
+                : undefined
+            }
             onSelectRun={(path, runId) => {
               setExpanded(path, true)
               onSelectRunInWorkspace?.(path, runId)

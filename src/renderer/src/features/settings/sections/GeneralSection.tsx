@@ -42,6 +42,7 @@ export function GeneralSection({
 
   const persistedDiagnostics = form.settings.diagnosticsCommand ?? ''
   const [diagnosticsDraft, setDiagnosticsDraft] = useState(persistedDiagnostics)
+  const [traceDumping, setTraceDumping] = useState(false)
   useEffect(() => {
     setDiagnosticsDraft(persistedDiagnostics)
   }, [persistedDiagnostics])
@@ -345,63 +346,30 @@ export function GeneralSection({
         <SettingsField
           id="trace-capture"
           title="Trace capture"
-          hint={
-            form.traceCapturing
-              ? 'Recording Chromium trace — stop when done, then open the traces folder.'
-              : 'Records a Chromium trace (startup, IPC, renderer frames) to a chrome://tracing JSON file.'
-          }
-          help="On-demand and local-only. Keep captures short; traces can grow quickly under load."
+          hint="Traces record continuously in the background at near-zero cost and dump automatically on crashes or hangs."
+          help="Always on. The button also dumps the last minutes of trace activity on demand; files land in the traces folder (chrome://tracing JSON)."
           wide
         >
-          <div className="flex flex-wrap gap-2">
-            {!form.traceCapturing ? (
-              <Button
-                variant="subtle"
-                disabled={form.formLocked}
-                onClick={() => {
-                  form.clearErrors()
-                  form.setTraceCapturing(true)
-                  void (window.vyotiq?.startTrace?.() ?? Promise.reject(new Error('Trace API unavailable')))
-                    .then((res) => {
-                      if (!res.ok) form.setErrorMessage(res.error)
-                    })
-                    .catch((err: unknown) => {
-                      form.setErrorMessage(err instanceof Error ? err.message : String(err))
-                    })
-                    .finally(() => {
-                      void window.vyotiq?.getTraceStatus?.()?.then((res) => {
-                        if (res.ok) form.setTraceCapturing(res.data.recording)
-                      })
-                    })
-                }}
-              >
-                Start trace
-              </Button>
-            ) : (
-              <Button
-                variant="subtle"
-                disabled={form.formLocked}
-                onClick={() => {
-                  form.clearErrors()
-                  void (window.vyotiq?.stopTrace?.() ?? Promise.reject(new Error('Trace API unavailable')))
-                    .then((res) => {
-                      if (res.ok) window.vyotiq?.openLogsDir?.()
-                      else form.setErrorMessage(res.error)
-                    })
-                    .catch((err: unknown) => {
-                      form.setErrorMessage(err instanceof Error ? err.message : String(err))
-                    })
-                    .finally(() => {
-                      void window.vyotiq?.getTraceStatus?.()?.then((res) => {
-                        if (res.ok) form.setTraceCapturing(res.data.recording)
-                      })
-                    })
-                }}
-              >
-                Stop trace & reveal
-              </Button>
-            )}
-          </div>
+          <Button
+            variant="subtle"
+            pending={traceDumping}
+            disabled={form.formLocked}
+            onClick={() => {
+              form.clearErrors()
+              setTraceDumping(true)
+              void (window.vyotiq?.stopTrace?.() ?? Promise.reject(new Error('Trace API unavailable')))
+                .then((res) => {
+                  if (res.ok) window.vyotiq?.openLogsDir?.()
+                  else form.setErrorMessage(res.error)
+                })
+                .catch((err: unknown) => {
+                  form.setErrorMessage(err instanceof Error ? err.message : String(err))
+                })
+                .finally(() => setTraceDumping(false))
+            }}
+          >
+            {traceDumping ? 'Dumping…' : 'Dump trace now'}
+          </Button>
         </SettingsField>
 
         <SettingsField

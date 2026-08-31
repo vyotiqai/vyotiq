@@ -43,7 +43,16 @@ export const SHORTCUT_TITLES: Record<ShortcutId, string> = {
   panelPr: 'Pull request panel',
   closeChat: 'Close chat tab',
   findInFiles: 'Find in files',
-  commandPalette: 'Command palette'
+  commandPalette: 'Command palette',
+  workspace1: 'Switch to workspace 1',
+  workspace2: 'Switch to workspace 2',
+  workspace3: 'Switch to workspace 3',
+  workspace4: 'Switch to workspace 4',
+  workspace5: 'Switch to workspace 5',
+  workspace6: 'Switch to workspace 6',
+  workspace7: 'Switch to workspace 7',
+  workspace8: 'Switch to workspace 8',
+  workspace9: 'Switch to workspace 9'
 }
 
 export type ShortcutCatalogEntry = {
