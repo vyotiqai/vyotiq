@@ -4,7 +4,9 @@ import {
   anthropicUsesManualThinking,
   catalogThinkingAllowed,
   isDeepSeekNativeThinkingModel,
+  isScriptCorruptedReasoning,
   modelSupportsThinking,
+  quarantineReasoningState,
   thinkingApiFor,
   ProviderReasoningStateSchema,
   normalizeEffortForOpenAiResponses,
@@ -324,5 +326,109 @@ describe('thinkingFromReasoningState', () => {
         thinkChunks: [{ text: '  ' }]
       })
     ).toBeUndefined()
+  })
+})
+
+describe('isScriptCorruptedReasoning', () => {
+  it('flags the measured glitch shape: CJK sutured onto ASCII path chars in a Latin stream', () => {
+    // Real corruption from run 6265fa90 (2026-08-31), path chars glued to CJK.
+    expect(
+      isScriptCorruptedReasoning(
+        'root: C:\\Users\\继续生存 30254-…] and update the garbled line "root: C:\\Users\\继续生存 line" into something clear. Also re-check volatile workspace state before acting.'
+      )
+    ).toBe(true)
+  })
+
+  it('flags kana and hangul sutures the same way', () => {
+    expect(isScriptCorruptedReasoning('read the file C:\\data\\テスト and the C:\\data\\テスト2 path twice more here')).toBe(
+      true
+    )
+    expect(
+      isScriptCorruptedReasoning('the C:\\디렉터리 path, C:\\디렉터리2 path and C:\\디렉터리3 path')
+    ).toBe(true)
+  })
+
+  it('never flags legitimate CJK-dominant reasoning', () => {
+    expect(
+      isScriptCorruptedReasoning(
+        '用户要求分析代码库。我需要先读取 package.json，然后检查 landing 目录。'
+      )
+    ).toBe(false)
+  })
+
+  it('never flags CJK prose with spaced English words', () => {
+    expect(
+      isScriptCorruptedReasoning(
+        '先运行 typecheck。The command is pnpm exec tsc。然后运行测试套件 vitest run 确认结果。'
+      )
+    ).toBe(false)
+  })
+
+  it('never flags pure-Latin reasoning', () => {
+    expect(isScriptCorruptedReasoning('Read src/main/agent/loop.ts, then run the test suite.')).toBe(
+      false
+    )
+  })
+
+  it('returns false for empty or absent input', () => {
+    expect(isScriptCorruptedReasoning(undefined)).toBe(false)
+    expect(isScriptCorruptedReasoning(null)).toBe(false)
+    expect(isScriptCorruptedReasoning('')).toBe(false)
+  })
+
+  it('requires multiple distinct suture points — one burst is not enough', () => {
+    expect(isScriptCorruptedReasoning('a single glitch テスト point only')).toBe(false)
+  })
+})
+
+describe('quarantineReasoningState', () => {
+  it('replaces a corrupted openai_compat payload with a clean stub', () => {
+    const state = {
+      kind: 'openai_compat' as const,
+      reasoningContent:
+        'root: C:\\Users\\继续生存 30254-…] and update the garbled line "root: C:\\Users\\继续生存 line" into something clear.',
+      reasoningFormat: 'reasoning_content' as const
+    }
+    const out = quarantineReasoningState(state)
+    expect(out).toEqual({ kind: 'openai_compat' })
+  })
+
+  it('quarantines when corruption is inside a thinkChunk', () => {
+    const state = {
+      kind: 'openai_compat' as const,
+      reasoningFormat: 'think_chunks' as const,
+      thinkChunks: [
+        { text: 'clean thought', closed: true },
+        { text: 'path C:\\x\\テスト and C:\\x\\テスト2 and C:\\x\\テスト3', closed: true }
+      ]
+    }
+    expect(quarantineReasoningState(state)).toEqual({ kind: 'openai_compat' })
+  })
+
+  it('passes clean openai_compat payloads through untouched', () => {
+    const state = {
+      kind: 'openai_compat' as const,
+      reasoningContent: 'ordinary English reasoning about the task',
+      reasoningFormat: 'reasoning_content' as const
+    }
+    expect(quarantineReasoningState(state)).toBe(state)
+  })
+
+  it('passes opaque and anthropic payloads through untouched', () => {
+    const responses = {
+      kind: 'openai_responses' as const,
+      responseId: 'resp_1',
+      outputItems: []
+    }
+    expect(quarantineReasoningState(responses)).toBe(responses)
+    const anthropic = {
+      kind: 'anthropic' as const,
+      blocks: [{ type: 'thinking' as const, thinking: 'claude block' }]
+    }
+    expect(quarantineReasoningState(anthropic)).toBe(anthropic)
+  })
+
+  it('returns undefined for absent state', () => {
+    expect(quarantineReasoningState(undefined)).toBeUndefined()
   })
 })

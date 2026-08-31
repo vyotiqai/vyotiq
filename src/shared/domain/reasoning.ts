@@ -409,6 +409,39 @@ export function parseProviderReasoningState(value: unknown): ProviderReasoningSt
   return parsed.success ? parsed.data : undefined
 }
 
+/** CJK ideographs + kana. */
+const CJK_CHAR = '[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff\\uac00-\\ud7af]'
+/** ASCII path/identifier char glued directly to a CJK char, either order. */
+const SCRIPT_SUTURE = new RegExp(
+  `[A-Za-z0-9\\\\/:._~\\-]${CJK_CHAR}|${CJK_CHAR}[A-Za-z0-9\\\\/:._~\\-]`
+)
+
+/**
+ * Detect a script-corrupted reasoning block: a mostly-Latin stream with ≥2
+ * distinct points where CJK characters are sutured directly onto ASCII
+ * identifier characters (the signature of a mid-stream script glitch).
+ * Majority-CJK streams are never flagged, so legitimate CJK reasoning passes.
+ */
+export function isScriptCorruptedReasoning(text: string | undefined | null): boolean {
+  if (!text) return false
+  const cjk = text.match(new RegExp(CJK_CHAR, 'g'))
+  if (!cjk || cjk.length === 0) return false
+  const latin = text.match(/[A-Za-z]/g)?.length ?? 0
+  if (cjk.length > latin) return false
+  let sutures = 0
+  let lastEnd = -2
+  const re = new RegExp(SCRIPT_SUTURE.source, 'g')
+  let m: RegExpExecArray | null
+  while ((m = re.exec(text)) !== null) {
+    // Count non-adjacent suture points only (one glitch burst = one point).
+    if (m.index > lastEnd + 1) sutures++
+    lastEnd = m.index + m[0].length - 2
+    if (m.index === re.lastIndex) re.lastIndex++
+    if (sutures >= 2) return true
+  }
+  return false
+}
+
 /**
  * Display text derived from the stored provider reasoning payload — the single
  * copy the agent persists. Mirrors each mapper's replay field:
@@ -453,6 +486,25 @@ export function thinkingFromReasoningState(
     case 'gemini_interactions':
       return undefined
   }
+}
+
+/**
+ * Quarantine a script-corrupted reasoning payload: replace the glitched
+ * openai_compat block with a clean stub so neither the wire nor display
+ * re-serves the corruption (replayed reasoning self-conditions later steps).
+ * Anthropic thinking blocks are structured provider output and pass through
+ * unchanged — sanitizing them would desync the required thinking-block chain.
+ */
+export function quarantineReasoningState(
+  state: ProviderReasoningState | undefined
+): ProviderReasoningState | undefined {
+  if (!state || state.kind !== 'openai_compat') return state
+  const corrupted =
+    isScriptCorruptedReasoning(state.reasoningContent) ||
+    (Array.isArray(state.thinkChunks) &&
+      state.thinkChunks.some((c) => isScriptCorruptedReasoning(c.text)))
+  if (!corrupted) return state
+  return { kind: 'openai_compat' }
 }
 
 /** OpenAI Responses API: supports none, minimal, low, medium, high, xhigh (not max). */
