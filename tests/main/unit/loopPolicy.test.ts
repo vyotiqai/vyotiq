@@ -190,6 +190,18 @@ describe('loopPolicy', () => {
     expect(pathHint).not.toMatch(/explicit verdict/)
   })
 
+  it('coaches terminal deadline failures toward background sessions', () => {
+    // Verbatim deadline content from executeStepTools.ts (TOOL_SOFT_DEADLINE_MS).
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'terminal',
+      summary:
+        'Tool "terminal" exceeded its 10-minute deadline and was stopped. Split the work into smaller calls or check whether the tool is stuck.'
+    })
+    expect(hint).toContain('background')
+    expect(hint).toMatch(/background session/i)
+    expect(hint).toMatch(/narrow the command/i)
+  })
+
   it('hints duplicate JSON keys so the dropped path is not retried as one call', () => {
     const hint = loopHintForConsecutiveToolFailures(2, {
       tool: 'read',

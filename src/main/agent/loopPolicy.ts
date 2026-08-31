@@ -307,6 +307,13 @@ export function loopHintForConsecutiveToolFailures(
     lines.push(
       'ssh exits with the remote script\u2019s last command. A remote poll ending in grep exits 1 while the pattern has not appeared yet — end remote scripts with an explicit verdict (e.g. \u2026; pgrep -f podman >/dev/null && exit 0 || exit 3) so ssh reports the real status instead of grep\u2019s last match attempt. Quote remote regexes carefully: an unquoted [class] can be mangled into a file redirect (sh: can\u2019t create \u2026).'
     )
+  } else if (
+    recent?.tool === 'terminal' &&
+    /exceeded its .* deadline/i.test(recent.summary)
+  ) {
+    lines.push(
+      'terminal hit its deadline. Re-run long work as a background session and poll it, or narrow the command (single build/test target, tail the log) instead of one long foreground call.'
+    )
   } else if (recent?.tool === 'browser_hover' && /Unknown snapshot ref/i.test(recent.summary)) {
     lines.push(
       'Snapshot refs reset on every navigation. Call browser_snapshot again and use a fresh @eN ref from the new snapshot — do not reuse the old ref.'
