@@ -34,7 +34,7 @@ Open [Settings → Providers](/docs/customize/providers).
 1. Set **Active provider**. Saving a key does not make that provider active.
 1. Return to chat and choose a model in the composer. Use `Refresh models` when you need the live catalog.
 
-New settings start with local Ollama active at `http://127.0.0.1:11434` and the seed model `qwen2.5`. That is a selection, not proof that Ollama is installed or reachable. The `Active menu` and composer include configured providers and retain the current active provider so you can repair its configuration.
+New settings start with local Ollama active at `http://127.0.0.1:11434` and the seed model `qwen2.5`. That is a selection, not proof that Ollama is installed or reachable. The `Active provider` menu and composer include configured providers and retain the current active provider so you can repair its configuration.
 
 ## Choose Agent mode and send
 

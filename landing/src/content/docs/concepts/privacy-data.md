@@ -29,7 +29,7 @@ Provider keys, MCP bearer tokens, and GitHub tokens use Electron safeStorage whe
 
 ## Logs and reporting
 
-Local rotating logs are always written and can be opened through [Settings → General](/docs/reference/settings) → Logs. Share crash & error reports is opt-in and available only in a build with a Sentry DSN. That reporting path excludes chat contents, API keys, and file bodies.
+Local rotating logs are always written and can be opened through [Settings → General](/docs/reference/settings) → `Open logs folder`. Share crash & error reports is opt-in and available only in a build with a Sentry DSN. That reporting path excludes chat contents, API keys, and file bodies.
 
 ## Notifications and desktop privacy
 

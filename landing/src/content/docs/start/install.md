@@ -10,7 +10,7 @@ related:
   - concepts/privacy-data
 ---
 
-The Agent V homepage has download buttons for each installer on the latest GitHub Release at https://github.com/vyotiqai/vyotiq-agent-v/releases/latest. There is no app store listing. You can also run a local pnpm dev session, or pack an installer from this repository with electron-builder (publish: null, --publish never).
+The Agent V homepage has download buttons for each installer on the latest GitHub Release at https://github.com/vyotiqai/vyotiq-agent-v/releases/latest. There is no app store listing. You can also run a local pnpm dev session, or pack an installer from this repository with electron-builder (--publish never).
 
 The packaged product name is Vyotiq. Agent V is the product/agent inside that app. Electron is the packager and runtime, not the product name.
 
@@ -35,14 +35,14 @@ Scripts in package.json run pnpm build then electron-builder. Default output is 
 | Script | Target | Artifact name (1.0.0) |
 | --- | --- | --- |
 | `pnpm pack:win` | Windows NSIS | Vyotiq-1.0.0-setup.exe |
-| `pnpm pack:mac` | macOS DMG | Vyotiq-1.0.0.dmg |
+| `pnpm pack:mac` | macOS DMG | Vyotiq-1.0.0-<arch>.dmg |
 | `pnpm pack:linux` | Linux AppImage | Vyotiq-1.0.0.AppImage |
 | pnpm pack:dir:win | Unpacked Windows dir | win-unpacked/ with Vyotiq.exe |
 
 Names come from electron-builder.yml:
 
 - Windows NSIS: ${productName}-${version}-setup.${ext}
-- macOS DMG: ${productName}-${version}.${ext}
+- macOS DMG: ${productName}-${version}-${arch}.${ext}
 - Linux AppImage: ${productName}-${version}.${ext}
 
 productName is Vyotiq. version is the root package.json version.
@@ -59,7 +59,7 @@ The installer is per-user (perMachine: false), creates Start menu and desktop sh
 ## Install on macOS
 
 1. Pack with `pnpm pack:mac`.
-1. Open Vyotiq-1.0.0.dmg and install the application.
+1. Open Vyotiq-1.0.0-<arch>.dmg and install the application.
 1. Launch Vyotiq.
 
 The current package configuration leaves notarize: false for local packs. GitHub Releases notarize the macOS DMG only when Apple ID, app-specific password, and team ID secrets are present at pack time. Unsigned builds can require an explicit Gatekeeper confirmation before first launch.
