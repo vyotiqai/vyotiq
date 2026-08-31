@@ -20,7 +20,7 @@ Every call is schema-validated. Renderer transcripts can contain a preview while
 - `read` — file or shallow directory listing under the workspace root (text)
 - `edit` — create/overwrite with contents, or apply a unified diff
 - `list_dir` — one directory level with sizes
-- `multi_edit` — several file edits atomically
+- `multi_edit` — several file edits applied atomically (full `contents` or a unified `diff` per entry; one entry per path; if any edit fails, nothing is written)
 - `str_replace` — replace exact text in one file
 - `delete` — delete a workspace file or directory (recursive for a non-empty directory)
 - `edit_notebook` — insert or uniquely replace one cell in a nbformat v4 .ipynb (no kernel)
