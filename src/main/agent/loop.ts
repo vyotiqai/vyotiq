@@ -93,7 +93,11 @@ import { getProvider } from './providers'
 import { resolveModelInfo } from './modelResolve'
 import { requestMaxOutputTokens } from './providers/requestLimits'
 import type { ProviderReasoningState } from '../../shared/reasoning'
-import { catalogThinkingAllowed, parseProviderReasoningState } from '../../shared/reasoning'
+import {
+  catalogThinkingAllowed,
+  parseProviderReasoningState,
+  thinkingFromReasoningState
+} from '../../shared/reasoning'
 import type { StopReason, TokenUsage, ToolCall } from './providers/types'
 import {
   cancelRun,
@@ -256,7 +260,8 @@ const INCOMPLETE_MESSAGES: Record<Exclude<IncompleteReason, never>, string> = {
   context_overflow:
     'Context still exceeds the model window after compaction. Start a new chat or compact manually.',
   network_interrupted: 'Connection lost. Retry when back online.',
-  circuit_open: 'Temporarily paused after repeated failures. Retry shortly.',
+  circuit_open:
+    'Temporarily paused after repeated provider failures. Nothing is retried automatically — use Continue or Retry in the chat to resume once the provider is reachable.',
   provider_error: 'The provider returned an error. Review the error details, then retry.'
 }
 
@@ -705,10 +710,14 @@ function* flushPartialAssistant(
     name: t.name,
     arguments: t.arguments
   }))
+  // Same single-copy rule as the main persist paths: reasoningState carries the
+  // payload; `thinking` stays only when the payload has no recoverable text.
   const assistant: ChatMessage = {
     role: 'assistant',
     content: scrubbedText,
-    ...(thinkingText ? { thinking: thinkingText } : {}),
+    ...(!thinkingFromReasoningState(reasoningState) && thinkingText
+      ? { thinking: thinkingText }
+      : {}),
     ...(reasoningState ? { reasoningState } : {}),
     ...(mappedCalls.length ? { toolCalls: mappedCalls } : {})
   }
@@ -2332,14 +2341,17 @@ export async function* runAgent(input: {
           const nowMs = Date.now()
           if (nowMs - lastStreamSnapshotAt >= STREAM_SNAPSHOT_INTERVAL_MS) {
             lastStreamSnapshotAt = nowMs
-            if (assistantText || thinkingText) {
+            // Snapshot the recoverable answer text only. Re-carrying the growing
+            // reasoning text on every interval duplicated those bytes ~2x per
+            // second of thinking on disk, and no reader consumes snapshot
+            // thinking; completed reasoning lives in messages.jsonl.
+            if (assistantText) {
               appendEvent(runDir, {
                 type: 'stream_snapshot',
                 runId,
                 invokeId,
                 step,
-                text: assistantText,
-                ...(thinkingText ? { thinking: thinkingText } : {})
+                text: assistantText
               })
             }
           }
@@ -2350,7 +2362,22 @@ export async function* runAgent(input: {
             thinkingText += chunk.text
             yield { type: 'thinking_delta', runId, text: chunk.text, step }
           } else if (chunk.type === 'thinking_done') {
-            if (chunk.text) thinkingText = chunk.text
+            // Anthropic emits one thinking_done per thinking block; append the
+            // new segment instead of overwriting, guarded against providers
+            // whose done text repeats the whole streamed buffer (OpenAI-compat
+            // message snapshots) — those must stay a single replace.
+            if (chunk.text) {
+              const doneText = chunk.text
+              if (
+                !thinkingText ||
+                doneText === thinkingText ||
+                doneText.startsWith(thinkingText)
+              ) {
+                thinkingText = doneText
+              } else if (!thinkingText.endsWith(doneText)) {
+                thinkingText = `${thinkingText}\n\n${doneText}`
+              }
+            }
             if (!thinkingDoneEmitted) {
               thinkingDoneEmitted = true
               const thinkingDoneEv: AgentEvent = {
@@ -2927,21 +2954,19 @@ export async function* runAgent(input: {
           yield thinkingDoneEv
         }
         const scrubbedAssistantText = stripToolShapedAssistantText(assistantText)
+        // Reasoning persists once (see the tool-call path above): `reasoningState`
+        // on the message, with `thinking` kept only when the payload carries no
+        // recoverable text.
         const assistant: ChatMessage = {
           role: 'assistant',
           content: scrubbedAssistantText,
-          ...(thinkingText ? { thinking: thinkingText } : {}),
+          ...(!thinkingFromReasoningState(stepReasoningState) && thinkingText
+            ? { thinking: thinkingText }
+            : {}),
           ...(stepReasoningState ? { reasoningState: stepReasoningState } : {})
         }
         messages.push(assistant)
         appendMessage(runDir, assistant)
-        if (stepReasoningState && thinkingText) {
-          const last = messages[messages.length - 1]
-          if (last?.role === 'assistant' && last.thinking) {
-            const { thinking: _drop, ...rest } = last
-            messages[messages.length - 1] = rest as ChatMessage
-          }
-        }
         const assistantMsgEv: AgentEvent = {
           type: 'assistant_message',
           runId,
@@ -3020,12 +3045,15 @@ export async function* runAgent(input: {
             yield continueEv
             // Drop empty assistant from in-memory history and rewrite disk so
             // resume/hydrate does not see a blank turn the working list no longer has.
+            // "Empty" = no text, no tool calls, and no reasoning — whether stored
+            // as legacy `thinking` or as the reasoningState payload.
             const last = messages[messages.length - 1]
             if (
               last?.role === 'assistant' &&
               !contentToText(last.content).trim() &&
               !last.toolCalls?.length &&
-              !(last.thinking ?? '').trim()
+              !(last.thinking ?? '').trim() &&
+              !thinkingFromReasoningState(parseProviderReasoningState(last.reasoningState))
             ) {
               messages.pop()
             }
@@ -3045,7 +3073,8 @@ export async function* runAgent(input: {
                 diskLast?.role === 'assistant' &&
                 !contentToText(diskLast.content).trim() &&
                 !diskLast.toolCalls?.length &&
-                !(diskLast.thinking ?? '').trim()
+                !(diskLast.thinking ?? '').trim() &&
+                !thinkingFromReasoningState(parseProviderReasoningState(diskLast.reasoningState))
               ) {
                 diskMessages.pop()
               }
@@ -3191,24 +3220,20 @@ export async function* runAgent(input: {
         arguments: t.arguments
       }))
       const scrubbedAssistantText = stripToolShapedAssistantText(assistantText)
+      // Persist reasoning once: `reasoningState` is the wire-replay source of
+      // truth (in memory and on disk); `thinking` is only its human-readable
+      // view and is kept solely when the payload carries no recoverable text.
+      // Storing both carried the same words twice on every transcript row.
+      const derivedThinking = thinkingFromReasoningState(stepReasoningState)
       const assistantWithTools: ChatMessage = {
         role: 'assistant',
         content: scrubbedAssistantText,
         toolCalls: mappedCalls,
-        ...(thinkingText ? { thinking: thinkingText } : {}),
+        ...(!derivedThinking && thinkingText ? { thinking: thinkingText } : {}),
         ...(stepReasoningState ? { reasoningState: stepReasoningState } : {})
       }
       messages.push(assistantWithTools)
       appendMessage(runDir, assistantWithTools)
-      // Disk keeps thinking for hydrate; drop the duplicate string from the working
-      // set when reasoningState already carries the provider wire payload.
-      if (stepReasoningState && thinkingText) {
-        const last = messages[messages.length - 1]
-        if (last?.role === 'assistant' && last.thinking) {
-          const { thinking: _drop, ...rest } = last
-          messages[messages.length - 1] = rest as ChatMessage
-        }
-      }
       await flushMessageAppends(runDir)
       if (yield* emitMessageAppendFailureNotice(runId, runDir, invokeId)) {
         yield* emitTerminalRunError({

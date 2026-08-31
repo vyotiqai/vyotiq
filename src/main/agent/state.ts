@@ -29,6 +29,10 @@ import {
   type RunStatus,
   type RunSummary
 } from '../../shared/ipc'
+import {
+  parseProviderReasoningState,
+  thinkingFromReasoningState
+} from '../../shared/reasoning'
 import { logger } from '../../shared/logger'
 import { RUN_INTERRUPTED_ERROR } from '../../shared/runInterrupt'
 import { workspaceIdFromPath } from '../../shared/utils/workspaceId'
@@ -1084,8 +1088,13 @@ export async function buildRunMarkdownExport(
       lines.push('## User', '', text || '_(empty)_')
     } else if (message.role === 'assistant') {
       lines.push('## Agent', '', text || '_(no text — tool calls only)_')
-      if (message.thinking?.trim()) {
-        lines.push('', '<details><summary>Thinking</summary>', '', message.thinking.trim(), '', '</details>')
+      // New rows carry reasoning only in reasoningState; derive the view.
+      const thinkingText =
+        message.thinking?.trim() ||
+        thinkingFromReasoningState(parseProviderReasoningState(message.reasoningState)) ||
+        ''
+      if (thinkingText) {
+        lines.push('', '<details><summary>Thinking</summary>', '', thinkingText, '', '</details>')
       }
       for (const call of message.toolCalls ?? []) {
         let args = call.arguments

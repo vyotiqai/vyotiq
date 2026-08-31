@@ -180,4 +180,149 @@ describe('runAgent steps', () => {
     ) as { inputTokens?: number } | undefined
     expect(providerCtx?.inputTokens).toBe(1200)
   })
+
+  it('persists reasoning once per assistant message (no thinking + reasoningState double-store)', async () => {
+    const think = 'Need the file before answering.'
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'thinking_delta', text: think }
+      yield { type: 'thinking_done', text: think }
+      yield { type: 'text', text: 'Here you go.' }
+      yield {
+        type: 'done',
+        stopReason: 'end_turn',
+        reasoningState: { kind: 'openai_compat', reasoningContent: think }
+      }
+    })
+
+    const runId = 'reasoning-once'
+    for await (const _ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'hello' }],
+      workspacePath: workspace
+    })) {
+      void _ev
+    }
+
+    const messagesPath = join(resolveRunDir(workspace, runId), 'messages.jsonl')
+    const rows = readFileSync(messagesPath, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    const assistants = rows.filter((m) => m.role === 'assistant')
+    expect(assistants.length).toBeGreaterThan(0)
+    for (const row of assistants) {
+      const hasThinking = typeof row.thinking === 'string' && row.thinking.length > 0
+      const state = row.reasoningState as { reasoningContent?: string } | undefined
+      const stateText = typeof state?.reasoningContent === 'string' ? state.reasoningContent : ''
+      // Exactly one representation of the reasoning words per message.
+      expect(Boolean(hasThinking) !== Boolean(stateText)).toBe(true)
+      // And it is the wire payload that survives (replay source of truth).
+      if (stateText) expect(stateText).toBe(think)
+    }
+    // Answer text is untouched.
+    expect(rows.some((m) => m.role === 'assistant' && m.content === 'Here you go.')).toBe(true)
+  })
+
+  it('does not persist thinking bytes into stream_snapshot events', async () => {
+    const think = 'Long reasoning streamed over several seconds.'
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'thinking_delta', text: think }
+      yield { type: 'thinking_done', text: think }
+      yield { type: 'text', text: 'Answer.' }
+      yield {
+        type: 'done',
+        stopReason: 'end_turn',
+        reasoningState: { kind: 'openai_compat', reasoningContent: think }
+      }
+    })
+
+    const runId = 'snapshot-no-thinking'
+    for await (const _ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'hello' }],
+      workspacePath: workspace
+    })) {
+      void _ev
+    }
+
+    const eventsPath = join(resolveRunDir(workspace, runId), 'events.jsonl')
+    const persisted = readFileSync(eventsPath, 'utf8')
+    expect(persisted).not.toContain('"type":"stream_snapshot"')
+    expect(persisted).toContain('"type":"thinking_done"')
+    expect(persisted).toContain('Long reasoning')
+  })
+
+  it('merges multi-block thinking_done segments instead of dropping earlier blocks', async () => {
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      // Anthropic shape: one thinking_done per thinking block.
+      yield { type: 'thinking_delta', text: 'plan the change' }
+      yield { type: 'thinking_done', text: 'plan the change' }
+      yield { type: 'thinking_delta', text: 'check the tests' }
+      yield { type: 'thinking_done', text: 'check the tests' }
+      yield { type: 'text', text: 'Done.' }
+      yield {
+        type: 'done',
+        stopReason: 'end_turn',
+        reasoningState: {
+          kind: 'anthropic',
+          blocks: [
+            { type: 'thinking', thinking: 'plan the change' },
+            { type: 'thinking', thinking: 'check the tests' }
+          ]
+        }
+      }
+    })
+
+    const runId = 'multi-block-thinking'
+    for await (const _ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'hello' }],
+      workspacePath: workspace
+    })) {
+      void _ev
+    }
+
+    const messagesPath = join(resolveRunDir(workspace, runId), 'messages.jsonl')
+    const rows = readFileSync(messagesPath, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+    const assistant = rows.find((m) => m.role === 'assistant')
+    expect(assistant).toBeDefined()
+    // With a derivable reasoningState the display copy is not double-stored;
+    // the state payload keeps every block.
+    expect(assistant?.reasoningState).toMatchObject({
+      blocks: [
+        { type: 'thinking', thinking: 'plan the change' },
+        { type: 'thinking', thinking: 'check the tests' }
+      ]
+    })
+  })
+
+  it('replaces thinking with a longer done snapshot instead of duplicating the buffer', async () => {
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'thinking_delta', text: 'partial thought' }
+      // OpenAI-compat message snapshot: done text supersedes the streamed buffer.
+      yield { type: 'thinking_done', text: 'partial thought extended into the full text' }
+      yield { type: 'text', text: 'Answer.' }
+      yield {
+        type: 'done',
+        stopReason: 'end_turn',
+        reasoningState: { kind: 'openai_compat', reasoningContent: 'partial thought extended into the full text' }
+      }
+    })
+
+    const runId = 'done-replace-thinking'
+    const doneThinking: string[] = []
+    for await (const ev of runAgent({
+      runId,
+      messages: [{ role: 'user', content: 'hello' }],
+      workspacePath: workspace
+    })) {
+      if (ev.type === 'thinking_done') doneThinking.push(ev.text ?? '')
+    }
+
+    // No doubled buffer in the emitted done event.
+    expect(doneThinking.some((t) => t.includes('partial thought partial thought'))).toBe(false)
+  })
 })
