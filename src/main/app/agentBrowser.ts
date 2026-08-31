@@ -19,6 +19,8 @@ import {
   SETTLE_FALLBACK_MS,
   normalizeBrowserUrl
 } from './browserUrl'
+import { canonicalizeWorkspacePath } from '../../shared/utils/workspacePath'
+import { isInsideRoot } from '@main/workspace/safePath'
 import { wrapBrowserPageContent } from './browserContentBoundary'
 import { getSettings } from '@main/settings/settings'
 import { assertBrowserActionAllowed, resolveBrowserUploadPath } from './browserActionPolicy'
@@ -489,6 +491,24 @@ function attachAgentSecurity(wc: WebContents): void {
     if (!tab || tab.allowLocalHosts) return
     const landed = wc.getURL()
     if (!landed || landed === 'about:blank') return
+    // Workspace-scoped file: pages are legitimate in Ask/Plan tabs — the
+    // front door (navigateUrlUnlocked) only admits paths inside the tab's
+    // workspace. Skip the http(s) post-navigation policy for them.
+    if (landed.startsWith('file:')) {
+      const root = tab.workspacePath ? canonicalizeWorkspacePath(tab.workspacePath) : null
+      if (root) {
+        try {
+          const landedUrl = new URL(landed)
+          if (!/%5c/i.test(landedUrl.pathname)) {
+            const decoded = decodeURIComponent(landedUrl.pathname)
+            const rel = decoded.startsWith('/') ? decoded.slice(1) : decoded
+            if (isInsideRoot(rel, root)) return
+          }
+        } catch {
+          /* fall through to the generic policy bounce */
+        }
+      }
+    }
     try {
       await assertPostNavigationPolicy(landed, false)
     } catch {
@@ -820,13 +840,36 @@ async function navigateUrlUnlocked(
   } = {}
 ): Promise<string> {
   const allowLocal = opts.allowLocal !== false
-  const url = normalizeBrowserUrl(rawUrl)
+  const url = normalizeBrowserUrl(rawUrl, { workspaceRoot: opts.workspacePath })
   throwIfAborted(opts.signal)
 
   if (!allowLocal) {
     await assertAllowedUrl(url.toString(), false)
   }
-  assertDomainAllowlist(url)
+  if (url.protocol === 'file:') {
+    // Front-door only: the containment fence was already enforced by
+    // normalizeBrowserUrl; re-verify the decoded path here as defense in
+    // depth (and to enforce workspacePath presence on this path too).
+    if (!opts.workspacePath) {
+      throw new Error('file: URLs must point inside the workspace')
+    }
+    let landed: string
+    try {
+      landed = decodeURIComponent(url.pathname)
+    } catch {
+      throw new Error('file: URLs must point inside the workspace')
+    }
+    if (/%5c/i.test(url.pathname)) {
+      throw new Error('file: URLs must point inside the workspace')
+    }
+    const inside = isInsideRoot(
+      landed.startsWith('/') ? landed.slice(1) : landed,
+      canonicalizeWorkspacePath(opts.workspacePath)
+    )
+    if (!inside) throw new Error('file: URLs must point inside the workspace')
+  } else {
+    assertDomainAllowlist(url)
+  }
 
   const timeoutMs = Math.max(1_000, opts.timeoutMs ?? DEFAULT_NAV_TIMEOUT_MS)
 

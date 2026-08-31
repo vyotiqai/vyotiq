@@ -27,6 +27,12 @@ describe('resolveAddressBarTarget', () => {
   it('returns empty for blank input', () => {
     expect(resolveAddressBarTarget('  ', 'google')).toBe('')
   })
+
+  it('keeps file: URLs as-is for workspace-scoped preview', () => {
+    expect(resolveAddressBarTarget('file:///C:/work/demo/index.html', 'google')).toBe(
+      'file:///C:/work/demo/index.html'
+    )
+  })
 })
 
 describe('buildSearchUrl', () => {
