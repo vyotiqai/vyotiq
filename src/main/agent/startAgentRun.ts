@@ -41,6 +41,25 @@ import {
 import { readGoal } from './runGoal'
 import { launchRunFollowUpOrStart } from './launchRunInvoke'
 import { emitGoalUpdate } from './goalEvents'
+import { planGoalRelaunch } from './goalRelaunchPlan'
+
+/**
+ * Per-run relaunch budget + pending delayed-relaunch timers (module scope so
+ * they survive across invokes of the same runId within one app session).
+ * Timers are cleared when the run is intentionally aborted (see clearGoalRelaunchState).
+ */
+const relaunchCounts = new Map<string, number>()
+const relaunchTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+/** Cancel a pending delayed relaunch and drop the run's relaunch budget state. */
+export function clearGoalRelaunchState(runId: string): void {
+  const timer = relaunchTimers.get(runId)
+  if (timer) {
+    clearTimeout(timer)
+    relaunchTimers.delete(runId)
+  }
+  relaunchCounts.delete(runId)
+}
 
 export function isTerminalAgentRunEvent(ev: AgentEvent): boolean {
   return (
@@ -164,6 +183,8 @@ export function startAgentRunInBackground(input: StartAgentRunInput): void {
           scope: 'ipc',
           correlationId: runId
         })
+        // A user cancel must not leave a pending delayed relaunch armed.
+        clearGoalRelaunchState(runId)
         if (!terminalSent) {
           batcher.push({ type: 'status', runId, status: 'cancelled' })
           terminalStatus = 'cancelled'
@@ -210,27 +231,65 @@ export function startAgentRunInBackground(input: StartAgentRunInput): void {
         persisted.inlineInstance !== true
       ) {
         const goal = readGoal(runDir)
-        if (goal?.status === 'active' && !isActive(runId)) {
-          logger.info('Relaunching goal run after resumable stop', {
+        const plan = planGoalRelaunch({
+          terminalStatus,
+          persisted,
+          goalActive: goal?.status === 'active',
+          relaunchCount: relaunchCounts.get(runId) ?? 0
+        })
+        if (plan.kind === 'blocked_quota') {
+          logger.warn('Goal run stopped on provider quota exhaustion — not relaunching', {
             scope: 'goal',
             correlationId: runId
           })
-          relaunchedActiveGoal = true
-          launchRunFollowUpOrStart({
-            workspacePath,
-            runId,
-            wc,
-            mode: 'agent',
-            message: { role: 'user', content: formatGoalContinueMessage(goal.objective) }
-          })
-          emitGoalUpdate({
-            workspacePath,
-            runId,
-            runDir,
-            goal,
-            notice: `Connection lost — resuming goal: ${goal.objective}`,
-            wc
-          })
+        } else if (plan.kind === 'budget_exhausted') {
+          logger.warn(
+            'Goal run relaunch budget exhausted — leaving goal active for user continue',
+            {
+              scope: 'goal',
+              correlationId: runId,
+              maxAutoRelaunches: plan.maxAutoRelaunches
+            }
+          )
+        } else if (goal && plan.kind !== 'none' && !isActive(runId)) {
+          const executeRelaunch = (): void => {
+            launchRunFollowUpOrStart({
+              workspacePath,
+              runId,
+              wc,
+              mode: 'agent',
+              message: { role: 'user', content: formatGoalContinueMessage(goal.objective) }
+            })
+            emitGoalUpdate({
+              workspacePath,
+              runId,
+              runDir,
+              goal,
+              notice: `Connection lost — resuming goal: ${goal.objective}`,
+              wc
+            })
+          }
+          if (plan.kind === 'delayed') {
+            relaunchCounts.set(runId, (relaunchCounts.get(runId) ?? 0) + 1)
+            logger.info(
+              `Circuit open — delaying goal relaunch ${Math.round(plan.delayMs / 1000)}s`,
+              { scope: 'goal', correlationId: runId, retryAfterMs: plan.delayMs }
+            )
+            relaunchedActiveGoal = true
+            const relaunchTimer = setTimeout(() => {
+              relaunchTimers.delete(runId)
+              if (isActive(runId)) return
+              executeRelaunch()
+            }, plan.delayMs)
+            relaunchTimers.set(runId, relaunchTimer)
+          } else {
+            logger.info('Relaunching goal run after resumable stop', {
+              scope: 'goal',
+              correlationId: runId
+            })
+            relaunchedActiveGoal = true
+            executeRelaunch()
+          }
         }
       }
       if (

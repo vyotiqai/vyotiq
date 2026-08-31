@@ -41,6 +41,18 @@ export function isCircuitOpenError(err: unknown): err is CircuitOpenError {
   return err instanceof CircuitOpenError
 }
 
+/**
+ * Extract the retry horizon from a CircuitOpenError-shaped message
+ * ("Circuit open for http:opencode.ai; retry in 58s" -> 58000ms).
+ * Returns null when no shape matches. Used by callers that persisted the
+ * error text (status.json) and lost the structured error — the relaunch
+ * path must honor the circuit's backoff instead of re-firing immediately.
+ */
+export function parseCircuitRetryAfterMs(message: string): number | null {
+  const m = message.match(/circuit open for .+?; retry in (\d+)s/i)
+  return m ? Number(m[1]) * 1000 : null
+}
+
 export function circuitKeyProvider(providerId: string, endpoint?: string | null): string {
   const trimmed = endpoint?.trim()
   const authority = trimmed ? circuitKeyHttp(trimmed) : 'http:default'
