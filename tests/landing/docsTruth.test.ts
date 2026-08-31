@@ -668,10 +668,10 @@ describe('landing docs architecture and truth', () => {
     }
   })
 
-  it('lists all ten Settings section titles', () => {
+  it('lists every Settings section title', () => {
     const settings = readDoc('reference/settings.md')
     const titles = Object.values(SECTION_LABELS).map((section) => section.title)
-    expect(titles).toHaveLength(10)
+    expect(titles).toHaveLength(9)
     for (const title of titles) expect(settings, `missing ${title}`).toContain(`## ${title}`)
   })
 

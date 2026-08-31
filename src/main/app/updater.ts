@@ -8,6 +8,8 @@ import { getSettings } from '../settings/settings'
 let current: UpdaterStatus = { state: 'idle' }
 let initialized = false
 
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+
 function broadcast(status: UpdaterStatus): void {
   current = status
   for (const win of BrowserWindow.getAllWindows()) {
@@ -27,7 +29,11 @@ export function updaterStatus(): UpdaterStatus {
 export function initAutoUpdater(): void {
   if (initialized) return
   initialized = true
-  autoUpdater.autoDownload = false
+  // Updates download as soon as a newer release is found and install on quit
+  // (autoInstallOnAppQuit). Manual check/download/install IPC stays available.
+  autoUpdater.autoDownload = true
+  // This app ships full NSIS installers only; reject web-installer payloads.
+  autoUpdater.disableWebInstaller = true
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.logger = {
     info: (m) => logger.info(`[updater] ${m}`),
@@ -88,6 +94,16 @@ export function initAutoUpdater(): void {
       logger.warn('[updater] startup check failed', err)
     })
   }
+
+  // Long-running sessions must pick up new releases too: re-check every 6h
+  // unless an update is already downloading or waiting to be installed.
+  setInterval(() => {
+    if (!getSettings().autoCheckUpdates) return
+    if (current.state === 'downloading' || current.state === 'ready') return
+    void checkForAppUpdates().catch((err) => {
+      logger.warn('[updater] periodic check failed', err)
+    })
+  }, UPDATE_CHECK_INTERVAL_MS)
 }
 
 export async function checkForAppUpdates(): Promise<UpdaterStatus> {

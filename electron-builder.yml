@@ -49,12 +49,13 @@ win:
   icon: resources/icon.ico
   target:
     - nsis
-  # Must match the code-signing certificate subject CN (CSC_LINK secret) so
-  # NSIS verifies the updater's signer. Ignored while builds are unsigned.
-  # Flip win.forceCodeSigning to true (and revisit mac.notarize) once the
-  # signing cert is always present in the release environment — release.yml
-  # currently falls back to unsigned packs when CSC_LINK is unset.
-  publisherName: Vyotiq
+  # publisherName enables NSIS updater signature verification: electron-updater
+  # compares the downloaded installer's Authenticode subject against it and
+  # throws ERR_UPDATER_INVALID_SIGNATURE when they do not match. It MUST stay
+  # unset while release builds are unsigned (release.yml falls back to unsigned
+  # packs when CSC_LINK is unset) or Windows auto-update always fails. Re-add
+  # `publisherName: <cert subject CN>` together with win.forceCodeSigning: true
+  # once the signing cert is always present in the release environment.
   # Win x64 only — drop other onnxruntime natives (~150 MB). macOS/Linux keep theirs.
   files:
     - '!**/onnxruntime-node/bin/napi-v6/darwin/**'
@@ -75,6 +76,7 @@ nsis:
 mac:
   target:
     - dmg
+    - zip
   entitlements: build/entitlements.mac.plist
   entitlementsInherit: build/entitlements.mac.plist
   hardenedRuntime: true
@@ -87,7 +89,10 @@ mac:
     - '!**/onnxruntime-node/bin/napi-v6/linux/**'
     - '!**/onnxruntime-node/bin/napi-v6/win32/**'
 dmg:
-  artifactName: ${productName}-${version}.${ext}
+  # ${arch} keeps arm64/x64 DMGs from colliding: both are uploaded to the same
+  # GitHub release by the single macOS job in release.yml, and latest-mac.yml
+  # must reference distinct files per arch (MacUpdater picks by URL).
+  artifactName: ${productName}-${version}-${arch}.${ext}
 linux:
   target:
     - AppImage
