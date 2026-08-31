@@ -126,4 +126,38 @@ describe('tool soft deadline', () => {
     expect(outcome.stepToolsOk).toBe(true)
     expect(seen[0]?.aborted).toBe(false)
   })
+
+  it('exempts ask_question from the deadline so a late human answer still succeeds', async () => {
+    const mod = await loadModule()
+    const run = new AbortController()
+    const seen: AbortSignal[] = []
+    // Resolves after the raced deadline would already have fired — exactly the
+    // ask_question shape: the handler only settles when the human answers.
+    executeTool.mockImplementation(
+      (_name: string, _args: string, _ws: string, signal: AbortSignal) => {
+        seen.push(signal)
+        return new Promise((resolve) =>
+          setTimeout(
+            () => resolve({ ok: true, summary: 'asked', content: 'The user answered: 42' }),
+            DEADLINE_MS * 2
+          )
+        )
+      }
+    )
+    const { ctx, messages } = makeCtx(run.signal, run.signal)
+    const outcome = await mod.executeStepToolCalls(
+      [{ id: 'c1', name: 'ask_question', arguments: '{"question":"Pick a number"}' }],
+      ctx,
+      { step: 1 }
+    )
+
+    expect(outcome.stepToolsOk).toBe(true)
+    const content = String(messages[0]?.content)
+    expect(content).not.toMatch(/exceeded its/)
+    expect(content).toBe('The user answered: 42')
+    // Waiting on the human must not abort the tool signal either — only the
+    // run's own cancel does that.
+    expect(seen[0]?.aborted).toBe(false)
+    expect(run.signal.aborted).toBe(false)
+  })
 })

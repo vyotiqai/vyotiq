@@ -242,6 +242,14 @@ function emitToolResult(ctx: ToolStepContext, event: AgentEvent): void {
  */
 export const TOOL_SOFT_DEADLINE_MS = resolveSoftDeadlineMs()
 
+/**
+ * Tools exempt from the soft deadline: ask_question resolves only when the
+ * human answers, so "stuck" is the normal state while it waits — deadline-
+ * killing it registers every long wait as a tool failure. Only the run's own
+ * AbortSignal (cancel/interrupt) ends it.
+ */
+const DEADLINE_EXEMPT_TOOLS: ReadonlySet<string> = new Set(['ask_question'])
+
 function resolveSoftDeadlineMs(): number {
   const raw = process.env.VYOTIQ_TOOL_SOFT_DEADLINE_MS
   if (raw) {
@@ -349,8 +357,7 @@ async function runSingleTool(
     const deadlineController = new AbortController()
     const toolSignal = composeAbortSignal(ctx.signal, deadlineController.signal)
 
-    const result = await raceToolDeadline(
-      executeTool(call.name, call.arguments, ctx.workspace, toolSignal, {
+    const pending = executeTool(call.name, call.arguments, ctx.workspace, toolSignal, {
       runDir: ctx.runDir,
       sessionWorkspace: ctx.sessionWorkspace,
       inlineInstance: ctx.inlineInstance,
@@ -389,10 +396,11 @@ async function runSingleTool(
               stream: chunk.stream
             })
         : undefined
-      }),
-      call.name,
-      () => deadlineController.abort()
-    )
+    })
+
+    const result = await (DEADLINE_EXEMPT_TOOLS.has(call.name)
+      ? pending
+      : raceToolDeadline(pending, call.name, () => deadlineController.abort()))
     let content = result.content
     if (result.ok && unreadPaths.length > 0) {
       content = `${content}\n\n[Soft warning: edited existing file(s) without a prior read/grep/glob/codebase_search inspect: ${unreadPaths.join(', ')}]`
