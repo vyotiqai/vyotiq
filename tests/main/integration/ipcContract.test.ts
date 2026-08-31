@@ -164,6 +164,9 @@ const VYOTIQ_INVOKE_MAP: Record<
   getCrashDiagnostics: IPC.crashDiagnosticsGet,
   consumeCrashRecovery: IPC.crashRecoveryConsume,
   telemetryStatus: IPC.telemetryStatus,
+  startTrace: IPC.traceStart,
+  getTraceStatus: IPC.traceStatus,
+  stopTrace: IPC.traceStop,
   getAppInfo: IPC.appInfo,
   getUpdaterStatus: IPC.updaterStatus,
   checkForAppUpdates: IPC.updaterCheck,
@@ -297,7 +300,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(183)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(186)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {

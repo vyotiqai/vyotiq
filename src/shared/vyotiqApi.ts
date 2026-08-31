@@ -62,6 +62,10 @@ import type {
   GithubIssueCreateResult,
   CrashDiagnosticsSnapshot,
   CrashRecoveryPending,
+  TraceStartRequest,
+  TraceStartResult,
+  TraceStatusResult,
+  TraceStopResult,
   ToolApprovalDecision,
   ToolApprovalRequest,
   AgentQuestionRequest,
@@ -416,6 +420,9 @@ export interface VyotiqApi {
   getCrashDiagnostics: () => Promise<IpcResult<CrashDiagnosticsSnapshot>>
   consumeCrashRecovery: () => Promise<IpcResult<CrashRecoveryPending | null>>
   telemetryStatus: () => Promise<IpcResult<TelemetryStatus>>
+  startTrace: (payload?: TraceStartRequest) => Promise<IpcResult<TraceStartResult>>
+  getTraceStatus: () => Promise<IpcResult<TraceStatusResult>>
+  stopTrace: () => Promise<IpcResult<TraceStopResult>>
   getAppInfo: () => Promise<IpcResult<AppInfo>>
   getUpdaterStatus: () => Promise<IpcResult<UpdaterStatus>>
   checkForAppUpdates: () => Promise<IpcResult<UpdaterStatus>>

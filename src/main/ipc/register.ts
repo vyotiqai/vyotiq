@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, shell, nativeTheme, dialog, app } from 'electron'
+import { ipcMain, BrowserWindow, shell, nativeTheme, dialog, app, contentTracing } from 'electron'
 import { release as osRelease } from 'os'
 import { ZodError } from 'zod'
 import { IPC } from '../../shared/channels'
@@ -138,6 +138,11 @@ import {
   DictationDeleteCacheRequestSchema,
   ok,
   fail,
+  TraceStartRequestSchema,
+  type TraceStartRequest,
+  type TraceStartResult,
+  type TraceStatusResult,
+  type TraceStopResult,
   MAX_ATTACHMENT_BYTES,
   WORKSPACE_FILE_BINARY_MAX_BYTES,
   type ExtractAttachmentResult,
@@ -419,6 +424,7 @@ import {
   syncCustomCssWatch
 } from '@main/appearance/customCss'
 import { logsDirectory } from '../logging/init'
+import { createTraceCapture } from '../perf/traceCapture'
 import {
   consumeRendererRecoveryPending,
   getCrashDiagnosticsSnapshot
@@ -605,6 +611,18 @@ function persistWriteCheckpointEvent(
     undone: Boolean(meta.undone || meta.resolved),
     files: meta.files
   })
+}
+
+let traceCaptureInstance: ReturnType<typeof createTraceCapture> | null = null
+
+/** Lazily created Chromium trace capture writing under {userData}/traces. */
+function getTraceCapture(): ReturnType<typeof createTraceCapture> {
+  traceCaptureInstance ??= createTraceCapture(contentTracing, () => {
+    const dir = join(app.getPath('userData'), 'traces')
+    mkdirSync(dir, { recursive: true })
+    return dir
+  })
+  return traceCaptureInstance
 }
 
 export function registerIpc(): void {
@@ -2381,6 +2399,38 @@ export function registerIpc(): void {
       return ok(true)
     } catch (err) {
       return failFrom(err, IPC.logsOpenDir)
+    }
+  })
+
+  ipcMain.handle(
+    IPC.traceStart,
+    async (event, payload?: TraceStartRequest): Promise<IpcResult<TraceStartResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const parsed = TraceStartRequestSchema.safeParse(payload ?? {})
+        if (!parsed.success) return fail('Invalid trace options')
+        return ok(await getTraceCapture().start(parsed.data))
+      } catch (err) {
+        return failFrom(err, IPC.traceStart)
+      }
+    }
+  )
+
+  ipcMain.handle(IPC.traceStatus, async (event): Promise<IpcResult<TraceStatusResult>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(await getTraceCapture().status())
+    } catch (err) {
+      return failFrom(err, IPC.traceStatus)
+    }
+  })
+
+  ipcMain.handle(IPC.traceStop, async (event): Promise<IpcResult<TraceStopResult>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      return ok(await getTraceCapture().stop())
+    } catch (err) {
+      return failFrom(err, IPC.traceStop)
     }
   })
 

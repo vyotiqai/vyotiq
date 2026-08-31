@@ -561,6 +561,34 @@ export const TelemetryStatusSchema = z.object({
 })
 export type TelemetryStatus = z.infer<typeof TelemetryStatusSchema>
 
+export const TraceStartRequestSchema = z
+  .object({
+    categoryFilter: z.string().trim().min(1).optional(),
+    traceOptions: z.string().trim().min(1).optional()
+  })
+  .optional()
+export type TraceStartRequest = z.infer<typeof TraceStartRequestSchema>
+
+export const TraceStartResultSchema = z.object({
+  categoryFilter: z.string(),
+  traceOptions: z.string()
+})
+export type TraceStartResult = z.infer<typeof TraceStartResultSchema>
+
+export const TraceStatusResultSchema = z.object({
+  recording: z.boolean(),
+  startedAt: z.string().nullable(),
+  bufferPercent: z.number().nullable()
+})
+export type TraceStatusResult = z.infer<typeof TraceStatusResultSchema>
+
+export const TraceStopResultSchema = z.object({
+  path: z.string(),
+  bytes: z.number().int().nonnegative(),
+  durationMs: z.number().nonnegative()
+})
+export type TraceStopResult = z.infer<typeof TraceStopResultSchema>
+
 export const AppInfoSchema = z.object({
   name: z.string().min(1),
   version: z.string().min(1),
