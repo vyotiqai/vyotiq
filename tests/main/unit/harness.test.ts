@@ -182,4 +182,21 @@ describe('harness', () => {
     expect(validateHarnessMarkdown(lf)).toEqual([])
     expect(validateHarnessMarkdown(`\uFEFF${lf.replace(/\n/g, '\r\n')}`)).toEqual([])
   })
+
+  it('does not carry ritual-inducing recovery vocabulary (measured 6265fa90: 21/24 steps opened thinking with compaction-echo recap despite ZERO compactions)', () => {
+    const text = readFileSync(
+      join(process.cwd(), 'resources', 'harness', 'default.md'),
+      'utf8'
+    )
+    // Rule 47's notice-claim guard must survive — it is the behavioral fix.
+    expect(text).toContain(
+      'Never preface reasoning by declaring the session compacted, resumed, restored, or fresh unless this conversation actually contains such a notice'
+    )
+    // The echo phrases the model parroted as a ritual thinking-preamble must
+    // stay out of the harness; models pattern-match this vocabulary even when
+    // no compaction occurred. Re-add only with new measured evidence.
+    expect(text).not.toMatch(/surviving context/i)
+    expect(text).not.toMatch(/re-orient/i)
+    expect(text).not.toMatch(/after (?:context )?compaction/i)
+  })
 })
