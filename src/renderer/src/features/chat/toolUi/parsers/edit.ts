@@ -338,9 +338,10 @@ function normalizeWritePath(path: string): string {
 }
 
 function multiEditPathAction(
-  content: string | undefined,
+  tool: UiToolRow,
   path: string
 ): 'created' | 'modified' | undefined {
+  const content = tool.content
   if (!content) return undefined
   const needle = normalizeWritePath(path)
   for (const raw of content.split('\n')) {
@@ -355,6 +356,9 @@ function multiEditPathAction(
     if (verb === 'created') return 'created'
     if (verb === 'wrote' || verb === 'patched') return 'modified'
   }
+  // Truncated content lost this path's result line; the batch-wide fallback would
+  // label it from whichever paths survived the cut. Only trust untruncated content.
+  if (tool.contentTruncated) return undefined
   return inferFileWriteAction('multi_edit', content) ?? undefined
 }
 
@@ -391,7 +395,7 @@ export function collectWritingChanges(tool: UiToolRow): FileChange[] {
       if (!entry || typeof entry !== 'object') continue
       const record = entry as Record<string, unknown>
       const path = typeof record.path === 'string' ? record.path : ''
-      const change = changeFromEditArgs(record, multiEditPathAction(tool.content, path))
+      const change = changeFromEditArgs(record, multiEditPathAction(tool, path))
       if (change) out.push(change)
     }
     return out

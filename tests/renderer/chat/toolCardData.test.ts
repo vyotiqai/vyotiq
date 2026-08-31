@@ -154,6 +154,49 @@ describe('parseEditCardData', () => {
     ])
   })
 
+  it('drops per-path actions the truncated multi_edit content can no longer confirm', () => {
+    expect(
+      collectWritingChanges(
+        tool({
+          name: 'multi_edit',
+          summary: 'a.ts, b.ts',
+          argsPreview: JSON.stringify({
+            edits: [
+              { path: 'src/a.ts', contents: 'A\n' },
+              { path: 'src/b.ts', contents: 'B\n' }
+            ]
+          }),
+          content: 'Applied 2 edits:\n- created src/a.ts\n- wrote src/b.t',
+          contentTruncated: true
+        })
+      )
+    ).toEqual([
+      { path: 'src/a.ts', added: 1, removed: 0, action: 'created' },
+      { path: 'src/b.ts', added: 1, removed: 0 }
+    ])
+  })
+
+  it('keeps full multi_edit per-path actions when content is not truncated', () => {
+    expect(
+      collectWritingChanges(
+        tool({
+          name: 'multi_edit',
+          summary: 'a.ts, b.ts',
+          argsPreview: JSON.stringify({
+            edits: [
+              { path: 'src/a.ts', contents: 'A\n' },
+              { path: 'src/b.ts', contents: 'B\n' }
+            ]
+          }),
+          content: 'Applied 2 edits:\n- created src/a.ts\n- wrote src/b.ts'
+        })
+      )
+    ).toEqual([
+      { path: 'src/a.ts', added: 1, removed: 0, action: 'created' },
+      { path: 'src/b.ts', added: 1, removed: 0, action: 'modified' }
+    ])
+  })
+
   it('counts diff lines from unified diff args', () => {
     const diff = '--- a\n+++ b\n@@\n-old\n+new\n+line'
     const data = parseEditCardData(
