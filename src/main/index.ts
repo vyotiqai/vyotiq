@@ -37,6 +37,7 @@ import {
 import { cancelAndWaitActiveRuns, listActiveRuns } from '@main/agent/runRegistry'
 import { pruneStaleInstanceWorktreesBestEffort } from '@main/git/instanceWorktree'
 import { initMainLogging } from './logging/init'
+import { initTraceAutoCapture } from './perf/traceAutoCapture'
 import { initCrashReporter } from './logging/crashReporter'
 import { logger } from '../shared/logger'
 import { IPC } from '../shared/channels'
@@ -148,6 +149,9 @@ if (!gotLock) {
         win.webContents.send(IPC.accessibilitySupportChanged, { enabled: accessibilitySupportEnabled })
       }
     })
+    // Flight recorder first: registers the fatal-path dump listeners before
+    // logging's exit handlers and starts the always-on ring buffer.
+    initTraceAutoCapture()
     // After userData path switches; before IPC / windows (Sentry + electron-log).
     initMainLogging()
 

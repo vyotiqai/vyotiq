@@ -442,11 +442,6 @@ export const SettingsSchema = z.object({
   /** Packaged builds check GitHub Releases for app updates on launch. */
   autoCheckUpdates: z.boolean().default(true),
   /**
-   * GitHub App / OAuth App client ID for in-app device-flow Connect.
-   * Empty falls back to `VYOTIQ_GITHUB_CLIENT_ID` env.
-   */
-  githubClientId: z.string().default(''),
-  /**
    * Shared Google Cloud OAuth client ID for Gmail/Drive/Calendar MCP.
    * Non-secret. Client secret lives in OS secure storage, never settings.json.
    */
@@ -532,7 +527,6 @@ export const DEFAULT_SETTINGS: Settings = {
   autoModeSwitch: false,
   autoResumeInterruptedRuns: false,
   autoCheckUpdates: true,
-  githubClientId: '',
   googleMcpClientId: '',
   marketplace: DEFAULT_MARKETPLACE_SETTINGS,
   codeIndex: DEFAULT_CODE_INDEX_SETTINGS,
@@ -560,14 +554,6 @@ export const TelemetryStatusSchema = z.object({
   telemetryEnabled: z.boolean()
 })
 export type TelemetryStatus = z.infer<typeof TelemetryStatusSchema>
-
-export const TraceStartRequestSchema = z
-  .object({
-    categoryFilter: z.string().trim().min(1).optional(),
-    traceOptions: z.string().trim().min(1).optional()
-  })
-  .optional()
-export type TraceStartRequest = z.infer<typeof TraceStartRequestSchema>
 
 export const TraceStartResultSchema = z.object({
   categoryFilter: z.string(),

@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, shell, nativeTheme, dialog, app, contentTracing } from 'electron'
+import { ipcMain, BrowserWindow, shell, nativeTheme, dialog, app } from 'electron'
 import { release as osRelease } from 'os'
 import { ZodError } from 'zod'
 import { IPC } from '../../shared/channels'
@@ -138,8 +138,6 @@ import {
   DictationDeleteCacheRequestSchema,
   ok,
   fail,
-  TraceStartRequestSchema,
-  type TraceStartRequest,
   type TraceStartResult,
   type TraceStatusResult,
   type TraceStopResult,
@@ -424,7 +422,7 @@ import {
   syncCustomCssWatch
 } from '@main/appearance/customCss'
 import { logsDirectory } from '../logging/init'
-import { createTraceCapture } from '../perf/traceCapture'
+import { getTraceAutoCapture } from '../perf/traceAutoCapture'
 import {
   consumeRendererRecoveryPending,
   getCrashDiagnosticsSnapshot
@@ -613,16 +611,9 @@ function persistWriteCheckpointEvent(
   })
 }
 
-let traceCaptureInstance: ReturnType<typeof createTraceCapture> | null = null
-
-/** Lazily created Chromium trace capture writing under {userData}/traces. */
-function getTraceCapture(): ReturnType<typeof createTraceCapture> {
-  traceCaptureInstance ??= createTraceCapture(contentTracing, () => {
-    const dir = join(app.getPath('userData'), 'traces')
-    mkdirSync(dir, { recursive: true })
-    return dir
-  })
-  return traceCaptureInstance
+/** The process-wide flight recorder (created here if boot init has not run yet). */
+function getTraceCapture(): ReturnType<typeof getTraceAutoCapture>['capture'] {
+  return getTraceAutoCapture().capture
 }
 
 export function registerIpc(): void {
@@ -2402,19 +2393,15 @@ export function registerIpc(): void {
     }
   })
 
-  ipcMain.handle(
-    IPC.traceStart,
-    async (event, payload?: TraceStartRequest): Promise<IpcResult<TraceStartResult>> => {
-      if (!senderOk(event)) return fail('Invalid sender')
-      try {
-        const parsed = TraceStartRequestSchema.safeParse(payload ?? {})
-        if (!parsed.success) return fail('Invalid trace options')
-        return ok(await getTraceCapture().start(parsed.data))
-      } catch (err) {
-        return failFrom(err, IPC.traceStart)
-      }
+  ipcMain.handle(IPC.traceStart, async (event): Promise<IpcResult<TraceStartResult>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      // Idempotent: the flight recorder is already running; this re-asserts it.
+      return ok(await getTraceCapture().ensureRecording())
+    } catch (err) {
+      return failFrom(err, IPC.traceStart)
     }
-  )
+  })
 
   ipcMain.handle(IPC.traceStatus, async (event): Promise<IpcResult<TraceStatusResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
@@ -2428,7 +2415,9 @@ export function registerIpc(): void {
   ipcMain.handle(IPC.traceStop, async (event): Promise<IpcResult<TraceStopResult>> => {
     if (!senderOk(event)) return fail('Invalid sender')
     try {
-      return ok(await getTraceCapture().stop())
+      // Manual dump always forces through and resumes recording — "no trace
+      // recording in progress" is structurally impossible now.
+      return ok(await getTraceCapture().dumpNow('manual'))
     } catch (err) {
       return failFrom(err, IPC.traceStop)
     }
