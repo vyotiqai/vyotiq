@@ -13,7 +13,6 @@ const SECTION_ICONS = {
   indexing: 'fileSearch',
   voice: 'mic',
   tools: 'plug',
-  integrations: 'globe',
   shortcuts: 'keyboard',
   about: 'info'
 } as const satisfies Record<SettingsSection, IconName>

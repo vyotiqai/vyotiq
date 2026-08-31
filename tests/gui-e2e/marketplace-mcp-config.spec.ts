@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test'
 import { closeApp, launchApp, type LaunchedApp } from './helpers/launch'
-import { leaveSettingsIfOpen, openSettings } from './helpers/settings'
+import { leaveSettingsIfOpen } from './helpers/settings'
 
 let launched: LaunchedApp
 
@@ -55,29 +55,4 @@ test('manage tab reveals registry settings panel', async () => {
   await expect(registry.getByText('Registry URL')).toBeVisible()
   await expect(registry.getByPlaceholder(/registry\.example\.com/i)).toBeVisible()
   await expect(window.getByRole('tablist', { name: 'Manage marketplace' })).toBeVisible()
-})
-
-test('integrations settings expose GitHub OAuth client id wiring', async () => {
-  const { window } = launched
-
-  await openSettings(window)
-  await window.getByRole('button', { name: /^integrations$/i }).click()
-
-  const clientId = window.getByRole('textbox', { name: 'GitHub client ID' })
-  await expect(clientId).toBeVisible({ timeout: 10_000 })
-
-  // Persist through the real settings path, then confirm the bridge round-trips it.
-  await clientId.fill('e2e-test-client-id')
-  await clientId.press('Tab')
-  await expect
-    .poll(
-      async () =>
-        window.evaluate(() =>
-          window.vyotiq
-            ?.getSettings?.()
-            .then((res) => (res.ok ? (res.data.githubClientId ?? null) : null))
-        ),
-      { timeout: 10_000 }
-    )
-    .toBe('e2e-test-client-id')
 })

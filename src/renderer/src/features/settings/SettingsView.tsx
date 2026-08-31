@@ -11,7 +11,6 @@ import { AgentSection } from './sections/AgentSection'
 import { IndexingSection } from './sections/IndexingSection'
 import { VoiceSection } from './sections/VoiceSection'
 import { ToolsSection } from './sections/ToolsSection'
-import { IntegrationsSection } from './sections/IntegrationsSection'
 import { AboutSection } from './sections/AboutSection'
 import { AppearanceSection } from './sections/AppearanceSection'
 import { ShortcutsSection } from './sections/ShortcutsSection'
@@ -78,8 +77,6 @@ export function SettingsView(props: SettingsViewProps) {
         return <VoiceSection form={form} secrets={secrets} />
       case 'tools':
         return <ToolsSection form={form} />
-      case 'integrations':
-        return <IntegrationsSection form={form} />
       case 'shortcuts':
         return <ShortcutsSection />
       case 'about':

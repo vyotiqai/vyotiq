@@ -390,7 +390,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   {
     id: 'trace-capture',
     title: 'Trace capture',
-    keywords: ['trace', 'tracing', 'chrome://tracing', 'profiling', 'performance', 'devtools', 'diagnostics', 'advanced'],
+    keywords: ['trace', 'tracing', 'chrome://tracing', 'profiling', 'performance', 'flight recorder', 'crash', 'hang', 'diagnostics', 'advanced'],
     section: 'general'
   },
   {
@@ -452,12 +452,6 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     title: 'App updates',
     keywords: ['updates', 'updater', 'upgrade', 'release', 'about'],
     section: 'about'
-  },
-  {
-    id: 'github-client-id',
-    title: 'GitHub client ID',
-    keywords: ['github', 'oauth', 'pr', 'connect'],
-    section: 'integrations'
   },
   {
     id: 'shortcuts',

@@ -245,7 +245,7 @@ describe('settings', () => {
     expect(screen.getByRole('button', { name: /^Voice$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^Tools$/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /^Advanced$/i })).toBeNull()
-    expect(screen.getByRole('button', { name: /^Integrations$/i })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Integrations$/i })).toBeNull()
     expect(screen.getByRole('button', { name: /^Shortcuts$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^About$/i })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /^Marketplace$/i })).toBeNull()
@@ -1591,7 +1591,6 @@ describe('settings', () => {
       'Indexing',
       'Voice',
       'Tools',
-      'Integrations',
       'Shortcuts',
       'About'
     ]) {
@@ -1625,21 +1624,6 @@ describe('settings', () => {
         return el
       })
     ).toBeTruthy()
-  })
-
-  it('Integrations section owns GitHub client ID', () => {
-    render(
-      <SettingsView
-        settings={baseSettings}
-        secrets={emptySecrets}
-        onClose={vi.fn()}
-        onUpdate={vi.fn(async () => ({ ok: true as const }))}
-        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
-        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
-      />
-    )
-    fireEvent.click(screen.getByRole('button', { name: /^Integrations$/i }))
-    expect(document.querySelector('[data-settings-field="github-client-id"]')).toBeTruthy()
   })
 
   it('Shortcuts section lists keyboard chords', () => {

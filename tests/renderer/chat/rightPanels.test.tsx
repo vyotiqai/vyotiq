@@ -178,7 +178,6 @@ beforeEach(() => {
         data: {
           ghAvailable: true,
           ghAuthenticated: true,
-          clientIdConfigured: false,
           hasAppToken: false,
           pending: false,
           userCode: null,
@@ -353,7 +352,6 @@ describe('ChangesPanel', () => {
       data: {
         ghAvailable: false,
         ghAuthenticated: true,
-        clientIdConfigured: false,
         hasAppToken: true,
         pending: false,
         userCode: null,
@@ -944,7 +942,6 @@ describe('PrPanel', () => {
       data: {
         ghAvailable: false,
         ghAuthenticated: false,
-        clientIdConfigured: false,
         hasAppToken: false,
         pending: false,
         userCode: null,
@@ -968,7 +965,6 @@ describe('PrPanel', () => {
       data: {
         ghAvailable: true,
         ghAuthenticated: false,
-        clientIdConfigured: false,
         hasAppToken: false,
         pending: false,
         userCode: null,
@@ -993,7 +989,6 @@ describe('PrPanel', () => {
       data: {
         ghAvailable: true,
         ghAuthenticated: false,
-        clientIdConfigured: false,
         hasAppToken: false,
         pending: true,
         userCode: 'WXYZ-9876',
@@ -1018,7 +1013,6 @@ describe('PrPanel', () => {
       data: {
         ghAvailable: true,
         ghAuthenticated: false,
-        clientIdConfigured: false,
         hasAppToken: false,
         pending: false,
         userCode: null,
@@ -1031,7 +1025,6 @@ describe('PrPanel', () => {
       data: {
         ghAvailable: true,
         ghAuthenticated: false,
-        clientIdConfigured: false,
         hasAppToken: false,
         pending: true,
         userCode: 'ABCD-1234',
@@ -1054,7 +1047,6 @@ describe('PrPanel', () => {
     let push: ((status: {
       ghAvailable: boolean
       ghAuthenticated: boolean
-      clientIdConfigured: boolean
       hasAppToken: boolean
       pending: boolean
       userCode: string | null
@@ -1070,7 +1062,6 @@ describe('PrPanel', () => {
     const pendingStatus = {
       ghAvailable: true,
       ghAuthenticated: false,
-      clientIdConfigured: false,
       hasAppToken: false,
       pending: true,
       userCode: 'ABCD-1234',
@@ -1091,7 +1082,6 @@ describe('PrPanel', () => {
     const signedIn = {
       ghAvailable: true,
       ghAuthenticated: true,
-      clientIdConfigured: false,
       hasAppToken: true,
       pending: false,
       userCode: null,
@@ -1294,7 +1284,6 @@ describe('PrPanel', () => {
       data: {
         ghAvailable: true,
         ghAuthenticated: true,
-        clientIdConfigured: true,
         hasAppToken: true,
         pending: false,
         userCode: null,

@@ -469,7 +469,6 @@ export function PrPanel({
       setAuth((prev) => ({
         ghAvailable: prev?.ghAvailable ?? true,
         ghAuthenticated: false,
-        clientIdConfigured: prev?.clientIdConfigured ?? false,
         hasAppToken: false,
         pending: false,
         userCode: null,
@@ -482,7 +481,6 @@ export function PrPanel({
     setAuth((prev) => ({
       ghAvailable: prev?.ghAvailable ?? true,
       ghAuthenticated: false,
-      clientIdConfigured: prev?.clientIdConfigured ?? false,
       hasAppToken: false,
       pending: true,
       userCode: prev?.userCode ?? null,
@@ -500,7 +498,6 @@ export function PrPanel({
             : {
                 ghAvailable: true,
                 ghAuthenticated: false,
-                clientIdConfigured: false,
                 hasAppToken: false,
                 pending: false,
                 userCode: null,
@@ -513,7 +510,6 @@ export function PrPanel({
       setAuth((prev) => ({
         ghAvailable: prev?.ghAvailable ?? true,
         ghAuthenticated: false,
-        clientIdConfigured: prev?.clientIdConfigured ?? false,
         hasAppToken: false,
         pending: false,
         userCode: null,

@@ -7,7 +7,7 @@ const { execFileAsync, spawnMock, openExternalMock } = vi.hoisted(() => ({
 }))
 
 vi.mock('@main/settings/settings', () => ({
-  getSettings: vi.fn(() => ({ githubClientId: '' }))
+  getSettings: vi.fn(() => ({}))
 }))
 
 vi.mock('@main/settings/secrets', () => {
@@ -70,7 +70,6 @@ vi.mock('@main/agent/tools/terminal', () => ({
   sanitizedTerminalEnv: vi.fn(() => ({ PATH: '/bin' }))
 }))
 
-import { getSettings } from '@main/settings/settings'
 import { clearGithubAccessToken, setGithubAccessToken } from '@main/settings/secrets'
 import {
   githubAuthStatus,
@@ -86,6 +85,7 @@ import {
   setupGithubGitAuth,
   startGithubAuth
 } from '@main/git/githubAuth'
+import { VYOTIQ_GITHUB_OAUTH_CLIENT_ID } from '@main/git/githubAuth'
 
 describe('githubAuth helpers', () => {
   afterEach(() => {
@@ -113,17 +113,10 @@ describe('githubAuth helpers', () => {
     })
   })
 
-  it('resolves client id from settings then env then GitHub CLI default', () => {
-    vi.mocked(getSettings).mockReturnValue({ githubClientId: 'from-settings' } as never)
-    expect(resolveGithubClientId()).toBe('from-settings')
-
-    vi.mocked(getSettings).mockReturnValue({ githubClientId: '' } as never)
+  it('resolves the official Vyotiq OAuth client id with no user configuration', () => {
     vi.stubEnv('VYOTIQ_GITHUB_CLIENT_ID', 'from-env')
-    expect(resolveGithubClientId()).toBe('from-env')
-
-    vi.unstubAllEnvs()
-    vi.mocked(getSettings).mockReturnValue({ githubClientId: '' } as never)
-    expect(resolveGithubClientId()).toBe('178c6fc778ccc68e1d6a')
+    expect(resolveGithubClientId()).toBe(VYOTIQ_GITHUB_OAUTH_CLIENT_ID)
+    expect(resolveGithubClientId()).not.toBe('178c6fc778ccc68e1d6a')
   })
 
   it('uses only the stored app token and never ambient GH_TOKEN', () => {
@@ -149,7 +142,6 @@ describe('githubAuth helpers', () => {
   })
 
   it('starts GitHub device flow without spawning gh auth login', async () => {
-    vi.mocked(getSettings).mockReturnValue({ githubClientId: '' } as never)
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -174,7 +166,6 @@ describe('githubAuth helpers', () => {
   })
 
   it('opens verification_uri_complete when GitHub returns it', async () => {
-    vi.mocked(getSettings).mockReturnValue({ githubClientId: '' } as never)
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -199,7 +190,6 @@ describe('githubAuth helpers', () => {
   })
 
   it('rejects a non-github.com verification host', async () => {
-    vi.mocked(getSettings).mockReturnValue({ githubClientId: 'client' } as never)
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -258,7 +248,7 @@ describe('githubAuth helpers', () => {
     expect(resolveGhTokenForCli()).toBe('gho_from_github')
   })
 
-  it('sends the GitHub CLI client secret when exchanging a device code', async () => {
+  it('exchanges the device code without a client secret', async () => {
     injectPendingGithubAuthForTests({ deviceCode: 'device-xyz' })
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -270,8 +260,8 @@ describe('githubAuth helpers', () => {
     expect(fetchMock).toHaveBeenCalled()
     const init = fetchMock.mock.calls[0]?.[1] as { body?: string }
     const body = new URLSearchParams(init.body)
-    expect(body.get('client_id')).toBe('178c6fc778ccc68e1d6a')
-    expect(body.get('client_secret')).toBe('34ddeff2b558a23d38fba8a6de74f086ede1cc0b')
+    expect(body.get('client_id')).toBe(VYOTIQ_GITHUB_OAUTH_CLIENT_ID)
+    expect(body.get('client_secret')).toBeNull()
     expect(body.get('device_code')).toBe('device-xyz')
     expect(body.get('grant_type')).toBe('urn:ietf:params:oauth:grant-type:device_code')
   })

@@ -1,7 +1,6 @@
 import { execFile as execFileCb, spawn } from 'child_process'
 import { promisify } from 'util'
 import { shell } from 'electron'
-import { getSettings } from '@main/settings/settings'
 import {
   clearGithubAccessToken,
   getGithubAccessToken,
@@ -19,13 +18,11 @@ const ACCESS_TOKEN_URL = 'https://github.com/login/oauth/access_token'
 const DEFAULT_SCOPE = 'repo read:org gist'
 const GH_DEVICE_LOGIN_URL = 'https://github.com/login/device'
 /**
- * Public GitHub CLI OAuth app client ID (device flow does not use a client secret).
- * Source: https://github.com/cli/cli/blob/trunk/internal/authflow/flow.go
- * Tokens are issued to "GitHub CLI", which is what `gh` commands need.
+ * Vyotiq's official GitHub OAuth app (owned by github.com/vyotiqai).
+ * Device flow never uses a client secret, so shipping the client id in the
+ * app is safe and users never need to paste credentials.
  */
-const GH_CLI_OAUTH_CLIENT_ID = '178c6fc778ccc68e1d6a'
-/** Public GitHub CLI OAuth app secret — embedded in gh itself; safe to ship. */
-const GH_CLI_OAUTH_CLIENT_SECRET = '34ddeff2b558a23d38fba8a6de74f086ede1cc0b'
+export const VYOTIQ_GITHUB_OAUTH_CLIENT_ID = 'Ov23lieCjobNKY3uUz5Z'
 const OAUTH_USER_AGENT = 'Vyotiq-Agent-V'
 const FETCH_TIMEOUT_MS = 15_000
 const MAX_TRANSIENT_POLL_FAILURES = 8
@@ -55,7 +52,6 @@ export type GithubAuthStatus = {
   ghAvailable: boolean
   /** True when Vyotiq has a token or `gh` is signed in to GitHub. */
   ghAuthenticated: boolean
-  clientIdConfigured: boolean
   hasAppToken: boolean
   pending: boolean
   userCode: string | null
@@ -106,21 +102,8 @@ async function openGithubVerificationUrl(url: string): Promise<void> {
   await shell.openExternal(url)
 }
 
-function configuredGithubClientId(): string | null {
-  const fromSettings = getSettings().githubClientId?.trim()
-  if (fromSettings) return fromSettings
-  const fromEnv = process.env.VYOTIQ_GITHUB_CLIENT_ID?.trim()
-  return fromEnv || null
-}
-
-export function resolveGithubClientId(): string | null {
-  return configuredGithubClientId() ?? GH_CLI_OAUTH_CLIENT_ID
-}
-
-function resolveGithubClientSecret(clientId: string): string | null {
-  if (clientId === GH_CLI_OAUTH_CLIENT_ID) return GH_CLI_OAUTH_CLIENT_SECRET
-  const fromEnv = process.env.VYOTIQ_GITHUB_CLIENT_SECRET?.trim()
-  return fromEnv || null
+export function resolveGithubClientId(): string {
+  return VYOTIQ_GITHUB_OAUTH_CLIENT_ID
 }
 
 function asPositiveNumber(value: unknown, fallback: number): number {
@@ -308,7 +291,6 @@ export async function githubAuthStatus(): Promise<GithubAuthStatus> {
   return {
     ghAvailable: available,
     ghAuthenticated: hasAppToken || ghCliLoggedIn,
-    clientIdConfigured: Boolean(configuredGithubClientId()),
     hasAppToken,
     pending: flowPending,
     userCode: pending?.userCode ?? null,
@@ -377,17 +359,12 @@ async function pollOnce(): Promise<void> {
     return
   }
   const clientId = pending.clientId || resolveGithubClientId()
-  if (!clientId) {
-    failPending('GitHub client ID is not configured')
-    return
-  }
+
   const tokenBody: Record<string, string> = {
     client_id: clientId,
     device_code: pending.deviceCode,
     grant_type: 'urn:ietf:params:oauth:grant-type:device_code'
   }
-  const secret = resolveGithubClientSecret(clientId)
-  if (secret) tokenBody.client_secret = secret
 
   try {
     const json = (await postForm(ACCESS_TOKEN_URL, tokenBody)) as TokenSuccess & TokenPending
@@ -439,9 +416,6 @@ async function pollOnce(): Promise<void> {
 
 export async function startGithubAuth(): Promise<GithubAuthStatus> {
   const clientId = resolveGithubClientId()
-  if (!clientId) {
-    throw new Error('GitHub OAuth client ID is not configured.')
-  }
 
   cancelGithubAuth()
 
@@ -590,7 +564,7 @@ export function injectPendingGithubAuthForTests(overrides: {
   deviceCode?: string
 }): void {
   pending = {
-    clientId: overrides.clientId ?? GH_CLI_OAUTH_CLIENT_ID,
+    clientId: overrides.clientId ?? VYOTIQ_GITHUB_OAUTH_CLIENT_ID,
     deviceCode: overrides.deviceCode ?? 'dev',
     userCode: 'ABCD-1234',
     verificationUri: 'https://github.com/login/device',

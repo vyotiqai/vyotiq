@@ -45,7 +45,6 @@ beforeEach(() => {
         ok: true,
         data: {
           ghAvailable: true,
-          clientIdConfigured: false,
           hasAppToken: false,
           pending: false,
           userCode: null,

@@ -15,7 +15,6 @@ export type SettingsSection =
   | 'indexing'
   | 'voice'
   | 'tools'
-  | 'integrations'
   | 'shortcuts'
   | 'about'
 

@@ -3,7 +3,6 @@ import { z } from 'zod'
 export const GithubAuthStatusSchema = z.object({
   ghAvailable: z.boolean(),
   ghAuthenticated: z.boolean(),
-  clientIdConfigured: z.boolean(),
   hasAppToken: z.boolean(),
   pending: z.boolean(),
   userCode: z.string().nullable(),

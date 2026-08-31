@@ -80,7 +80,6 @@ export const SECTION_LABELS: Record<SettingsSection, { title: string }> = {
   indexing: { title: 'Indexing' },
   voice: { title: 'Voice' },
   tools: { title: 'Tools' },
-  integrations: { title: 'Integrations' },
   shortcuts: { title: 'Shortcuts' },
   about: { title: 'About' }
 }

@@ -951,7 +951,6 @@ describe('ipc schemas', () => {
       GithubAuthStatusSchema.parse({
         ghAvailable: true,
         ghAuthenticated: false,
-        clientIdConfigured: false,
         hasAppToken: false,
         pending: false,
         userCode: null,
@@ -969,7 +968,6 @@ describe('ipc schemas', () => {
     expect(ShellOpenExternalRequestSchema.parse({ url: 'https://github.com' }).url).toContain(
       'github'
     )
-    expect(SettingsSchema.parse(DEFAULT_SETTINGS).githubClientId).toBe('')
     expect(SettingsSchema.parse(DEFAULT_SETTINGS).googleMcpClientId).toBe('')
   })
 

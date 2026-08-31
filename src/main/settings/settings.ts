@@ -357,6 +357,7 @@ function stripLegacyFields(raw: Record<string, unknown>): Record<string, unknown
     readBeforeEdit: _readBeforeEdit,
     memoryAutoPromote: _memoryAutoPromote,
     harnessProposalRewriter: _harnessProposalRewriter,
+    githubClientId: _legacyGithubClientId,
     ...rest
   } = raw
   return rest
