@@ -280,6 +280,12 @@ export type OpenAiCompatOptions = {
   includeUsage?: boolean
   /** OpenAI: route related requests for better prompt-cache hit rate. */
   enablePromptCache?: boolean
+  /**
+   * Send `x-grok-conv-id: <promptCacheKey>` on chat requests (xAI cache-affinity
+   * header — routes requests to the same cache server). The prompt_cache_key
+   * body field stays Responses-API only for these hosts.
+   */
+  convIdHeader?: boolean
   /** DeepSeek: enable thinking mode via extra_body fields. */
   deepseekThinking?: boolean
   /** OpenRouter: unified reasoning parameter. */
@@ -1401,6 +1407,11 @@ export function createOpenAiCompatibleProvider(
         'Content-Type': 'application/json',
         ...(opts.extraHeaders ?? {})
       }
+      // xAI cache affinity: routes the conversation to the same cache server
+      // (official docs: "Always set x-grok-conv-id … maximizing cache hits").
+      if (opts.convIdHeader && req.promptCacheKey?.trim()) {
+        headers['x-grok-conv-id'] = req.promptCacheKey.trim()
+      }
       if (req.apiKey?.trim()) {
         headers.Authorization = `Bearer ${req.apiKey.trim()}`
       }
@@ -1728,41 +1739,48 @@ export const openaiProvider: LlmProvider = {
     yield* base.streamChat(req)
   }
 }
-export const deepseekProvider = createOpenAiCompatibleProvider(
-  'deepseek',
-  {
-    defaultBaseUrl: 'https://api.deepseek.com/v1',
-    deepseekThinking: true
-  }
-)
-export const ollamaProvider = createOpenAiCompatibleProvider('ollama', {
+/** DeepSeek thinking is enabled via extra_body fields; caching is automatic (no key field). */
+const DEEPSEEK_OPTS: OpenAiCompatOptions = {
+  defaultBaseUrl: 'https://api.deepseek.com/v1',
+  deepseekThinking: true
+}
+const OLLAMA_OPTS: OpenAiCompatOptions = {
   defaultBaseUrl: 'http://127.0.0.1:11434/v1',
   ollamaVision: true
-})
-export const groqProvider = createOpenAiCompatibleProvider('groq', {
+}
+const GROQ_OPTS: OpenAiCompatOptions = {
   defaultBaseUrl: 'https://api.groq.com/openai/v1'
-})
-export const openrouterProvider = createOpenAiCompatibleProvider('openrouter', {
+}
+/** Send prompt_cache_key (stable per runId) so upstream providers keep cache affinity across steps. */
+const OPENROUTER_OPTS: OpenAiCompatOptions = {
   defaultBaseUrl: 'https://openrouter.ai/api/v1',
+  requireToolsParam: true,
+  openRouterReasoning: true,
+  enablePromptCache: true
+}
+/** Cache affinity via the documented x-grok-conv-id header (Chat Completions); body key is Responses-only. */
+export const XAI_OPTS: OpenAiCompatOptions = {
+  defaultBaseUrl: 'https://api.x.ai/v1',
+  listLanguageModels: true,
+  convIdHeader: true
+}
+/** prompt_cache_key is officially documented by Mistral (cached tokens billed at 10% price). */
+export const MISTRAL_OPTS: OpenAiCompatOptions = {
+  defaultBaseUrl: 'https://api.mistral.ai/v1',
+  enablePromptCache: true
+}
+export const deepseekProvider = createOpenAiCompatibleProvider('deepseek', DEEPSEEK_OPTS)
+export const ollamaProvider = createOpenAiCompatibleProvider('ollama', OLLAMA_OPTS)
+export const groqProvider = createOpenAiCompatibleProvider('groq', GROQ_OPTS)
+export const openrouterProvider = createOpenAiCompatibleProvider('openrouter', {
+  ...OPENROUTER_OPTS,
   extraHeaders: {
     'HTTP-Referer': 'https://vyotiq.com',
     'X-Title': 'Vyotiq'
-  },
-  requireToolsParam: true,
-  openRouterReasoning: true,
-  // Send prompt_cache_key (stable per runId) so upstream providers can keep
-  // cache affinity across steps; without it every step billed as cold input.
-  enablePromptCache: true
+  }
 })
-export const xaiProvider = createOpenAiCompatibleProvider('xai', {
-  defaultBaseUrl: 'https://api.x.ai/v1',
-  listLanguageModels: true
-})
-export const mistralProvider = createOpenAiCompatibleProvider('mistral', {
-  defaultBaseUrl: 'https://api.mistral.ai/v1'
-  // stream_options.include_usage is sent like the other OpenAI-compat hosts; a
-  // host that rejects it retries automatically without it (shouldRetryOmitIncludeUsage).
-})
+export const xaiProvider = createOpenAiCompatibleProvider('xai', XAI_OPTS)
+export const mistralProvider = createOpenAiCompatibleProvider('mistral', MISTRAL_OPTS)
 
 /** Bring-your-own OpenAI-compatible host (Cerebras, Fireworks, Together, vLLM, …). */
 export const customProvider = createOpenAiCompatibleProvider('custom', {

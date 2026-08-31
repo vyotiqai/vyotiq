@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   compatStreamOptions,
   buildOpenAiCompatBody,
@@ -7,7 +7,10 @@ import {
   parseOpenAiCompatUsage,
   toOpenAiCompatThinkChunkContent,
   absorbOpenAiCompatThinkChunks,
-  toOpenAiMessages
+  toOpenAiMessages,
+  xaiProvider,
+  XAI_OPTS,
+  MISTRAL_OPTS
 } from '@main/agent/providers/openai'
 import { parseOpenAiResponsesUsage } from '@main/agent/providers/openaiResponses'
 import type { ProviderChatRequest } from '@main/agent/providers/types'
@@ -87,6 +90,79 @@ describe('buildOpenAiCompatBody prompt cache', () => {
       { defaultBaseUrl: 'https://api.deepseek.com/v1' }
     )
     expect(body.prompt_cache_key).toBeUndefined()
+  })
+
+  it('MISTRAL_OPTS ships enablePromptCache (prompt_cache_key officially documented by Mistral)', () => {
+    expect(MISTRAL_OPTS.enablePromptCache).toBe(true)
+    const body = buildOpenAiCompatBody(
+      { ...baseReq, promptCacheKey: 'run-abc' },
+      MISTRAL_OPTS,
+      'mistral'
+    )
+    expect(body.prompt_cache_key).toBe('run-abc')
+  })
+
+  it('XAI_OPTS ships convIdHeader and chat bodies stay header-affine (no body key for CC)', () => {
+    expect(XAI_OPTS.convIdHeader).toBe(true)
+    const body = buildOpenAiCompatBody(
+      { ...baseReq, promptCacheKey: 'run-abc' },
+      XAI_OPTS,
+      'xai'
+    )
+    // xAI Chat Completions affinity is the x-grok-conv-id HEADER; prompt_cache_key is Responses-API only.
+    expect(body.prompt_cache_key).toBeUndefined()
+  })
+
+  it('suppresses prompt_cache_key when the omitCacheKey override is set', () => {
+    const body = buildOpenAiCompatBody(
+      { ...baseReq, promptCacheKey: 'run-abc' },
+      { defaultBaseUrl: 'https://api.openai.com/v1', enablePromptCache: true },
+      'openai',
+      { omitCacheKey: true }
+    )
+    expect(body.prompt_cache_key).toBeUndefined()
+    expect(body.prompt_cache_options).toBeUndefined()
+  })
+})
+
+describe('xai conv-id cache affinity header', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('sends x-grok-conv-id from the run promptCacheKey on chat requests', async () => {
+    const headersSeen: Array<Record<string, string>> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        headersSeen.push(init?.headers as Record<string, string>)
+        return new Response(
+          [
+            'data: {"choices":[{"delta":{"content":"hi"}}],"usage":{"prompt_tokens":10,"completion_tokens":2,"prompt_tokens_details":{"cached_tokens":8}}}\n\n',
+            'data: [DONE]\n\n'
+          ].join(''),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } }
+        )
+      })
+    )
+
+    const chunks: unknown[] = []
+    for await (const chunk of xaiProvider.streamChat({
+      model: 'grok-4.6',
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [],
+      signal: new AbortController().signal,
+      apiKey: 'test-key',
+      promptCacheKey: 'run-abc'
+    })) {
+      chunks.push(chunk)
+    }
+
+    expect(chunks.length).toBeGreaterThan(0)
+    expect(headersSeen.length).toBeGreaterThan(0)
+    for (const h of headersSeen) {
+      expect(h['x-grok-conv-id']).toBe('run-abc')
+    }
   })
 })
 
