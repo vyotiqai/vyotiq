@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import { randomUUID } from 'crypto'
 import {
   commandOnPath,
+  decodeConsoleText,
   formatTerminalSessionOutput,
   killProcessTree,
   killProcessTreeAndWait,
@@ -382,7 +383,7 @@ export async function startBackgroundTerminal(
   else opts.signal.addEventListener('abort', onAbort, { once: true })
 
   child.stdout?.on('data', (buf: Buffer) => {
-    const text = buf.toString('utf8')
+    const text = decodeConsoleText(buf)
     // Same per-stream capture cap as the foreground terminal tool: bound
     // buffered output while the child keeps draining.
     if (session.stdout.length < TERMINAL_MAX_OUTPUT) {
@@ -396,7 +397,7 @@ export async function startBackgroundTerminal(
     }
   })
   child.stderr?.on('data', (buf: Buffer) => {
-    const text = buf.toString('utf8')
+    const text = decodeConsoleText(buf)
     if (session.stderr.length < TERMINAL_MAX_OUTPUT) {
       const room = TERMINAL_MAX_OUTPUT - session.stderr.length
       session.stderr += text.length > room ? text.slice(0, room) : text

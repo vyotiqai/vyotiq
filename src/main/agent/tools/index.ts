@@ -57,6 +57,8 @@ import { ensurePlanStub } from '../planArtifacts'
 import {
   isFindstrNoMatchContent,
   isDirMissingPathContent,
+  isCommandProbeNoTargetContent,
+  isElevationDeniedContent,
   toolTerminal,
   TERMINAL_DEFAULT_TIMEOUT_MS,
   resolveNewCommandBlockUntilMs,
@@ -351,6 +353,12 @@ export function terminalResultOk(command: string, content: string): boolean {
   if (isTerminalSessionInProgress(/^status: (\w+)/m.exec(content)?.[1])) return true
   if (!content.includes('exit_code: ')) return true
   if (/exit_code: 0\b/.test(content)) return true
+  // Informative non-zero exits (any shell): environment probes answered
+  // "not installed" and elevation denials answer the question asked — they
+  // are evidence, not tool faults. Counting them as failures made runs stop
+  // on LOOP_SAFETY while probing a machine's toolchain (run 1de9344a).
+  if (isCommandProbeNoTargetContent(command, content)) return true
+  if (isElevationDeniedContent(command, content)) return true
   // Soft-success helpers are cmd-oriented only.
   const shellLine = /^shell:\s*(\S+)/m.exec(content)
   const shell = shellLine?.[1]

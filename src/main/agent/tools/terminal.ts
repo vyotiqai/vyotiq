@@ -501,6 +501,161 @@ export function isFindstrNoMatch(
 }
 
 /**
+ * Decode child-process output that may arrive as UTF-16LE. Windows system
+ * binaries (wsl.exe, reg.exe, some .NET CLIs) write UTF-16 to piped stdout/
+ * stderr; decoded as UTF-8 it becomes NUL-mojibake (`T\u0000h\u0000e\u0000…`)
+ * that is unreadable to the model and defeats every failure-pattern match.
+ *
+ * Ground truth (2026-08-30 raw capture of `wsl --status 2>&1` under
+ * PowerShell) shows three real shapes:
+ *  1. plain UTF-8/ASCII — keep as-is;
+ *  2. pure UTF-16LE — re-decode as UTF-16LE (BOM tolerated);
+ *  3. MIXED: an ASCII prefix (PowerShell error-record chrome) followed by
+ *     UTF-16LE payload. Whole-chunk UTF-16 decoding absorbs the padding NULs
+ *     as pair high-bytes and turns the ASCII prefix into CJK garbage, so for
+ *     mixed chunks the least-lossy repair is stripping the padding NULs from
+ *     the UTF-8 decode: the ASCII prefix and ASCII-under-UTF-16 body both read
+ *     cleanly (PowerShell's `At line:`/CategoryInfo chrome is ASCII and is
+ *     filtered later by stripPowerShellPatternNoise).
+ * Shape 2 vs 3 discriminator: strip the NULs from the UTF-8 decode — a mixed
+ * stream reads ~100% printable ASCII, while pure UTF-16 with chars ≥ U+0100
+ * leaves replacement-character garbage (→ prefer the true UTF-16 decode).
+ * Scope limit: without a BOM or a NUL signature, UTF-16 text (e.g. CJK-only
+ * output) is byte-identical to valid UTF-8 and is deliberately left as UTF-8 —
+ * guessing there would corrupt genuine UTF-8 output.
+ * Chunk-level: mixed streams keep each side in its own encoding.
+ */
+export function decodeConsoleText(buf: Buffer): string {
+  const utf8 = buf.toString('utf8')
+  // A UTF-16LE BOM is an explicit encoding declaration — trust it immediately.
+  if (buf.length >= 2 && buf[0] === 0xff && buf[1] === 0xfe) {
+    const withBom = buf.toString('utf16le')
+    return withBom.charCodeAt(0) === 0xfeff ? withBom.slice(1) : withBom
+  }
+  // Repair candidate: UTF-8 decode with padding NULs removed. UTF-16-encoded
+  // ASCII — pure (`T\0h\0e\0…`), mixed with an ASCII chrome prefix, or short
+  // whitespace chunks (`0A 00` = one UTF-16 newline) — reads ~100% printable
+  // ASCII after the strip. Legitimate UTF-8 output has no NULs and is
+  // returned untouched; binary noise does not reach the 0.95 printable ratio
+  // and keeps the original decode (never worse than the pre-fix behavior).
+  // eslint-disable-next-line no-control-regex -- removing NUL padding IS the purpose
+  const stripped = utf8.replace(/\u0000/g, '')
+  if (stripped.length === utf8.length) return utf8 // no NULs: nothing to repair
+  let printable = 0
+  for (let i = 0; i < stripped.length; i++) {
+    const c = stripped.charCodeAt(i)
+    if ((c >= 0x20 && c <= 0x7e) || c === 0x09 || c === 0x0a || c === 0x0d) printable++
+  }
+  if (printable / Math.max(stripped.length, 1) >= 0.95) return stripped
+  // NUL-bearing but not ASCII-dominant: plausibly UTF-16 with non-ASCII text —
+  // but only when the UTF-16 decode is itself clean. Binary noise must never
+  // be transmuted; fall through to the status-quo UTF-8 decode otherwise.
+  const utf16Raw = buf.toString('utf16le')
+  const utf16 = utf16Raw.charCodeAt(0) === 0xfeff ? utf16Raw.slice(1) : utf16Raw
+  if (!utf16.includes('\u0000')) {
+    let printable16 = 0
+    for (let i = 0; i < utf16.length; i++) {
+      const c = utf16.charCodeAt(i)
+      if ((c >= 0x20 && c <= 0x7e) || c === 0x09 || c === 0x0a || c === 0x0d) printable16++
+    }
+    if (printable16 / Math.max(utf16.length, 1) >= 0.95) return utf16
+  }
+  // Unrecoverable: keep the original UTF-8 decode.
+  return utf8
+}
+
+/**
+ * Windows environment probes that exit non-zero when the target is absent —
+ * `podman --version 2>&1` on a machine without podman fails with
+ * CommandNotFoundException even though the probe was answered ("not
+ * installed"). `--status`/`--list` probes answer with "<X> is not installed".
+ * Informative outcome, not a tool fault (run 1de9344a burned its failure
+ * budget on exactly these). Parse errors (`The term '='`) are never probes.
+ */
+export function isCommandProbeNoTarget(
+  command: string,
+  exitCode: number | null | undefined,
+  stdout: string,
+  stderr: string
+): boolean {
+  if (exitCode == null || exitCode === 0) return false
+  if (!/(?:--version|--status|--list|\s-v\b)/.test(command)) return false
+  const combined = `${stdout}\n${stderr}`
+  if (/The term '=' is not recognized/i.test(combined)) return false
+  if (/(?:--status|--list)/.test(command)) {
+    return /\bis not installed\b|\bis not recognized as (?:the name of a cmdlet|an internal or external command)|command not found/i.test(
+      combined
+    )
+  }
+  return /is not recognized as (?:the name of a cmdlet|an internal or external command)|command not found/i.test(
+    combined
+  )
+}
+
+/**
+ * Parse a terminal result frame for classification. `parseTerminalOutput`
+ * requires `exit_code` to be the trailing line, but appendMissingCommandHint /
+ * appendWindowsCompatHint append hint text after it — fall back to a multiline
+ * match so classified frames keep their exit code (exit_code appears exactly
+ * once; the masked-exit correction rewrites it in place).
+ */
+function parseTerminalFrame(content: string): {
+  stdout: string
+  stderr: string
+  exitCode: number | null
+  command: string
+} {
+  const parsed = parseTerminalOutput(content)
+  let exitCode = parsed.exitCode
+  if (exitCode == null) {
+    const match = /^exit_code:\s*(-?\d+)\s*$/m.exec(content)
+    if (match) exitCode = Number(match[1])
+  }
+  return { stdout: parsed.stdout, stderr: parsed.stderr, exitCode, command: parsed.command ?? '' }
+}
+
+/** Parse terminal tool content for the probe no-target soft success. Exported for tests. */
+export function isCommandProbeNoTargetContent(command: string, content: string): boolean {
+  const parsed = parseTerminalFrame(content)
+  if (parsed.exitCode == null) return false
+  // Session-poll frames carry the real command in their header; prefer it when
+  // the caller passed the session id placeholder instead.
+  return isCommandProbeNoTarget(parsed.command || command, parsed.exitCode, parsed.stdout, parsed.stderr)
+}
+
+/**
+ * Windows elevation denials (run 1de9344a): the request was refused before any
+ * system state changed — winget `0x80073d28` ("administrator privileges are
+ * required"), a declined/dismissed UAC dialog (`Start-Process -Verb RunAs` →
+ * "The operation was canceled by the user"). The answer is "needs one admin
+ * action", not a retryable tool fault. Deliberately excludes bare
+ * "access is denied" — that also fires for real auth/permission failures
+ * (git push, file ACLs) which must stay failures.
+ */
+export function isElevationDenied(
+  command: string,
+  exitCode: number | null | undefined,
+  stdout: string,
+  stderr: string
+): boolean {
+  void command
+  if (exitCode == null || exitCode === 0) return false
+  const combined = `${stdout}\n${stderr}`
+  return (
+    /administrator privileges are required/i.test(combined) ||
+    /0x80073d28/.test(combined) ||
+    /The operation was canceled by the user/i.test(combined)
+  )
+}
+
+/** Parse terminal tool content for the elevation-denied soft success. Exported for tests. */
+export function isElevationDeniedContent(command: string, content: string): boolean {
+  const parsed = parseTerminalFrame(content)
+  if (parsed.exitCode == null) return false
+  return isElevationDenied(parsed.command || command, parsed.exitCode, parsed.stdout, parsed.stderr)
+}
+
+/**
  * Strip PowerShell error-record chrome before terminal pattern matching.
  * Native stderr redirection adds CategoryInfo / FullyQualifiedErrorId lines that
  * contain "Error" even when the underlying command output does not.
@@ -564,6 +719,12 @@ function formatTerminalOutput(
 ): string {
   const cmdSoft = resolved === 'cmd'
   const dirMissing = cmdSoft && isDirMissingPath(command, code, stdout, stderr)
+  // Informative non-zero exits answer the question asked ("is podman
+  // installed?" → no; "install WSL" → needs one admin click). Stamped in the
+  // result so the model reads the verdict even though exit_code stays
+  // non-zero; terminalResultOk classifies these as ok.
+  const probeNoTarget = isCommandProbeNoTarget(command, code, stdout, stderr)
+  const elevationDenied = !probeNoTarget && isElevationDenied(command, code, stdout, stderr)
   let out = [
     `cwd: ${cwd}`,
     `shell: ${resolved}`,
@@ -572,6 +733,12 @@ function formatTerminalOutput(
     stdout,
     dirMissing ? 'dir: path not found' : '',
     stderr ? `stderr:\n${stderr}` : '',
+    probeNoTarget
+      ? 'probe: target not found (informative — the answer is "not installed", do not retry the same probe)'
+      : '',
+    elevationDenied
+      ? 'elevation: denied (informative — one admin/UAC action is required; ask the user or use a non-elevated fallback, do not retry the same command)'
+      : '',
     `exit_code: ${code ?? -1}`
   ]
     .filter(Boolean)
@@ -824,7 +991,7 @@ export async function toolTerminal(
     signal.addEventListener('abort', onAbort)
 
     child.stdout.on('data', (buf: Buffer) => {
-      const text = buf.toString('utf8')
+      const text = decodeConsoleText(buf)
       // Capture cap: stop appending once at TERMINAL_MAX_OUTPUT but keep the
       // stream draining so the child never blocks on a full pipe.
       if (stdout.length < TERMINAL_MAX_OUTPUT) {
@@ -837,7 +1004,7 @@ export async function toolTerminal(
       if (text) opts.onOutput?.({ text, stream: 'stdout' })
     })
     child.stderr.on('data', (buf: Buffer) => {
-      const text = buf.toString('utf8')
+      const text = decodeConsoleText(buf)
       if (stderr.length < TERMINAL_MAX_OUTPUT) {
         const room = TERMINAL_MAX_OUTPUT - stderr.length
         stderr += text.length > room ? text.slice(0, room) : text
