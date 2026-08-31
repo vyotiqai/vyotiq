@@ -289,7 +289,7 @@ const multiEditArgs = z
             path: z.string().trim().min(1).describe('File path inside the workspace'),
             contents: z
               .string()
-              .describe('Full non-empty file contents to write; use diff to empty an existing file')
+              .describe('Full file contents to write (empty contents is allowed only when creating a new file); use diff to empty an existing file')
               .optional(),
             diff: z
               .string()
