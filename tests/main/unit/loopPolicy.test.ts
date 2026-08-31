@@ -169,6 +169,27 @@ describe('loopPolicy', () => {
     expect(hint).toMatch(/Get-Content/)
   })
 
+  it('coaches ssh remote polls toward explicit verdicts instead of grep exit 1', () => {
+    // Verbatim summary shape from run 1de9344a invoke 2: ssh-poll frames whose
+    // 240-char summary is consumed by the session header + ssh command.
+    const hint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'terminal',
+      summary:
+        "e9bcc8de-25dd-4f48-aec1-2a9e4b47aedc | status: done | command: ssh -i .vmkey\\id_ed25519 -p 2222 -o StrictHostKeyChecking=no root@127.0.0.1 'n=$(grep -aoE \"[0-9]+/847\" /root/build.log)'; exit_code: 1"
+    })
+    expect(hint).toMatch(/ssh exits with the remote script/)
+    expect(hint).toMatch(/explicit verdict/)
+    expect(hint).toMatch(/can.t create/)
+
+    // Local ssh-not-on-PATH still gets the PATH hint, not the remote-poll one.
+    const pathHint = loopHintForConsecutiveToolFailures(2, {
+      tool: 'terminal',
+      summary: "ssh : The term 'ssh' is not recognized as the name of a cmdlet"
+    })
+    expect(pathHint).toMatch(/not on PATH/i)
+    expect(pathHint).not.toMatch(/explicit verdict/)
+  })
+
   it('hints duplicate JSON keys so the dropped path is not retried as one call', () => {
     const hint = loopHintForConsecutiveToolFailures(2, {
       tool: 'read',

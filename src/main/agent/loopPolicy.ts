@@ -293,6 +293,20 @@ export function loopHintForConsecutiveToolFailures(
     lines.push(
       'PowerShell member access cannot have a space before the dot. Write $_.Line not $_ .Line. To scan a log file, Get-Content $path first — do not -split the path string.'
     )
+  } else if (
+    recent?.tool === 'terminal' &&
+    /(?:^|[\s"'])ssh(?:\s|["']|$)/.test(recent.summary)
+  ) {
+    // ssh forwards the remote script's last exit code; a remote poll ending in
+    // grep "exits 1" whenever the pattern has not appeared yet, even when the
+    // remote build is healthy (run 1de9344a invoke 2: four healthy polls with
+    // BUILD_RUNNING + pkg progress in stdout still charged the failure
+    // streak). Coaching, not ok-classification — the same shape also carries
+    // real remote failures, which DO print output. Placed after the
+    // more-specific not-on-PATH / PowerShell-syntax branches above.
+    lines.push(
+      'ssh exits with the remote script\u2019s last command. A remote poll ending in grep exits 1 while the pattern has not appeared yet — end remote scripts with an explicit verdict (e.g. \u2026; pgrep -f podman >/dev/null && exit 0 || exit 3) so ssh reports the real status instead of grep\u2019s last match attempt. Quote remote regexes carefully: an unquoted [class] can be mangled into a file redirect (sh: can\u2019t create \u2026).'
+    )
   } else if (recent?.tool === 'browser_hover' && /Unknown snapshot ref/i.test(recent.summary)) {
     lines.push(
       'Snapshot refs reset on every navigation. Call browser_snapshot again and use a fresh @eN ref from the new snapshot — do not reuse the old ref.'
