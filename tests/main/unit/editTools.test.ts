@@ -4,6 +4,8 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -24,7 +26,11 @@ vi.mock('@main/agent/sparsegrep', async (importOriginal) => {
 
 import { applyUnifiedDiff, toolEdit } from '@main/agent/tools/edit'
 import { toolStrReplace, countOccurrences } from '@main/agent/tools/strReplace'
-import { toolMultiEdit, type MultiEditEntry } from '@main/agent/tools/multiEdit'
+import {
+  toolMultiEdit,
+  type MultiEditEntry,
+  type MultiEditDiskDeps
+} from '@main/agent/tools/multiEdit'
 import { toolListDir } from '@main/agent/tools/listDir'
 import { grepFilesForTest, toolGrep } from '@main/agent/tools/grep'
 import { toolDelete } from '@main/agent/tools/deletePath'
@@ -184,6 +190,72 @@ describe('toolMultiEdit', () => {
       { path: 'a.txt', old_string: 'x', new_string: 'y' } as MultiEditEntry
     ]
     expect(() => toolMultiEdit(workspace, edits)).toThrow(/old_string\/new_string/)
+  })
+
+  it('rolls back earlier files when a later commit rename fails mid-batch', () => {
+    writeFileSync(join(workspace, 'a.txt'), 'a\n', 'utf8')
+    writeFileSync(join(workspace, 'b.txt'), 'b\n', 'utf8')
+    const realRename = renameSync
+    const disk: MultiEditDiskDeps = {
+      renameSyncFn: (from, to) => {
+        // Fail exactly the b.txt → b.txt.<pid>.<hex>.bak backup move.
+        if (String(from).endsWith('b.txt')) throw new Error('EACCES injected mid-commit')
+        realRename(String(from), String(to))
+      }
+    }
+    expect(() =>
+      toolMultiEdit(
+        workspace,
+        [
+          { path: 'a.txt', contents: 'A\n' },
+          { path: 'b.txt', contents: 'B\n' }
+        ],
+        undefined,
+        disk
+      )
+    ).toThrow(/EACCES injected mid-commit/)
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('a\n')
+    expect(readFileSync(join(workspace, 'b.txt'), 'utf8')).toBe('b\n')
+    const strays = readdirSync(workspace).filter((f) => f.endsWith('.bak') || f.endsWith('.tmp'))
+    expect(strays).toEqual([])
+  })
+
+  it('aborts cleanly when the signal fires before commit and writes nothing', () => {
+    const controller = new AbortController()
+    controller.abort()
+    expect(() =>
+      toolMultiEdit(
+        workspace,
+        [
+          { path: 'x.txt', contents: 'x\n' },
+          { path: 'y.txt', contents: 'y\n' }
+        ],
+        controller.signal
+      )
+    ).toThrow()
+    expect(existsSync(join(workspace, 'x.txt'))).toBe(false)
+    expect(existsSync(join(workspace, 'y.txt'))).toBe(false)
+  })
+
+  it('refuses to replace a non-empty file with empty contents', () => {
+    writeFileSync(join(workspace, 'full.txt'), 'data\n', 'utf8')
+    expect(() =>
+      toolMultiEdit(workspace, [{ path: 'full.txt', contents: '' }])
+    ).toThrow(/refusing to replace a non-empty file with empty contents/)
+    expect(readFileSync(join(workspace, 'full.txt'), 'utf8')).toBe('data\n')
+  })
+
+  it('allows creating a new empty file', () => {
+    const out = toolMultiEdit(workspace, [{ path: 'empty.txt', contents: '' }])
+    expect(out).toMatch(/Applied 1 edit:\n- created empty\.txt/)
+    expect(readFileSync(join(workspace, 'empty.txt'), 'utf8')).toBe('')
+  })
+
+  it('refuses text contents to a binary extension path', () => {
+    expect(() =>
+      toolMultiEdit(workspace, [{ path: 'model.gguf', contents: 'text' }])
+    ).toThrow(/binary/)
+    expect(existsSync(join(workspace, 'model.gguf'))).toBe(false)
   })
 })
 
