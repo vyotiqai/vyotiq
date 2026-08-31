@@ -1,6 +1,6 @@
 ---
 title: Slash commands
-description: Use all 15 built-in commands and understand dynamic commands from skills, MCP prompts, rules, and command files.
+description: Use all 15 built-in commands and understand dynamic commands from skills, MCP tools, rules, and command files.
 section: customize
 order: 8
 type: reference
@@ -40,9 +40,9 @@ There are 15 built-in slash commands.
 The menu can also include:
 
 - enabled local or Marketplace skills;
-- MCP prompts advertised by connected servers;
-- requestable rules;
-- supported command files discovered for the workspace.
+- tools from connected MCP servers;
+- workspace rule files (the command opens the rule);
+- command markdown files under `.vyotiq/commands/` or `.cursor/commands/`.
 
 Availability can therefore change when you switch workspaces, connect an MCP server, create a skill, or edit rules. /help is generated from commands that are ready at that moment and limits its output to 40 entries.
 

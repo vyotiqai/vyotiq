@@ -37,7 +37,7 @@ Before you change provider settings, **Active provider** shows local Ollama and 
 1. Return to the composer, open the model picker, and select a model.
 1. Use `Refresh models` to query the provider's current catalog.
 
-The `Active menu` lists configured providers and always retains the current active provider. A provider counts as configured when it has a saved key or its current Ollama/Custom host is allowed to be keyless.
+The `Active provider` menu lists configured providers and always retains the current active provider. A provider counts as configured when it has a saved key or its current Ollama/Custom host is allowed to be keyless.
 
 ## Configure Ollama
 
