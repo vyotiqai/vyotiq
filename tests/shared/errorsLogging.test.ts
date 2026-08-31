@@ -283,6 +283,35 @@ describe('log policy (no user workspace data)', () => {
     expect(String(out.message)).not.toContain('IPC_CLIENT')
   })
 
+  it('keeps path-bearing error messages with paths scrubbed, not dropped', () => {
+    // Verbatim shape of the 2026-08-31 renderer crashes: a failed dynamic
+    // import after a rebuild carries its file:// URL in message text. The
+    // old drop-left-only-name behavior made the log say just "TypeError".
+    // PATH_IN_TEXT replaces from the drive-letter to the end of the URL, so
+    // the file name is not separately asserted.
+    const err = new TypeError(
+      'Failed to fetch dynamically imported module: file:///C:/Users/me/app/out/renderer/assets/chunk-abc.js'
+    )
+    const out = sanitizeErrorForLog(err) as Record<string, unknown>
+    expect(out.name).toBe('TypeError')
+    expect(typeof out.message).toBe('string')
+    expect(String(out.message)).toContain('Failed to fetch dynamically imported module')
+    expect(String(out.message)).not.toContain('C:/Users')
+    expect(String(out.message)).not.toContain('me/app')
+  })
+
+  it('logErrorSummary keeps scrubbed text for path-bearing messages', () => {
+    // Established scrubPath semantics: directory structure is removed, the
+    // basename survives (scrubPath('C:\\u\\a\\f.ts') → 'f.ts'). The message
+    // text itself is retained instead of being dropped.
+    const summary = logErrorSummary(
+      new TypeError('Cannot read settings of file:///C:/Users/me/ws/config.json')
+    )
+    expect(summary).toContain('Cannot read settings of')
+    expect(summary).not.toContain('C:/Users')
+    expect(summary).not.toContain('me/ws')
+  })
+
   it('redacts OpenAI masked API key echoes in providerMessage', () => {
     const out = sanitizeLogFields({
       scope: 'provider',

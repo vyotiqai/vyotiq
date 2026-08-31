@@ -14,6 +14,7 @@ import {
   findOllamaCatalogModel,
   ollamaModelFamily,
   ollamaThinkingHeuristicFields,
+  thinkingFromReasoningState,
   trailingToolMessages,
   statefulContinuationMessages
 } from '@shared/reasoning'
@@ -260,5 +261,68 @@ describe('reasoning', () => {
     ]
     expect(trailingToolMessages(messages)).toEqual([])
     expect(statefulContinuationMessages(messages)).toEqual([messages[2], messages[3]])
+  })
+})
+
+describe('thinkingFromReasoningState', () => {
+  it('derives openai_compat display text from reasoningContent', () => {
+    expect(
+      thinkingFromReasoningState({
+        kind: 'openai_compat',
+        reasoningContent: 'step one, then step two',
+        reasoningFormat: 'reasoning_content'
+      })
+    ).toBe('step one, then step two')
+  })
+
+  it('falls back to thinkChunks text when reasoningContent is absent', () => {
+    expect(
+      thinkingFromReasoningState({
+        kind: 'openai_compat',
+        reasoningFormat: 'think_chunks',
+        thinkChunks: [
+          { text: 'first thought, ', closed: true },
+          { text: 'second thought', closed: true }
+        ]
+      })
+    ).toBe('first thought, second thought')
+  })
+
+  it('derives anthropic display text from thinking blocks and skips redacted ones', () => {
+    expect(
+      thinkingFromReasoningState({
+        kind: 'anthropic',
+        blocks: [
+          { type: 'thinking', thinking: 'block one' },
+          { type: 'redacted_thinking', data: 'enc' },
+          { type: 'thinking', thinking: 'block two' }
+        ]
+      })
+    ).toBe('block one\n\nblock two')
+  })
+
+  it('returns undefined for opaque provider payloads', () => {
+    expect(
+      thinkingFromReasoningState({
+        kind: 'openai_responses',
+        responseId: 'resp_1',
+        outputItems: []
+      })
+    ).toBeUndefined()
+    expect(
+      thinkingFromReasoningState({ kind: 'gemini_interactions', interactionId: 'int_1' })
+    ).toBeUndefined()
+  })
+
+  it('returns undefined for empty or absent state', () => {
+    expect(thinkingFromReasoningState(undefined)).toBeUndefined()
+    expect(thinkingFromReasoningState({ kind: 'openai_compat' })).toBeUndefined()
+    expect(
+      thinkingFromReasoningState({
+        kind: 'openai_compat',
+        reasoningContent: '   ',
+        thinkChunks: [{ text: '  ' }]
+      })
+    ).toBeUndefined()
   })
 })

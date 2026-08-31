@@ -9,6 +9,10 @@ import {
 } from '../ipc'
 import { isAgentEvent } from '../utils/eventUtils'
 import { isRetryableTurnFailure } from '../utils/errors'
+import {
+  parseProviderReasoningState,
+  thinkingFromReasoningState
+} from './reasoning'
 import { summarizeToolArgs } from '../utils/toolSummary'
 import { truncateToolArgsPreview } from '../utils/toolResultIpc'
 import { finalizeTodoContentOnRunEnd } from '../utils/todoContent'
@@ -488,15 +492,6 @@ export function scrubStreamingAssistantToolLeak(items: UiItem[]): UiItem[] {
   return changed ? next : items
 }
 
-/** Join adjacent reasoning chunks for one inline step. */
-export function mergeThinking(previous: string | undefined, next: string): string {
-  const before = previous?.trim() ?? ''
-  const after = next.trim()
-  if (!before) return after
-  if (!after || before.endsWith(after)) return before
-  return `${before}\n\n${after}`
-}
-
 /** Provider snapshot replaces streamed deltas; empty snapshot keeps the buffer. */
 export function applyThinkingSnapshot(
   previous: string | undefined,
@@ -534,15 +529,19 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
 
     if (m.role === 'assistant') {
       const text = contentDisplayText(m.content)
+      // New transcripts carry reasoning only inside reasoningState; derive the
+      // display view so hydration matches what live streaming showed.
+      const thinking =
+        m.thinking || thinkingFromReasoningState(parseProviderReasoningState(m.reasoningState))
       // Each step keeps its own reasoning, right above the calls it explains.
       // Pooling a turn's steps into one row buries the work under a wall of text.
-      if (text || m.thinking) {
+      if (text || thinking) {
         items.push({
           kind: 'message',
           id: messageUiId('assistant', i),
           role: 'assistant',
           content: stripToolShapedAssistantText(text),
-          thinking: m.thinking
+          thinking
         })
       }
       if (m.toolCalls?.length) {

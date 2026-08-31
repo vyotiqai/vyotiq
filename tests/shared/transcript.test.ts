@@ -38,6 +38,20 @@ describe('messagesToUiItems', () => {
     }
   })
 
+  it('derives thinking from reasoningState when the thinking field is absent', () => {
+    const items = messagesToUiItems([
+      {
+        role: 'assistant',
+        content: 'answer',
+        reasoningState: { kind: 'openai_compat', reasoningContent: 'derived view' }
+      }
+    ] as ChatMessage[])
+    expect(items).toHaveLength(1)
+    if (items[0].kind === 'message') {
+      expect(items[0].thinking).toBe('derived view')
+    }
+  })
+
   it('copies persisted user send timestamps onto UI items', () => {
     const items = messagesToUiItems([
       { role: 'user', content: 'hello', at: '2026-07-24T12:00:00.000Z' }

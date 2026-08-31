@@ -91,15 +91,17 @@ export function logErrorSummary(err: unknown, code?: string): string {
     if (err.name === 'AbortError' || err.name === 'TimeoutError') {
       return `${code ?? err.name}: ${err.name}`
     }
+    // Same contract as sanitizeErrorForLog: path-bearing messages are
+    // path-scrubbed via sanitizeLogMessage, never dropped (dropping left
+    // renderer crash logs with a bare TypeError and no cause).
     const raw = err.message?.trim() ?? ''
-    if (!raw || USER_DATA_PREFIX.test(raw) || PATH_IN_TEXT.test(raw)) {
-      return code ? `${code}: ${err.name}` : err.name
+    if (raw) {
+      const scrubbed = sanitizeLogMessage(raw)
+      if (scrubbed) {
+        return code ? `${code}: ${scrubbed.slice(0, 120)}` : scrubbed.slice(0, 120)
+      }
     }
-    const scrubbed = scrubString(raw)
-    if (scrubbed !== raw || USER_DATA_PREFIX.test(scrubbed)) {
-      return code ? `${code}: ${err.name}` : err.name
-    }
-    return code ? `${code}: ${scrubbed.slice(0, 120)}` : scrubbed.slice(0, 120)
+    return code ? `${code}: ${err.name}` : err.name
   }
   if (typeof err === 'string') {
     const scrubbed = sanitizeLogMessage(err)
@@ -137,9 +139,14 @@ export function sanitizeErrorForLog(err: unknown): Record<string, unknown> | und
     if (typeof rec.code === 'string' || typeof rec.code === 'number') out.code = rec.code
     if (typeof rec.errno === 'number') out.errno = rec.errno
     if (typeof rec.syscall === 'string') out.syscall = rec.syscall
-    // Keep a short scrubbed message when it does not embed workspace paths.
+    // Path-bearing messages are path-scrubbed, not dropped. A failed dynamic
+    // import (renderer chunk reload after a rebuild) carries its file:// URL
+    // in message text; dropping it left only "TypeError" in crash logs
+    // (2026-08-31 renderer crashes, run 82889e99 window) and made the cause
+    // undiagnosable. sanitizeLogMessage replaces path spans with [path] /
+    // [redacted], so user-derived text never reaches disk.
     const raw = err.message?.trim() ?? ''
-    if (raw && !USER_DATA_PREFIX.test(raw) && !PATH_IN_TEXT.test(raw)) {
+    if (raw) {
       const scrubbed = sanitizeLogMessage(raw)
       if (scrubbed && scrubbed !== err.name) out.message = scrubbed.slice(0, 200)
     }

@@ -409,6 +409,52 @@ export function parseProviderReasoningState(value: unknown): ProviderReasoningSt
   return parsed.success ? parsed.data : undefined
 }
 
+/**
+ * Display text derived from the stored provider reasoning payload — the single
+ * copy the agent persists. Mirrors each mapper's replay field:
+ *
+ * - openai_compat: `reasoningContent`, else flattened `thinkChunks[].text`
+ *   (ThinkChunk.text is itself the flattening of `thinking[]` inners, so the
+ *   flat field and the chunks never disagree in content).
+ * - anthropic: `thinking` blocks (redacted blocks have no display text).
+ * - openai_responses / gemini_interactions: encrypted / opaque provider payloads;
+ *   they carry no recoverable text, so nothing is derived (assistant `thinking`
+ *   remains authoritative for those messages when present).
+ *
+ * Returns undefined when the state yields no text, so callers can fall back.
+ */
+export function thinkingFromReasoningState(
+  state: ProviderReasoningState | undefined
+): string | undefined {
+  if (!state) return undefined
+  switch (state.kind) {
+    case 'openai_compat': {
+      const flat = state.reasoningContent?.trim()
+      if (flat) return state.reasoningContent
+      if (Array.isArray(state.thinkChunks) && state.thinkChunks.length > 0) {
+        const text = state.thinkChunks
+          .map((c) => c.text ?? '')
+          .join('')
+          .trim()
+        if (text) return text
+      }
+      return undefined
+    }
+    case 'anthropic': {
+      const text = state.blocks
+        .filter((b): b is { type: 'thinking'; thinking: string } =>
+          b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking.trim() !== '')
+        .map((b) => b.thinking)
+        .join('\n\n')
+        .trim()
+      return text || undefined
+    }
+    case 'openai_responses':
+    case 'gemini_interactions':
+      return undefined
+  }
+}
+
 /** OpenAI Responses API: supports none, minimal, low, medium, high, xhigh (not max). */
 export function normalizeEffortForOpenAiResponses(
   effort?: ThinkingEffort,
@@ -463,17 +509,6 @@ export function normalizeEffortForMistral(effort?: ThinkingEffort): string {
   if (!effort || effort === 'medium') return 'medium'
   if (effort === 'max') return 'xhigh'
   return effort
-}
-
-/** Rough token estimate for opaque reasoning replay blobs. */
-export function estimateReasoningStateTokens(state: unknown): number {
-  if (state == null) return 0
-  try {
-    const json = JSON.stringify(state)
-    return Math.ceil(json.length / 4)
-  } catch {
-    return 0
-  }
 }
 
 /** Collect trailing tool results for provider continuation turns. */
