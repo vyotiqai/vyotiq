@@ -896,7 +896,9 @@ const spawnAgentInstanceArgs = z.object({
     ),
   path_scope: z
     .array(z.string().min(1))
-    .describe('Write path prefixes. Required when git worktree isolation is unavailable.')
+    .describe(
+      'Workspace-relative write path prefixes. Entries must be disjoint (a path may match only one instance); overlapping prefixes make concurrent worktrees unsafe. Required when git worktree isolation is unavailable.'
+    )
     .optional()
 })
 
@@ -1269,12 +1271,12 @@ export const TOOL_REGISTRY = {
   },
   spawn_agent_instance: {
     description:
-      'Spawn Agent V child for an independent workstream (root only; depth 1). Returns run_id. Multiple independent spawns in one step, then await those ids together.',
+      'Spawn an Agent V child instance for an independent workstream that would run several steps in parallel with the parent (root runs only; depth 1). Goal is the child’s only prompt — include outcome, sub-tasks, done-when, and affected paths; the child never sees this conversation. The child gets its own git worktree branch when isolation is available; pass path_scope prefixes when it is not. Returns run_id. Batch multiple spawns in one step, then await those run_ids together in one step.',
     schema: spawnAgentInstanceArgs
   },
   await_agent_instance: {
     description:
-      'Await child; summary + wroteFiles. Await those spawn ids together in one step.',
+      'Wait for a spawned child instance to finish; returns phase plus the child’s summary and wroteFiles. Await multiple run_ids together in one step. On timeout the child keeps running — await again with a longer timeout_ms, pull_agent_instance, or cancel_agent_instance.',
     schema: awaitAgentInstanceArgs
   },
   pull_agent_instance: {
@@ -1283,7 +1285,7 @@ export const TOOL_REGISTRY = {
   },
   merge_agent_instance: {
     description:
-      'Merge one successfully finished (done) instance worktree branch into parent HEAD (clean tree; one at a time).',
+      'Merge a successfully finished (done) instance worktree branch into parent HEAD. Parent tree must be clean; one branch at a time. Deferred from the fresh catalog — restore with request_mcp_tools when a spawn has finished and its branch should land.',
     schema: mergeAgentInstanceArgs
   },
   cancel_agent_instance: {

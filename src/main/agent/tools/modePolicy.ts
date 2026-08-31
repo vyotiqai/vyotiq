@@ -136,7 +136,8 @@ export function modeSectionMarkdown(
           ...(opts?.inlineInstance
             ? []
             : [
-                'Root-only agent-instance tools may be available; use their catalog schemas for orchestration and isolation rules.'
+                'Root-only agent-instance tools may be available. When the plan has 2+ independent workstreams (separate files or subsystems, each verifiable alone), delegate each to a child agent instance with a complete self-contained brief — outcome, sub-tasks, done-when, affected paths — since the child sees nothing of this conversation; follow the catalog schemas for the spawn, await, and merge lifecycle.',
+                'Parallel work does not require instances: batch independent tool calls within a step first, and delegate only when the workstreams would each run several steps or genuinely proceed in parallel.'
               ])
         ].join('\n')
       )

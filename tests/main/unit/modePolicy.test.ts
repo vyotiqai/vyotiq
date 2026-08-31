@@ -65,6 +65,25 @@ describe('modePolicy', () => {
     expect(section).not.toMatch(/path_scope/)
   })
 
+  it('root Agent mode section carries the delegation decision policy', () => {
+    const section = modeSectionMarkdown('agent')
+    expect(section).toMatch(/delegate each to a child agent instance/)
+    expect(section).toMatch(/2\+ independent workstreams/)
+    expect(section).toMatch(/complete self-contained brief/)
+    expect(section).toMatch(/child sees nothing of this conversation/)
+    expect(section).toMatch(/spawn, await, and merge lifecycle/)
+    expect(section).toMatch(/batch independent tool calls within a step first/i)
+    expect(section).not.toMatch(/path_scope/)
+  })
+
+  it('inline instance Agent mode section omits delegation policy (parent-only)', () => {
+    const section = modeSectionMarkdown('agent', { inlineInstance: true })
+    expect(section).not.toMatch(/delegate each to a child agent instance/)
+    expect(section).not.toMatch(/child sees nothing of this conversation/)
+    expect(section).not.toMatch(/spawn_agent_instance/)
+    expect(section).not.toMatch(/merge_agent_instance/)
+  })
+
   it('inline instance Agent mode section omits spawn/merge instructions', () => {
     const section = modeSectionMarkdown('agent', { inlineInstance: true })
     expect(section).not.toMatch(/spawn_agent_instance/)

@@ -300,8 +300,8 @@ describe('harness tool catalog', () => {
     const spawn = AGENT_TOOLS.find((t) => t.name === 'spawn_agent_instance')
     expect(spawn).toBeDefined()
     expect(spawn!.description).toMatch(/independent workstream/)
-    expect(spawn!.description).toMatch(/Multiple independent spawns in one step/)
-    expect(spawn!.description).toMatch(/then await those ids together/)
+    expect(spawn!.description).toMatch(/Batch multiple spawns in one step/)
+    expect(spawn!.description).toMatch(/then await those run_ids together in one step/)
     const goal = (
       spawn!.parameters as { properties: Record<string, { description?: string }> }
     ).properties.goal
@@ -314,11 +314,11 @@ describe('harness tool catalog', () => {
     )
   })
 
-  it('describes await as waiting those spawn ids together in one step', () => {
+  it('describes await as waiting those run_ids together in one step', () => {
     const awaitTool = AGENT_TOOLS.find((t) => t.name === 'await_agent_instance')
     expect(awaitTool).toBeDefined()
     expect(awaitTool!.description).toMatch(/summary/)
-    expect(awaitTool!.description).toMatch(/Await those spawn ids together in one step/)
+    expect(awaitTool!.description).toMatch(/Await multiple run_ids together in one step/)
   })
 
   it('describes search as text-only without a skip-size cap', () => {
@@ -598,5 +598,24 @@ describe('harness tool catalog', () => {
     expect(validateToolArgs('create_goal', JSON.stringify({ objective: 'fix flaky tests' })).ok).toBe(
       true
     )
+  })
+
+  it('spawn_agent_instance schema states the brief contract and batch semantics', () => {
+    const spawn = AGENT_TOOLS.find((t) => t.name === 'spawn_agent_instance')
+    expect(spawn).toBeDefined()
+    expect(spawn!.description).toMatch(/independent workstream/i)
+    expect(spawn!.description).toMatch(/several steps in parallel/i)
+    expect(spawn!.description).toMatch(/child never sees this conversation/i)
+    expect(spawn!.description).toMatch(/worktree branch/i)
+    expect(spawn!.description).toMatch(/run_ids together in one step/i)
+    const awaitTool = AGENT_TOOLS.find((t) => t.name === 'await_agent_instance')
+    expect(awaitTool!.description).toMatch(/run_ids together in one step/i)
+    expect(awaitTool!.description).toMatch(/On timeout the child keeps running/i)
+  })
+
+  it('merge_agent_instance documents catalog deferral and merge constraints', () => {
+    const merge = AGENT_TOOLS.find((t) => t.name === 'merge_agent_instance')
+    expect(merge!.description).toMatch(/request_mcp_tools/i)
+    expect(merge!.description).toMatch(/one branch at a time/i)
   })
 })
