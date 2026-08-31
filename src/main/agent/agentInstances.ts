@@ -629,7 +629,12 @@ export async function handleInlineInstanceFinished(
     if (worktreePath && isSafeInstanceWorktreePath(workspacePath, worktreePath)) {
       disposeWorkspaceIndexes(worktreePath, { permanent: true })
       await finalizeInstanceWorktree(workspacePath, worktreePath, {
-        keepBranch: phase === 'done',
+        // Keep the branch for 'done' AND 'error' children: an error'd child's
+        // committed checkpoint is the only durable copy of its applied edits —
+        // run 79f92c12 (2026-08-31) lost its branch here and survived only as
+        // an fsck-unreachable commit. Cancelled children keep the old contract
+        // (user-backed-out WIP).
+        keepBranch: phase !== 'cancelled',
         branch: childStatus?.worktreeBranch
       })
     } else if (worktreePath) {

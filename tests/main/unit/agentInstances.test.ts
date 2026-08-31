@@ -829,11 +829,11 @@ describe('agentInstances worktree', () => {
     clearRunAbort(child.runId)
   })
 
-  it('deletes the instance branch when finalize is not done', async () => {
+  it('keeps the instance branch on error (checkpoint survives) and deletes it on cancelled', async () => {
     const child = await spawnAgentInstance({
       parentRunId,
       workspacePath,
-      goal: 'error then drop branch'
+      goal: 'error then keep branch'
     })
     expect(child.ok).toBe(true)
     if (!child.ok) return
@@ -847,8 +847,32 @@ describe('agentInstances worktree', () => {
       windowsHide: true,
       env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
     })
-    expect(listed.stdout.trim()).toBe('')
+    // Error'd children keep their committed checkpoint branch — it is the only
+    // durable copy of their applied edits (2026-08-31: error'd children lost
+    // the branch and survived only as fsck-unreachable commits). Merge remains
+    // done-only; this branch is for recovery/forensics.
+    expect(listed.stdout.trim()).not.toBe('')
     clearRunAbort(child.runId)
+
+    const cancelled = await spawnAgentInstance({
+      parentRunId,
+      workspacePath,
+      goal: 'cancel then drop branch'
+    })
+    expect(cancelled.ok).toBe(true)
+    if (!cancelled.ok) return
+    const cancelledStatus = loadStatus(resolveRunDir(workspacePath, cancelled.runId))
+    const cancelledBranch = cancelledStatus?.worktreeBranch
+    expect(cancelledBranch).toBeTruthy()
+    await handleInlineInstanceFinished(workspacePath, cancelled.runId, 'cancelled')
+    const cancelledListed = await execFileAsync('git', ['branch', '--list', cancelledBranch!], {
+      cwd: workspacePath,
+      encoding: 'utf8',
+      windowsHide: true,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+    })
+    expect(cancelledListed.stdout.trim()).toBe('')
+    clearRunAbort(cancelled.runId)
   })
 
   it('commits dirty worktree edits before remove so merge applies them', async () => {
