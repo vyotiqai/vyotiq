@@ -656,6 +656,32 @@ export function nextIdenticalStepStreak(
 }
 
 /**
+ * Next consecutive tool-failure streak. The counter's contract (loop.ts) is
+ * "steps in a row whose tool calls ALL failed" — a step that mixes a success
+ * with failures made progress and must reset the streak, not extend it.
+ * Previously any single failed call charged the whole step, so a mixed step
+ * (todo_write ok + terminal probe failing) burned failure budget (run
+ * 1de9344a: steps 60-61 charged despite successful todo/memory calls).
+ * Cancel/interrupt stubs are not tool results (runReceipt excludes them from
+ * failure clusters too); a step containing only stubs resets the streak.
+ */
+export function nextConsecutiveToolFailureSteps(
+  prev: number,
+  stepToolMessages: ReadonlyArray<ChatMessage>
+): number {
+  let sawRealResult = false
+  let sawOk = false
+  for (const msg of stepToolMessages) {
+    if (msg?.role !== 'tool' || !msg.toolName?.trim()) continue
+    if (isAbortStubToolResult(contentToText(msg.content))) continue
+    sawRealResult = true
+    if (msg.ok !== false) sawOk = true
+  }
+  if (!sawRealResult) return 0
+  return sawOk ? 0 : prev + 1
+}
+
+/**
  * Central loop-safety decision. Stops the run when it is clearly spinning:
  * the same tool call(s) repeating, or tool calls failing every step. These
  * signals are already collected per step in `loop.ts`; previously this always

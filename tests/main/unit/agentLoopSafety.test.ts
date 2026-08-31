@@ -219,4 +219,73 @@ describe('runAgent LOOP_SAFETY integration', () => {
     expect(events.some((e) => e.type === 'follow_up_dropped')).toBe(false)
     expectNoLoopSafetyStop(events)
   })
+
+  it('continues past 4 mixed steps (probe fails + todo_write succeeds each step)', async () => {
+    // Run 1de9344a pathology: every step mixed a failing environment probe with
+    // successful todo/memory calls, yet each step was charged as all-failed and
+    // the run died on LOOP_SAFETY at step 63. Mixed steps make progress — the
+    // failure streak must reset.
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call > 5) {
+        yield { type: 'text', text: 'environment mapped, proceeding' }
+        yield { type: 'done', stopReason: 'stop' }
+        return
+      }
+      yield {
+        type: 'tool_call',
+        toolCall: { id: `t${call}`, name: 'terminal', arguments: `{"command":"probe ${call}"}` }
+      }
+      yield {
+        type: 'tool_call',
+        toolCall: { id: `w${call}`, name: 'todo_write', arguments: '{"todos":[{"id":"1","content":"x","status":"in_progress"}]}' }
+      }
+      yield { type: 'done', stopReason: 'tool_calls' }
+    })
+    executeTool.mockImplementation(async (name: string) => {
+      if (name === 'terminal') {
+        return { ok: false, summary: 'probe failed', content: 'stderr:\nnot recognized\nexit_code: 1' }
+      }
+      return { ok: true, summary: 'todos', content: '1 task' }
+    })
+
+    const runId = 'safety-mixed-steps'
+    const events = await collect(runId, workspace)
+
+    expect(streamChat).toHaveBeenCalledTimes(6)
+    expectNoLoopSafetyStop(events)
+    const persisted = readFileSync(join(resolveRunDir(workspace, runId), 'events.jsonl'), 'utf8')
+    expect(persisted).not.toContain('"code":"LOOP_SAFETY"')
+  })
+
+  it('still stops when every step fails outright (guard intact)', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call > 6) {
+        yield { type: 'text', text: 'giving up' }
+        yield { type: 'done', stopReason: 'stop' }
+        return
+      }
+      yield {
+        type: 'tool_call',
+        toolCall: { id: `f${call}`, name: 'terminal', arguments: `{"command":"cargo test --release ${call}"}` }
+      }
+      yield { type: 'done', stopReason: 'tool_calls' }
+    })
+    executeTool.mockResolvedValue({
+      ok: false,
+      summary: 'build failed',
+      content: 'stderr:\nerror: could not compile\nexit_code: 101'
+    })
+
+    const runId = 'safety-all-fail-still-stops'
+    const events = await collect(runId, workspace)
+
+    const loopStop = events.find((e) => e.type === 'error' && e.code === 'LOOP_SAFETY')
+    expect(loopStop).toBeTruthy()
+    expect(String(loopStop?.message)).toContain('failed 4 steps in a row')
+    expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
+  })
 })

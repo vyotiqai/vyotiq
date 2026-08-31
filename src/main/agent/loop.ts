@@ -74,6 +74,7 @@ import {
   loopHintForMcpNotInCatalogFailFast,
   loopHintForOmittedMcpTools,
   loopStopDecision,
+  nextConsecutiveToolFailureSteps,
   MAX_TRUNCATION_CONTINUES,
   MAX_EMPTY_RESPONSE_CONTINUES,
   MAX_STEPS_PER_TURN,
@@ -3420,9 +3421,10 @@ export async function* runAgent(input: {
           consecutiveToolFailureSteps = 0
           toolFailureLoopHint = undefined
         } else {
-          consecutiveToolFailureSteps = toolOutcome.stepToolsOk
-            ? 0
-            : consecutiveToolFailureSteps + 1
+          consecutiveToolFailureSteps = nextConsecutiveToolFailureSteps(
+            consecutiveToolFailureSteps,
+            toolOutcome.messages
+          )
           toolFailureLoopHint = loopHintForConsecutiveToolFailures(
             consecutiveToolFailureSteps,
             summarizeRecentToolFailure(toolOutcome.messages)
