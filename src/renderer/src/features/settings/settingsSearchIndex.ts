@@ -388,6 +388,12 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     section: 'general'
   },
   {
+    id: 'trace-capture',
+    title: 'Trace capture',
+    keywords: ['trace', 'tracing', 'chrome://tracing', 'profiling', 'performance', 'devtools', 'diagnostics', 'advanced'],
+    section: 'general'
+  },
+  {
     id: 'diagnostics-command',
     title: 'Diagnostics command',
     keywords: ['typecheck', 'diagnostics', 'tsc', 'advanced'],

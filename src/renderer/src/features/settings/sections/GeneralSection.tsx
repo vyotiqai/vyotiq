@@ -343,6 +343,68 @@ export function GeneralSection({
         </SettingsField>
 
         <SettingsField
+          id="trace-capture"
+          title="Trace capture"
+          hint={
+            form.traceCapturing
+              ? 'Recording Chromium trace — stop when done, then open the traces folder.'
+              : 'Records a Chromium trace (startup, IPC, renderer frames) to a chrome://tracing JSON file.'
+          }
+          help="On-demand and local-only. Keep captures short; traces can grow quickly under load."
+          wide
+        >
+          <div className="flex flex-wrap gap-2">
+            {!form.traceCapturing ? (
+              <Button
+                variant="subtle"
+                disabled={form.formLocked}
+                onClick={() => {
+                  form.clearErrors()
+                  form.setTraceCapturing(true)
+                  void (window.vyotiq?.startTrace?.() ?? Promise.reject(new Error('Trace API unavailable')))
+                    .then((res) => {
+                      if (!res.ok) form.setErrorMessage(res.error)
+                    })
+                    .catch((err: unknown) => {
+                      form.setErrorMessage(err instanceof Error ? err.message : String(err))
+                    })
+                    .finally(() => {
+                      void window.vyotiq?.getTraceStatus?.()?.then((res) => {
+                        if (res.ok) form.setTraceCapturing(res.data.recording)
+                      })
+                    })
+                }}
+              >
+                Start trace
+              </Button>
+            ) : (
+              <Button
+                variant="subtle"
+                disabled={form.formLocked}
+                onClick={() => {
+                  form.clearErrors()
+                  void (window.vyotiq?.stopTrace?.() ?? Promise.reject(new Error('Trace API unavailable')))
+                    .then((res) => {
+                      if (res.ok) window.vyotiq?.openLogsDir?.()
+                      else form.setErrorMessage(res.error)
+                    })
+                    .catch((err: unknown) => {
+                      form.setErrorMessage(err instanceof Error ? err.message : String(err))
+                    })
+                    .finally(() => {
+                      void window.vyotiq?.getTraceStatus?.()?.then((res) => {
+                        if (res.ok) form.setTraceCapturing(res.data.recording)
+                      })
+                    })
+                }}
+              >
+                Stop trace & reveal
+              </Button>
+            )}
+          </div>
+        </SettingsField>
+
+        <SettingsField
           id="diagnostics-command"
           title="Diagnostics command"
           hint="Optional override for the diagnostics tool typecheck."

@@ -77,6 +77,7 @@ export function useSettingsForm({
   const [pickingWorkspace, setPickingWorkspace] = useState(false)
   const [openingLogs, setOpeningLogs] = useState(false)
   const [dsnConfigured, setDsnConfigured] = useState(false)
+  const [traceCapturing, setTraceCapturing] = useState(false)
   const [logsPath, setLogsPath] = useState<string | null>(null)
   const [crashSnippets, setCrashSnippets] = useState<
     import('@shared/ipc').CrashSnippet[]
@@ -270,6 +271,10 @@ export function useSettingsForm({
       if (!window.vyotiq?.getCrashDiagnostics) return
       const crashRes = await window.vyotiq.getCrashDiagnostics()
       if (!cancelled && crashRes.ok) setCrashSnippets(crashRes.data.snippets)
+
+      if (!window.vyotiq?.getTraceStatus) return
+      const traceRes = await window.vyotiq.getTraceStatus()
+      if (!cancelled && traceRes.ok) setTraceCapturing(traceRes.data.recording)
     })()
     return () => {
       cancelled = true
@@ -556,6 +561,8 @@ export function useSettingsForm({
     openingLogs,
     setOpeningLogs,
     dsnConfigured,
+    traceCapturing,
+    setTraceCapturing,
     logsPath,
     crashSnippets,
     clearErrors,
