@@ -783,4 +783,67 @@ describe('runAgent partial persistence', () => {
     expect(deltaIdx).toBeGreaterThanOrEqual(0)
     expect(resetIdx).toBeGreaterThan(deltaIdx)
   })
+
+  it('stops TERMINALLY with QUOTA_EXHAUSTED when a usage-limit chunk precedes the circuit chunk', async () => {
+    const runId = 'quota-chunk-then-circuit'
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      // Wire shape from run 6265fa90: PROVIDER_HTTP 429 with the quota body,
+      // retried once at the stream layer, then the circuit chunk goes terminal.
+      yield {
+        type: 'error',
+        error:
+          'Weekly usage limit reached. Resets in 6 days. To continue using this model now, enable usage from your available balance.',
+        errorCode: 'PROVIDER_HTTP',
+        httpStatus: 429
+      }
+      yield {
+        type: 'error',
+        error: 'Circuit open for http:opencode.ai; retry in 58s',
+        errorCode: 'CIRCUIT_OPEN'
+      }
+    })
+
+    const events = await collect(runId, workspace)
+
+    expect(
+      events.some((e) => e.type === 'error' && e.code === 'QUOTA_EXHAUSTED')
+    ).toBe(true)
+    expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
+    expect(events.some((e) => e.type === 'incomplete')).toBe(false)
+
+    const statusFile = readFileSync(
+      join(resolveRunDir(workspace, runId), 'status.json'),
+      'utf8'
+    )
+    const status = JSON.parse(statusFile) as { resumable?: boolean; error?: string }
+    expect(status.resumable).toBeUndefined()
+    expect(status.error).toContain('quota exhausted')
+    expect(status.error).toContain('resets in 6 days')
+  })
+
+  it('stops TERMINALLY with QUOTA_EXHAUSTED when the exhausted class carries a quota message', async () => {
+    const runId = 'quota-exhausted-class'
+    let calls = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      calls += 1
+      if (calls === 1) {
+        yield {
+          type: 'error',
+          error: 'Weekly usage limit reached. Resets in 6 days. To continue using this model now, enable usage from your available balance.',
+          errorCode: 'PROVIDER_HTTP',
+          httpStatus: 429
+        }
+        return
+      }
+      yield { type: 'error', error: 'Circuit open for http:opencode.ai; retry in 59s', errorCode: 'CIRCUIT_OPEN' }
+    })
+
+    const events = await collect(runId, workspace)
+
+    expect(
+      events.some((e) => e.type === 'error' && e.code === 'QUOTA_EXHAUSTED')
+    ).toBe(true)
+    expect(events.some((e) => e.type === 'incomplete')).toBe(false)
+    expect(calls).toBeGreaterThanOrEqual(1)
+  })
 })

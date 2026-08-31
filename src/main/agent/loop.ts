@@ -29,6 +29,12 @@ import {
 } from './streamRetry'
 import { isRetriableProviderMessage } from './providers/fetchWithRetry'
 import { circuitKeyProvider, isCircuitOpenError } from './circuitBreaker'
+import {
+  QUOTA_EXHAUSTED_STOP_CODE,
+  isQuotaExhaustedMessage,
+  parseQuotaResetDays,
+  quotaExhaustedStopMessage
+} from './quotaGate'
 import { isNetworkFailureCode, iterateNetworkWait, resolveOfflineWaitMs } from './networkMonitor'
 import { isStreamIdleTimeoutError } from './providers/sse'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
@@ -2251,6 +2257,14 @@ export async function* runAgent(input: {
       let lastStreamFailureMessage = ''
       let lastStreamFailureCode = 'PROVIDER_STREAM'
       let lastStreamFailureHttpStatus: number | undefined = undefined
+      // Quota exhaustion is sticky across stream attempts: the wire 429 chunk
+      // ("Weekly usage limit reached...") is retried once at the stream layer,
+      // then the follow-up circuit-open chunk goes terminal. The stop must
+      // still classify as QUOTA_EXHAUSTED, so capture it from ANY failure chunk
+      // (429s from OTHER concurrent runs on the same key also trip the circuit
+      // that lands here). Reset per step — it must not leak across steps.
+      let stepQuotaExhausted = false
+      let stepQuotaResetDays: number | null = null
       // Const capture so nested generators keep `string` (outer `runDir` is `string | null`).
       const streamRunDir = runDir
       if (!streamRunDir) {
@@ -2642,6 +2656,10 @@ export async function* runAgent(input: {
                 ? chunk.errorCode
                 : 'PROVIDER_STREAM'
             lastStreamFailureHttpStatus = chunk.httpStatus
+            if (isQuotaExhaustedMessage(message)) {
+              stepQuotaExhausted = true
+              stepQuotaResetDays = parseQuotaResetDays(message) ?? stepQuotaResetDays
+            }
             if (errorCode === 'PROVIDER_NETWORK') {
               // Retriable at the stream layer now — record so a final exhaust
               // classifies as networkRelated (interrupted, not hard error).
@@ -2669,6 +2687,37 @@ export async function* runAgent(input: {
               step,
               message: message.slice(0, 280)
             })
+            // Quota exhaustion (weekly usage limit) is a billing gate, not a
+            // transient outage: stop TERMINALLY (non-resumable) so the goal
+            // relaunch path cannot storm (run 6265fa90: 472 relaunches in
+            // ~4 minutes until the runaway-loop guard fired). Flushed partial
+            // output is preserved; queued follow-ups are dropped — a quota
+            // resume is a user "continue", not an automatic replay.
+            if (stepQuotaExhausted) {
+              yield* flushPartialAssistant(
+                runId,
+                runDir,
+                messages,
+                assistantText,
+                thinkingText,
+                stepReasoningState,
+                toolCalls,
+                streamedToolCalls,
+                step,
+                'interrupted'
+              )
+              yield* emitTerminalRunError({
+                runId,
+                invokeId,
+                runDir,
+                message: quotaExhaustedStopMessage(stepQuotaResetDays),
+                code: QUOTA_EXHAUSTED_STOP_CODE,
+                dropFollowUpsReason: 'quota_exhausted',
+                flushWriteCheckpoint,
+                writeStatus
+              })
+              return 'terminal'
+            }
             // A retriable status that exhausted its attempts (429/408/5xx) is a
             // transient provider-side wait — interrupted + Continue, not a hard error.
             if (
@@ -2830,6 +2879,34 @@ export async function* runAgent(input: {
           step,
           networkRelated
         })
+        // Quota exhaustion seen during the exhausted attempts: stop terminally
+        // (a billing gate cannot clear within a circuit window). Same contract
+        // as the in-stream branch above.
+        if (stepQuotaExhausted) {
+          yield* flushPartialAssistant(
+            runId,
+            runDir,
+            messages,
+            assistantText,
+            thinkingText,
+            stepReasoningState,
+            toolCalls,
+            streamedToolCalls,
+            step,
+            'interrupted'
+          )
+          yield* emitTerminalRunError({
+            runId,
+            invokeId,
+            runDir,
+            message: quotaExhaustedStopMessage(stepQuotaResetDays),
+            code: QUOTA_EXHAUSTED_STOP_CODE,
+            dropFollowUpsReason: 'quota_exhausted',
+            flushWriteCheckpoint,
+            writeStatus
+          })
+          return
+        }
         if (networkRelated || circuitOpen) {
           yield* yieldNetworkInterruptedTerminal(
             runId,
