@@ -79,6 +79,21 @@ export function shouldRetryOmitIncludeUsage(status: number, body: string): boole
   return INCLUDE_USAGE_REJECT_RE.test(message)
 }
 
+const PROMPT_CACHE_KEY_REJECT_RE =
+  /prompt[_-]?cache[_-]?key|unknown.*(field|parameter|property).*cache|extra.*(field|input|property).*cache/i
+
+/**
+ * Some OpenAI-compat hosts reject the OpenAI `prompt_cache_key` cache-affinity
+ * field (GLM-family OpenCode Go models are known to reject cache instrumentation).
+ * Retry once without the field when the 400/422 body points at it — the field is
+ * inert for hosts that ignore it, so the retry only fires on real rejection.
+ */
+export function shouldRetryOmitCacheKey(status: number, body: string): boolean {
+  if (status !== 400 && status !== 422) return false
+  const message = parseProviderErrorMessage(body) ?? body
+  return PROMPT_CACHE_KEY_REJECT_RE.test(message)
+}
+
 const PROVIDER_SECRET_RE =
   /\b(?:sk-[a-zA-Z0-9_-]+|Bearer\s+[a-zA-Z0-9._/=+-]+|api[_-]?key["\s:=]+[a-zA-Z0-9._-]+)/gi
 

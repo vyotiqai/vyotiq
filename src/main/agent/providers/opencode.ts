@@ -22,9 +22,20 @@ import {
 
 const OPENCODE_GO_BASE = 'https://opencode.ai/zen/go/v1'
 
-const opencodeChat = createOpenAiCompatibleProvider('opencode', {
-  defaultBaseUrl: OPENCODE_GO_BASE
-})
+/**
+ * Chat-completions transport opts. `enablePromptCache` forwards the loop's
+ * promptCacheKey (runId) as `prompt_cache_key` so the gateway keeps cache
+ * affinity across steps — without it live runs bounce between cache shards
+ * (measured 2026-08-31: 3.8–10% overall hit rate, binary 0%/100% alternation,
+ * run 72d5df60). Hosts that reject the field retry once without it
+ * (shouldRetryOmitCacheKey).
+ */
+export const OPENCODE_CHAT_OPTS = {
+  defaultBaseUrl: OPENCODE_GO_BASE,
+  enablePromptCache: true
+} as const
+
+const opencodeChat = createOpenAiCompatibleProvider('opencode', OPENCODE_CHAT_OPTS)
 
 /** Endpoint family for a model id — shared with reasoning/thinking wiring. */
 export function opencodeEndpointFor(model: string): OpenCodeTransport {

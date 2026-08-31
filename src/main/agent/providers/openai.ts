@@ -56,6 +56,7 @@ import {
   parseOpenRouterAffordableOutputTokens,
   scrubProviderErrorSnippet,
   scrubProviderErrorText,
+  shouldRetryOmitCacheKey,
   shouldRetryOmitIncludeUsage,
   shouldRetryOpenRouterCompatBody
 } from './httpErrors'
@@ -69,6 +70,7 @@ import {
 
 /** Re-export for callers/tests that imported from openai. */
 export { supportsExplicitPromptCache } from './systemZones'
+export { shouldRetryOmitCacheKey } from './httpErrors'
 
 export function openAiCompatMessageReasoningDelta(
   messageReasoning: string,
@@ -1154,7 +1156,7 @@ export function buildOpenAiCompatBody(
   req: ProviderChatRequest,
   opts: OpenAiCompatOptions,
   providerId?: ProviderId,
-  overrides?: { omitReasoning?: boolean; omitIncludeUsage?: boolean }
+  overrides?: { omitReasoning?: boolean; omitIncludeUsage?: boolean; omitCacheKey?: boolean }
 ): Record<string, unknown> {
   const tools = req.tools.map((t) => ({
     type: 'function',
@@ -1209,7 +1211,7 @@ export function buildOpenAiCompatBody(
     ...(req.maxOutputTokens && req.maxOutputTokens > 0 ? { max_tokens: req.maxOutputTokens } : {}),
     ...(typeof req.temperature === 'number' ? { temperature: req.temperature } : {}),
     ...(req.stop && req.stop.length > 0 ? { stop: req.stop.slice(0, 4) } : {}),
-    ...(opts.enablePromptCache && req.promptCacheKey
+    ...(opts.enablePromptCache && req.promptCacheKey && !overrides?.omitCacheKey
       ? {
           prompt_cache_key: req.promptCacheKey,
           ...(explicitCache ? { prompt_cache_options: { mode: 'explicit', ttl: '30m' } } : {})
@@ -1406,7 +1408,7 @@ export function createOpenAiCompatibleProvider(
       let maxOutputTokens = req.maxOutputTokens
       let res: Response | undefined
       let bodyOverrides:
-        | { omitReasoning?: boolean; omitIncludeUsage?: boolean }
+        | { omitReasoning?: boolean; omitIncludeUsage?: boolean; omitCacheKey?: boolean }
         | undefined
       let lastHttpErrorText = ''
 
@@ -1458,6 +1460,13 @@ export function createOpenAiCompatibleProvider(
           shouldRetryOmitIncludeUsage(res.status, text)
         ) {
           bodyOverrides = { ...bodyOverrides, omitIncludeUsage: true }
+          continue
+        }
+
+        // Some hosts reject the prompt_cache_key affinity field (GLM-family
+        // OpenCode Go models are known to) — retry once without it.
+        if (!bodyOverrides?.omitCacheKey && shouldRetryOmitCacheKey(res.status, text)) {
+          bodyOverrides = { ...bodyOverrides, omitCacheKey: true }
           continue
         }
 

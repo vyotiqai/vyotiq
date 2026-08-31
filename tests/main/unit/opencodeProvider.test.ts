@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeAll } from 'vitest'
+import { describe, expect, it, beforeAll, vi, afterEach } from 'vitest'
 import { ProviderIdSchema } from '@shared/ipc/schemas/providers'
 import type { ModelInfo } from '@shared/ipc'
 import { seedModelsFor } from '@shared/providers'
@@ -8,7 +8,15 @@ import {
   preloadOpenCodeGoCatalog
 } from '@shared/domain/opencodeGoCatalog'
 import { PUBLIC_CATALOG_PROVIDERS, getProvider } from '@main/agent/providers'
-import { mergeGoMeta, opencodeEndpointFor } from '@main/agent/providers/opencode'
+import { buildOpenAiCompatBody, shouldRetryOmitCacheKey } from '@main/agent/providers/openai'
+import { buildAnthropicBody } from '@main/agent/providers/anthropic'
+import { streamOpenAiResponses } from '@main/agent/providers/openaiResponses'
+import {
+  mergeGoMeta,
+  opencodeEndpointFor,
+  OPENCODE_CHAT_OPTS,
+  OPENCODE_GO_BASE
+} from '@main/agent/providers/opencode'
 
 // Endpoints table from https://opencode.ai/docs/go/ — structural routing only.
 const RESPONSES_ENDPOINT_MODELS = ['grok-4.5', 'gpt-5.6-luna', 'muse-spark-1.2-contributor']
@@ -148,3 +156,134 @@ describe('OpenCode Go (opencode) provider wiring', () => {
     expect(glm5.thinkingCanDisable).toBe(true)
   })
 })
+
+describe('opencode chat transport prompt-cache wiring', () => {
+  it('ships enablePromptCache so the loop promptCacheKey reaches the wire', () => {
+    expect(OPENCODE_CHAT_OPTS.enablePromptCache).toBe(true)
+  })
+
+  it('chat bodies carry prompt_cache_key for cache affinity (live 72d5df60: 0%/100% shard bounce)', () => {
+    const body = buildOpenAiCompatBody(
+      {
+        model: 'glm-5.3-flash',
+        messages: [{ role: 'user', content: 'hi' }],
+        tools: [],
+        signal: new AbortController().signal,
+        promptCacheKey: 'run-xyz'
+      },
+      OPENCODE_CHAT_OPTS,
+      'opencode'
+    )
+    expect(body.prompt_cache_key).toBe('run-xyz')
+  })
+})
+
+describe('prompt cache key field-rejection fallback', () => {
+  it('retries 400/422 when the body names prompt_cache_key as rejected', () => {
+    expect(
+      shouldRetryOmitCacheKey(
+        400,
+        JSON.stringify({ error: { message: 'Extra inputs are not permitted: prompt_cache_key' } })
+      )
+    ).toBe(true)
+    expect(
+      shouldRetryOmitCacheKey(
+        422,
+        JSON.stringify({ message: 'Unknown parameter: prompt_cache_key' })
+      )
+    ).toBe(true)
+  })
+
+  it('does not retry unrelated errors or other statuses', () => {
+    expect(
+      shouldRetryOmitCacheKey(400, JSON.stringify({ error: { message: 'invalid model' } }))
+    ).toBe(false)
+    expect(shouldRetryOmitCacheKey(500, 'prompt_cache_key is bad')).toBe(false)
+  })
+})
+
+describe('opencode non-chat transport cache wiring (regression pins)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  /** Minimal SSE body for a completed Responses interaction (no data assertions needed). */
+  function responsesSse(): Response {
+    return new Response(
+      [
+        'data: {"type":"response.output_text.delta","delta":"ok"}\n\n',
+        'data: {"type":"response.completed","response":{"id":"resp_cache_pin"}}\n\n'
+      ].join(''),
+      { status: 200, headers: { 'content-type': 'text/event-stream' } }
+    )
+  }
+
+  it('responses transport sends prompt_cache_key with the gateway base URL', async () => {
+    let capturedUrl = ''
+    let capturedBody: Record<string, unknown> | undefined
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        capturedUrl = String(input)
+        capturedBody = JSON.parse(String(init?.body)) as Record<string, unknown>
+        return responsesSse()
+      })
+    )
+
+    await collectChunks(
+      streamOpenAiResponses(
+        {
+          model: 'gpt-5.6-luna',
+          messages: [{ role: 'user', content: 'hi' }],
+          tools: [],
+          signal: new AbortController().signal,
+          apiKey: 'test-key',
+          promptCacheKey: 'run-xyz'
+        },
+        `${OPENCODE_GO_BASE}/responses`
+      )
+    )
+
+    expect(capturedUrl).toBe(`${OPENCODE_GO_BASE}/responses`)
+    expect(capturedBody?.prompt_cache_key).toBe('run-xyz')
+  })
+
+  it('messages transport marks cache_control breakpoints on tools, system, and history', () => {
+    const body = buildAnthropicBody({
+      model: 'minimax-m3',
+      messages: [
+        { role: 'user', content: 'first' },
+        { role: 'assistant', content: 'second' },
+        { role: 'user', content: 'third' }
+      ],
+      systemStable: 'stable instructions',
+      systemVolatile: 'clock=step-1',
+      tools: [
+        { name: 'read', description: 'read', parameters: { type: 'object', properties: {} } },
+        { name: 'edit', description: 'edit', parameters: { type: 'object', properties: {} } }
+      ],
+      signal: new AbortController().signal,
+      apiKey: 'test-key'
+    })
+
+    const tools = body.tools as Array<Record<string, unknown>>
+    expect(tools.at(-1)?.cache_control).toEqual({ type: 'ephemeral' })
+
+    const system = body.system as Array<Record<string, unknown>>
+    expect(system[0]?.cache_control).toEqual({ type: 'ephemeral' })
+
+    const messages = body.messages as Array<{ role: string; content: unknown }>
+    const historyLast = messages[messages.length - 2] // before the trailing volatile user message
+    expect(historyLast.role).toBe('user')
+    const lastBlock = (historyLast.content as Array<Record<string, unknown>>).at(-1)
+    expect(lastBlock?.cache_control).toEqual({ type: 'ephemeral' })
+    // Volatile rides AFTER the cacheable prefix as an unmarked trailing message.
+    const volatileMsg = messages.at(-1)
+    expect(JSON.stringify(volatileMsg?.content)).not.toContain('cache_control')
+  })
+})
+
+/** Drain a stream generator to completion, discarding the chunks. */
+async function collectChunks(gen: AsyncGenerator<unknown>): Promise<void> {
+  for await (const _chunk of gen) void _chunk
+}
