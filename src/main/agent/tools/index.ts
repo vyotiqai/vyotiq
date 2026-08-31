@@ -60,6 +60,7 @@ import {
   isCommandProbeNoTargetContent,
   isRemoteGrepNoMatchContent,
   isElevationDeniedContent,
+  isProcessKillSweepContent,
   toolTerminal,
   TERMINAL_DEFAULT_TIMEOUT_MS,
   resolveNewCommandBlockUntilMs,
@@ -361,6 +362,9 @@ export function terminalResultOk(command: string, content: string): boolean {
   if (isCommandProbeNoTargetContent(command, content)) return true
   if (isRemoteGrepNoMatchContent(command, content)) return true
   if (isElevationDeniedContent(command, content)) return true
+  // A kill sweep that confirmed its kills (taskkill exit 128 = a raced PID
+  // already exited) answered the question asked — evidence, not a tool fault.
+  if (isProcessKillSweepContent(command, content)) return true
   // Soft-success helpers are cmd-oriented only.
   const shellLine = /^shell:\s*(\S+)/m.exec(content)
   const shell = shellLine?.[1]

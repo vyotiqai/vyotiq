@@ -15,6 +15,8 @@ import {
   isCommandProbeNoTargetContent,
   isElevationDenied,
   isElevationDeniedContent,
+  isProcessKillSweep,
+  isProcessKillSweepContent,
   isRemoteGrepNoMatch,
   isRemoteGrepNoMatchContent,
   formatTerminalSessionOutput
@@ -241,6 +243,58 @@ describe('isRemoteGrepNoMatch', () => {
   it('does not fire on exit 0 or null', () => {
     expect(isRemoteGrepNoMatch(sshGrepNoMatch, 0, 'hit', '')).toBe(false)
     expect(isRemoteGrepNoMatch(sshGrepNoMatch, null, '', '')).toBe(false)
+  })
+})
+
+describe('isProcessKillSweep', () => {
+  // Fixture verbatim from run 82889e99 (2026-08-31): the agent killed a wedged
+  // vitest tree; both PIDs confirmed killed, follow-up probe found no
+  // survivors, but taskkill's raced-PID exit 128 rendered the row red as
+  // "failed (128)" and fed the consecutive tool-failure streak.
+  const sweepCommand =
+    'Get-CimInstance Win32_Process -Filter "Name=\'node.exe\'" | Where-Object { $_.CommandLine -match \'vitest\' } | ForEach-Object { taskkill /PID $_.ProcessId /T /F 2>$null | Out-Null; Write-Output ("killed " + $_.ProcessId) }; Write-Output ("vitest alive after: " + [bool](Get-CimInstance Win32_Process -Filter "Name=\'node.exe\'" | Where-Object { $_.CommandLine -match \'vitest\' }))'
+
+  it('classifies a confirmed kill sweep with exit 128 as informative', () => {
+    expect(
+      isProcessKillSweep(sweepCommand, 128, 'killed 21920\nkilled 19720\nvitest alive after: False', '')
+    ).toBe(true)
+  })
+
+  it('classifies through the terminal frame and via terminalResultOk', () => {
+    const content = [
+      'session_id: 4d10347e-1774-4531-9b5d-de8f7355735d',
+      'status: done',
+      `command: ${sweepCommand}`,
+      'cwd: C:\\ws',
+      'shell: powershell',
+      '',
+      'killed 21920',
+      'killed 19720',
+      'vitest alive after: False',
+      '',
+      'exit_code: 128'
+    ].join('\n')
+    expect(isProcessKillSweepContent('session', content)).toBe(true)
+    expect(terminalResultOk('session', content)).toBe(true)
+  })
+
+  it('keeps unconfirmed sweeps (no killed PIDs) as real failures', () => {
+    expect(isProcessKillSweep(sweepCommand, 128, 'vitest alive after: True', '')).toBe(false)
+  })
+
+  it('keeps plain taskkill invocations without a process enumeration as real failures', () => {
+    expect(isProcessKillSweep('taskkill /PID 4242 /F', 128, 'killed 4242', '')).toBe(false)
+  })
+
+  it('keeps access-denied sweeps as real failures', () => {
+    expect(
+      isProcessKillSweep(sweepCommand, 128, 'killed 21920', 'Access is denied.')
+    ).toBe(false)
+  })
+
+  it('does not fire on other exit codes', () => {
+    expect(isProcessKillSweep(sweepCommand, 1, 'killed 21920', '')).toBe(false)
+    expect(isProcessKillSweep(sweepCommand, 0, 'killed 21920', '')).toBe(false)
   })
 })
 

@@ -11,6 +11,7 @@ import {
   isDirMissingPathContent,
   lastPipelineCommandToken,
   primaryCommandToken,
+  POWERSHELL_EXIT_EPILOGUE,
   resolveTerminalShell,
   sanitizedTerminalEnv,
   terminalSpawnSpec,
@@ -264,7 +265,7 @@ describe('resolveTerminalShell / terminalSpawnSpec', () => {
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      'Get-ChildItem'
+      `Get-ChildItem\n; ${POWERSHELL_EXIT_EPILOGUE}`
     ])
     expect(terminalSpawnSpec('ls', 'bash')).toEqual({
       resolved: 'bash',
@@ -506,5 +507,59 @@ describe('exit-code masking', () => {
     )
     expect(result).toMatch(/exit_code: 1/)
     expect(result).toMatch(/Exit code masked/)
+  })
+})
+
+describe('PowerShell native-stderr exit inflation (win32)', () => {
+  // Root cause measured on this machine (2026-08-31): inside `… 2>&1`, PS 5.1
+  // turns every native stderr line into a NativeCommandError record and the
+  // outer powershell.exe exits 1 even when the native command exited 0 —
+  // `ssh -V 2>&1` reported a successful version check as a failure.
+  it('reports success when only benign native stderr was redirected', async () => {
+    if (process.platform !== 'win32') return
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-nce-ok-'))
+    const result = await toolTerminal(
+      dir,
+      'ssh -V 2>&1 | Select-Object -Last 1',
+      new AbortController().signal,
+      { timeoutMs: 30_000, shell: 'powershell' }
+    )
+    expect(result).toMatch(/exit_code: 0/)
+  })
+
+  it('still fails a command whose native child genuinely failed', async () => {
+    if (process.platform !== 'win32') return
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-nce-fail-'))
+    const result = await toolTerminal(
+      dir,
+      'cmd /c exit 3 2>&1 | Select-Object -Last 1',
+      new AbortController().signal,
+      { timeoutMs: 30_000, shell: 'powershell' }
+    )
+    expect(result).toMatch(/exit_code: 3/)
+  })
+
+  it('still fails a real cmdlet failure redirected through 2>&1', async () => {
+    if (process.platform !== 'win32') return
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-nce-cmdlet-'))
+    const result = await toolTerminal(
+      dir,
+      'Get-Item .definitely-missing-xyz 2>&1 | Select-Object -Last 2',
+      new AbortController().signal,
+      { timeoutMs: 30_000, shell: 'powershell' }
+    )
+    expect(result).toMatch(/exit_code: 1/)
+  })
+
+  it('preserves a deliberate trailing exit statement', async () => {
+    if (process.platform !== 'win32') return
+    const dir = mkdtempSync(join(tmpdir(), 'vyotiq-nce-exit-'))
+    const result = await toolTerminal(
+      dir,
+      "Write-Output hi\nexit 5",
+      new AbortController().signal,
+      { timeoutMs: 30_000, shell: 'powershell' }
+    )
+    expect(result).toMatch(/exit_code: 5/)
   })
 })

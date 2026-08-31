@@ -195,11 +195,37 @@ function unixShellInvocation(command: string): { bin: string; args: string[] } {
   return { bin: '/bin/sh', args: ['-c', command] }
 }
 
+/**
+ * Windows PowerShell 5.1 fabricates exit codes for redirected native stderr:
+ * inside `… 2>&1`, every native stderr line becomes a NativeCommandError
+ * record and the outer powershell.exe exits 1 even when the native command
+ * succeeded (exit 0). Measured on this machine: `ssh -V 2>&1` → exit 1 with a
+ * fully successful run; run 1de9344a burned 32+ failure-budget entries on
+ * ssh polls whose stdout carried MOUNT_OK / BUILD_RUNNING while `exit_code: 1`
+ * was invented by the shell, not the workload. An unguarded `; exit
+ * $LASTEXITCODE` suffix is NOT a fix: after a cmdlet failure $LASTEXITCODE is
+ * a string, so it would flip real failures to 0 (measured). The epilogue
+ * restores the true verdict at spawn time:
+ *  - native command actually failed → forward its real exit code;
+ *  - any non-NativeCommandError PowerShell error (cmdlet failure, parse
+ *    error, Write-Error) → exit 1, as PS itself would have reported;
+ *  - only NativeCommandError records remain (benign native stderr under a
+ *    successful native run) → exit 0. Errors tolerated via try/catch /
+ *    -ErrorAction Continue are not in $Error at this point, so they stay 0.
+ * A user-supplied trailing `exit …` statement runs first and wins, preserving
+ * deliberate verdicts; pwsh 7+ is unaffected by the inflation but gets the
+ * same consistent verdict contract.
+ */
+export const POWERSHELL_EXIT_EPILOGUE =
+  `if ($LASTEXITCODE -is [int] -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE } ` +
+  `elseif (@($Error | Where-Object { $_.FullyQualifiedErrorId -notlike 'NativeCommandError*' }).Count -gt 0) { exit 1 } ` +
+  `else { exit 0 }`
+
 function powershellInvocation(command: string): { bin: string; args: string[] } {
   const bin = commandOnPath('pwsh') ? 'pwsh' : 'powershell'
   return {
     bin,
-    args: ['-NoProfile', '-NonInteractive', '-Command', command]
+    args: ['-NoProfile', '-NonInteractive', '-Command', `${command}\n; ${POWERSHELL_EXIT_EPILOGUE}`]
   }
 }
 
@@ -687,6 +713,37 @@ export function isElevationDeniedContent(command: string, content: string): bool
   const parsed = parseTerminalFrame(content)
   if (parsed.exitCode == null) return false
   return isElevationDenied(parsed.command || command, parsed.exitCode, parsed.stdout, parsed.stderr)
+}
+
+/**
+ * A process-kill sweep (Get-CimInstance/Get-Process enumeration piping PIDs
+ * into `taskkill /PID … /T /F`) that confirms kills in stdout is an
+ * informative sweep, not a tool fault: taskkill exits 128 ("process not
+ * found") when a PID from the enumerated list already exited mid-sweep, even
+ * though the sweep did its job (run 82889e99: killed both vitest PIDs,
+ * follow-up probe reported no survivors, frame still carried exit_code 128 —
+ * rendered as a red "failed (128)" row and fed the tool-failure streak).
+ * Access denials (exit 1), sweeps with no kill confirmations, and plain
+ * `taskkill` invocations stay real failures.
+ */
+export function isProcessKillSweep(
+  command: string,
+  exitCode: number | null | undefined,
+  stdout: string,
+  stderr: string
+): boolean {
+  if (exitCode !== 128) return false
+  if (!/\btaskkill\b/i.test(command)) return false
+  if (!/Get-(CimInstance|WmiObject|Process)\b/i.test(command)) return false
+  if (/Access is denied/i.test(`${stdout}\n${stderr}`)) return false
+  return /(?:^|\n)\s*killed \d+/i.test(stdout)
+}
+
+/** Parse terminal tool content for the kill-sweep soft success. Exported for tests. */
+export function isProcessKillSweepContent(command: string, content: string): boolean {
+  const parsed = parseTerminalFrame(content)
+  if (parsed.exitCode == null) return false
+  return isProcessKillSweep(parsed.command || command, parsed.exitCode, parsed.stdout, parsed.stderr)
 }
 
 /**
