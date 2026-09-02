@@ -1285,7 +1285,7 @@ export const TOOL_REGISTRY = {
   },
   merge_agent_instance: {
     description:
-      'Merge a successfully finished (done) instance worktree branch into parent HEAD. Parent tree must be clean; one branch at a time. Deferred from the fresh catalog — restore with request_mcp_tools when a spawn has finished and its branch should land.',
+      'Merge a successfully finished (done) instance worktree branch into parent HEAD. Parent tree must be clean; one branch at a time.',
     schema: mergeAgentInstanceArgs
   },
   cancel_agent_instance: {

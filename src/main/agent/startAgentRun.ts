@@ -258,7 +258,11 @@ export function startAgentRunInBackground(input: StartAgentRunInput): void {
               runId,
               wc,
               mode: 'agent',
-              message: { role: 'user', content: formatGoalContinueMessage(goal.objective) }
+              message: {
+                role: 'user',
+                content: formatGoalContinueMessage(goal.objective),
+                synthetic: true
+              }
             })
             emitGoalUpdate({
               workspacePath,

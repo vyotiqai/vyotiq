@@ -7,19 +7,21 @@ import {
 } from './runTelemetry'
 
 export function userMessageAts(
-  messages: ReadonlyArray<{ role: string; at?: string }>
+  messages: ReadonlyArray<{ role: string; at?: string; synthetic?: boolean }>
 ): Array<string | undefined> {
   const ats: Array<string | undefined> = []
   for (const message of messages) {
-    if (message.role === 'user') ats.push(message.at)
+    if (message.role === 'user' && !message.synthetic) ats.push(message.at)
   }
   return ats
 }
 
-export function userTurnCount(messages: ReadonlyArray<{ role: string }>): number {
+export function userTurnCount(
+  messages: ReadonlyArray<{ role: string; synthetic?: boolean }>
+): number {
   let n = 0
   for (const message of messages) {
-    if (message.role === 'user') n += 1
+    if (message.role === 'user' && !message.synthetic) n += 1
   }
   return n
 }

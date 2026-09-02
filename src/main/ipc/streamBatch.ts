@@ -159,8 +159,7 @@ const UI_GATED_STREAM_TYPES = new Set<AgentEvent['type']>([
   'assistant_message',
   'step_usage',
   'context_usage',
-  'token_cost_hint',
-  'mcp_tools_omitted'
+  'token_cost_hint'
 ])
 
 let uiSubscribeExplicit = false

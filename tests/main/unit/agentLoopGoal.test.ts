@@ -119,7 +119,7 @@ describe('runAgent goal auto-continue', () => {
     })
 
     const runId = 'goal-auto-continue'
-    const events: Array<{ type: string; status?: string }> = []
+    const events: Array<{ type: string; status?: string; reason?: string; message?: string }> = []
     for await (const ev of runAgent({
       runId,
       messages: [{ role: 'user', content: formatGoalInvocation('make CI green') }],
@@ -138,28 +138,49 @@ describe('runAgent goal auto-continue', () => {
     expect(messages.some((m) => m.role === 'user' && String(m.content).startsWith(GOAL_CONTINUE_PREFIX))).toBe(
       true
     )
-    expect(readFileSync(join(runDir, 'events.jsonl'), 'utf8')).toContain('Two finishes without tools')
+    // The injected continue turn is protocol, not a user prompt — it must be
+    // flagged synthetic so the transcript never renders it as a user bubble.
+    const continueMsg = messages.find(
+      (m) => m.role === 'user' && String(m.content).startsWith(GOAL_CONTINUE_PREFIX)
+    )
+    expect(continueMsg?.synthetic).toBe(true)
+    const persisted = readFileSync(join(runDir, 'events.jsonl'), 'utf8')
+    expect(persisted).toContain('Two finishes without tools')
+    // The stop must be durable + visible: a goal_wait incomplete event powers
+    // the chat banner + Continue affordance (was toast-only).
+    expect(persisted).toContain('"reason":"goal_wait"')
+    const goalWait = events.find((e) => e.type === 'incomplete' && e.reason === 'goal_wait')
+    expect(goalWait).toBeTruthy()
+    expect(String(goalWait?.message)).toContain('Goal is still active')
   })
 
-  it('does not auto-continue in Plan mode', async () => {
+  it('auto-continues an active goal in Plan mode too, then waits visibly', async () => {
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       yield { type: 'text', text: 'plan only' }
       yield { type: 'done', stopReason: 'stop' }
     })
 
     const runId = 'goal-plan'
-    for await (const _ev of runAgent({
+    const events: Array<{ type: string; reason?: string }> = []
+    for await (const ev of runAgent({
       runId,
       messages: [{ role: 'user', content: formatGoalInvocation('make CI green') }],
       workspacePath: workspace,
       mode: 'plan'
     })) {
-      // drain
+      events.push(ev as { type: string; reason?: string })
     }
+    // 2 plan nudges (no create_plan call) + 1 goal continue + final stop_wait.
+    expect(streamChat.mock.calls.length).toBe(4)
     expect(loadMessages(workspace, runId).some((m) => String(m.content).startsWith(GOAL_CONTINUE_PREFIX))).toBe(
-      false
+      true
     )
     expect(readGoal(resolveRunDir(workspace, runId))?.status).toBe('active')
+    const goalWait = events.find((e) => e.type === 'incomplete' && e.reason === 'goal_wait')
+    expect(goalWait).toBeTruthy()
+    expect(
+      readFileSync(join(resolveRunDir(workspace, runId), 'events.jsonl'), 'utf8')
+    ).toContain('"reason":"goal_wait"')
   })
 
   it('leaves the goal active when the run is aborted (quit must still resume)', async () => {

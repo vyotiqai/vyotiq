@@ -11,7 +11,6 @@ import {
   runNoticeForContextAboveSoftTrigger,
   loopHintForIdenticalStepStreak,
   loopHintForConsecutiveToolFailures,
-  loopHintForOmittedMcpTools,
   isPlausibleWorkspaceFilePath,
   isBuildOutputRelPath,
   isAbortStubToolResult,
@@ -405,12 +404,8 @@ describe('loopPolicy', () => {
     expect(unreadExistingEditPaths(known, 'read', { path: 'exists.ts' }, exists)).toEqual([])
   })
 
-  it('combines omitted-MCP hints without injecting failure recipes', () => {
-    const omitted = loopHintForOmittedMcpTools(['mcp__a__t1', 'mcp__b__t2'])
-    expect(omitted).toMatch(/2 pinned MCP tool/)
-    expect(omitted).toMatch(/request_mcp_tools/)
-    expect(omitted).not.toMatch(/Prefer built-in/i)
-    expect(combineLoopHints(omitted, undefined)).toBe(omitted)
+  it('combineLoopHints joins defined hints and skips undefined', () => {
+    expect(combineLoopHints('mcp hint', undefined)).toBe('mcp hint')
     expect(combineLoopHints(undefined, undefined)).toBeUndefined()
   })
 

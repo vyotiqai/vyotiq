@@ -113,28 +113,6 @@ export function loopHintForMcpNotInCatalogFailFast(
   ].join(' ')
 }
 
-/** Tell the model which pinned MCP tools were dropped from the tools catalog this step (budget). */
-export function loopHintForOmittedMcpTools(omittedNames: readonly string[]): string | undefined {
-  if (omittedNames.length === 0) return undefined
-  const preview = omittedNames.slice(0, 8).join(', ')
-  const more = omittedNames.length > 8 ? ` (+${omittedNames.length - 8} more)` : ''
-  return [
-    `${omittedNames.length} pinned MCP tool(s) were omitted from this step's catalog to fit the tools budget: ${preview}${more}.`,
-    'Release unused pins with release_mcp_tools, disable unused MCP servers in Marketplace → Manage, then pin again with request_mcp_tools if still needed.'
-  ].join(' ')
-}
-
-/** Tell the model pinned MCP schemas were unloaded (unused TTL or release_mcp_tools). */
-export function loopHintForEvictedMcpTools(evictedNames: readonly string[]): string | undefined {
-  if (evictedNames.length === 0) return undefined
-  const preview = evictedNames.slice(0, 8).join(', ')
-  const more = evictedNames.length > 8 ? ` (+${evictedNames.length - 8} more)` : ''
-  return [
-    `${evictedNames.length} pinned MCP tool(s) were unloaded from this step's catalog: ${preview}${more}.`,
-    'Call request_mcp_tools to pin them again for the next step if still needed. Prefer release_mcp_tools when finished with a server to free schema tokens sooner.'
-  ].join(' ')
-}
-
 export function combineLoopHints(...hints: Array<string | undefined>): string | undefined {
   const parts = hints.map((h) => h?.trim()).filter((h): h is string => Boolean(h))
   return parts.length ? parts.join('\n\n') : undefined

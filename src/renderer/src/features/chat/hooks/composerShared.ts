@@ -167,7 +167,9 @@ export function useComposerEditState(args: {
 
 export function lastUserMessageIndex(messages: readonly ChatMessage[]): number | null {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.role === 'user') return i
+    // Skip loop-injected protocol turns (goal continue) — they are not
+    // editable/revertable user prompts.
+    if (messages[i]?.role === 'user' && !messages[i].synthetic) return i
   }
   return null
 }

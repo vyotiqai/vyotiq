@@ -1902,7 +1902,8 @@ export function registerIpc(): void {
               wc,
               message: {
                 role: 'user',
-                content: formatGoalContinueMessage(goal.objective)
+                content: formatGoalContinueMessage(goal.objective),
+                synthetic: true
               }
             })
             if (!launched.ok) return fail(launched.error)

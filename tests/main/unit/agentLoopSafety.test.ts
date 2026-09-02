@@ -288,4 +288,56 @@ describe('runAgent LOOP_SAFETY integration', () => {
     expect(String(loopStop?.message)).toContain('failed 4 steps in a row')
     expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
   })
+
+  it(
+    'runaway 500-step guard emits a visible LOOP_SAFETY error and a fresh continue resets the step budget',
+    { timeout: 120_000 },
+    async () => {
+      // Run 6265fa90 (2026-09-01): the runaway guard fired with NO error event
+      // (bare "Run failed" in the UI) and every app restart re-fired it ~200ms
+      // in — status running → error, no steps, no provider call — because the
+      // restored step counter sat at the ceiling and the guard checked before
+      // any provider call. The guard's own message promises "Send continue to
+      // keep going"; that must actually continue.
+      let call = 0
+      streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+        call += 1
+        if (call <= 500) {
+          yield {
+            type: 'tool_call',
+            toolCall: { id: `c${call}`, name: 'read', arguments: `{"path":"f${call}.ts"}` }
+          }
+          yield { type: 'done', stopReason: 'tool_calls' }
+          return
+        }
+        yield { type: 'text', text: 'resumed and finished' }
+        yield { type: 'done', stopReason: 'stop' }
+      })
+      executeTool.mockResolvedValue({ ok: true, summary: 'file', content: 'body' })
+
+      const runId = 'safety-runaway-resume'
+      const first = await collect(runId, workspace)
+
+      const guard = first.find((e) => e.type === 'error' && e.code === 'LOOP_SAFETY')
+      expect(guard).toBeTruthy()
+      expect(String(guard?.message)).toContain('500 agent steps')
+      expect(first.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
+      // The reason must be persisted so it survives an app restart.
+      const runDir = resolveRunDir(workspace, runId)
+      const persisted = readFileSync(join(runDir, 'events.jsonl'), 'utf8')
+      expect(persisted).toContain('"code":"LOOP_SAFETY"')
+      expect(persisted).toContain('runaway-loop guard')
+      const statusRaw = JSON.parse(readFileSync(join(runDir, 'status.json'), 'utf8')) as {
+        step: number
+      }
+      expect(statusRaw.step).toBeGreaterThanOrEqual(500)
+
+      const resumed = await collect(runId, workspace, { resume: true })
+      // Without the step-budget reset the resumed run would hit the guard
+      // before streaming anything: no new stream call and a LOOP_SAFETY error.
+      expect(resumed.some((e) => e.type === 'error' && e.code === 'LOOP_SAFETY')).toBe(false)
+      expect(resumed.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+      expect(streamChat).toHaveBeenCalledTimes(501)
+    }
+  )
 })

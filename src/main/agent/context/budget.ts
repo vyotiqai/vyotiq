@@ -3,7 +3,6 @@ import { resolveModelContextWindow } from '../../../shared/domain/modelContextWi
 import {
   allocateBudgetShares,
   contentWindowFromRaw,
-  toolsBudgetFromRaw,
   DEFAULT_CONTEXT_WINDOW,
   type BudgetLayerShares
 } from '../../../shared/domain/contextBudget'
@@ -35,12 +34,3 @@ export function contentWindow(model: ModelInfo, providerId?: ProviderId): number
   return effectiveWindow(model, providerId)
 }
 
-/** Tools budget = full window share (no soft ceiling). */
-export function toolsBudgetTokens(model: ModelInfo, providerId?: ProviderId): number {
-  return toolsBudgetFromRaw(contextWindowFor(model, providerId))
-}
-
-/** Compaction trigger = hard content window (no ratio soft trigger). */
-export function compactionTriggerTokens(model: ModelInfo, providerId?: ProviderId): number {
-  return contentWindowFromRaw(contextWindowFor(model, providerId))
-}

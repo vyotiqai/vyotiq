@@ -139,7 +139,24 @@ const RETRYABLE_TURN_ERROR_CODES = new Set([
   'CIRCUIT_OPEN'
 ])
 
-const RETRYABLE_INCOMPLETE_REASONS = new Set(['network_interrupted', 'circuit_open', 'provider_error'])
+// 2026-09-01 audit (runs 9349708b / c9e863c0): empty_response and truncated
+// incompletes ended turns with NO user-visible banner because only network-
+// class reasons were recognized here. The loop already auto-continues these
+// in-band; when it gives up (MAX_EMPTY_RESPONSE_CONTINUES / MAX_TRUNCATION_
+// CONTINUES) the user must see why the run stopped. They are surfaceable
+// turn failures: the Continue/retry affordance re-issues a user turn, not an
+// auto-resend, so listing them cannot create a resend loop.
+const RETRYABLE_INCOMPLETE_REASONS = new Set([
+  'network_interrupted',
+  'circuit_open',
+  'provider_error',
+  'empty_response',
+  'truncated',
+  // Bounded goal auto-continue stop: the goal is still active but the model
+  // finished twice without tools. A user continue re-issues a turn (the goal
+  // loop resumes it), so listing it cannot create an auto-resend loop.
+  'goal_wait'
+])
 
 /** Continue / retry affordance for transient provider, stream, and circuit-open failures. */
 export function isRetryableTurnFailure(opts: {

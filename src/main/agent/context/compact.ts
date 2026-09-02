@@ -18,7 +18,6 @@ import { collectStructuredResponse } from '../schemas/structured'
 import { circuitKeyProvider, isCircuitOpenError } from '../circuitBreaker'
 import { runWithStreamRetry } from '../streamRetry'
 import {
-  estimateMessagesTokens,
   estimateMessagesTokensAsync,
   estimateTextTokensAsync
 } from './estimate'
@@ -70,16 +69,6 @@ export function ensureSubstantialFold(
   if (folded >= Math.floor(working.length / 2)) return kept
   const forced = forceCompactKeepTail(working)
   return forced.length < kept.length ? forced : kept
-}
-
-export function applyTriggerFold(
-  working: ChatMessage[],
-  kept: ChatMessage[],
-  estimatedTokens: number,
-  triggerTokens: number
-): ChatMessage[] {
-  if (!(triggerTokens > 0 && estimatedTokens >= triggerTokens)) return kept
-  return ensureSubstantialFold(working, kept)
 }
 
 const COMPACTION_NEXT_STEPS_GUIDANCE =
@@ -484,63 +473,8 @@ export async function compactMessages(input: {
   }
 }
 
-/** Keep the last ~N user/assistant turns (tool pairs included). */
-export function preserveRecentMessages(
-  messages: ChatMessage[],
-  keepTurns = KEEP_RECENT_TURNS,
-  historyBudgetTokens?: number,
-  model?: ModelInfo
-): ChatMessage[] {
-  let userTurns = 0
-  let start = 0
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === 'user') {
-      userTurns++
-      if (userTurns >= keepTurns) {
-        start = i
-        break
-      }
-    }
-  }
-
-  if (userTurns < keepTurns) {
-    if (!historyBudgetTokens || !model) return messages
-    if (estimateMessagesTokens(messages, model) <= historyBudgetTokens) return messages
-    start = Math.min(start + 2, messages.length - 1)
-  }
-
-  let kept = stripLeadingOrphanToolMessages(messages.slice(start))
-  // Budget/index trim landed inside a tool turn — rewind to include the owner.
-  while (kept.length === 0 && start > 0) {
-    start--
-    kept = stripLeadingOrphanToolMessages(messages.slice(start))
-  }
-  if (kept.length === 0) {
-    for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role !== 'tool') return messages.slice(i)
-    }
-    return messages.slice(-1)
-  }
-
-  if (historyBudgetTokens && model) {
-    while (
-      kept.length > 2 &&
-      estimateMessagesTokens(kept, model) > historyBudgetTokens
-    ) {
-      const dropIdx = kept.findIndex((m) => m.role === 'user')
-      if (dropIdx < 0) break
-      const nextUser = kept.findIndex((m, idx) => idx > dropIdx && m.role === 'user')
-      const end = nextUser >= 0 ? nextUser : kept.length
-      let next = stripLeadingOrphanToolMessages(kept.slice(end))
-      if (next.length === 0) break
-      kept = next
-    }
-  }
-
-  return kept
-}
-
-/** Async variant — BPE for uncached strings runs off the main thread when workers are available. */
+/** Keep the last ~N user/assistant turns (tool pairs included).
+ * BPE for uncached strings runs off the main thread when workers are available. */
 export async function preserveRecentMessagesAsync(
   messages: ChatMessage[],
   keepTurns = KEEP_RECENT_TURNS,

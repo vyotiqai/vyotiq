@@ -3,6 +3,27 @@ import type { ChatMessage } from '@shared/ipc'
 import { inferToolStatus, messagesToUiItems, applyEventTimestamps, applyCompactionItems, insertCompactionItem, applyPersistedLiveTools, finalizeHydratedTranscript, isMeaningfulThinking, shouldRenderThinking, duplicatesReasoning, mergeThinkingContent, applyThinkingSnapshot, stripToolShapedAssistantText, stripToolShapedAssistantTextForStream, stripIncompleteToolPrefix, isToolShapedTextLeak, scrubStreamingAssistantToolLeak, type UiItem } from '@shared/transcript'
 
 describe('messagesToUiItems', () => {
+  it('never renders loop-injected synthetic user messages', () => {
+    const messages: ChatMessage[] = [
+      { role: 'user', content: 'real prompt' },
+      {
+        role: 'user',
+        content: '[Goal continue] Continue the active goal until it is complete.',
+        synthetic: true
+      },
+      { role: 'assistant', content: 'working' }
+    ]
+
+    const items = messagesToUiItems(messages)
+    expect(items).toHaveLength(2)
+    expect(
+      items.some(
+        (i) =>
+          i.kind === 'message' && i.role === 'user' && String(i.content).includes('Goal continue')
+      )
+    ).toBe(false)
+  })
+
   it('rebuilds user, assistant, and tool rows in order', () => {
     const messages: ChatMessage[] = [
       { role: 'user', content: 'read a.ts' },

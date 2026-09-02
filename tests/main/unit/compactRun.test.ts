@@ -1,12 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import {
-  applyTriggerFold,
   buildCompactionSystemPrompt,
   countUserTurns,
   ensureSubstantialFold,
   forceCompactKeepTail,
   manualKeepRecentTurns,
-  preserveRecentMessages
+  preserveRecentMessagesAsync
 } from '@main/agent/context/compact'
 import type { ChatMessage } from '@shared/ipc'
 
@@ -98,7 +97,7 @@ describe('forceCompactKeepTail', () => {
   })
 })
 
-describe('applyTriggerFold (81cf5721 6-turn / 243-message shape)', () => {
+describe('ensureSubstantialFold (81cf5721 6-turn / 243-message shape)', () => {
   const USER_AT_1BASED = new Set([1, 17, 19, 25, 27, 212])
 
   function recordedShapeWorking(): ChatMessage[] {
@@ -109,36 +108,34 @@ describe('applyTriggerFold (81cf5721 6-turn / 243-message shape)', () => {
     })
   }
 
-  it('does not plan a 16-message-only fold when history is over the 170k trigger', () => {
+  it('keep-recent baseline folds only the last 5 turns (16 messages)', async () => {
     const working = recordedShapeWorking()
     expect(working).toHaveLength(243)
     expect(countUserTurns(working)).toBe(6)
     expect(manualKeepRecentTurns(6, 12)).toBe(5)
 
-    const keptRecent = preserveRecentMessages(working, 5)
+    const keptRecent = await preserveRecentMessagesAsync(working, 5)
     expect(working.length - keptRecent.length).toBe(16)
+  })
 
-    const kept = applyTriggerFold(working, keptRecent, 176_457, 170_000)
+  it('always folds at least half so keep-recent cannot persist a 16-message-only fold', async () => {
+    const working = recordedShapeWorking()
+    const keptRecent = await preserveRecentMessagesAsync(working, 5)
+    const kept = ensureSubstantialFold(working, keptRecent)
     const toSummarize = working.slice(0, working.length - kept.length)
     expect(toSummarize.length).toBeGreaterThan(16)
     expect(toSummarize.length).toBe(working.length - forceCompactKeepTail(working).length)
     expect(toSummarize.length).toBeGreaterThanOrEqual(Math.floor(working.length / 2))
   })
 
-  it('leaves keep-recent in place when usage is under the trigger', () => {
+  it('is idempotent — a second fold of an already-halved tail keeps it', async () => {
+    // planCompact calls the fold once; this is the property that made the old
+    // second (duplicate) call a no-op and its removal safe.
     const working = recordedShapeWorking()
-    const keptRecent = preserveRecentMessages(working, 5)
-    const kept = applyTriggerFold(working, keptRecent, 100_000, 170_000)
-    expect(kept).toEqual(keptRecent)
-    expect(working.length - kept.length).toBe(16)
-  })
-
-  it('ensureSubstantialFold still halves a keep-recent tail when under the token trigger', () => {
-    const working = recordedShapeWorking()
-    const keptRecent = preserveRecentMessages(working, 5)
-    expect(working.length - keptRecent.length).toBe(16)
-    const kept = ensureSubstantialFold(working, keptRecent)
-    expect(working.length - kept.length).toBeGreaterThanOrEqual(Math.floor(working.length / 2))
+    const keptRecent = await preserveRecentMessagesAsync(working, 5)
+    const once = ensureSubstantialFold(working, keptRecent)
+    const twice = ensureSubstantialFold(working, once)
+    expect(twice).toEqual(once)
   })
 })
 

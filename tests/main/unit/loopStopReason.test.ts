@@ -232,6 +232,16 @@ describe('runAgent stop-reason classification', () => {
     expect(incomplete.every((e) => e.reason === 'empty_response')).toBe(true)
     expect(incomplete[0]?.message).toMatch(/retrying/i)
     expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+    // 2026-09-01: the empty-response retry re-streams the SAME request — it must
+    // not inject a synthetic user nudge. Run 707a561f leaked
+    // "Your previous response was empty…" into messages.jsonl where it rendered
+    // as a user chat bubble (session c3290c9d lines 459→460 on disk).
+    const persisted = readFileSync(
+      join(resolveRunDir(workspace, 'stop-empty-multi'), 'messages.jsonl'),
+      'utf8'
+    )
+    expect(persisted).not.toContain('previous response was empty')
+    expect(persisted).toContain('do the thing')
   })
 
   it('auto-continues once after an empty response then finishes', async () => {
@@ -251,6 +261,38 @@ describe('runAgent stop-reason classification', () => {
     expect(events.filter((e) => e.type === 'incomplete')).toHaveLength(1)
     expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('empty_response')
     expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+  })
+
+  it('auto-continues after a reasoning-only response then finishes', async () => {
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call === 1) {
+        yield { type: 'thinking_delta', text: 'I will make the edits next.' }
+        yield {
+          type: 'done',
+          stopReason: 'stop',
+          reasoningState: {
+            kind: 'openai_compat',
+            reasoningContent: 'I will make the edits next.'
+          }
+        }
+      } else {
+        yield { type: 'text', text: 'Recovered answer' }
+        yield { type: 'done', stopReason: 'stop' }
+      }
+    })
+
+    const runId = 'stop-reasoning-only-continue'
+    const events = await collect(runId, workspace)
+    const messagesPath = join(resolveRunDir(workspace, runId), 'messages.jsonl')
+    const persisted = readFileSync(messagesPath, 'utf8')
+
+    expect(call).toBe(2)
+    expect(events.find((e) => e.type === 'incomplete')?.reason).toBe('empty_response')
+    expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+    expect(persisted).not.toContain('I will make the edits next.')
+    expect(persisted).toContain('Recovered answer')
   })
 
   it('reports a content filter stop', async () => {

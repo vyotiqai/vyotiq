@@ -29,7 +29,6 @@ import {
   mergeAgentInstanceMaps,
   mergeAgentInstanceUpdate
 } from '@shared/utils/mergeAgentInstanceUpdate'
-import { mcpToolsOmittedRunNotice } from '@shared/utils/mcpRunNotice'
 import {
   buildUserContent,
   contentDisplayText,
@@ -927,7 +926,7 @@ function hydrateFromDisk(
     incomplete,
     turnStatus: turnOutcomeFromPersisted(events, opts?.idle === true, incomplete),
     contextUsage: summarizeContextUsageFromEvents(events),
-    runNotice: operationalRunNoticeFromEvents(events),
+    runNotice: null,
     compacting: compactingFromEvents(events, opts?.idle === true),
     costHint: costHintFromEvents(events),
     items: applyCompactionItems(
@@ -945,19 +944,6 @@ function hydrateFromDisk(
     agentInstances: prior ? mergeAgentInstanceMaps(prior, fromDisk) : fromDisk,
     turnUsage: turnUsageFromPersistedEvents(events, userMessageAts(kept))
   }
-}
-
-/** Last operational composer notice from disk (deferred MCP only — compaction is inline). */
-function operationalRunNoticeFromEvents(events: PersistedEvent[]): string | null {
-  let notice: string | null = null
-  for (const row of events) {
-    if (!isAgentEvent(row.event)) continue
-    if (row.event.type === 'mcp_tools_omitted') {
-      if (row.event.reason === 'unpinned') continue
-      notice = mcpToolsOmittedRunNotice(row.event.omittedCount, 'budget') ?? null
-    }
-  }
-  return notice
 }
 
 /** True when a fold started on disk and has not yet finished or failed. */
@@ -2391,11 +2377,6 @@ export function createChatStreamController(
     } else if (event.type === 'token_cost_hint') {
       const msg = event.message?.trim()
       if (msg) patch({ costHint: msg })
-    } else if (event.type === 'mcp_tools_omitted') {
-      if (event.reason === 'unpinned') return
-      patch({
-        runNotice: mcpToolsOmittedRunNotice(event.omittedCount, 'budget') ?? undefined
-      })
     } else if (event.type === 'writes_checkpoint') {
       const files = event.files.map((f) => ({
         path: f.path,
@@ -2445,24 +2426,29 @@ export function createChatStreamController(
         if (!alreadyPresent) {
           nextMessages = messagesForNextTurn([...state.messages, ...event.messages])
           const startIdx = nextMessages.length - event.messages.length
-          const newItems = event.messages.map((msg, i) => {
-            const followUpId = event.ids[i]
-            const pendingEntry = state.pendingFollowUps.find((entry) => entry.id === followUpId)
-            const content = msg.content
-            const displayText = contentDisplayText(content)
-            const imageUrls = contentImages(content)
-            const attachments = uiAttachments(content)
-            return {
-              kind: 'message' as const,
-              id: pendingEntry?.itemId ?? messageUiId('user', startIdx + i),
-              role: 'user' as const,
-              content: displayText,
-              images: imageUrls.length ? imageUrls : undefined,
-              attachments: attachments.length ? attachments : undefined,
-              at: msg.at ?? new Date().toISOString()
-            }
-          })
-          nextItems = prependClosed(state.items, newItems)
+          // Synthetic protocol turns (goal continue) join state.messages for the
+          // model but never render as user bubbles.
+          const newItems = event.messages
+            .map((msg, i) => ({ msg, i }))
+            .filter(({ msg }) => !msg.synthetic)
+            .map(({ msg, i }) => {
+              const followUpId = event.ids[i]
+              const pendingEntry = state.pendingFollowUps.find((entry) => entry.id === followUpId)
+              const content = msg.content
+              const displayText = contentDisplayText(content)
+              const imageUrls = contentImages(content)
+              const attachments = uiAttachments(content)
+              return {
+                kind: 'message' as const,
+                id: pendingEntry?.itemId ?? messageUiId('user', startIdx + i),
+                role: 'user' as const,
+                content: displayText,
+                images: imageUrls.length ? imageUrls : undefined,
+                attachments: attachments.length ? attachments : undefined,
+                at: msg.at ?? new Date().toISOString()
+              }
+            })
+          if (newItems.length > 0) nextItems = prependClosed(state.items, newItems)
         }
       }
       turnUsageSlots = alignTurnUsageSlots(
@@ -2634,12 +2620,8 @@ export function createChatStreamController(
           networkWait: null,
           compacting: false,
           turnStatus: event.status,
-          // Keep MCP budget notices readable after the run ends; cleared on next send.
           // Compaction summaries are transcript items, not composer runNotice.
-          runNotice:
-            state.runNotice?.includes('deferred to fit the context budget') === true
-              ? state.runNotice
-              : null,
+          runNotice: null,
           runTerminalTick: state.runTerminalTick + 1,
           ...(event.status === 'error' && !state.error
             ? { error: errorMessage, errorCode: lastRunErrorCode }

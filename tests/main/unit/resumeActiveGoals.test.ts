@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, rmSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import type { WebContents } from 'electron'
@@ -82,9 +82,34 @@ describe('resumeActiveGoalsAndLoops', () => {
     expect(launchMock).toHaveBeenCalledTimes(1)
     const launched = launchMock.mock.calls[0]?.[0] as {
       runId: string
-      message: { content: string }
+      message: { content: string; synthetic?: boolean }
     }
     expect(launched.runId).toBe(activeId)
     expect(launched.message.content).toBe(formatGoalContinueMessage('make CI green'))
+    // Protocol turn — must not render as a user chat bubble after resume.
+    expect(launched.message.synthetic).toBe(true)
+  })
+
+  it('skips the app-start relaunch when the run stopped on provider quota', () => {
+    // Run 6265fa90 (2026-09-01): quota-exhausted terminal stops were relaunched
+    // at every app restart and re-stopped instantly on the same billing-gate
+    // error. quotaGate's contract is "no automatic relaunch"; the app-start
+    // path must honor it too.
+    const quotaId = 'goal-quota'
+    createRun(workspace, quotaId, 'chat')
+    createGoal(resolveRunDir(workspace, quotaId), 'quota objective')
+    const statusPath = join(resolveRunDir(workspace, quotaId), 'status.json')
+    writeFileSync(
+      statusPath,
+      JSON.stringify({
+        ...JSON.parse(readFileSync(statusPath, 'utf8')),
+        status: 'error',
+        error: 'Weekly usage limit reached. Resets in 6 days'
+      })
+    )
+
+    resumeActiveGoalsAndLoops({ isDestroyed: () => false } as WebContents)
+
+    expect(launchMock).not.toHaveBeenCalled()
   })
 })

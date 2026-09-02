@@ -1,28 +1,21 @@
 export {
   assembleContext,
-  clearSystemPromptCache,
-  estimateToolsJson
+  clearSystemPromptCache
 } from './assemble'
-export { allocateBudget, contextWindowFor, effectiveWindow, contentWindow, toolsBudgetTokens } from './budget'
+export { allocateBudget, contextWindowFor, effectiveWindow, contentWindow } from './budget'
 export {
   compactMessages,
   countUserTurns,
   forceCompactKeepTail,
-  applyTriggerFold,
   ensureSubstantialFold,
   manualKeepRecentTurns,
   buildCompactionSystemPrompt,
-  preserveRecentMessages,
   preserveRecentMessagesAsync
 } from './compact'
 export {
-  estimateContentTokens,
-  estimateContentTokensAsync,
-  estimateMessagesTokens,
   estimateMessagesTokensAsync,
   estimateTextTokens,
   estimateTextTokensAsync,
-  effectiveInputTokens,
   shouldTriggerAutoCompact
 } from './estimate'
 export {
@@ -49,10 +42,6 @@ export {
 } from './memory'
 export {
   buildStepToolCatalog,
-  toolCatalogFingerprint,
-  omittedOptionalBuiltinNames,
-  loopHintForDeferredBuiltins,
-  loopHintForDeferredMcpTools,
   isOptionalBuiltinName,
   OPTIONAL_BUILTIN_NAMES
 } from './toolsBudget'
@@ -103,7 +92,6 @@ export {
   stripLeadingOrphanToolMessages,
   stripOrphanToolMessages
 } from './foldWatermark'
-export { stripImagesFromMessages } from './stripImages'
 export { buildWorkspaceSnapshot, buildWorkspaceSnapshotAsync, clearWorkspaceSnapshotCache } from './workspaceSnapshot'
 export {
   buildWorkspaceRulesSection,

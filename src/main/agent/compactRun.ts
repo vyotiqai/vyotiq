@@ -9,10 +9,6 @@ import type {
 import { contentToText } from '../../shared/ipc'
 import { providerNeedsKey, resolveProviderChatBaseUrl } from '../../shared/domain/providers'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
-import {
-  DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO,
-  proactiveCompactThresholdTokens
-} from '../../shared/domain/contextBudget'
 import { logger } from '../../shared/logger'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
 import { getSecret, hasStoredSecretBlob, secretStatus } from '@main/settings/secrets'
@@ -23,7 +19,6 @@ import {
   compactMessages,
   countUserTurns,
   forceCompactKeepTail,
-  applyTriggerFold,
   ensureSubstantialFold,
   manualKeepRecentTurns,
   preserveRecentMessagesAsync,
@@ -58,12 +53,9 @@ import { getProvider } from './providers'
 import { STREAM_IDLE_TIMEOUT_MS } from './providers/sse'
 import type { LlmProvider, ToolDefinition } from './providers/types'
 import { loadHarness } from './harness'
-import { listMcpToolDefinitions } from './mcp'
-import { AGENT_TOOLS } from './types'
 import {
   appendEvent,
   loadCompaction,
-  loadToolCatalogSticky,
   loadWorkingMessagesForFold,
   readContract,
   runExists,
@@ -179,30 +171,11 @@ function throwCompactionAbort(abort: CompactAbortHandle): void {
   throw err
 }
 
-function toolDefsFromKeptNames(keptNames: readonly string[]): ToolDefinition[] {
-  const byName = new Map<string, ToolDefinition>()
-  for (const t of AGENT_TOOLS) byName.set(t.name, t)
-  for (const t of listMcpToolDefinitions()) byName.set(t.name, t)
-  const out: ToolDefinition[] = []
-  for (const name of keptNames) {
-    const def = byName.get(name)
-    if (!def) continue
-    out.push({
-      name: def.name,
-      description: def.description,
-      parameters: def.parameters
-    })
-  }
-  return out
-}
-
-/** Manual /compact: sticky catalog + loaded harness. Not byte-identical to a live step. */
-function bestEffortForkPrefix(workspacePath: string, runDir: string): CompactForkPrefix | undefined {
+/** Manual /compact: harness-only fork prefix. Not byte-identical to a live step. */
+function bestEffortForkPrefix(workspacePath: string): CompactForkPrefix | undefined {
   const systemStable = loadHarness(workspacePath)
-  const sticky = loadToolCatalogSticky(runDir)
-  const toolDefs = sticky ? toolDefsFromKeptNames(sticky.keptNames) : []
-  if (!systemStable && toolDefs.length === 0) return undefined
-  return { systemStable, toolDefs }
+  if (!systemStable) return undefined
+  return { systemStable, toolDefs: [] }
 }
 
 function resolveSettings(workspacePath: string, snapshotted?: Settings): Settings {
@@ -225,12 +198,6 @@ export async function planCompact(input: {
   signal?: AbortSignal
   /** Invoke-snapshotted settings (auto). When omitted, read live effective settings (menu). */
   settings?: Settings
-  /**
-   * Assembled context size (history + system + tools). When at/above the
-   * proactive trigger, fold enough prefix — keep-recent alone can leave a
-   * 167k tail verbatim.
-   */
-  estimatedTokens?: number
 }): Promise<CompactPlan> {
   if (!runExists(input.workspacePath, input.runId)) {
     throw new CompactionUnavailableError('Run not found')
@@ -273,15 +240,7 @@ export async function planCompact(input: {
   if (kept.length >= working.length) {
     kept = forceCompactKeepTail(working)
   }
-  const cWin = contentWindow(model, providerId)
-  const triggerTokens = proactiveCompactThresholdTokens(
-    cWin,
-    settings.autoCompactThresholdRatio ?? DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO
-  )
-  const estimatedTokens =
-    input.estimatedTokens ?? (await estimateMessagesTokensAsync(working, model))
-  kept = applyTriggerFold(working, kept, estimatedTokens, triggerTokens)
-  // Menu compact can be under the token trigger; still fold at least half so
+  // Menu compact can be under any token trigger; still fold at least half so
   // keep-recent cannot persist a 16-message-only prefix of a long run.
   kept = ensureSubstantialFold(working, kept)
   const toSummarize = working.slice(0, working.length - kept.length)
@@ -307,7 +266,7 @@ export async function planCompact(input: {
     toSummarize,
     baseFolded,
     existing,
-    forkPrefix: bestEffortForkPrefix(input.workspacePath, runDir)
+    forkPrefix: bestEffortForkPrefix(input.workspacePath)
   }
 }
 
@@ -699,8 +658,6 @@ export type AutoCompactEventsInput = {
   focus?: string
   triggerReason?: 'proactive' | 'overflow'
   invokeId?: number
-  /** Assembled context tokens at the auto-compact decision. */
-  estimatedTokens?: number
   /** Parent step stable system — required with `toolDefs` for a cache-safe fork. */
   systemStable?: string
   /** Parent step tool defs in catalog order. */
@@ -720,8 +677,7 @@ export async function* autoCompactLlmEvents(
       workspacePath: input.workspacePath,
       runId: input.runId,
       signal: input.signal,
-      settings: input.settings,
-      estimatedTokens: input.estimatedTokens
+      settings: input.settings
     })
     if (input.signal?.aborted || plan.abort.signal.aborted) {
       throwCompactionAbort(plan.abort)
@@ -767,7 +723,6 @@ export async function autoCompactLlm(input: {
   signal?: AbortSignal
   focus?: string
   triggerReason?: 'proactive' | 'overflow'
-  estimatedTokens?: number
 }): Promise<AutoCompactOutcome> {
   const gen = autoCompactLlmEvents({
     ...input,

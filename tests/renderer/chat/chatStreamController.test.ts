@@ -499,7 +499,7 @@ describe('createChatStreamController', () => {
     expect(currentAfter?.kind === 'message' ? currentAfter.reconnecting : undefined).toBe(true)
   })
 
-  it('skips advisory token_cost_hint from runNotice; keeps operational notices', () => {
+  it('skips advisory token_cost_hint from runNotice', () => {
     const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
 
     controller.handleEvent({
@@ -560,21 +560,6 @@ describe('createChatStreamController', () => {
         item.kind === 'compaction' ? item.summary : ''
       )
     ).toEqual(['summarized', 'Another fold'])
-
-    controller.handleEvent({
-      type: 'mcp_tools_omitted',
-      runId: 'r1',
-      omittedCount: 2
-    })
-    expect(controller.runNotice).toMatch(/2 MCP tools were deferred/)
-
-    controller.handleEvent({
-      type: 'mcp_tools_omitted',
-      runId: 'r1',
-      omittedCount: 10,
-      reason: 'unpinned'
-    })
-    expect(controller.runNotice).toMatch(/2 MCP tools were deferred/)
   })
 
   it('clears stale overflow on applyManualCompaction', () => {
@@ -1375,6 +1360,32 @@ describe('createChatStreamController', () => {
     })
     expect(controller.turnUsage[2]?.billedInputTokens).toBe(15)
     expect(controller.turnUsage[1]?.billedInputTokens).toBe(80)
+  })
+
+  it('does not render a synthetic protocol turn from follow_up_applied', () => {
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+    controller.hydrateTranscript([{ role: 'user', content: 'one' }], [])
+    expect(controller.items.some((i) => i.kind === 'message' && i.role === 'user')).toBe(true)
+
+    controller.handleEvent({
+      type: 'follow_up_applied',
+      runId: 'r1',
+      ids: ['fu-goal'],
+      messages: [
+        {
+          role: 'user',
+          content: '[Goal continue] Continue the active goal until it is complete.',
+          synthetic: true
+        }
+      ]
+    })
+    // The protocol turn joins model history but never renders as a user bubble.
+    expect(
+      controller.items.some(
+        (i) => i.kind === 'message' && String(i.content).includes('Goal continue')
+      )
+    ).toBe(false)
+    expect(controller.messages.some((m) => String(m.content).includes('Goal continue'))).toBe(true)
   })
 
   it('keeps hydrated run step totals when a later step_usage arrives', () => {

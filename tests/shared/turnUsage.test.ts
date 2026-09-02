@@ -3,6 +3,7 @@ import { emptyStepUsageTotals } from '@shared/utils/runTelemetry'
 import {
   turnUsageFromPersistedEvents,
   userMessageAts,
+  userTurnCount,
   alignTurnUsageSlots
 } from '@shared/utils/turnUsage'
 
@@ -72,6 +73,16 @@ describe('userMessageAts', () => {
         { role: 'user' }
       ])
     ).toEqual(['a', undefined])
+  })
+
+  it('excludes synthetic protocol turns from slots and counts', () => {
+    const messages = [
+      { role: 'user', at: 'a' },
+      { role: 'user', at: 'b', synthetic: true },
+      { role: 'user' }
+    ]
+    expect(userMessageAts(messages)).toEqual(['a', undefined])
+    expect(userTurnCount(messages)).toBe(2)
   })
 })
 

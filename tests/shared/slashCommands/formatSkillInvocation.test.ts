@@ -130,6 +130,22 @@ describe('stubPastSkillInvocationsInMessages', () => {
     expect(skillInvocationEditDraft(parsed)).toBe('/docs write')
   })
 
+  it('is idempotent — a second pass over stubbed history stubs nothing new', () => {
+    // The agent loop's per-step disk rewrite gate relies on this: once a body
+    // is stubbed, later passes must report stubbedCount 0 so the transcript
+    // is not re-read and rewritten on every step.
+    const full = formatSkillInvocation('docs', 'LONG BODY', 'write')
+    const first = stubPastSkillInvocationsInMessages([
+      { role: 'user', content: full },
+      { role: 'tool', toolName: 'Skill', toolCallId: 's1', content: 'BODY' },
+      { role: 'assistant', content: 'ok' }
+    ])
+    expect(first.stubbedCount).toBeGreaterThan(0)
+    const second = stubPastSkillInvocationsInMessages(first.messages)
+    expect(second.stubbedCount).toBe(0)
+    expect(second.messages).toEqual(first.messages)
+  })
+
   it('stubs earlier Skill tool results and keeps the latest body', () => {
     const reviewBody = [
       '# Skill: review-code',

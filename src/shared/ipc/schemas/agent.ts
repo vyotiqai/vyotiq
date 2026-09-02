@@ -82,6 +82,9 @@ export const ChatMessageSchema = z.object({
   thinking: z.string().optional(),
   /** Opaque provider reasoning replay state for multi-turn tool loops. */
   reasoningState: z.unknown().optional(),
+  /** Loop-injected protocol turn (goal continue / plan nudge). Persisted for
+   * the model, but never rendered as a user chat bubble. */
+  synthetic: z.boolean().optional(),
   /** ISO timestamp when the user sent this message (turn-duration start). */
   at: z.string().datetime().optional()
 })
@@ -132,7 +135,10 @@ export type IpcResult<T> =
 
 /**
  * Why a turn ended without finishing its work. Drives the Continue affordance:
- * the run is over, but the model was cut off rather than done.
+ * the run is over, but the model was cut off rather than done. `goal_wait` is
+ * the bounded goal auto-continue stop: the goal is still active but the model
+ * finished twice without tool calls, so the run parks for the user instead of
+ * looping unbounded.
  */
 export const IncompleteReasonSchema = z.enum([
   'truncated',
@@ -141,7 +147,8 @@ export const IncompleteReasonSchema = z.enum([
   'context_overflow',
   'network_interrupted',
   'circuit_open',
-  'provider_error'
+  'provider_error',
+  'goal_wait'
 ])
 export type IncompleteReason = z.infer<typeof IncompleteReasonSchema>
 
@@ -324,18 +331,6 @@ const AgentEventUnionSchema = z.discriminatedUnion('type', [
     verified: z.boolean().optional(),
     verifyCoverage: z.number().min(0).max(1).optional(),
     verifyFailures: z.array(z.string()).max(16).optional()
-  }),
-  z.object({
-    /** MCP tools absent from the step catalog (budget shed or unpinned policy). */
-    type: z.literal('mcp_tools_omitted'),
-    ...eventBase,
-    omittedCount: z.number().int().min(1),
-    omittedPreview: z.string().optional(),
-    /**
-     * Why tools are absent. Default/omit = budget (pinned shed).
-     * `unpinned` = connected but deferred until request_mcp_tools.
-     */
-    reason: z.enum(['budget', 'unpinned']).optional()
   }),
   z.object({
     /** User-facing cost guidance (never changes settings; surface + recommend only). */

@@ -62,6 +62,22 @@ describe('goalRuntime', () => {
         incomplete: false,
         consecutiveNoToolFinishes: 1
       })
+    ).toBe('continue')
+    expect(
+      shouldAutoContinueActiveGoal({
+        goalStatus: 'active',
+        agentMode: 'plan',
+        incomplete: false,
+        consecutiveNoToolFinishes: 2
+      })
+    ).toBe('stop_wait')
+    expect(
+      shouldAutoContinueActiveGoal({
+        goalStatus: 'active',
+        agentMode: 'ask',
+        incomplete: false,
+        consecutiveNoToolFinishes: 1
+      })
     ).toBe('none')
     expect(
       shouldAutoContinueActiveGoal({

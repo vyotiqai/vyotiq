@@ -40,10 +40,7 @@ export function planGoalRelaunch(opts: {
   // Quota exhaustion is a billing gate, not an outage — relaunching cannot
   // succeed until the plan resets. The goal stays active but waits for a user
   // continue / app restart.
-  if (
-    isQuotaExhaustedMessage(persistedError) ||
-    (persisted as { stopReason?: string }).stopReason === 'quota_exhausted'
-  ) {
+  if (isQuotaExhaustedMessage(persistedError)) {
     return { kind: 'blocked_quota', reason: 'quota_exhausted' }
   }
   if (!opts.goalActive) return { kind: 'none' }

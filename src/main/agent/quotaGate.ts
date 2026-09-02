@@ -36,9 +36,8 @@ export function parseQuotaResetDays(message: string): number | null {
  * Fixture is verbatim from vyotiq.log run 6265fa90, 2026-08-31T17:43:24Z.
  */
 export function isQuotaExhaustedMessage(message: string): boolean {
-  const s = (message ?? '').trim()
+  const s = message.trim()
   if (!s) return false
-  if (s.includes('Weekly usage limit reached. Resets in')) return true
   return QUOTA_MESSAGE_RE.test(s)
 }
 

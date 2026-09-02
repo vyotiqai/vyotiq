@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { allocateBudget, contentWindow, contextWindowFor, effectiveWindow } from '@main/agent/context/budget'
-import { estimateTextTokens, estimateMessagesTokens } from '@main/agent/context/estimate'
-import { preserveRecentMessages } from '@main/agent/context/compact'
+import { estimateTextTokens, estimateMessagesTokensAsync } from '@main/agent/context/estimate'
+import { preserveRecentMessagesAsync } from '@main/agent/context/compact'
 import {
   applyFoldedMessagesWatermark,
   stripLeadingOrphanToolMessages
@@ -62,20 +62,20 @@ describe('context budget', () => {
     expect(result.layers.buffer).toBe(Math.max(0, 85_000 - used))
   })
 
-  it('estimates tokens heuristically', () => {
+  it('estimates tokens heuristically', async () => {
     expect(estimateTextTokens('abcd')).toBe(1)
     expect(
-      estimateMessagesTokens([{ role: 'user', content: 'hello world!!' }])
+      await estimateMessagesTokensAsync([{ role: 'user', content: 'hello world!!' }])
     ).toBeGreaterThan(0)
   })
 
-  it('preserves recent user turns', () => {
+  it('preserves recent user turns', async () => {
     const msgs: ChatMessage[] = []
     for (let i = 0; i < 20; i++) {
       msgs.push({ role: 'user', content: `u${i}` })
       msgs.push({ role: 'assistant', content: `a${i}` })
     }
-    const kept = preserveRecentMessages(msgs, 3)
+    const kept = await preserveRecentMessagesAsync(msgs, 3)
     expect(kept.some((m) => m.content === 'u17')).toBe(true)
     expect(kept.some((m) => m.content === 'u0')).toBe(false)
   })
@@ -95,7 +95,7 @@ describe('context budget', () => {
     expect(applied.messages.some((m) => m.role === 'assistant')).toBe(true)
   })
 
-  it('preserveRecentMessages never returns a leading orphan tool', () => {
+  it('preserveRecentMessagesAsync never returns a leading orphan tool', async () => {
     const msgs: ChatMessage[] = [
       { role: 'user', content: 'u0' },
       {
@@ -113,37 +113,13 @@ describe('context budget', () => {
       supportsVision: false,
       contextWindow: 1000
     }
-    const kept = preserveRecentMessages(msgs, 5, 200, model)
+    const kept = await preserveRecentMessagesAsync(msgs, 5, 200, model)
     expect(kept.length).toBeGreaterThan(0)
     expect(kept[0].role).not.toBe('tool')
   })
 
   it('disables anthropic server-side context management (LLM compact is client-only)', () => {
-    const opts = anthropicNativeOptions('anthropic', {
-      id: 'claude-haiku-4-5',
-      inputModalities: ['text'],
-      outputModalities: ['text'],
-      supportsTools: true,
-      supportsVision: true,
-      contextWindow: 32_000
-    })
+    const opts = anthropicNativeOptions()
     expect(opts.enableContextManagement).toBe(false)
-  })
-
-  it('strips images when model lacks vision', async () => {
-    const { stripImagesFromMessages } = await import('@main/agent/context/stripImages')
-    const msgs: ChatMessage[] = [
-      {
-        role: 'user',
-        content: [
-          { type: 'text', text: 'see' },
-          { type: 'image_url', url: 'data:image/png;base64,aa' }
-        ]
-      }
-    ]
-    const stripped = stripImagesFromMessages(msgs)
-    expect(typeof stripped[0].content).toBe('string')
-    expect(String(stripped[0].content)).toContain('omitted')
-    expect(String(stripped[0].content)).toContain('see')
   })
 })

@@ -512,6 +512,10 @@ export function messagesToUiItems(messages: ChatMessage[]): UiItem[] {
   for (let i = 0; i < messages.length; i++) {
     const m = messages[i]
     if (m.role === 'user') {
+      // Loop-injected protocol turns (goal continue, plan nudge) are not user
+      // prompts — they must never appear as chat bubbles. Item ids keep the raw
+      // message index so edit/revert index mapping stays aligned with disk.
+      if (m.synthetic) continue
       const images = contentImages(m.content)
       const attachments = uiAttachments(m.content)
       const display = contentDisplayText(m.content)

@@ -53,11 +53,6 @@ import {
   contextWindowFor,
   applyFoldedMessagesWatermark,
   buildStepToolCatalog,
-  toolCatalogFingerprint,
-  omittedOptionalBuiltinNames,
-  loopHintForDeferredBuiltins,
-  loopHintForDeferredMcpTools,
-  toolsBudgetTokens,
   shouldTriggerAutoCompact,
   type CompactionRecord
 } from './context'
@@ -74,11 +69,9 @@ import {
   loopHintForCompactionFailure,
   loopHintForCompactionVerifyFailed,
   loopHintForConsecutiveToolFailures,
-  loopHintForEvictedMcpTools,
   loopHintAfterCompaction,
   loopHintForIdenticalStepStreak,
   loopHintForMcpNotInCatalogFailFast,
-  loopHintForOmittedMcpTools,
   loopStopDecision,
   nextConsecutiveToolFailureSteps,
   MAX_TRUNCATION_CONTINUES,
@@ -143,14 +136,12 @@ import {
   loadWorkingMessagesForFold,
   loadStatus,
   runExists,
-  loadToolCatalogSticky,
   readContract,
   readContractAsync,
   readPlanAsync,
   readPlanRawAsync,
   resumeRun,
   saveCompaction,
-  saveToolCatalogSticky,
   syncMessagesAsync,
   updateStatus,
   flushEventAppends,
@@ -208,10 +199,8 @@ import { mcpAuthAllowedForWorkspace } from '../../shared/mcpApps'
 import {
   filterToolDefsForMode,
   filterToolDefsForCodeIndex,
-  isBuiltinAllowedInMode,
   modeSectionMarkdown
 } from './tools/modePolicy'
-import { INLINE_OMIT_BUILTIN } from './tools/classify'
 import { dedupeToolCalls, ensureToolCallIds } from './dedupeToolCalls'
 import { existsSync, readFileSync } from 'fs'
 import { join } from 'path'
@@ -270,7 +259,9 @@ const INCOMPLETE_MESSAGES: Record<Exclude<IncompleteReason, never>, string> = {
   network_interrupted: 'Connection lost. Retry when back online.',
   circuit_open:
     'Temporarily paused after repeated provider failures. Nothing is retried automatically — use Continue or Retry in the chat to resume once the provider is reachable.',
-  provider_error: 'The provider returned an error. Review the error details, then retry.'
+  provider_error: 'The provider returned an error. Review the error details, then retry.',
+  goal_wait:
+    'Goal is still active. Two finishes without tools — waiting for you to continue or mark complete.'
 }
 
 /** True when two messages are the same role + normalized text (resume dedupe). */
@@ -317,29 +308,31 @@ function dedupeNewMessagesAgainstDisk(
 
 /**
  * Classify a turn that produced no tool calls. `undefined` means the model
- * genuinely finished; anything else means it was cut short.
+ * genuinely finished; anything else means it was cut short. Thinking is not a
+ * user-visible answer, so a reasoning-only turn must retry rather than appear
+ * to have completed successfully.
  */
 function classifyIncompleteTurn(
   stopReason: StopReason | undefined,
-  assistantText: string,
-  thinkingText: string
+  assistantText: string
 ): IncompleteReason | undefined {
+  const hasVisibleAnswer = Boolean(assistantText.trim())
   if (stopReason === 'length') return 'truncated'
   if (stopReason === 'content_filter') return 'filtered'
   // tool_calls with zero parsed tools usually means truncated/malformed deltas,
   // not a genuinely empty model response.
   if (stopReason === 'tool_calls') return 'truncated'
   if (stopReason === 'error') {
-    // Only label as empty when nothing was produced; partial text is truncated.
-    if (!assistantText.trim() && !thinkingText.trim()) return 'empty_response'
+    // Only label as empty when no answer was produced; partial text is truncated.
+    if (!hasVisibleAnswer) return 'empty_response'
     return 'truncated'
   }
   // Providers sometimes emit `unknown` for truncated/interrupted streams.
   if (stopReason === 'unknown') {
-    if (!assistantText.trim() && !thinkingText.trim()) return 'empty_response'
+    if (!hasVisibleAnswer) return 'empty_response'
     return 'truncated'
   }
-  if (!assistantText.trim() && !thinkingText.trim()) return 'empty_response'
+  if (!hasVisibleAnswer) return 'empty_response'
   return undefined
 }
 
@@ -444,6 +437,51 @@ async function* yieldNetworkInterruptedTerminal(
     message: errorMessage,
     code: errorCode,
     resumable: true,
+    flushWriteCheckpoint,
+    writeStatus
+  })
+}
+
+/**
+ * Shared quota-exhaustion terminal path (same contract at both stream-failure
+ * sites): flush partial output, drop queued follow-ups — a quota resume is a
+ * user "continue", not an automatic replay — and stop the run non-resumably.
+ */
+function* yieldQuotaExhaustedTerminal(
+  runId: string,
+  invokeId: number,
+  step: number,
+  runDir: string | undefined,
+  messages: ChatMessage[],
+  assistantText: string,
+  thinkingText: string,
+  stepReasoningState: ProviderReasoningState | undefined,
+  toolCalls: ToolCall[],
+  streamedToolCalls: Map<string, ToolCall>,
+  quotaResetDays: number | null,
+  flushWriteCheckpoint: () => Generator<AgentEvent, void, unknown>,
+  writeStatus: (patch: { status: 'error'; error: string; resumable?: true }) => void
+): Generator<AgentEvent, void, unknown> {
+  if (!runDir) return
+  yield* flushPartialAssistant(
+    runId,
+    runDir,
+    messages,
+    assistantText,
+    thinkingText,
+    stepReasoningState,
+    toolCalls,
+    streamedToolCalls,
+    step,
+    'interrupted'
+  )
+  yield* emitTerminalRunError({
+    runId,
+    invokeId,
+    runDir,
+    message: quotaExhaustedStopMessage(quotaResetDays),
+    code: QUOTA_EXHAUSTED_STOP_CODE,
+    dropFollowUpsReason: 'quota_exhausted',
     flushWriteCheckpoint,
     writeStatus
   })
@@ -921,6 +959,18 @@ export async function* runAgent(input: {
       }
       const persisted = loadStatus(runDir)
       initialStep = persisted?.step ?? 0
+      // Run 6265fa90 (2026-09-01): every app restart re-fired the 500-step
+      // runaway guard ~200ms in — status running → error, no steps, no
+      // provider call — because the run-scoped counter restored 500 and the
+      // step++ at the loop head crossed the ceiling immediately. The guard's
+      // own message says "Send continue to keep going": a resume that carries
+      // a fresh user turn is a new turn, so its step budget starts at 0.
+      if (
+        initialStep >= MAX_STEPS_PER_TURN &&
+        ((input.newMessages?.length ?? 0) > 0 || (input.messages?.length ?? 0) > 0)
+      ) {
+        initialStep = 0
+      }
       // Prefer chatStart mode when the UI sent one; otherwise restore last run mode.
       agentMode = input.mode ?? persisted?.mode ?? 'agent'
       const diskMessages = await loadMessagesAsync(workspace, runId)
@@ -1358,66 +1408,21 @@ export async function* runAgent(input: {
     >()
     let toolDefs: { name: string; description: string; parameters: Record<string, unknown> }[] = []
     let toolsJsonEstimate = 0
-    let omittedMcpHint: string | undefined
-    let deferredBuiltinsHint: string | undefined
-    let deferredMcpHint: string | undefined
-    let evictedMcpHint: string | undefined
     let lastMcpRefreshFp = ''
     let lastMcpCatalogFp = ''
-    /** Dedup UI notices when the omitted set is unchanged across refreshes. */
-    let lastOmittedMcpNoticeKey = ''
-    let pendingMcpOmittedEv: AgentEvent | null = null
     /** One forced reconnect attempt per run when enabled servers previously failed. */
     let mcpFailureRetried = false
     /** MCP tool names in the current step's provider catalog (post budget trim). */
     let stepMcpToolNames = new Set<string>()
-    /** Agent-requested MCP tools to prefer in buildStepToolCatalog on later steps. */
+    /** Optional pin bookkeeping for request_mcp_tools / release_mcp_tools.
+     * The step catalog always carries every connected MCP tool and builtin, so
+     * pins never change the catalog — they exist so request/release respond
+     * honestly and so not-in-catalog fail-fast stays real for mode-denied MCP. */
     const runPinnedMcpToolNames = new Set<string>()
-    /** Last step each MCP tool was pinned or invoked (pin tracking). */
     const mcpLastUsedByName = new Map<string, number>()
     /** Per-tool not-in-catalog rejection counts (fail-fast after repeats). */
     const mcpNotInCatalogCounts = new Map<string, number>()
-    /** Kept tool names from the last budget pass — sticky for prompt-cache stability. */
     const runStickyToolNames = new Set<string>()
-    let lastToolCatalogFingerprint = ''
-    const toolsBudgetState: {
-      overflow: {
-        estimate: number
-        budget: number
-        omittedMcpNames: string[]
-      } | null
-    } = { overflow: null }
-    const stickyDisk = loadToolCatalogSticky(runDir)
-    if (stickyDisk && stickyDisk.keptNames.length > 0) {
-      for (const name of stickyDisk.keptNames) {
-        if (isInlineInstance && INLINE_OMIT_BUILTIN.has(name)) continue
-        runStickyToolNames.add(name)
-      }
-      lastToolCatalogFingerprint = stickyDisk.fingerprint
-      const seedStep = Math.max(initialStep, 1)
-      const restoredLastUsed = stickyDisk.mcpLastUsedByName
-      for (const name of stickyDisk.keptNames) {
-        if (isInlineInstance && INLINE_OMIT_BUILTIN.has(name)) continue
-        if (name.startsWith('mcp__')) {
-          runPinnedMcpToolNames.add(name)
-          const stamped = restoredLastUsed?.[name]
-          // Prefer persisted last-used on resume; fall back to
-          // current step when older catalogs omit stamps (avoid instant eviction).
-          mcpLastUsedByName.set(
-            name,
-            typeof stamped === 'number' && stamped >= 1 ? stamped : seedStep
-          )
-        }
-      }
-      logger.info('Restored sticky tool catalog from disk', {
-        scope: 'agent',
-        code: 'TOKEN_COST',
-        runId,
-        keptCount: stickyDisk.keptNames.length,
-        mcpLastUsedRestored: restoredLastUsed ? Object.keys(restoredLastUsed).length : 0,
-        fingerprint: stickyDisk.fingerprint.slice(0, 200)
-      })
-    }
     const invalidateMcpToolCatalogCache = (): void => {
       lastMcpCatalogFp = ''
     }
@@ -1427,13 +1432,6 @@ export async function* runAgent(input: {
         .filter(([, n]) => n >= MCP_NOT_IN_CATALOG_FAIL_FAST_THRESHOLD)
         .map(([name]) => name)
       return loopHintForMcpNotInCatalogFailFast(hit)
-    }
-
-    const flushPendingMcpOmittedNotice = function* (): Generator<AgentEvent, void> {
-      if (!pendingMcpOmittedEv) return
-      const ev = pendingMcpOmittedEv
-      pendingMcpOmittedEv = null
-      yield ev
     }
 
     // Bind stdio MCP hint for legacy callers; sessions are workspace-scoped per sync.
@@ -1480,12 +1478,10 @@ export async function* runAgent(input: {
             }
           ])
       )
-      const pinnedKey = [...runPinnedMcpToolNames].sort().join(',')
-      const catalogStep = Math.max(step, 1)
       const liveCodeIndexEnabled = getSettings().codeIndex?.enabled !== false
-      const catalogFp = `${refreshFp}::${agentMode}::${settings.autoModeSwitch ? 1 : 0}::${modelInfo.supportsTools === false ? 0 : 1}::${pinnedKey}::${catalogStep}::ci${liveCodeIndexEnabled ? 1 : 0}`
+      const catalogFp = `${refreshFp}::${agentMode}::${settings.autoModeSwitch ? 1 : 0}::${modelInfo.supportsTools === false ? 0 : 1}::ci${liveCodeIndexEnabled ? 1 : 0}`
       if (configUnchanged && catalogFp === lastMcpCatalogFp && lastMcpCatalogFp !== '') {
-        // Fingerprint + mode + pins + tools support + step unchanged — reuse prior trimmed defs.
+        // Servers/mode/switch availability/tools support unchanged — reuse prior defs.
         return
       }
       lastMcpCatalogFp = catalogFp
@@ -1509,131 +1505,19 @@ export async function* runAgent(input: {
               liveCodeIndexEnabled
             )
           : []
-      const toolBudget = toolsBudgetTokens(modelInfo, providerId)
-      const catalogResult = buildStepToolCatalog(allToolDefs, toolBudget, {
-        pinnedMcpNames: runPinnedMcpToolNames,
-        deferUnpinnedMcp: true,
-        ...(runStickyToolNames.size > 0 ? { stickyKeptNames: runStickyToolNames } : {})
-      })
-      toolsBudgetState.overflow = null
-      const trimmedTools = catalogResult.ok
-        ? catalogResult
-        : {
-            ok: true as const,
-            tools: allToolDefs,
-            estimate: 0,
-            omittedMcp: 0,
-            omittedMcpNames: [] as string[],
-            budgetOmittedMcpNames: [] as string[],
-            policyDeferredMcpNames: [] as string[],
-            evictedMcpNames: [] as string[],
-            fingerprint: toolCatalogFingerprint(allToolDefs)
-          }
-      if (trimmedTools.evictedMcpNames.length > 0) {
-        for (const name of trimmedTools.evictedMcpNames) {
-          runPinnedMcpToolNames.delete(name)
-          mcpLastUsedByName.delete(name)
-        }
-        evictedMcpHint = loopHintForEvictedMcpTools(trimmedTools.evictedMcpNames)
-        logger.info('Unloaded pinned MCP from catalog', {
-          scope: 'agent',
-          code: 'TOKEN_COST',
-          runId,
-          evictedMcp: trimmedTools.evictedMcpNames.length,
-          evictedPreview: trimmedTools.evictedMcpNames.slice(0, 8).join(', '),
-          pinnedRemaining: runPinnedMcpToolNames.size,
-          step: catalogStep
-        })
-      } else {
-        evictedMcpHint = undefined
-      }
-      // Budget-omitted pins cannot stay pinned — otherwise request_mcp_tools
-      // reports alreadyPinned while the catalog still omits them.
-      if (trimmedTools.budgetOmittedMcpNames.length > 0) {
-        for (const name of trimmedTools.budgetOmittedMcpNames) {
-          runPinnedMcpToolNames.delete(name)
-          mcpLastUsedByName.delete(name)
-        }
-      }
-      toolDefs = trimmedTools.tools.map((t) => ({
+      // Full catalog every step: nothing is trimmed, deferred, or evicted —
+      // request_mcp_tools pins are bookkeeping only (see toolsBudget.ts).
+      const fullCatalog = buildStepToolCatalog(allToolDefs)
+      toolDefs = fullCatalog.tools.map((t) => ({
         name: t.name,
         description: t.description,
         parameters: t.parameters as Record<string, unknown>
       }))
-      toolsJsonEstimate = trimmedTools.estimate
-      // Keep the same Set instance so request_mcp_tools can pin deferred builtins into it.
-      const nextSticky = new Set(trimmedTools.tools.map((t) => t.name))
-      for (const name of runStickyToolNames) {
-        if (!nextSticky.has(name) && !name.startsWith('mcp__')) {
-          // Preserve deferred builtin pins that have not been admitted yet (next step).
-          nextSticky.add(name)
-        }
-      }
-      runStickyToolNames.clear()
-      for (const name of nextSticky) runStickyToolNames.add(name)
-      const catalogFinger = trimmedTools.fingerprint || toolCatalogFingerprint(trimmedTools.tools)
-      if (catalogFinger !== lastToolCatalogFingerprint) {
-        // First catalog of a run always "changes" from nothing — that is not
-        // signal. Log at debug; info only for real mid-run catalog shifts
-        // (MCP pins/evictions), which are the ones that break prompt-cache
-        // prefix reuse within the run.
-        const logFn = lastToolCatalogFingerprint ? logger.info : logger.debug
-        logFn('Tool catalog fingerprint changed', {
-          scope: 'agent',
-          code: 'TOKEN_COST',
-          runId,
-          keptCount: trimmedTools.tools.length,
-          omittedMcp: trimmedTools.omittedMcp,
-          evictedMcp: trimmedTools.evictedMcpNames.length,
-          fingerprint: catalogFinger.slice(0, 200),
-          priorFingerprint: lastToolCatalogFingerprint
-            ? lastToolCatalogFingerprint.slice(0, 200)
-            : undefined
-        })
-        lastToolCatalogFingerprint = catalogFinger
-      }
-      if (runDir) {
-        // Always persist kept names + pending sticky pins + last-used stamps (TTL must survive resume/crash).
-        saveToolCatalogSticky(
-          runDir,
-          [...runStickyToolNames],
-          catalogFinger,
-          mcpLastUsedByName
-        )
-      }
-      omittedMcpHint = loopHintForOmittedMcpTools(trimmedTools.budgetOmittedMcpNames)
-      const keptNameSet = new Set(trimmedTools.tools.map((t) => t.name))
-      // A successful pin that admits the tool should clear fail-fast history.
+      toolsJsonEstimate = fullCatalog.estimate
+      const keptNameSet = new Set(fullCatalog.tools.map((t) => t.name))
+      // A successful refresh that carries the tool should clear fail-fast history.
       for (const name of [...mcpNotInCatalogCounts.keys()]) {
         if (keptNameSet.has(name)) mcpNotInCatalogCounts.delete(name)
-      }
-      const availableOptional = new Set(allToolDefs.map((t) => t.name))
-      // The hint's whole payload is "pin these with request_mcp_tools", which is
-      // Agent-only — advertising it elsewhere costs a step on a guaranteed denial.
-      const canPin = isBuiltinAllowedInMode(agentMode, 'request_mcp_tools', {
-        autoModeSwitch: settings.autoModeSwitch
-      })
-      deferredBuiltinsHint = canPin
-        ? loopHintForDeferredBuiltins(omittedOptionalBuiltinNames(keptNameSet, availableOptional))
-        : undefined
-      deferredMcpHint = canPin
-        ? loopHintForDeferredMcpTools(trimmedTools.policyDeferredMcpNames, mcpToolDefs)
-        : undefined
-      if (trimmedTools.budgetOmittedMcpNames.length > 0) {
-        const noticeKey = `budget:${trimmedTools.budgetOmittedMcpNames.length}:${trimmedTools.budgetOmittedMcpNames.slice(0, 8).join(',')}`
-        if (noticeKey !== lastOmittedMcpNoticeKey) {
-          lastOmittedMcpNoticeKey = noticeKey
-          const ev: AgentEvent = {
-            type: 'mcp_tools_omitted',
-            runId,
-            invokeId,
-            omittedCount: trimmedTools.budgetOmittedMcpNames.length,
-            omittedPreview: trimmedTools.budgetOmittedMcpNames.slice(0, 8).join(', ') || undefined,
-            reason: 'budget'
-          }
-          if (runDir) appendEvent(runDir, ev)
-          pendingMcpOmittedEv = ev
-        }
       }
       stepMcpToolNames = new Set(
         toolDefs.map((t) => t.name).filter((n) => parseMcpToolName(n) != null)
@@ -1641,7 +1525,6 @@ export async function* runAgent(input: {
     }
 
     await refreshMcpToolsForStep()
-    yield* flushPendingMcpOmittedNotice()
     let identicalStepLoopHint: string | undefined
     let compactionLoopHint: string | undefined
     /** Last executed step's tool fingerprint + repeat streak (runaway-loop guard). */
@@ -1769,6 +1652,7 @@ export async function* runAgent(input: {
           invokeId,
           runDir,
           message: `This turn reached ${MAX_STEPS_PER_TURN} agent steps and was stopped as a runaway-loop guard. Send "continue" to keep going, or break the task into smaller steps.`,
+          code: 'LOOP_SAFETY',
           flushWriteCheckpoint,
           writeStatus
         })
@@ -1831,7 +1715,6 @@ export async function* runAgent(input: {
       }
       if (step > initialStep + 1 || autoModeSwitchChanged) {
         await refreshMcpToolsForStep()
-        yield* flushPendingMcpOmittedNotice()
       }
 
       let assistantText = ''
@@ -1867,19 +1750,6 @@ export async function* runAgent(input: {
         })
       }
 
-      const toolsBudgetOverflow = toolsBudgetState.overflow
-      if (toolsBudgetOverflow) {
-        logger.warn('Tools budget overflow ignored; using full catalog', {
-          scope: 'agent',
-          code: 'TOOLS_BUDGET_OVERFLOW',
-          correlationId: runId,
-          step,
-          estimate: toolsBudgetOverflow.estimate,
-          budget: toolsBudgetOverflow.budget
-        })
-        toolsBudgetState.overflow = null
-      }
-
       const priorSummary = compaction?.summary
       const contract = await readContractAsync(runDir)
       // Plan mode mirrors plan.md verbatim (stub included, never truncated) so
@@ -1888,10 +1758,6 @@ export async function* runAgent(input: {
       const plan =
         agentMode === 'plan' ? await readPlanRawAsync(runDir) : await readPlanAsync(runDir)
       const assembleLoopHint = combineLoopHints(
-        omittedMcpHint,
-        deferredMcpHint,
-        deferredBuiltinsHint,
-        evictedMcpHint,
         mcpNotInCatalogFailFastHint(),
         outsidePathHint,
         compactionLoopHint,
@@ -1995,7 +1861,6 @@ export async function* runAgent(input: {
           settings,
           signal: controller.signal,
           triggerReason: assembled.overflow ? 'overflow' : 'proactive',
-          estimatedTokens: assembled.estimatedTokens,
           systemStable: assembled.systemStable,
           toolDefs,
           ...(invokeId != null ? { invokeId } : {})
@@ -2078,10 +1943,6 @@ export async function* runAgent(input: {
             messages,
             priorCompaction: compaction,
             loopHint: combineLoopHints(
-              omittedMcpHint,
-              deferredMcpHint,
-              deferredBuiltinsHint,
-              evictedMcpHint,
               mcpNotInCatalogFailFastHint(),
               outsidePathHint,
               compactionLoopHint,
@@ -2113,7 +1974,6 @@ export async function* runAgent(input: {
             settings,
             signal: controller.signal,
             triggerReason: 'overflow',
-            estimatedTokens: assembled.estimatedTokens,
             systemStable: assembled.systemStable,
             toolDefs,
             ...(invokeId != null ? { invokeId } : {})
@@ -2175,10 +2035,6 @@ export async function* runAgent(input: {
               messages,
               priorCompaction: compaction,
               loopHint: combineLoopHints(
-                omittedMcpHint,
-                deferredMcpHint,
-                deferredBuiltinsHint,
-                evictedMcpHint,
                 mcpNotInCatalogFailFastHint(),
                 outsidePathHint,
                 compactionLoopHint,
@@ -2694,8 +2550,10 @@ export async function* runAgent(input: {
             // output is preserved; queued follow-ups are dropped — a quota
             // resume is a user "continue", not an automatic replay.
             if (stepQuotaExhausted) {
-              yield* flushPartialAssistant(
+              yield* yieldQuotaExhaustedTerminal(
                 runId,
+                invokeId,
+                step,
                 runDir,
                 messages,
                 assistantText,
@@ -2703,19 +2561,10 @@ export async function* runAgent(input: {
                 stepReasoningState,
                 toolCalls,
                 streamedToolCalls,
-                step,
-                'interrupted'
-              )
-              yield* emitTerminalRunError({
-                runId,
-                invokeId,
-                runDir,
-                message: quotaExhaustedStopMessage(stepQuotaResetDays),
-                code: QUOTA_EXHAUSTED_STOP_CODE,
-                dropFollowUpsReason: 'quota_exhausted',
+                stepQuotaResetDays,
                 flushWriteCheckpoint,
                 writeStatus
-              })
+              )
               return 'terminal'
             }
             // A retriable status that exhausted its attempts (429/408/5xx) is a
@@ -2883,8 +2732,10 @@ export async function* runAgent(input: {
         // (a billing gate cannot clear within a circuit window). Same contract
         // as the in-stream branch above.
         if (stepQuotaExhausted) {
-          yield* flushPartialAssistant(
+          yield* yieldQuotaExhaustedTerminal(
             runId,
+            invokeId,
+            step,
             runDir,
             messages,
             assistantText,
@@ -2892,19 +2743,10 @@ export async function* runAgent(input: {
             stepReasoningState,
             toolCalls,
             streamedToolCalls,
-            step,
-            'interrupted'
-          )
-          yield* emitTerminalRunError({
-            runId,
-            invokeId,
-            runDir,
-            message: quotaExhaustedStopMessage(stepQuotaResetDays),
-            code: QUOTA_EXHAUSTED_STOP_CODE,
-            dropFollowUpsReason: 'quota_exhausted',
+            stepQuotaResetDays,
             flushWriteCheckpoint,
             writeStatus
-          })
+          )
           return
         }
         if (networkRelated || circuitOpen) {
@@ -3082,7 +2924,7 @@ export async function* runAgent(input: {
         appendEvent(runDir, assistantMsgEv)
         yield assistantMsgEv
 
-        const incomplete = classifyIncompleteTurn(stepStopReason, scrubbedAssistantText, thinkingText)
+        const incomplete = classifyIncompleteTurn(stepStopReason, scrubbedAssistantText)
         if (incomplete === 'truncated' && !controller.signal.aborted) {
           truncationContinues += 1
           persistLoopCheckpoint()
@@ -3114,7 +2956,9 @@ export async function* runAgent(input: {
             yield continueEv
             const continueUser: ChatMessage = {
               role: 'user',
-              content: 'Continue from where you left off. Finish without repeating.'
+              content: 'Continue from where you left off. Finish without repeating.',
+              // Loop-injected protocol turn — must never render as a user bubble.
+              synthetic: true
             }
             messages.push(continueUser)
             appendMessage(runDir, continueUser)
@@ -3151,40 +2995,35 @@ export async function* runAgent(input: {
             yield continueEv
             // Drop empty assistant from in-memory history and rewrite disk so
             // resume/hydrate does not see a blank turn the working list no longer has.
-            // "Empty" = no text, no tool calls, and no reasoning — whether stored
-            // as legacy `thinking` or as the reasoningState payload.
+            // "Empty" = no user-visible text and no tool calls. Reasoning is not
+            // an answer, so discard reasoning-only turns before retrying.
             const last = messages[messages.length - 1]
             if (
               last?.role === 'assistant' &&
               !contentToText(last.content).trim() &&
-              !last.toolCalls?.length &&
-              !(last.thinking ?? '').trim() &&
-              !thinkingFromReasoningState(parseProviderReasoningState(last.reasoningState))
+              !last.toolCalls?.length
             ) {
               messages.pop()
             }
-            const continueUser: ChatMessage = {
-              role: 'user',
-              content: 'Your previous response was empty. Reply with your answer or tool calls.'
-            }
-            messages.push(continueUser)
+            // Retry the SAME request: no injected user message. Fabricating a
+            // "Your previous response was empty…" user turn leaked protocol text
+            // into messages.jsonl (rendered as a user bubble) and taught the model
+            // a phantom turn; re-streaming the unchanged history is the honest retry.
             // Rewrite from DISK, not the working set: after mid-run compaction the
             // working list is post-fold and a sync here would permanently drop the
             // folded head from messages.jsonl (breaking rewind indices and the
-            // stitched transcript). Replicate the same edit against the full history.
+            // stitched transcript).
             if (foldedMessages > 0) {
               const diskMessages = await loadMessagesAsync(workspace, runId)
               const diskLast = diskMessages[diskMessages.length - 1]
               if (
                 diskLast?.role === 'assistant' &&
                 !contentToText(diskLast.content).trim() &&
-                !diskLast.toolCalls?.length &&
-                !(diskLast.thinking ?? '').trim() &&
-                !thinkingFromReasoningState(parseProviderReasoningState(diskLast.reasoningState))
+                !diskLast.toolCalls?.length
               ) {
                 diskMessages.pop()
               }
-              await syncMessagesAsync(runDir, [...diskMessages, continueUser])
+              await syncMessagesAsync(runDir, diskMessages)
             } else {
               await syncMessagesAsync(runDir, messages)
             }
@@ -3203,7 +3042,9 @@ export async function* runAgent(input: {
           const nudge: ChatMessage = {
             role: 'user',
             content:
-              'Call `create_plan` with Goal, Steps, and Done when. Do not put the plan only in chat.'
+              'Call `create_plan` with Goal, Steps, and Done when. Do not put the plan only in chat.',
+            // Loop-injected protocol turn — must never render as a user bubble.
+            synthetic: true
           }
           messages.push(nudge)
           appendMessage(runDir, nudge)
@@ -3266,7 +3107,9 @@ export async function* runAgent(input: {
             bumpGoalContinueCount(runDir)
             const continueUser: ChatMessage = {
               role: 'user',
-              content: formatGoalContinueMessage(activeGoal.objective)
+              content: formatGoalContinueMessage(activeGoal.objective),
+              // Loop-injected protocol turn — must never render as a user bubble.
+              synthetic: true
             }
             messages.push(continueUser)
             appendMessage(runDir, continueUser)
@@ -3276,14 +3119,28 @@ export async function* runAgent(input: {
           }
           if (decision === 'stop_wait' && activeGoal) {
             goalNoToolFinishes = nextStreak
+            const goalWaitMessage = INCOMPLETE_MESSAGES.goal_wait
             emitGoalUpdate({
               workspacePath: workspace,
               runId,
               runDir,
               goal: activeGoal,
-              notice:
-                'Goal is still active. Two finishes without tools — waiting for you to continue or mark complete.'
+              notice: goalWaitMessage
             })
+            // Durable, chat-visible stop reason (was toast-only, run 6265fa90
+            // audit): the renderer builds its banner + Continue affordance from
+            // the persisted incomplete event, so the reason survives restarts
+            // instead of vanishing with the toast.
+            const goalWaitEv: AgentEvent = {
+              type: 'incomplete',
+              runId,
+              invokeId,
+              reason: 'goal_wait',
+              step,
+              message: goalWaitMessage
+            }
+            appendEvent(runDir, goalWaitEv)
+            yield goalWaitEv
           }
         }
         // Surface disk append failures before claiming done — otherwise the UI

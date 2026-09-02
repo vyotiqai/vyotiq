@@ -220,7 +220,6 @@ const ORPHAN_CRITICAL_TYPES = new Set<AgentEvent['type']>([
   'compaction_verify_retry',
   'compaction_verify_failed',
   'compaction',
-  'mcp_tools_omitted',
   'mode_changed',
   'goal_update',
   'loop_update'

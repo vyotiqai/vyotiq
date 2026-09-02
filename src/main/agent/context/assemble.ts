@@ -628,16 +628,7 @@ export async function assembleContext(
     estimatedTokens: estimated,
     layers,
     overflow: estimated > window,
-    anthropicNative: anthropicNativeOptions(input.providerId, input.model)
-  }
-}
-
-/** Estimate tool definitions JSON size in tokens. */
-export function estimateToolsJson(tools: unknown[]): number {
-  try {
-    return estimateTextTokens(JSON.stringify(tools))
-  } catch {
-    return 500
+    anthropicNative: anthropicNativeOptions()
   }
 }
 

@@ -4,12 +4,13 @@ import type { WebContents } from 'electron'
 import { RunLoopSchema, type RunLoop } from '../../shared/ipc'
 import { atomicWriteJson } from '@main/storage/atomicWrite'
 import { invalidateListRunsCache } from './runListCache'
-import { appendEvent } from './state'
+import { appendEvent, loadStatus } from './state'
 import { getRunInvokeId } from './runRegistry'
 import { sendChatEventToRenderer } from './startAgentRun'
 import { launchRunFollowUpOrStart, resolveRunWebContents } from './launchRunInvoke'
 import { readGoal, registerGoalLoopDisarm } from './runGoal'
 import { formatLoopStatusLine as formatLoopStatusLineShared } from '../../shared/goalRuntime'
+import { isQuotaExhaustedMessage } from './quotaGate'
 import { logger } from '../../shared/logger'
 
 function loopPath(runDir: string): string {
@@ -100,6 +101,16 @@ async function onTick(runId: string): Promise<void> {
   if (goal && goal.status === 'paused') {
     // Hold: re-check on the next interval instead of spawning a run, so the
     // loop naturally resumes once the goal is resumed.
+    const timer = setTimeout(() => void onTick(runId), loop.intervalMs)
+    timers.set(runId, timer)
+    return
+  }
+  // Quota exhaustion is a billing gate, not an outage (quotaGate contract):
+  // a relaunch on an exhausted plan re-stops instantly on the same terminal
+  // error (run 6265fa90: 472 relaunches in ~4 min). Hold the loop on the next
+  // interval instead of launching; a real Continue clears the persisted error.
+  const persisted = loadStatus(info.runDir)
+  if (persisted?.status === 'error' && isQuotaExhaustedMessage(persisted.error ?? '')) {
     const timer = setTimeout(() => void onTick(runId), loop.intervalMs)
     timers.set(runId, timer)
     return

@@ -119,7 +119,10 @@ export function shouldAutoContinueActiveGoal(input: {
   consecutiveNoToolFinishes: number
 }): GoalAutoContinueDecision {
   if (input.goalStatus !== 'active') return 'none'
-  if (input.agentMode !== 'agent') return 'none'
+  // Ask mode is read-only Q&A — auto-looping a goal there would churn Q&A
+  // turns without progress. Agent and Plan both work with tools, so both
+  // continue an active goal (bounded by the two-finish stop_wait cap).
+  if (input.agentMode === 'ask') return 'none'
   if (input.incomplete) return 'none'
   if (input.consecutiveNoToolFinishes >= 2) return 'stop_wait'
   return 'continue'

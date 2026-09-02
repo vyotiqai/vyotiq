@@ -9,16 +9,14 @@ import {
   resetActiveRunsForTests
 } from '@main/agent/runRegistry'
 
-describe('omitted MCP tools hint', () => {
-  it('keeps the full catalog even when the tools budget is tiny', () => {
+describe('full step tool catalog', () => {
+  it('keeps the full catalog even when it is huge', () => {
     const tools: ToolDefinition[] = [
       { name: 'read', description: 'r', parameters: {} },
       { name: 'mcp__a__one', description: 'x'.repeat(800), parameters: {} },
       { name: 'mcp__b__two', description: 'y'.repeat(800), parameters: {} }
     ]
-    const result = buildStepToolCatalog(tools, 50, {
-      pinnedMcpNames: new Set(['mcp__a__one', 'mcp__b__two'])
-    })
+    const result = buildStepToolCatalog(tools)
     expect(result.ok).toBe(true)
     if (!result.ok) return
     expect(result.tools.map((t) => t.name)).toEqual([
@@ -26,8 +24,6 @@ describe('omitted MCP tools hint', () => {
       'mcp__a__one',
       'mcp__b__two'
     ])
-    expect(result.evictedMcpNames).toEqual([])
-    expect(result.budgetOmittedMcpNames).toEqual([])
   })
 })
 

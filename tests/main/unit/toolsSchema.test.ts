@@ -613,9 +613,9 @@ describe('harness tool catalog', () => {
     expect(awaitTool!.description).toMatch(/On timeout the child keeps running/i)
   })
 
-  it('merge_agent_instance documents catalog deferral and merge constraints', () => {
+  it('merge_agent_instance documents merge constraints', () => {
     const merge = AGENT_TOOLS.find((t) => t.name === 'merge_agent_instance')
-    expect(merge!.description).toMatch(/request_mcp_tools/i)
+    expect(merge!.description).toMatch(/one branch at a time/i)
     expect(merge!.description).toMatch(/one branch at a time/i)
   })
 })

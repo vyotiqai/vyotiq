@@ -135,6 +135,16 @@ describe('formatError + AppError', () => {
     expect(isRetryableTurnFailure({ errorCode: 'PROVIDER_NETWORK' })).toBe(true)
     expect(isRetryableTurnFailure({ errorCode: 'PROVIDER_AUTH' })).toBe(false)
   })
+
+  // 2026-09-01 audit: empty_response/truncated incompletes ended runs with no
+  // visible reason (runs 9349708b s129/s150, c9e863c0 s31). They must surface
+  // the turn-failure banner like network-class incompletes do.
+  it('surfaces empty_response and truncated incompletes for Continue UX', () => {
+    expect(isRetryableTurnFailure({ incompleteReason: 'empty_response' })).toBe(true)
+    expect(isRetryableTurnFailure({ incompleteReason: 'truncated' })).toBe(true)
+    expect(isRetryableTurnFailure({ incompleteReason: 'filtered' })).toBe(false)
+    expect(isRetryableTurnFailure({ incompleteReason: 'context_overflow' })).toBe(false)
+  })
 })
 
 describe('scrubber', () => {
@@ -142,6 +152,15 @@ describe('scrubber', () => {
     expect(scrubString('key sk-abc1234567890xyz in text')).toContain('[redacted]')
     expect(scrubString('Authorization: Bearer secret-token-value')).toContain('[redacted]')
     expect(scrubString('X-Api-Key: super-secret-key-value')).toContain('[redacted]')
+  })
+
+  it('scrubs Modal proxy tokens in combined wk-…ws-… form', () => {
+    expect(scrubString('auth failed for wk-Ab12Cd34.ws-Xy56Zv78')).toBe(
+      'auth failed for [redacted]'
+    )
+    expect(scrubString('Bearer wk-Ab12Cd34.ws-Xy56Zv78')).toContain('[redacted]')
+    // Partial forms without the dot-joined secret are not claimed.
+    expect(scrubString('endpoint id wk-Ab12Cd34 alone')).not.toContain('[redacted]')
   })
 
   it('redacts named tokens in text and URL query strings', () => {

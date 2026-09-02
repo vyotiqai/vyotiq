@@ -15,7 +15,6 @@ import {
   imageTokensForDimensions
 } from '@main/agent/context/imageTokens'
 import {
-  estimateMessagesTokens,
   estimateMessagesTokensAsync,
   estimateTextTokens
 } from '@main/agent/context/estimate'
@@ -217,20 +216,20 @@ describe('estimateImageTokens', () => {
   })
 })
 
-describe('estimateMessagesTokens', () => {
-  it('counts image parts by dimension rather than a flat constant', () => {
-    const icon = estimateMessagesTokens([
+describe('estimateMessagesTokensAsync', () => {
+  it('counts image parts by dimension rather than a flat constant', async () => {
+    const icon = await estimateMessagesTokensAsync([
       { role: 'user', content: [{ type: 'image_url', url: pngDataUrl(64, 64) }] }
     ])
-    const large = estimateMessagesTokens([
+    const large = await estimateMessagesTokensAsync([
       { role: 'user', content: [{ type: 'image_url', url: pngDataUrl(1920, 1080) }] }
     ])
     expect(icon).toBeLessThan(large)
   })
 
-  it('includes tool call arguments and thinking text', () => {
-    const bare = estimateMessagesTokens([{ role: 'assistant', content: 'ok' }])
-    const rich = estimateMessagesTokens([
+  it('includes tool call arguments and thinking text', async () => {
+    const bare = await estimateMessagesTokensAsync([{ role: 'assistant', content: 'ok' }])
+    const rich = await estimateMessagesTokensAsync([
       {
         role: 'assistant',
         content: 'ok',
@@ -241,9 +240,9 @@ describe('estimateMessagesTokens', () => {
     expect(rich).toBeGreaterThan(bare)
   })
 
-  it('does not double-count thinking when reasoningState is present', () => {
+  it('does not double-count thinking when reasoningState is present', async () => {
     const longThink = 'a long chain of reasoning about the problem '.repeat(20)
-    const withBoth = estimateMessagesTokens([
+    const withBoth = await estimateMessagesTokensAsync([
       {
         role: 'assistant',
         content: 'ok',
@@ -251,7 +250,7 @@ describe('estimateMessagesTokens', () => {
         reasoningState: { kind: 'openai_compat', reasoningContent: longThink }
       }
     ])
-    const stateOnly = estimateMessagesTokens([
+    const stateOnly = await estimateMessagesTokensAsync([
       {
         role: 'assistant',
         content: 'ok',
@@ -261,13 +260,13 @@ describe('estimateMessagesTokens', () => {
     expect(withBoth).toBe(stateOnly)
   })
 
-  it('counts tool message content once (not double-counted with toolName)', () => {
+  it('counts tool message content once (not double-counted with toolName)', async () => {
     const body = 'TOOL_BODY_'.repeat(50)
-    const withTool = estimateMessagesTokens([
+    const withTool = await estimateMessagesTokensAsync([
       { role: 'tool', toolCallId: 'c1', toolName: 'read', content: body }
     ])
-    const contentOnly = estimateMessagesTokens([{ role: 'user', content: body }])
-    const nameOnly = estimateMessagesTokens([
+    const contentOnly = await estimateMessagesTokensAsync([{ role: 'user', content: body }])
+    const nameOnly = await estimateMessagesTokensAsync([
       { role: 'tool', toolCallId: 'c1', toolName: 'read', content: '' }
     ])
     // content + toolName, not 2x content + toolName
@@ -282,7 +281,7 @@ describe('estimateMessagesTokens', () => {
     expect(estimateTextTokens(text, model('gpt-4o'))).toBeGreaterThan(0)
   })
 
-  it('async estimates match sync for the same messages', async () => {
+  it('reuses the per-message cache across repeated counts of the same array', async () => {
     resetTokenizerCache()
     const messages = [
       {
@@ -292,9 +291,8 @@ describe('estimateMessagesTokens', () => {
         toolCalls: [{ id: 't1', name: 'read', arguments: '{"path":"src/index.ts"}' }]
       }
     ]
-    const sync = estimateMessagesTokens(messages, model('gpt-4o'))
-    resetTokenizerCache()
-    const asyncCount = await estimateMessagesTokensAsync(messages, model('gpt-4o'))
-    expect(asyncCount).toBe(sync)
+    const first = await estimateMessagesTokensAsync(messages, model('gpt-4o'))
+    const second = await estimateMessagesTokensAsync(messages, model('gpt-4o'))
+    expect(second).toBe(first)
   })
 })
