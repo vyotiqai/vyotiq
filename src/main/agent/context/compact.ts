@@ -3,6 +3,7 @@ import { contentToText } from '../../../shared/ipc'
 import { isAbortError } from '../../../shared/errors'
 import { logger } from '../../../shared/logger'
 import {
+  isRetriableHttpStatus,
   isRetriableProviderMessage,
   RetriableStreamError
 } from '../providers/fetchWithRetry'
@@ -23,6 +24,24 @@ import {
 } from './estimate'
 import { stripLeadingOrphanToolMessages } from './foldWatermark'
 import { KEEP_RECENT_TURNS, type CompactionRecord } from './types'
+
+/**
+ * A provider failure compaction cannot recover from — non-retriable HTTP
+ * status (auth, billing, unknown model). Thrown so callers stop the entire
+ * fallback ladder instead of walking fork → structured → freeform → flattened
+ * retry against a dead endpoint (2026-09-02: a modal 404 "unknown inference
+ * model" fired 13 compaction calls in ~4s and surfaced as the unrelated
+ * "The model returned no summary.").
+ */
+export class CompactionHardFailureError extends Error {
+  readonly httpStatus?: number
+
+  constructor(message: string, httpStatus?: number) {
+    super(message)
+    this.name = 'CompactionHardFailureError'
+    this.httpStatus = httpStatus
+  }
+}
 
 /** Count user turns in a message list (manual + auto keep-recent). */
 export function countUserTurns(messages: readonly ChatMessage[]): number {
@@ -145,6 +164,9 @@ async function collectCompactionStreamText(input: {
           if (chunk.type === 'text' && chunk.text) summary += chunk.text
           if (chunk.type === 'error') {
             const message = chunk.error ?? 'Provider error'
+            if (chunk.httpStatus != null && !isRetriableHttpStatus(chunk.httpStatus)) {
+              throw new CompactionHardFailureError(message, chunk.httpStatus)
+            }
             if (isRetriableProviderMessage(message)) {
               throw new RetriableStreamError(message)
             }
@@ -313,6 +335,16 @@ async function summarizeHistoryChunk(input: {
         (!result.ok && result.error === 'Request aborted')
       )
         return ''
+      if (
+        !result.ok &&
+        result.streamHttpStatus != null &&
+        !isRetriableHttpStatus(result.streamHttpStatus)
+      ) {
+        // Hard provider failure (non-retriable status): bail instead of
+        // silently falling back to freeform against the same dead endpoint.
+        // Transient failures keep the fallback ladder.
+        throw new CompactionHardFailureError(result.error, result.streamHttpStatus)
+      }
       const parsed = parseCompactionJson(result.rawText)
       if (result.ok || parsed.structured) {
         summary = parsed.markdown
@@ -321,6 +353,9 @@ async function summarizeHistoryChunk(input: {
         summary = parsed.markdown
       }
     } catch (err) {
+      // A hard provider failure must not fall back to freeform against the
+      // same dead endpoint — surface it to the caller.
+      if (err instanceof CompactionHardFailureError) throw err
       if (!isAbortError(err) && !input.signal.aborted) {
         logger.warn('Structured compaction failed, falling back to freeform', {
           scope: 'agent',

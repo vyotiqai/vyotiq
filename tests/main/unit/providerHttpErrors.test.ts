@@ -81,6 +81,24 @@ describe('formatProviderHttpError', () => {
     expect(msg).not.toContain('wk-Ab12Cd34.ws-Xy56Zv78')
   })
 
+  it('maps Modal 401 to the combined proxy-token fix', () => {
+    const msg = formatProviderHttpError(401, '', 'modal')
+    expect(msg).toMatch(/wk-<id>\.ws-<secret>/)
+    expect(msg).toMatch(/re-save the full token/i)
+  })
+
+  it('maps Modal 404 unknown-model to refresh-and-pick-endpoint guidance', () => {
+    // vLLM/Modal-style bare string error body.
+    const msg = formatProviderHttpError(404, '{"error":"unknown inference model"}', 'modal')
+    expect(msg).toMatch(/endpoint hostnames/i)
+    expect(msg).toMatch(/Modal said: unknown inference model/)
+  })
+
+  it('extracts bare string error bodies for generic OpenAI-compat hosts', () => {
+    const msg = formatProviderHttpError(404, '{"error":"unknown inference model"}', 'custom')
+    expect(msg).toBe('unknown inference model')
+  })
+
   it('maps auth failures to a settings hint', () => {
     expect(formatProviderHttpError(401, '', 'openai')).toMatch(/API key/i)
   })

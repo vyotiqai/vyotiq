@@ -7,7 +7,11 @@ import type {
   Settings
 } from '../../shared/ipc'
 import { contentToText } from '../../shared/ipc'
-import { providerNeedsKey, resolveProviderChatBaseUrl } from '../../shared/domain/providers'
+import {
+  modalPlaceholderModelMessage,
+  providerNeedsKey,
+  resolveProviderChatBaseUrl
+} from '../../shared/domain/providers'
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
 import { resolveEffectiveSettings } from '../../shared/effectiveSettings'
@@ -16,6 +20,7 @@ import { getSettings } from '@main/settings/settings'
 import { findWorkspaceSettingsOverride, readWorkspacesState } from '@main/workspace/workspaces'
 import { allocateBudget, contentWindow, contextWindowFor } from './context/budget'
 import {
+  CompactionHardFailureError,
   compactMessages,
   countUserTurns,
   forceCompactKeepTail,
@@ -76,6 +81,14 @@ const MIN_MESSAGES_TO_COMPACT = 4
 function compactTimeoutUserMessage(): string {
   const minutes = Math.round(COMPACT_TIMEOUT_MS / 60_000)
   return `Compaction timed out after ${minutes} minutes. Try again, use a faster model, or /clear for a fresh chat.`
+}
+
+/** Hard provider failures surface their real cause, not a generic no-summary error. */
+function unwrapCompactionFailure(err: unknown): never {
+  if (err instanceof CompactionHardFailureError) {
+    throw new CompactionUnavailableError(err.message)
+  }
+  throw err
 }
 
 /**
@@ -233,6 +246,11 @@ export async function planCompact(input: {
   const abort = createCompactAbort(input.signal)
   const provider = getProvider(providerId)
   const model = await resolveModelInfo(providerId, settings.model, apiKey, baseUrl, abort.signal)
+  // Same Modal placeholder guard as the agent loop — the summarize request
+  // would 404 "unknown inference model" against an unloaded catalog.
+  if (providerId === 'modal' && model.isPlaceholder) {
+    throw new CompactionUnavailableError(modalPlaceholderModelMessage(settings.model))
+  }
   const historyBudget = allocateBudget(model, providerId).history
 
   const keepRecent = manualKeepRecentTurns(countUserTurns(working), configuredKeep)
@@ -322,7 +340,12 @@ async function summarizeWithTimeoutRetry(
   focus: string | undefined,
   structured: boolean
 ): Promise<NonNullable<Awaited<ReturnType<typeof compactMessages>>>> {
-  let record = await invokeCompactionLlm(plan, focus, plan.abort, structured)
+  let record: Awaited<ReturnType<typeof compactMessages>>
+  try {
+    record = await invokeCompactionLlm(plan, focus, plan.abort, structured)
+  } catch (err) {
+    unwrapCompactionFailure(err)
+  }
 
   if (!record && plan.abort.timedOut() && !plan.abort.userAborted()) {
     logger.info('Compaction timed out; retrying flattened tools=[] path', {
@@ -331,7 +354,11 @@ async function summarizeWithTimeoutRetry(
       correlationId: plan.runId
     })
     const retryAbort = createCompactAbort(plan.userSignal)
-    record = await invokeCompactionLlm(plan, focus, retryAbort, false, { allowFork: false })
+    try {
+      record = await invokeCompactionLlm(plan, focus, retryAbort, false, { allowFork: false })
+    } catch (err) {
+      unwrapCompactionFailure(err)
+    }
     if (!record && retryAbort.timedOut()) {
       throw new CompactionUnavailableError(compactTimeoutUserMessage())
     }
@@ -350,7 +377,11 @@ async function summarizeWithTimeoutRetry(
       correlationId: plan.runId
     })
     const retryAbort = createCompactAbort(plan.userSignal)
-    record = await invokeCompactionLlm(plan, focus, retryAbort, false, { allowFork: false })
+    try {
+      record = await invokeCompactionLlm(plan, focus, retryAbort, false, { allowFork: false })
+    } catch (err) {
+      unwrapCompactionFailure(err)
+    }
     if (!record && retryAbort.timedOut()) {
       throw new CompactionUnavailableError(compactTimeoutUserMessage())
     }
@@ -463,9 +494,14 @@ export async function* executeCompactEvents(
       .filter(Boolean)
       .join('\n\n')
     const retryAbort = createCompactAbort(plan.userSignal)
-    const retryRecord = await invokeCompactionLlm(plan, retryFocus, retryAbort, false, {
-      allowFork: false
-    })
+    let retryRecord: Awaited<ReturnType<typeof compactMessages>>
+    try {
+      retryRecord = await invokeCompactionLlm(plan, retryFocus, retryAbort, false, {
+        allowFork: false
+      })
+    } catch (err) {
+      unwrapCompactionFailure(err)
+    }
     if (!retryRecord) {
       if (retryAbort.userAborted() || retryAbort.timedOut() || retryAbort.signal.aborted) {
         throwCompactionAbort(retryAbort)

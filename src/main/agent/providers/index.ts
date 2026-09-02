@@ -73,6 +73,9 @@ export function catalogWarningMessage(provider: ProviderId, err: unknown): strin
   }
 
   if (/HTTP 401/i.test(raw)) {
+    if (provider === 'modal') {
+      return `${label} returned HTTP 401 (unauthorized). Proxy tokens use the combined form wk-<id>.ws-<secret> — check the saved key, then refresh.`
+    }
     // DeepSeek (and some gateways) return this exact body when Authorization is missing/invalid.
     if (/Authentication Fails \(governor\)/i.test(raw)) {
       return `${label} returned HTTP 401 Authentication Fails (governor) — usually a missing or invalid API key. Save a valid ${label} key in Providers, then refresh.`

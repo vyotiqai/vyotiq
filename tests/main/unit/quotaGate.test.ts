@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   QUOTA_EXHAUSTED_STOP_CODE,
   isQuotaExhaustedMessage,
-  parseQuotaResetDays,
+  parseQuotaResetHorizon,
   quotaExhaustedStopMessage
 } from '@main/agent/quotaGate'
 import { parseCircuitRetryAfterMs } from '@main/agent/circuitBreaker'
@@ -27,7 +27,7 @@ const resumableCircuitStatus: RunStatus = {
 
 const resumableQuotaStatus: RunStatus = {
   ...resumableCircuitStatus,
-  error: quotaExhaustedStopMessage(6)
+  error: quotaExhaustedStopMessage('6 days')
 }
 
 describe('quotaGate', () => {
@@ -51,17 +51,27 @@ describe('quotaGate', () => {
   })
 
   it('parses the reset horizon', () => {
-    expect(parseQuotaResetDays(INCIDENT_QUOTA_MESSAGE)).toBe(6)
-    expect(parseQuotaResetDays('usage limit reached. resets in 2 days')).toBe(2)
-    expect(parseQuotaResetDays('resets in 36 hours')).toBe(2)
-    expect(parseQuotaResetDays('quota exceeded')).toBeNull()
+    expect(parseQuotaResetHorizon(INCIDENT_QUOTA_MESSAGE)).toBe('6 days')
+    expect(parseQuotaResetHorizon('usage limit reached. resets in 2 days')).toBe('2 days')
+    expect(parseQuotaResetHorizon('resets in 36 hours')).toBe('36 hours')
+    // Minutes shape is real: opencode "5-hour usage limit reached. Resets in
+    // 32min." (runs f086bc66 / c3290c9d, 2026-09-01) degraded to "resets in
+    // soon" without a minutes branch.
+    expect(parseQuotaResetHorizon('5-hour usage limit reached. Resets in 32min.')).toBe(
+      '32 minutes'
+    )
+    expect(parseQuotaResetHorizon('quota exceeded')).toBeNull()
   })
 
   it('exposes the stop code and a user-facing message with the reset horizon', () => {
     expect(QUOTA_EXHAUSTED_STOP_CODE).toBe('QUOTA_EXHAUSTED')
-    expect(quotaExhaustedStopMessage(6)).toContain('resets in 6 days')
-    expect(quotaExhaustedStopMessage(1)).toContain('resets in 1 day')
+    expect(quotaExhaustedStopMessage('6 days')).toContain('resets in 6 days')
+    expect(quotaExhaustedStopMessage('1 day')).toContain('resets in 1 day')
     expect(quotaExhaustedStopMessage(null)).toContain('resets in soon')
+    // "Weekly" lied for 5-hour windows — the gate must not name a plan shape.
+    expect(
+      quotaExhaustedStopMessage('32 minutes').startsWith('Provider usage limit reached')
+    ).toBe(true)
   })
 })
 

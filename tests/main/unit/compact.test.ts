@@ -368,4 +368,53 @@ describe('compactMessages', () => {
     expect(fallback.messages[0]?.role).toBe('user')
     expect(String(fallback.messages[0]?.content)).toContain('user: Fix the search tool')
   })
+
+  it('bails the fork ladder on a hard HTTP failure instead of storming fallbacks', async () => {
+    // Shape from the 2026-09-02 storm: modal 404 "unknown inference model"
+    // previously walked fork → structured → freeform → flattened retry.
+    const { provider, requests } = capturingProvider([
+      () => [
+        {
+          type: 'error',
+          error: 'HTTP 404: {"error":"unknown inference model"}',
+          errorCode: 'PROVIDER_HTTP',
+          httpStatus: 404
+        }
+      ]
+    ])
+    await expect(
+      compactMessages({
+        provider,
+        model: 'gpt-4o',
+        signal: new AbortController().signal,
+        messages: history,
+        supportsStructuredOutput: true,
+        forkPrefix: { systemStable: 'PARENT_STABLE_HARNESS_UNIQUE', toolDefs: parentToolDefs }
+      })
+    ).rejects.toThrow(/unknown inference model/)
+    expect(requests).toHaveLength(1)
+  })
+
+  it('surfaces a hard HTTP failure from the structured path without freeform fallback', async () => {
+    const { provider, requests } = capturingProvider([
+      () => [
+        {
+          type: 'error',
+          error: 'HTTP 401: {"error":"invalid proxy auth credentials"}',
+          errorCode: 'PROVIDER_HTTP',
+          httpStatus: 401
+        }
+      ]
+    ])
+    await expect(
+      compactMessages({
+        provider,
+        model: 'gpt-4o',
+        signal: new AbortController().signal,
+        messages: history,
+        supportsStructuredOutput: true
+      })
+    ).rejects.toThrow(/invalid proxy auth credentials/)
+    expect(requests).toHaveLength(1)
+  })
 })

@@ -24,7 +24,7 @@ import { findByWorkspacePath } from '@shared/workspacePathMatch'
 import { useEscapeToClose } from '@renderer/lib/hooks/useEscapeToClose'
 import { useModelCatalog } from '@renderer/lib/hooks/useModelCatalog'
 import type { SettingsErrorField, SettingsSection, SettingsViewProps } from '../types'
-import { defaultKeyProvider, isValidHttpUrl } from '../utils/settingsHelpers'
+import { cleanModalProxyToken, defaultKeyProvider, isValidHttpUrl } from '../utils/settingsHelpers'
 
 export type AgentSettingsPatch = Partial<
   Pick<
@@ -452,10 +452,24 @@ export function useSettingsForm({
   }
 
   const saveKey = async (): Promise<void> => {
-    const value = keyDraft.trim()
+    let value = keyDraft.trim()
     if (!value) {
       setFieldError('apikey', 'API key cannot be empty.')
       return
+    }
+    if (keyProvider === 'modal') {
+      // Combined-form proxy tokens are easy to paste with the Bearer prefix
+      // from curl examples; clean wrappers and require the wk-<id>.ws-<secret>
+      // shape so a malformed save cannot 401 every later catalog/chat call.
+      const cleaned = cleanModalProxyToken(value)
+      if (!cleaned) {
+        setFieldError(
+          'apikey',
+          'Modal proxy tokens use the combined form wk-<id>.ws-<secret>. Paste the full token without "Bearer".'
+        )
+        return
+      }
+      value = cleaned
     }
     clearErrors()
     setModelsInfo(null)

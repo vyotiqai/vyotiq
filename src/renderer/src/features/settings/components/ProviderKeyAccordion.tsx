@@ -187,6 +187,11 @@ export function ProviderKeyAccordion({
                       </div>
                     </div>
                   ) : null}
+                  {id === 'modal' ? (
+                    <p className="m-0 text-xs leading-snug text-secondary">
+                      {`Paste the Modal proxy token in its combined form wk-<id>.ws-<secret> (Modal → Tokens → Create token). Endpoint hostnames appear in the model picker after Refresh models.`}
+                    </p>
+                  ) : null}
                   <Input
                     id="apikey"
                     className="w-full"

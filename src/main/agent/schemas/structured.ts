@@ -20,10 +20,11 @@ export async function collectStructuredResponse<T>(
   parse: (raw: string) => StructuredParseResult<T>
 ): Promise<
   | { ok: true; data: T; rawText: string }
-  | { ok: false; rawText: string; error: string }
+  | { ok: false; rawText: string; error: string; streamHttpStatus?: number }
 > {
   let rawText = ''
   let streamError: string | undefined
+  let streamHttpStatus: number | undefined
   let aborted = false
 
   try {
@@ -47,6 +48,7 @@ export async function collectStructuredResponse<T>(
               throw new RetriableStreamError(message)
             }
             streamError = message
+            streamHttpStatus = chunk.httpStatus
             return 'terminal'
           }
         }
@@ -58,6 +60,8 @@ export async function collectStructuredResponse<T>(
       return { ok: false, rawText, error: 'Request aborted' }
     }
     if (err instanceof RetriableStreamError || isRetriableNetworkError(err) || isCircuitOpenError(err)) {
+      // Transient connect/network failure — no hard status; callers keep their
+      // fallback ladder for these.
       return {
         ok: false,
         rawText: '',
@@ -71,7 +75,7 @@ export async function collectStructuredResponse<T>(
     return { ok: false, rawText, error: 'Request aborted' }
   }
   if (streamError) {
-    return { ok: false, rawText, error: streamError }
+    return { ok: false, rawText, error: streamError, streamHttpStatus }
   }
 
   rawText = rawText.trim()

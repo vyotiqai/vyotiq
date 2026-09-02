@@ -688,7 +688,8 @@ describe('settings', () => {
       />
     )
     fireEvent.click(screen.getByRole('button', { name: /^Providers$/i }))
-    expect(screen.getByText(/1\/11 saved/i)).toBeTruthy()
+    // modal joined SECRET_PROVIDERS (11 → 12) on the Modal-provider branch.
+    expect(screen.getByText(/1\/12 saved/i)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Refresh models' }))
     expect(
       await screen.findByText(/seed models for Ollama.*Cannot reach Ollama/i)

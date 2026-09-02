@@ -1,11 +1,14 @@
 import type { ProviderId } from '../../../shared/ipc'
 
 type ProviderErrorJson = {
-  error?: {
+  /** vLLM/Modal-style bodies use a bare string error: {"error":"unknown inference model"}. */
+  error?:
+    | {
     message?: string
     code?: unknown
     metadata?: { raw?: unknown; provider_name?: unknown }
   }
+    | string
   message?: string
 }
 
@@ -14,16 +17,19 @@ function parseProviderErrorMessage(body: string): string | undefined {
   if (!trimmed.startsWith('{')) return undefined
   try {
     const parsed = JSON.parse(trimmed) as ProviderErrorJson
+    const errObj =
+      typeof parsed.error === 'object' && parsed.error != null ? parsed.error : undefined
+    const errText = typeof parsed.error === 'string' ? parsed.error.trim() : undefined
     const outer =
-      typeof parsed.error?.message === 'string' && parsed.error.message.trim()
-        ? parsed.error.message.trim()
+      errObj && typeof errObj.message === 'string' && errObj.message.trim()
+        ? errObj.message.trim()
         : typeof parsed.message === 'string' && parsed.message.trim()
           ? parsed.message.trim()
-          : undefined
+          : errText || undefined
 
     // OpenRouter often wraps upstream failures as "Provider returned error"
     // with the real message nested in error.metadata.raw (JSON string).
-    const raw = parsed.error?.metadata?.raw
+    const raw = errObj?.metadata?.raw
     if (typeof raw === 'string' && raw.trim()) {
       const nested = parseProviderErrorMessage(raw)
       if (nested && nested !== outer) return nested
@@ -141,6 +147,16 @@ export function formatProviderHttpError(
       )
     }
     return scrubbedMessage ?? 'Insufficient provider credits for this request.'
+  }
+
+  // Modal-specific guidance: the endpoint docs use combined-form proxy tokens
+  // and hostname model IDs, so 401/404 have a canonical fix each.
+  if (providerId === 'modal' && status === 401) {
+    return `Modal rejected the proxy token (HTTP 401). Modal proxy tokens use the combined form wk-<id>.ws-<secret> — re-save the full token in Settings → Providers.${scrubbedMessage ? ` Modal said: ${scrubbedMessage}` : ''}`
+  }
+
+  if (providerId === 'modal' && status === 404) {
+    return `Modal has no inference endpoint for this model ID (HTTP 404). Model IDs are endpoint hostnames listed by GET /v1/models — refresh the Modal catalog in Settings → Providers and pick your endpoint.${scrubbedMessage ? ` Modal said: ${scrubbedMessage}` : ''}`
   }
 
   if (

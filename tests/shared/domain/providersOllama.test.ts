@@ -87,6 +87,23 @@ describe('custom OpenAI-compatible host helpers', () => {
     )
   })
 
+  it('defaults scheme-less inputs to https for public hosts and http for loopback', () => {
+    // Modal endpoint hostname pasted bare — must not become http:// (the old
+    // default), which breaks TLS-only cloud endpoints.
+    expect(normalizeCustomOpenAiBaseUrl('my-endpoint.us-west.modal.direct')).toBe(
+      'https://my-endpoint.us-west.modal.direct/v1'
+    )
+    expect(normalizeCustomOpenAiBaseUrl('my-endpoint.us-west.modal.direct/v1')).toBe(
+      'https://my-endpoint.us-west.modal.direct/v1'
+    )
+    expect(normalizeCustomOpenAiBaseUrl('192.168.1.10:8080')).toBe(
+      'http://192.168.1.10:8080/v1'
+    )
+    expect(normalizeCustomOpenAiBaseUrl('localhost:8080')).toBe(
+      'http://localhost:8080/v1'
+    )
+  })
+
   it('requires a key for remote custom hosts but not local or private LAN ones', () => {
     expect(providerNeedsKey('custom', 'http://127.0.0.1:8080/v1')).toBe(false)
     expect(providerNeedsKey('custom', 'http://localhost:8080/v1')).toBe(false)

@@ -5,6 +5,7 @@ import { PROVIDER_DEFAULTS, seedModelsFor } from '@shared/providers'
 import {
   isProviderConfigured,
   providerNeedsKey,
+  modalPlaceholderModelMessage,
   resolveProviderChatBaseUrl,
   resolveProviderListBaseUrl
 } from '@shared/domain/providers'
@@ -46,6 +47,13 @@ describe('Modal (modal) provider wiring', () => {
       expect(m.isPlaceholder).toBe(true)
       expect(m.supportsTools).toBe(true)
     }
+  })
+
+  it('placeholder-chat failure message names the combined token and Refresh models', () => {
+    const msg = modalPlaceholderModelMessage('my-endpoint.us-west.modal.direct')
+    expect(msg).toMatch(/illustrative placeholder/)
+    expect(msg).toMatch(/wk-<id>\.ws-<secret>/)
+    expect(msg).toMatch(/Refresh models/)
   })
 
   it('registers a chat/list provider in the runtime registry', () => {

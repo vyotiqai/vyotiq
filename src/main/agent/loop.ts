@@ -11,6 +11,7 @@ import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { contentDisplayText, contentToText } from '../../shared/ipc'
 import { runGoalFromUserText, findAbsolutePathsInText, outsideWorkspacePathGuidance, stubPastSkillInvocationsInMessages } from '../../shared/slashCommands'
 import {
+  modalPlaceholderModelMessage,
   resolveProviderChatBaseUrl,
   seedModelsFor
 } from '../../shared/providers'
@@ -32,7 +33,7 @@ import { circuitKeyProvider, isCircuitOpenError } from './circuitBreaker'
 import {
   QUOTA_EXHAUSTED_STOP_CODE,
   isQuotaExhaustedMessage,
-  parseQuotaResetDays,
+  parseQuotaResetHorizon,
   quotaExhaustedStopMessage
 } from './quotaGate'
 import { isNetworkFailureCode, iterateNetworkWait, resolveOfflineWaitMs } from './networkMonitor'
@@ -458,7 +459,7 @@ function* yieldQuotaExhaustedTerminal(
   stepReasoningState: ProviderReasoningState | undefined,
   toolCalls: ToolCall[],
   streamedToolCalls: Map<string, ToolCall>,
-  quotaResetDays: number | null,
+  quotaResetHorizon: string | null,
   flushWriteCheckpoint: () => Generator<AgentEvent, void, unknown>,
   writeStatus: (patch: { status: 'error'; error: string; resumable?: true }) => void
 ): Generator<AgentEvent, void, unknown> {
@@ -479,7 +480,7 @@ function* yieldQuotaExhaustedTerminal(
     runId,
     invokeId,
     runDir,
-    message: quotaExhaustedStopMessage(quotaResetDays),
+    message: quotaExhaustedStopMessage(quotaResetHorizon),
     code: QUOTA_EXHAUSTED_STOP_CODE,
     dropFollowUpsReason: 'quota_exhausted',
     flushWriteCheckpoint,
@@ -1390,6 +1391,24 @@ export async function* runAgent(input: {
       return
     }
 
+    // Modal-only guard: an unresolved placeholder model ID is guaranteed to
+    // 404 ("unknown inference model") because Modal has no static catalog —
+    // valid IDs are endpoint hostnames that exist only after /v1/models
+    // succeeds. Fail the turn up front with fix steps instead of burning the
+    // run on a provider 404 mid-stream.
+    if (providerId === 'modal' && modelInfo.isPlaceholder) {
+      yield* emitTerminalRunError({
+        runId,
+        invokeId,
+        runDir,
+        message: modalPlaceholderModelMessage(settings.model),
+        code: 'PROVIDER_AUTH',
+        flushWriteCheckpoint,
+        writeStatus
+      })
+      return
+    }
+
     // Marketplace Force on/off applies from marketplaceOverrides even when the
     // provider/model workspace override toggle is off.
     const marketplaceOverrides = override?.marketplaceOverrides
@@ -2114,13 +2133,12 @@ export async function* runAgent(input: {
       let lastStreamFailureCode = 'PROVIDER_STREAM'
       let lastStreamFailureHttpStatus: number | undefined = undefined
       // Quota exhaustion is sticky across stream attempts: the wire 429 chunk
-      // ("Weekly usage limit reached...") is retried once at the stream layer,
-      // then the follow-up circuit-open chunk goes terminal. The stop must
-      // still classify as QUOTA_EXHAUSTED, so capture it from ANY failure chunk
-      // (429s from OTHER concurrent runs on the same key also trip the circuit
-      // that lands here). Reset per step — it must not leak across steps.
+      // ("Weekly/5-hour usage limit reached...") goes terminal the moment it
+      // is seen, but 429s from OTHER concurrent runs on the same key can also
+      // land here via the circuit — capture from ANY failure chunk in the
+      // step. Reset per step — it must not leak across steps.
       let stepQuotaExhausted = false
-      let stepQuotaResetDays: number | null = null
+      let stepQuotaResetHorizon: string | null = null
       // Const capture so nested generators keep `string` (outer `runDir` is `string | null`).
       const streamRunDir = runDir
       if (!streamRunDir) {
@@ -2514,7 +2532,41 @@ export async function* runAgent(input: {
             lastStreamFailureHttpStatus = chunk.httpStatus
             if (isQuotaExhaustedMessage(message)) {
               stepQuotaExhausted = true
-              stepQuotaResetDays = parseQuotaResetDays(message) ?? stepQuotaResetDays
+              stepQuotaResetHorizon = parseQuotaResetHorizon(message) ?? stepQuotaResetHorizon
+            }
+            // A usage-limit 429 is a billing gate, not a transient outage: stop
+            // TERMINALLY (non-resumable) the moment it is seen. Burning stream
+            // attempts (and tripping the circuit) only delays the stop and
+            // re-bills the full prompt on retries that cannot succeed (runs
+            // f086bc66 / c3290c9d, 2026-09-01: 429 → attempt 2 → circuit open →
+            // terminal). Flushed partial output is preserved; queued follow-ups
+            // are dropped — a quota resume is a user "continue", not an
+            // automatic replay (same gate blocks the goal relaunch storm of run
+            // 6265fa90).
+            if (stepQuotaExhausted) {
+              logger.warn('Provider quota exhausted — stopping without retries', {
+                scope: 'agent',
+                code: 'QUOTA_EXHAUSTED',
+                correlationId: runId,
+                provider: providerId,
+                step
+              })
+              yield* yieldQuotaExhaustedTerminal(
+                runId,
+                invokeId,
+                step,
+                runDir,
+                messages,
+                assistantText,
+                thinkingText,
+                stepReasoningState,
+                toolCalls,
+                streamedToolCalls,
+                stepQuotaResetHorizon,
+                flushWriteCheckpoint,
+                writeStatus
+              )
+              return 'terminal'
             }
             if (errorCode === 'PROVIDER_NETWORK') {
               // Retriable at the stream layer now — record so a final exhaust
@@ -2543,30 +2595,6 @@ export async function* runAgent(input: {
               step,
               message: message.slice(0, 280)
             })
-            // Quota exhaustion (weekly usage limit) is a billing gate, not a
-            // transient outage: stop TERMINALLY (non-resumable) so the goal
-            // relaunch path cannot storm (run 6265fa90: 472 relaunches in
-            // ~4 minutes until the runaway-loop guard fired). Flushed partial
-            // output is preserved; queued follow-ups are dropped — a quota
-            // resume is a user "continue", not an automatic replay.
-            if (stepQuotaExhausted) {
-              yield* yieldQuotaExhaustedTerminal(
-                runId,
-                invokeId,
-                step,
-                runDir,
-                messages,
-                assistantText,
-                thinkingText,
-                stepReasoningState,
-                toolCalls,
-                streamedToolCalls,
-                stepQuotaResetDays,
-                flushWriteCheckpoint,
-                writeStatus
-              )
-              return 'terminal'
-            }
             // A retriable status that exhausted its attempts (429/408/5xx) is a
             // transient provider-side wait — interrupted + Continue, not a hard error.
             if (
@@ -2743,7 +2771,7 @@ export async function* runAgent(input: {
             stepReasoningState,
             toolCalls,
             streamedToolCalls,
-            stepQuotaResetDays,
+            stepQuotaResetHorizon,
             flushWriteCheckpoint,
             writeStatus
           )

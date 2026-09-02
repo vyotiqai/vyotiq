@@ -152,7 +152,7 @@ export function ProvidersSection({
         <SettingsField
           id="refresh-models"
           title="Refresh models"
-          hint={`Reload the live catalog for ${form.providerMeta?.label ?? settings.provider}.`}
+          hint={`Reload the live catalog for the active provider (${form.providerMeta?.label ?? settings.provider}). Saving a key refreshes that provider's catalog automatically.`}
           help="Fetches the provider model list used by the composer picker. Does not change the active model."
         >
           <Button

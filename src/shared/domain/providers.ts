@@ -117,6 +117,16 @@ export function defaultModelFor(provider: ProviderId): string {
   return seedIdsFor(provider)[0]!
 }
 
+/**
+ * User-facing failure for chat/compaction on a Modal placeholder model ID.
+ * Modal has no static catalog — valid model IDs are endpoint hostnames that
+ * exist only after GET /v1/models succeeds, so an illustrative seed ID is
+ * guaranteed to 404 ("unknown inference model") upstream.
+ */
+export function modalPlaceholderModelMessage(modelId: string): string {
+  return `Modal model "${modelId}" is an illustrative placeholder — the live Modal catalog has not loaded, so this ID does not exist on Modal. Open Settings → Providers, expand Modal, confirm the saved proxy token uses the combined form wk-<id>.ws-<secret>, click "Refresh models" in Catalog, then pick your endpoint hostname (…us-west.modal.direct) in the model picker.`
+}
+
 export function providerLabel(provider: ProviderId): string {
   return PROVIDER_DEFAULTS.find((entry) => entry.id === provider)?.label ?? provider
 }
@@ -249,7 +259,13 @@ export function resolveOllamaListBaseUrl(
 export function normalizeCustomOpenAiBaseUrl(url: string): string {
   let trimmed = url.trim().replace(/\/+$/, '')
   if (!trimmed) return CUSTOM_OPENAI_DEFAULT
-  if (!/^https?:\/\//i.test(trimmed)) trimmed = `http://${trimmed}`
+  if (!/^https?:\/\//i.test(trimmed)) {
+    // Scheme-less input: default https for public hosts (cloud endpoint
+    // hostnames are the common paste — e.g. Modal's my-endpoint.us-west.
+    // modal.direct); http only for loopback/private LAN targets, matching
+    // the keyless-LAN rule in isPrivateOrLoopbackHost.
+    trimmed = `${isPrivateOrLoopbackHost(`http://${trimmed}`) ? 'http' : 'https'}://${trimmed}`
+  }
 
   let parsed: URL
   try {
