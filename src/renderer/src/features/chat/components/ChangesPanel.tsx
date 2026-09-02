@@ -1178,6 +1178,7 @@ export const ChangesPanel = memo(function ChangesPanel({
               <ChangeSummary
                 files={agentFiles}
                 fileDiffs={agentDiffs}
+                onOpenFile={onOpenFile}
                 fileResolutions={writeFileResolutions}
                 resolvablePaths={resolvablePaths}
                 conflictedPaths={conflictedPaths}
@@ -1430,6 +1431,7 @@ export const ChangesPanel = memo(function ChangesPanel({
                 <ChangeSummary
                   files={sessionAgentFiles}
                   fileDiffs={sessionAgentDiffs}
+                  onOpenFile={onOpenFile}
                   fileResolutions={writeFileResolutions}
                   resolvablePaths={resolvablePaths}
                   conflictedPaths={conflictedPaths}

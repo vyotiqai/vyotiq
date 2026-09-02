@@ -8,16 +8,25 @@ import { normalizeRelPath } from '../utils/turnFileDiffs'
 import { FileBadge } from './FileBadge'
 import { DiffPreview, type DiffLayout } from './DiffPreview'
 import { useRunSession } from '../RunSessionContext'
+import type { WorkspaceFileOpenOptions } from './FilesPanel'
 
 export type ChangeSummaryFileResolution = 'kept' | 'discarded' | undefined
 
 /** Transcript compact receipt: first N rows, then “… Show N more”. */
 export const COMPACT_PREVIEW_COUNT = 4
 
-function ChangeFileName({ path }: { path: string }) {
+function ChangeFileName({
+  path,
+  onOpenFile
+}: {
+  path: string
+  /** Dock panels render outside RunSessionProvider — prefer the explicit prop. */
+  onOpenFile?: (path: string, options?: WorkspaceFileOpenOptions) => void
+}) {
   const { onOpenWorkspaceFile } = useRunSession()
+  const open = onOpenFile ?? onOpenWorkspaceFile
   const label = basename(path)
-  if (!onOpenWorkspaceFile) {
+  if (!open) {
     return (
       <span className="min-w-0 truncate text-fg" title={path}>
         {label}
@@ -30,7 +39,7 @@ function ChangeFileName({ path }: { path: string }) {
       className="min-w-0 truncate text-left text-fg underline-offset-2 hover:underline"
       title={path}
       onClick={() => {
-        onOpenWorkspaceFile(path)
+        open(path)
       }}
     >
       {label}
@@ -70,7 +79,8 @@ export const ChangeSummary = memo(function ChangeSummary({
   onOpenChanges,
   layout = 'unified',
   wordWrap = false,
-  findQuery = ''
+  findQuery = '',
+  onOpenFile
 }: {
   files: ChangedFile[]
   /** Path → tool-arg diff lines for this turn (optional). */
@@ -100,6 +110,8 @@ export const ChangeSummary = memo(function ChangeSummary({
   layout?: DiffLayout
   wordWrap?: boolean
   findQuery?: string
+  /** Open the file in the workspace editor (dock panels live outside RunSessionProvider). */
+  onOpenFile?: (path: string, options?: WorkspaceFileOpenOptions) => void
 }) {
   const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set())
   const [showAll, setShowAll] = useState(false)
@@ -170,7 +182,7 @@ export const ChangeSummary = memo(function ChangeSummary({
             <li key={file.path} className="min-w-0 [&+&]:border-t [&+&]:border-border/60">
               <div className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-xs">
                 <FileBadge path={file.path} />
-                <ChangeFileName path={file.path} />
+                <ChangeFileName path={file.path} onOpenFile={onOpenFile} />
                 <span className="ml-auto flex shrink-0 items-center gap-2 tabular-nums">
                   {file.added > 0 ? <span className="text-success">+{file.added}</span> : null}
                   {file.removed > 0 ? <span className="text-danger">-{file.removed}</span> : null}
@@ -288,7 +300,7 @@ export const ChangeSummary = memo(function ChangeSummary({
                   <span className="w-3 shrink-0" aria-hidden />
                 )}
                 <FileBadge path={file.path} />
-                <ChangeFileName path={file.path} />
+                <ChangeFileName path={file.path} onOpenFile={onOpenFile} />
                 <span className="ml-auto flex shrink-0 items-center gap-2 tabular-nums">
                   {file.added > 0 ? <span className="text-success">+{file.added}</span> : null}
                   {file.removed > 0 ? <span className="text-danger">-{file.removed}</span> : null}

@@ -228,8 +228,7 @@ describe('ChangesPanel', () => {
     await screen.findAllByText('a.ts')
     fireEvent.click(screen.getByRole('button', { name: /Uncommitted/i }))
     fireEvent.click(screen.getByRole('menuitem', { name: /^Staged/i }))
-    const rows = await screen.findAllByText('a.ts')
-    fireEvent.click(rows[0]!)
+    fireEvent.click(await screen.findByRole('button', { name: 'Show diff for src/a.ts' }))
     await waitFor(() => {
       expect(window.vyotiq.gitDiff).toHaveBeenCalledWith({
         workspacePath: '/ws',
@@ -246,6 +245,15 @@ describe('ChangesPanel', () => {
     await screen.findAllByText('a.ts')
     expect(screen.queryByText('Tree')).toBeNull()
     expect(screen.getByText(/Files Changed/i)).toBeTruthy()
+  })
+
+  it('opens the workspace editor when a change row name is clicked', async () => {
+    const onOpenFile = vi.fn()
+    render(
+      <ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} onOpenFile={onOpenFile} />
+    )
+    fireEvent.click((await screen.findAllByText('a.ts'))[0]!)
+    expect(onOpenFile).toHaveBeenCalledWith('src/a.ts')
   })
 
   it('exposes Layout, Ignore Whitespace, and Find in the more menu', async () => {
@@ -567,8 +575,7 @@ describe('ChangesPanel', () => {
 
   it('requests vsHead diffs for Uncommitted mixed files', async () => {
     render(<ChangesPanel items={[]} workspacePath="/ws" gitRevision={1} />)
-    const rows = await screen.findAllByText('a.ts')
-    fireEvent.click(rows[0]!)
+    fireEvent.click(await screen.findByRole('button', { name: 'Show diff for src/a.ts' }))
     await waitFor(() => {
       expect(window.vyotiq.gitDiff).toHaveBeenCalledWith({
         workspacePath: '/ws',
@@ -1144,7 +1151,7 @@ describe('PrPanel', () => {
     render(<PrPanel workspacePath="/ws" />)
     await screen.findByText(/feat: panels/)
     expect(screen.getByRole('button', { name: /^Reviews/i })).toBeTruthy()
-    fireEvent.click(screen.getAllByText('a.ts')[0]!)
+    fireEvent.click(screen.getByRole('button', { name: 'Show diff for a.ts' }))
     await waitFor(() => {
       expect(window.vyotiq.prDiff).toHaveBeenCalledWith({
         workspacePath: '/ws',

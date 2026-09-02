@@ -188,4 +188,53 @@ describe('ChangedFilesBrowser', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open diff for src/app.ts' }))
     expect(openFile).toHaveBeenCalledWith('src/app.ts', { mode: 'diff' })
   })
+
+  it('opens the file from the row name without expanding the diff', async () => {
+    const openFile = vi.fn()
+    const fetchDiff = vi.fn().mockResolvedValue({ content: '@@ -1 +1 @@\n-old\n+new\n' })
+    const onToggleExpand = vi.fn()
+    render(
+      <ChangedFilesBrowser
+        files={[entry('src/app.ts')]}
+        expanded={new Set()}
+        onToggleExpand={onToggleExpand}
+        selectedPath={null}
+        onSelectPath={() => undefined}
+        fetchDiff={fetchDiff}
+        layout="unified"
+        wordWrap={false}
+        findQuery=""
+        workspacePath="/ws/demo"
+        onOpenFile={openFile}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Open src/app.ts' }))
+    expect(openFile).toHaveBeenCalledWith('src/app.ts')
+    expect(onToggleExpand).not.toHaveBeenCalled()
+    await waitFor(() => {
+      expect(fetchDiff).not.toHaveBeenCalled()
+    })
+  })
+
+  it('toggles the diff from the row chevron, not the file name', async () => {
+    const onToggleExpand = vi.fn()
+    render(
+      <ChangedFilesBrowser
+        files={[entry('src/app.ts')]}
+        expanded={new Set()}
+        onToggleExpand={onToggleExpand}
+        selectedPath={null}
+        onSelectPath={() => undefined}
+        fetchDiff={async () => ({ content: '' })}
+        layout="unified"
+        wordWrap={false}
+        findQuery=""
+        workspacePath="/ws/demo"
+        onOpenFile={() => undefined}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Show diff for src/app.ts' }))
+    expect(onToggleExpand).toHaveBeenCalledWith('src/app.ts')
+    expect(screen.queryByRole('button', { name: 'Open src/app.ts' })?.getAttribute('aria-expanded')).toBeNull()
+  })
 })

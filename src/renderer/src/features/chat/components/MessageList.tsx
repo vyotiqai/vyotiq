@@ -227,6 +227,42 @@ export function transcriptRowsContentRevision(rows: readonly TranscriptRow[]): s
   return transcriptRowFingerprint(rows[rows.length - 1]!)
 }
 
+/** Vertical inset of the stuck turn header below the scrollport's top edge. */
+const STICKY_PROMPT_TOP_PX = 10
+/** Cap on prompt text carried into the sticky turn header. */
+const STICKY_PROMPT_MAX_CHARS = 220
+
+/** One visual line of prompt text: collapse whitespace, truncate with an ellipsis. */
+export function excerptTurnPrompt(content: string | undefined): string {
+  const text = (content ?? '').replace(/\s+/g, ' ').trim()
+  if (text.length <= STICKY_PROMPT_MAX_CHARS) return text
+  return `${text.slice(0, STICKY_PROMPT_MAX_CHARS - 1).trimEnd()}…`
+}
+
+export type StickyPromptTarget = {
+  row: Extract<TranscriptRow, { kind: 'user' }>
+  index: number
+}
+
+/**
+ * Latest turn's user prompt for the sticky turn header. Long transcripts scroll
+ * the prompt far off-screen while its work streams, so the header keeps the
+ * turn's ask visible. Suppressed while a run is live — the pinned tail already
+ * shows the streaming turn beside its prompt.
+ */
+export function stickyPromptTarget(
+  rows: readonly TranscriptRow[],
+  running: boolean,
+  pendingRun: boolean
+): StickyPromptTarget | null {
+  if (running || pendingRun) return null
+  for (let i = rows.length - 1; i >= 0; i -= 1) {
+    const row = rows[i]!
+    if (row.kind === 'user') return { row, index: i }
+  }
+  return null
+}
+
 /** Minimum pin slack when no dock reserve is known yet. */
 const NEAR_BOTTOM_MIN_PX = 80
 /**
@@ -948,6 +984,42 @@ export function MessageList({
     return null
   }, [displayRows])
 
+  const stickyPrompt = useMemo(
+    () => stickyPromptTarget(displayRows, running, pendingRun),
+    [displayRows, running, pendingRun]
+  )
+  const stickyPromptRef = useRef(stickyPrompt)
+  stickyPromptRef.current = stickyPrompt
+  const [stickyPromptVisible, setStickyPromptVisible] = useState(false)
+
+  /**
+   * Show the header once the turn's prompt row has scrolled fully above the
+   * scrollport's top edge. Virtualized rows unmount off-screen, so an absent
+   * row counts as past-top only when the mounted window has moved past its
+   * index; a zero-sized rect (no layout info yet) stays hidden.
+   */
+  const evaluateStickyPrompt = useCallback((): void => {
+    const target = stickyPromptRef.current
+    const el = containerRef.current
+    if (!el || !target) {
+      setStickyPromptVisible(false)
+      return
+    }
+    const node = el.querySelector(`[data-transcript-row="${target.index}"]`)
+    if (node instanceof HTMLElement) {
+      const rect = node.getBoundingClientRect()
+      const containerTop = el.getBoundingClientRect().top
+      setStickyPromptVisible(rect.height > 0 && rect.bottom <= containerTop + 1)
+      return
+    }
+    if (shouldVirtualizeRef.current) {
+      const items = rowVirtualizerRef.current?.getVirtualItems() ?? []
+      setStickyPromptVisible(items.length > 0 && items[items.length - 1]!.index >= target.index)
+      return
+    }
+    setStickyPromptVisible(false)
+  }, [])
+
   const findMatches = useMemo(
     () => findTranscriptRowMatches(displayRows, findQuery),
     [displayRows, findQuery]
@@ -1501,6 +1573,7 @@ export function MessageList({
 
   const handleScroll = useCallback(
     (scrollTop: number) => {
+      evaluateStickyPrompt()
       const el = containerRef.current
       const prevTop = lastScrollTopRef.current
       lastScrollTopRef.current = scrollTop
@@ -1530,7 +1603,7 @@ export function MessageList({
         onScrollTopChange?.(scrollTop)
       }
     },
-    [onScrollTopChange, recordScrollAnchor]
+    [onScrollTopChange, recordScrollAnchor, evaluateStickyPrompt]
   )
 
   const remasureMountedRows = useCallback(() => {
@@ -1630,6 +1703,12 @@ export function MessageList({
     remasureMountedRows()
   }, [rowsContentRevision, shouldVirtualize, remasureMountedRows])
 
+  // Re-evaluate without a scroll event: run end surfaces the target, layout
+  // flips remount rows, scroll restore lands the reader mid-transcript.
+  useEffect(() => {
+    evaluateStickyPrompt()
+  }, [stickyPrompt, layoutMode, scrollRestored, evaluateStickyPrompt])
+
   useLayoutEffect(() => {
     if (!scrollRestored || displayRows.length === 0) return
     // Honor explicit restore only when the reader is not pinned to the tail.
@@ -1724,6 +1803,11 @@ export function MessageList({
     />
     )
   }
+
+  const stickyPromptText = stickyPrompt
+    ? excerptTurnPrompt(stickyPrompt.row.item.content)
+    : ''
+  const showStickyPrompt = stickyPromptVisible && stickyPromptText !== ''
 
   return (
     <>
@@ -2002,6 +2086,30 @@ export function MessageList({
               >
                 <Icon name="chevron" size={12} />
                 {unpinnedNewCount > 0 ? `Latest · ${unpinnedNewCount}` : 'Latest'}
+              </button>
+            </div>
+          ) : null}
+          {showStickyPrompt ? (
+            <div
+              data-sticky-turn-prompt
+              className={cn(
+                'pointer-events-none sticky z-sticky flex h-0 w-full justify-center',
+                CHAT_COLUMN
+              )}
+              style={{ top: `${STICKY_PROMPT_TOP_PX}px` }}
+            >
+              <button
+                type="button"
+                onClick={() => stickyPrompt && scrollToDisplayRow(stickyPrompt.index)}
+                aria-label="Scroll to the prompt that started this section"
+                title="Scroll to prompt"
+                className={cn(
+                  'pointer-events-auto inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1.5 text-caption text-secondary shadow-md vy-transition',
+                  'hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:vy-focus-ring'
+                )}
+              >
+                <Icon name="arrowUp" size={12} className="shrink-0 text-muted" />
+                <span className="truncate">{stickyPromptText}</span>
               </button>
             </div>
           ) : null}

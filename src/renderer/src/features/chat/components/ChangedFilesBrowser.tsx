@@ -293,75 +293,80 @@ function FileRow({
       >
         <button
           type="button"
-          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          className="grid size-5 shrink-0 place-items-center rounded text-tertiary vy-transition hover:bg-surface-2 hover:text-fg"
+          aria-expanded={expanded}
+          aria-label={expanded ? `Collapse diff for ${file.path}` : `Show diff for ${file.path}`}
           onClick={() => {
             onSelect()
             onToggle()
           }}
-          aria-expanded={expanded}
         >
-          <span className="w-3 shrink-0 text-tertiary">{expanded ? '▾' : '▸'}</span>
-          <span
-            className={cn(
-              'w-3 shrink-0 text-center font-mono text-2xs',
-              statusLetterClass(file.statusLetter)
-            )}
+          <Icon
+            name="chevronRight"
+            size={12}
+            className={cn('vy-transition', expanded && 'rotate-90')}
+          />
+        </button>
+        <span
+          className={cn(
+            'w-3 shrink-0 text-center font-mono text-2xs',
+            statusLetterClass(file.statusLetter)
+          )}
+        >
+          {file.statusLetter}
+        </span>
+        <FileBadge path={file.path} />
+        {openWorkspaceFile ? (
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 items-center gap-1.5 truncate rounded-sm text-left text-fg vy-transition hover:underline hover:underline-offset-2"
+            title={file.path}
+            aria-label={`Open ${file.path}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              onSelect()
+              openWorkspaceFile(file.path)
+            }}
           >
-            {file.statusLetter}
-          </span>
-          <FileBadge path={file.path} />
+            {label.dir ? <span className="shrink-0 text-muted">{label.dir}</span> : null}
+            <span className="truncate font-medium">{label.name}</span>
+          </button>
+        ) : (
           <span className="min-w-0 flex-1 truncate text-fg" title={file.path}>
             {label.dir ? <span className="text-muted">{label.dir}</span> : null}
             <span className="font-medium">{label.name}</span>
           </span>
-          <span className="shrink-0 tabular-nums text-caption">
-            {file.added > 0 ? <span className="text-success">+{file.added}</span> : null}
-            {file.removed > 0 ? (
-              <span className="ml-1 text-danger">-{file.removed}</span>
-            ) : null}
-          </span>
-          {file.statusLabel ? (
-            <span
-              className={cn(
-                'shrink-0 text-2xs',
-                file.statusTone === 'success' ? 'text-success' : 'text-muted'
-              )}
-            >
-              {file.statusLabel}
-            </span>
+        )}
+        <span className="shrink-0 tabular-nums text-caption">
+          {file.added > 0 ? <span className="text-success">+{file.added}</span> : null}
+          {file.removed > 0 ? (
+            <span className="ml-1 text-danger">-{file.removed}</span>
           ) : null}
-        </button>
+        </span>
+        {file.statusLabel ? (
+          <span
+            className={cn(
+              'shrink-0 text-2xs',
+              file.statusTone === 'success' ? 'text-success' : 'text-muted'
+            )}
+          >
+            {file.statusLabel}
+          </span>
+        ) : null}
         {openWorkspaceFile ? (
-          <>
-            <Tooltip content={`Open ${file.path}`}>
-              <button
-                type="button"
-                className="inline-grid size-5 shrink-0 place-items-center rounded-md text-muted vy-transition hover:bg-surface-2 hover:text-fg"
-                aria-label={`Open ${file.path}`}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  openWorkspaceFile(file.path)
-                }}
-              >
-                <Icon name="folderOpen" size={12} />
-              </button>
-            </Tooltip>
-            {expanded ? (
-              <Tooltip content={`Open diff for ${file.path}`}>
-                <button
-                  type="button"
-                  className="shrink-0 rounded px-1 text-2xs text-muted vy-transition hover:bg-surface-2 hover:text-fg"
-                  aria-label={`Open diff for ${file.path}`}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    openWorkspaceFile(file.path, { mode: 'diff' })
-                  }}
-                >
-                  Diff
-                </button>
-              </Tooltip>
-            ) : null}
-          </>
+          <Tooltip content={`Open diff for ${file.path}`}>
+            <button
+              type="button"
+              className="shrink-0 rounded px-1 text-2xs text-muted vy-transition hover:bg-surface-2 hover:text-fg"
+              aria-label={`Open diff for ${file.path}`}
+              onClick={(e) => {
+                e.stopPropagation()
+                openWorkspaceFile(file.path, { mode: 'diff' })
+              }}
+            >
+              Diff
+            </button>
+          </Tooltip>
         ) : null}
         {stageActions ? <StageControls file={file} {...stageActions} /> : null}
         {onToggleViewed ? (
