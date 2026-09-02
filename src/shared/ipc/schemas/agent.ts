@@ -916,6 +916,13 @@ export const LoopCheckpointSchema = z.object({
   identicalStepStreak: z.number().int().min(0).default(0),
   lastStepFingerprint: z.string().max(64).default(''),
   consecutiveToolFailureSteps: z.number().int().min(0).default(0),
+  /**
+   * Signatures of recent all-failed steps, newest first. Additive field:
+   * checkpoints written before it parse to []. Feeds the failure-streak
+   * novelty rule in loopPolicy.ts; the cap must stay in sync with
+   * FAILURE_SIGNATURE_WINDOW there.
+   */
+  recentFailureSignatures: z.array(z.string().max(64)).max(32).default([]),
   emptyResponseContinues: z.number().int().min(0).default(0),
   goalNoToolFinishes: z.number().int().min(0).default(0),
   /**

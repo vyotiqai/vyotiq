@@ -18,9 +18,17 @@ export const MAX_IDENTICAL_STEP_STREAK_TERMINAL = 8
 
 /**
  * Stop the run after this many consecutive steps whose tool calls all failed.
- * Mirrors the "failed 4 steps in a row" loop hint threshold.
+ * Mirrors the "failed 4 steps in a row" loop hint threshold. Charges only
+ * REPEATED failed attempts — a new failing attempt shape holds the streak
+ * (see nextToolFailureStreak) so novel-failure exploration is not killed.
  */
 export const MAX_CONSECUTIVE_TOOL_FAILURE_STEPS = 4
+
+/**
+ * How many recent all-failed step signatures feed the novelty check. Must
+ * stay in sync with recentFailureSignatures.max(32) in LoopCheckpointSchema.
+ */
+export const FAILURE_SIGNATURE_WINDOW = 32
 
 /**
  * Cap auto-continuation after the model output is truncated. Each continuation
@@ -681,10 +689,57 @@ export function nextConsecutiveToolFailureSteps(
 }
 
 /**
+ * Fingerprint of one all-failed step: each failed tool's name plus the head
+ * of its result. The terminal tool echoes the full command into its result,
+ * so re-issued calls with new arguments hash differently (a new attempt
+ * shape), while the same call hitting the same error hashes identical.
+ * Contents are capped so huge results stay cheap to hash.
+ */
+export function stepFailureSignature(
+  toolMessages: ReadonlyArray<Pick<ChatMessage, 'role' | 'toolName' | 'ok' | 'content'>>
+): string {
+  const parts: string[] = []
+  for (const msg of toolMessages) {
+    if (msg?.role !== 'tool' || msg.ok !== false || !msg.toolName?.trim()) continue
+    parts.push(`${msg.toolName.trim()}\n${contentToText(msg.content).slice(0, 512)}`)
+  }
+  return createHash('sha256')
+    .update(parts.join('\n\n'))
+    .digest('hex')
+    .slice(0, 16)
+}
+
+/**
+ * Novelty-aware tool-failure streak (root fix for run 3d8e0ead, 2026-09-02:
+ * "gh pr checks", "gh run view --log-failed", "--job --log", and the jobs
+ * API — four DISTINCT attempts against one external blocker — hit the old
+ * all-failed counter at 4 and killed the run mid-exploration). A failing
+ * step charges the streak only when it repeats a recent failed attempt; a
+ * new attempt shape holds it; loop.ts clears streak and window on any ok.
+ */
+export function nextToolFailureStreak(
+  prev: number,
+  signature: string,
+  recentSignatures: ReadonlyArray<string>
+): { streak: number; recentSignatures: string[] } {
+  if (recentSignatures.includes(signature)) {
+    return {
+      streak: Math.min(prev + 1, MAX_CONSECUTIVE_TOOL_FAILURE_STEPS),
+      recentSignatures: [signature, ...recentSignatures].slice(0, FAILURE_SIGNATURE_WINDOW)
+    }
+  }
+  return {
+    streak: Math.max(prev, 1),
+    recentSignatures: [signature, ...recentSignatures].slice(0, FAILURE_SIGNATURE_WINDOW)
+  }
+}
+
+/**
  * Central loop-safety decision. Stops the run when it is clearly spinning:
- * the same tool call(s) repeating, or tool calls failing every step. These
- * signals are already collected per step in `loop.ts`; previously this always
- * returned `undefined`, so the agent could iterate forever burning tokens.
+ * the same tool call(s) repeating, or the same failing attempt repeating
+ * every step. These signals are already collected per step in `loop.ts`;
+ * previously this always returned `undefined`, so the agent could iterate
+ * forever burning tokens.
  */
 export function loopStopDecision(state: {
   step: number
@@ -701,7 +756,7 @@ export function loopStopDecision(state: {
   if (failures >= MAX_CONSECUTIVE_TOOL_FAILURE_STEPS) {
     return {
       reason: 'tool_failure_streak',
-      message: `Stopping: tool calls failed ${failures} steps in a row. Resolve the underlying error or change approach.`
+      message: `Stopping: tool calls failed ${failures} steps in a row with no new attempt shape. Resolve the underlying error or change approach.`
     }
   }
   return undefined

@@ -75,6 +75,8 @@ import {
   loopHintForMcpNotInCatalogFailFast,
   loopStopDecision,
   nextConsecutiveToolFailureSteps,
+  nextToolFailureStreak,
+  stepFailureSignature,
   MAX_TRUNCATION_CONTINUES,
   MAX_EMPTY_RESPONSE_CONTINUES,
   MAX_STEPS_PER_TURN,
@@ -1262,6 +1264,7 @@ export async function* runAgent(input: {
           identicalStepStreak,
           lastStepFingerprint,
           consecutiveToolFailureSteps,
+          recentFailureSignatures,
           emptyResponseContinues,
           goalNoToolFinishes,
           usageTotals
@@ -1283,6 +1286,7 @@ export async function* runAgent(input: {
           identicalStepStreak,
           lastStepFingerprint,
           consecutiveToolFailureSteps,
+          recentFailureSignatures,
           emptyResponseContinues,
           goalNoToolFinishes,
           // Carry the durable usage totals so this write never erases them.
@@ -1551,6 +1555,8 @@ export async function* runAgent(input: {
     let identicalStepStreak = resumedLoopCheckpoint?.identicalStepStreak ?? 0
     /** Steps in a row where every tool call failed (runaway-failure guard). */
     let consecutiveToolFailureSteps = resumedLoopCheckpoint?.consecutiveToolFailureSteps ?? 0
+    /** Recent all-failed step signatures (failure-streak novelty rule). */
+    let recentFailureSignatures = [...(resumedLoopCheckpoint?.recentFailureSignatures ?? [])]
     let toolFailureLoopHint: string | undefined
     /** Estimated tokens left by the last auto-compaction (re-compaction throttle). */
     let postCompactEstimateFloor: number | null = null
@@ -3436,11 +3442,26 @@ export async function* runAgent(input: {
           identicalStepLoopHint = undefined
           consecutiveToolFailureSteps = 0
           toolFailureLoopHint = undefined
+          recentFailureSignatures = []
         } else {
-          consecutiveToolFailureSteps = nextConsecutiveToolFailureSteps(
-            consecutiveToolFailureSteps,
-            toolOutcome.messages
-          )
+          // Novelty-aware failure streak (root fix for run 3d8e0ead): an
+          // all-failed step charges the streak only when it repeats a recent
+          // failed attempt; a new attempt shape holds the streak so distinct
+          // approaches can keep exploring one external blocker.
+          if (nextConsecutiveToolFailureSteps(0, toolOutcome.messages) === 1) {
+            const signature = stepFailureSignature(toolOutcome.messages)
+            const next = nextToolFailureStreak(
+              consecutiveToolFailureSteps,
+              signature,
+              recentFailureSignatures
+            )
+            consecutiveToolFailureSteps = next.streak
+            recentFailureSignatures = next.recentSignatures
+          } else {
+            // Mixed or successful step — real progress; clear streak + window.
+            consecutiveToolFailureSteps = 0
+            recentFailureSignatures = []
+          }
           toolFailureLoopHint = loopHintForConsecutiveToolFailures(
             consecutiveToolFailureSteps,
             summarizeRecentToolFailure(toolOutcome.messages)

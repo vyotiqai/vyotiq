@@ -30,6 +30,7 @@ describe('loopCheckpoint', () => {
       identicalStepStreak: 2,
       lastStepFingerprint: 'fp-abc123',
       consecutiveToolFailureSteps: 1,
+      recentFailureSignatures: ['sig-1', 'sig-2'],
       emptyResponseContinues: 1,
       goalNoToolFinishes: 2
     }
@@ -85,6 +86,8 @@ describe('loopCheckpoint', () => {
     // Invariants survive the migration.
     expect(loaded?.step).toBe(105)
     expect(loaded?.identicalStepStreak).toBe(1)
+    // recentFailureSignatures postdates v2 files — parses to an empty window.
+    expect(loaded?.recentFailureSignatures).toEqual([])
     expect(loaded?.usageTotals).toBeUndefined()
   })
 

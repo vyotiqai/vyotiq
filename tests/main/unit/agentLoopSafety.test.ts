@@ -5,6 +5,7 @@ import { tmpdir } from 'os'
 import type { StreamChunk } from '@main/agent/providers/types'
 import { resolveRunDir } from '@main/storage/paths'
 import {
+  MAX_CONSECUTIVE_TOOL_FAILURE_STEPS,
   MAX_IDENTICAL_STEP_STREAK
 } from '@main/agent/loopPolicy'
 
@@ -259,18 +260,20 @@ describe('runAgent LOOP_SAFETY integration', () => {
     expect(persisted).not.toContain('"code":"LOOP_SAFETY"')
   })
 
-  it('still stops when every step fails outright (guard intact)', async () => {
+  it('still stops when the same failing attempt repeats (guard intact)', async () => {
+    // Novelty rule: identical arguments + identical error output is a spin,
+    // not progress — the terminal streak must still stop the run.
     let call = 0
     streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
       call += 1
-      if (call > 6) {
+      if (call > MAX_CONSECUTIVE_TOOL_FAILURE_STEPS) {
         yield { type: 'text', text: 'giving up' }
         yield { type: 'done', stopReason: 'stop' }
         return
       }
       yield {
         type: 'tool_call',
-        toolCall: { id: `f${call}`, name: 'terminal', arguments: `{"command":"cargo test --release ${call}"}` }
+        toolCall: { id: `f${call}`, name: 'terminal', arguments: '{"command":"cargo test --release"}' }
       }
       yield { type: 'done', stopReason: 'tool_calls' }
     })
@@ -286,7 +289,59 @@ describe('runAgent LOOP_SAFETY integration', () => {
     const loopStop = events.find((e) => e.type === 'error' && e.code === 'LOOP_SAFETY')
     expect(loopStop).toBeTruthy()
     expect(String(loopStop?.message)).toContain('failed 4 steps in a row')
+    expect(String(loopStop?.message)).toContain('no new attempt shape')
     expect(events.some((e) => e.type === 'status' && e.status === 'error')).toBe(true)
+  })
+
+  it('keeps exploring when failed attempts stay distinct (run 3d8e0ead replay)', async () => {
+    // 2026-09-02: "gh pr checks" (exit 8) → "gh run view --log-failed" →
+    // "--job --log" → "gh api .../logs" were four DISTINCT attempts against
+    // one external blocker (GitHub serves no logs for in-progress runs). The
+    // old all-failed counter reached 4 and killed the run mid-investigation;
+    // the novelty rule must hold the streak while attempts stay distinct.
+    const attempts = [
+      'gh pr checks 17',
+      'gh run view 33580725961 --log-failed 2>&1 | Select-Object -Last 120',
+      'gh run view 33580725961 --job 100094249291 --log 2>&1 | Select-Object -Last 60',
+      'gh api repos/vyotiqai/vyotiq-agent-v/actions/jobs/100094249291/logs > ci-macos.log 2>&1'
+    ]
+    let call = 0
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      call += 1
+      if (call > attempts.length) {
+        yield {
+          type: 'text',
+          text: 'CI logs are gated until the run completes; waiting instead of retrying.'
+        }
+        yield { type: 'done', stopReason: 'stop' }
+        return
+      }
+      yield {
+        type: 'tool_call',
+        toolCall: {
+          id: `gh${call}`,
+          name: 'terminal',
+          arguments: JSON.stringify({ command: attempts[call - 1], block_until_ms: 60000 })
+        }
+      }
+      yield { type: 'done', stopReason: 'tool_calls' }
+    })
+    // The real terminal tool echoes the command into its result; the failure
+    // signature hashes that echo, so distinct commands stay distinct.
+    executeTool.mockImplementation(async (_name: string, argsJson: string) => {
+      const parsed = JSON.parse(argsJson) as { command?: string }
+      return {
+        ok: false,
+        summary: 'gh',
+        content: `status: done\ncommand: ${parsed.command ?? ''}\ncwd: /ws\nshell: powershell\nexit_code: 1\nstderr:\ngh : run 33580725961 is still in progress; logs will be available when it is complete`
+      }
+    })
+
+    const runId = 'safety-novel-failures-continue'
+    const events = await collect(runId, workspace)
+
+    expectNoLoopSafetyStop(events)
+    expect(streamChat).toHaveBeenCalledTimes(attempts.length + 1)
   })
 
   it(
