@@ -99,10 +99,15 @@ describe('ChatView operational errors', () => {
       id: 'err-1',
       message: 'Run failed in transcript'
     } as UiItem
+    // getItems() is a snapshot getter: real stores return one stable identity
+    // per revision (chatStoresFor wraps controller.items). A fresh array per
+    // call re-rendered every identity-sensitive consumer forever — this suite
+    // hung CI until the heap OOM'd on all three OSes.
+    const snapshot: UiItem[] = [runErrorItem]
     const itemsStore: ChatItemsStore = {
       subscribeItems: () => () => {},
       getItemsRevision: () => 1,
-      getItems: () => [runErrorItem]
+      getItems: () => snapshot
     }
 
     render(
