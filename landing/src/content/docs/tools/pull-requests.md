@@ -23,7 +23,7 @@ The workspace must:
 - have a usable GitHub remote, or allow the creation flow to establish one;
 - have gh available and authenticated.
 
-When an in-app device flow is used, Settings → Integrations → GitHub client ID supplies the OAuth App or GitHub App client ID. An empty field can fall back to the `VYOTIQ_GITHUB_CLIENT_ID` environment variable.
+The in-app device flow uses the app's built-in GitHub OAuth App client ID. No user-supplied client ID or environment variable is needed; the app does not read `VYOTIQ_GITHUB_CLIENT_ID`.
 
 ## Connect and open a pull request
 

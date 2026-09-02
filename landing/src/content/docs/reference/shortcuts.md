@@ -6,7 +6,6 @@ order: 3
 type: reference
 audience: Power users
 related:
-  - reference/layout
   - tools/terminal
 ---
 
@@ -31,6 +30,7 @@ Windows and Linux use Ctrl; macOS uses ⌘. Shift chords use Ctrl+Shift or ⌘�
 | Close chat tab | Ctrl+W | ⌘W |
 | Find in files | Ctrl+Shift+F | ⌘⇧F |
 | Command palette | Ctrl+Shift+P | ⌘⇧P |
+| Switch to workspace 1–9 | Ctrl+1 … Ctrl+9 | ⌘1 … ⌘9 |
 
 Cycle mode allows Shift (previous mode).
 

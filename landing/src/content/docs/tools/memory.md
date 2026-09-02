@@ -23,11 +23,11 @@ The memory root is required to remain inside the workspace. Path traversal, junc
 
 ## Built-in tools
 
-- `memory_list` shows an excerpt of index.md, note names, and whether state.md exists.
+- `memory_list` shows index.md, note names, and whether state.md exists.
 - `memory_read` reads index.md, state.md, or one safe notes/<name>.md path.
 - `memory_write` creates or replaces one allowed file in Agent mode.
 
-A write accepts at most 64 KiB of text. `memory_list` shows only a 1,500-character index excerpt, so keep the index brief.
+The write path has no length cap. Context assembly injects index.md and state.md excerpts capped at 3,000 characters each, so keep those two files brief.
 
 ## What belongs in memory
 

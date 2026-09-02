@@ -1,6 +1,6 @@
 ---
 title: Providers and API keys
-description: Configure one of eleven provider hosts, store credentials securely, and make a configured provider active.
+description: Configure one of twelve provider hosts, store credentials securely, and make a configured provider active.
 section: customize
 order: 1
 type: guide
@@ -11,7 +11,7 @@ related:
   - start/quickstart
 ---
 
-Open [Settings → Providers](/docs/customize/providers). Agent V supports eleven provider IDs:
+Open [Settings → Providers](/docs/customize/providers). Agent V supports twelve provider IDs:
 
 | Provider | ID | Credential rule |
 | --- | --- | --- |
@@ -23,6 +23,7 @@ Open [Settings → Providers](/docs/customize/providers). Agent V supports eleve
 | Groq | `groq` | API key |
 | **OpenRouter** | `openrouter` | API key |
 | xAI | `xai` | API key |
+| Modal | `modal` | API key (Modal proxy token, combined form `wk-<id>.ws-<secret>`) |
 | Mistral | `mistral` | API key |
 | Custom OpenAI-compatible | `custom` | Key required for public hosts; private and loopback hosts can be keyless |
 | OpenCode Go | `opencode` | API key |

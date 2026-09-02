@@ -28,7 +28,7 @@ Prefer exact search when you know a symbol, label, filename, or error. Use seman
 Open Settings → Indexing:
 
 - Enable codebase index — default on.
-- Embedder — LightOn dense (mDenseOn / ONNX), Ollama, or **Local** hash.
+- Embedder — LightOn dense ONNX (default), LFM2.5-Embedding-350M, Ollama, or **Local** hash.
 - Auto-download model — default on for the local dense model.
 - Ollama embedding model — default nomic-embed-text.
 - Index status

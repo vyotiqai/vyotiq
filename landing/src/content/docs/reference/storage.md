@@ -2,7 +2,7 @@
 title: Storage locations
 description: Locate settings, workspaces, runs, indexes, logs, notifications, models, packages, skills, rules, and memory.
 section: reference
-order: 6
+order: 5
 type: reference
 audience: Support and administrators
 related:
@@ -26,7 +26,7 @@ Agent V stores local state in Electron's platform-specific userData directory. T
 | Exact sparse index | workspaces/{workspaceId}/sparsegrep/ | Derived cache |
 | Logs | Directory returned by Open logs folder | Local rotating logs |
 | Code-index models | Codeindex model directory under user data | Downloaded ONNX weights |
-| Dictation models | Dictation cache under user data | Whisper Tiny/Small files |
+| Dictation models | Dictation cache under user data | Whisper and Qwen3-ASR on-device files |
 | Marketplace packages | Marketplace-managed package root under user data | Use Marketplace lifecycle actions |
 | Personal skills | ~/.vyotiq/skills/ | One directory per SKILL.md skill |
 | Workspace skills | {workspace}/.vyotiq/skills/ and .cursor/skills/ | Project files |

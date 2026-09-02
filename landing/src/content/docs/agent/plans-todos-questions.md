@@ -31,13 +31,13 @@ Todos communicate execution state; they are not durable project issues and do no
 
 Plan mode can write plan.md and contract.md inside the run artifact directory. The panel displays those artifacts and the live todo state.
 
-A draft plan uses eight sections: Goal (desired result), Success criteria (how we know it worked), Scope (included and excluded), Open questions (needs your decision), Approach (direction and why), Ordered steps (small phases), Verification (how finished work will be checked), and Risks or trade-offs. Copy Success criteria into Contract Done when so Agent mode can check them. Use the question form for blocking Open questions. Todos track execution; they do not replace Ordered steps or Verification.
+A draft plan covers three sections: Goal (desired result), Steps (ordered phases), and Done when (how finished work is checked). Copy Done when into Contract Done when so Agent mode can check them. Use the question form for blocking decisions. Todos track execution; they do not replace Steps or Done when.
 
 1. Ask for a plan in Plan mode.
-1. Review Goal, Success criteria, Scope, Open questions, Approach, Ordered steps, Verification, and Risks or trade-offs.
-1. Confirm Success criteria match Contract Done when.
+1. Review Goal, Steps, and Done when.
+1. Confirm Done when matches Contract Done when.
 1. Request corrections while still in Plan.
-1. Approve by selecting Agent or Continue in Agent. That button appears when Goal, Success criteria (or Done when), Approach, and Ordered steps have real content — not the empty template.
+1. Approve by selecting Agent or Continue in Agent. That button appears when the draft has real content beyond the empty template.
 1. Keep the same run when the implementation should use the approved artifacts.
 
 Plan mode cannot edit product source. diagnostics is available there because it runs the configured process check, but terminal commands and normal file mutations remain Agent-only.

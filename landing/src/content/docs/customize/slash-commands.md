@@ -24,7 +24,7 @@ Type / in the composer to search available commands. Built-ins can change the ap
 | /create-rule | Create a workspace rule under .vyotiq/rules/ |
 | /create-skill | Create under .vyotiq/skills/; add personal for personal scope |
 | /help | Send a generated list of currently available commands |
-| /undo | Restore files from the latest agent-write checkpoint for this run |
+| /undo | Restore files from the last agent write checkpoint for this run |
 | /ask | Switch to Ask mode |
 | /plan | Switch to Plan mode |
 | /agent | Switch to Agent mode |

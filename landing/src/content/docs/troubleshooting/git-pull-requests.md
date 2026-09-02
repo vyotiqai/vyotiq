@@ -31,7 +31,7 @@ The panel depends on gh. Install the GitHub CLI using its official platform inst
 
 ## GitHub authentication required
 
-Use Connect GitHub. If device flow requires a client ID, set Settings → Integrations → GitHub client ID or provide `VYOTIQ_GITHUB_CLIENT_ID` to the app environment.
+Use Connect GitHub. The device flow uses the app's built-in GitHub OAuth App client ID, so no client ID setting or environment variable is required.
 
 Complete the pending browser/device code flow, then refresh the panel. Do not paste a token into chat.
 

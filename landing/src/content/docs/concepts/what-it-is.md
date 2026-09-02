@@ -8,7 +8,6 @@ audience: Evaluators and users
 related:
   - concepts/runs-sessions-state
   - concepts/security
-  - start/product-tour
 ---
 
 Agent V is a coding workspace for working through real repositories. It combines a natural-language harness, workspace tools, provider-hosted models, live context management, and explicit file-backed memory.

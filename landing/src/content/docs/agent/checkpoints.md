@@ -22,7 +22,7 @@ Agent V records workspace-write checkpoints for agent edits. They support review
 
 Keep and Discard apply to the checkpoint represented by the UI. Read the confirmation and current diff before using either action.
 
-## Undo the latest agent writes
+## Undo the last agent writes
 
 /undo invokes Undo agent writes for the current run. Its built-in description is “Restore files from the last agent write checkpoint for this run.”
 

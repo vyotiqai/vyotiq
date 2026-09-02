@@ -49,19 +49,18 @@ const DOC_SECTIONS = [
 ] as const
 
 const SECTION_COUNTS = {
-  start: 3,
+  start: 2,
   agent: 9,
   customize: 8,
   tools: 9,
   concepts: 4,
-  reference: 6,
+  reference: 5,
   troubleshooting: 6
 } as const
 
 const REQUIRED_WORKFLOWS = [
   'start/install.md',
   'start/quickstart.md',
-  'start/product-tour.md',
   'agent/modes.md',
   'agent/prompting-attachments.md',
   'agent/workspaces-sessions.md',
@@ -160,11 +159,11 @@ describe('landing docs architecture and truth', () => {
 
   it('ships docs index, section landings, and article routes with unique section ordering', () => {
     expect(existsSync(DOCS_INDEX)).toBe(true)
-    expect(files).toHaveLength(45)
+    expect(files).toHaveLength(43)
     const sectionRoutes = DOC_SECTIONS.map((section) => `/docs/${section}`)
     const canonicalRoutes = ['/docs', ...sectionRoutes, ...files.map((file) => `/docs/${docsId(file)}`)]
-    expect(canonicalRoutes).toHaveLength(53)
-    expect(new Set(canonicalRoutes).size).toBe(53)
+    expect(canonicalRoutes).toHaveLength(51)
+    expect(new Set(canonicalRoutes).size).toBe(51)
     expect(canonicalRoutes).toContain('/docs')
     expect(canonicalRoutes).toContain('/docs/start/quickstart')
     for (const [section, count] of Object.entries(SECTION_COUNTS)) {
@@ -288,7 +287,7 @@ describe('landing docs architecture and truth', () => {
       'utf8'
     )
     const secrets = emptySecretStatus()
-    expect(PROVIDER_DEFAULTS).toHaveLength(11)
+    expect(PROVIDER_DEFAULTS).toHaveLength(12)
     for (const entry of PROVIDER_DEFAULTS) {
       expect(providers, `missing provider ${entry.id}`).toContain(`\`${entry.id}\``)
     }
@@ -312,7 +311,7 @@ describe('landing docs architecture and truth', () => {
     }
     expect(providers).toContain('**Active provider** shows local Ollama')
     expect(features).toContain('New settings initially select Ollama with <code>qwen2.5</code>')
-    expect(features).toContain('nine named cloud providers')
+    expect(features).toContain('ten named cloud providers')
     expect(features).toContain('custom OpenAI-compatible host')
     expect(features).not.toMatch(/default provider/i)
     expect(providers).not.toMatch(/default provider/i)
@@ -410,6 +409,7 @@ describe('landing docs architecture and truth', () => {
       'groq',
       'openrouter',
       'xai',
+      'modal',
       'mistral',
       'opencode'
     ]) {

@@ -8,7 +8,6 @@ audience: Multi-project users
 related:
   - concepts/runs-sessions-state
   - agent/background-runs
-  - reference/layout
 ---
 
 Agent V exposes several kinds of tabs. They are related, but they do not represent the same state.

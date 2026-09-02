@@ -50,7 +50,6 @@ export function docsFeedbackHref(title: string): string {
 export function docsNavTitle(id: string, title: string): string {
   const labels: Record<string, string> = {
     'start/install': 'Install',
-    'start/product-tour': 'Product tour',
     'start/quickstart': 'Quickstart',
     'agent/background-runs': 'Background runs',
     'agent/checkpoints': 'Checkpoints',
@@ -83,7 +82,6 @@ export function docsNavTitle(id: string, title: string): string {
     'concepts/security': 'Security',
     'concepts/what-it-is': 'What it is',
     'reference/attachments': 'Attachments',
-    'reference/layout': 'Layout',
     'reference/settings': 'Settings',
     'reference/shortcuts': 'Shortcuts',
     'reference/storage': 'Storage',

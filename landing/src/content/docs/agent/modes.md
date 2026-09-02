@@ -18,7 +18,7 @@ The mode is an enforced tool boundary, not only a prompting hint.
 | Need | Mode | Boundary |
 | --- | --- | --- |
 | Explain code, inspect state, compare options | Ask | Read-only built-ins and browse-only browser actions |
-| Investigate and produce an approval-ready plan | Plan | Read tools, todos, diagnostics, and only run plan.md/contract.md edits |
+| Investigate and produce an approval-ready plan | Plan | Read tools, todos, diagnostics, run_tests, and only run plan.md/contract.md edits |
 | Change files, run commands, interact with sites, or write memory | Agent | Full built-in catalog, subject to approval and safety gates |
 
 MCP server tools are Agent-only. Ask and Plan can list MCP catalogs, but cannot invoke server tools, read resources, or fetch prompts.

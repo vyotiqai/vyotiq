@@ -81,8 +81,8 @@ const docRoutes = [
   ...DOC_SECTIONS.map((section) => `/docs/${section}`),
   ...articleRoutes
 ]
-if (docRoutes.length !== 52) {
-  throw new Error(`Expected 52 canonical docs routes, found ${docRoutes.length}`)
+if (docRoutes.length !== 51) {
+  throw new Error(`Expected 51 canonical docs routes, found ${docRoutes.length}`)
 }
 
 const viewports = [
@@ -658,6 +658,7 @@ try {
   }
   for (const [oldRoute, target] of [
     ['/products/agent-v', '/'],
+    ['/docs/start/product-tour', '/docs/start/quickstart'],
     ['/docs/guides/modes', '/docs/agent/modes'],
     ['/docs/guides/providers', '/docs/customize/providers'],
     ['/docs/guides/marketplace', '/docs/customize/marketplace'],
@@ -666,6 +667,7 @@ try {
     ['/docs/guides/approval-browser-terminal', '/docs/tools/browser'],
     ['/docs/guides/git', '/docs/tools/changes-git'],
     ['/docs/concepts/context', '/docs/agent/context-compaction'],
+    ['/docs/reference/layout', '/docs/agent/workspaces-sessions'],
     ['/docs/reference/slash-commands', '/docs/customize/slash-commands']
   ]) {
     await page.goto(`${baseUrl}${oldRoute}`, { waitUntil: 'domcontentloaded' })

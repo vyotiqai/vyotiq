@@ -1,6 +1,6 @@
 ---
 title: Settings reference
-description: Exact controls, options, defaults, and scope across all ten Settings sections.
+description: Exact controls, options, defaults, and scope across all nine Settings sections.
 section: reference
 order: 1
 type: reference
@@ -49,26 +49,20 @@ See [Providers](/docs/customize/providers). **Active provider**, API keys, `Refr
 | Show thinking in chat | collapsed thinking blocks above assistant replies |
 | Keep recent turns | 4–50 turns preserved during compaction |
 | Auto-compact threshold | 5–95% of the model content window |
-| Workspace rules | loaded from AGENTS.md, CLAUDE.md, .cursorrules, and .vyotiq/rules/. Edit in Marketplace → Manage → **Rules** |
+| Workspace rules | loaded from AGENTS.md, CLAUDE.md, .cursorrules, .cursor/rules/, and .vyotiq/rules/. Edit in Marketplace → Manage → **Rules** |
 | Memory files | {workspace}/.vyotiq/memory/ markdown. See Memory files |
 
 ## Indexing
 
-See [Codebase search and indexing](/docs/tools/indexing). Enable codebase index, embedder, auto-download, Ollama embedding model, index status, reindex workspace.
+See [Codebase search and indexing](/docs/tools/indexing). Enable codebase index, embedder, auto-download, LFM2 Ollama GGUF model, Ollama embedding model, index status, reindex workspace, live processes.
 
 ## Voice
 
-See [Voice dictation](/docs/tools/voice-dictation). Dictation engine, waveform, and Local Whisper install, unload, and cache delete.
+See [Voice dictation](/docs/tools/voice-dictation). Dictation engine, waveform, Local Whisper install, unload, and cache delete, Qwen3-ASR server URL and key, and Qwen3-ASR on-device models.
 
 ## Tools
 
-See Security and approval, Browser, and Terminal. `Tool approval`, Terminal shell, Browser domain allowlist, Search engine, Auto-resume interrupted runs, Automatic mode switching.
-
-## Integrations
-
-| Control | Options and notes |
-| --- | --- |
-| GitHub client ID | Connect GitHub in the PR panel |
+See Security and approval, Browser, and Terminal. `Tool approval`, MCP tools protection, Terminal shell, Terminal screen reader, Browser domain allowlist, Search engine, Auto-resume interrupted runs, Automatic mode switching.
 
 ## Shortcuts
 

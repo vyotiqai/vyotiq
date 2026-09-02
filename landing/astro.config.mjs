@@ -11,6 +11,7 @@ export default defineConfig({
   integrations: [sitemap()],
   redirects: {
     '/products/agent-v': '/',
+    '/docs/start/product-tour': '/docs/start/quickstart',
     '/docs/guides/modes': '/docs/agent/modes',
     '/docs/guides/providers': '/docs/customize/providers',
     '/docs/guides/marketplace': '/docs/customize/marketplace',
@@ -19,6 +20,7 @@ export default defineConfig({
     '/docs/guides/approval-browser-terminal': '/docs/tools/browser',
     '/docs/guides/git': '/docs/tools/changes-git',
     '/docs/concepts/context': '/docs/agent/context-compaction',
+    '/docs/reference/layout': '/docs/agent/workspaces-sessions',
     '/docs/reference/slash-commands': '/docs/customize/slash-commands'
   },
   vite: {
