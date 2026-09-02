@@ -448,8 +448,8 @@ async function checkHomepage(page, viewport) {
   }
   await checkTypography(page, `${viewport} homepage`)
   const providerMarks = page.locator('.provider-list .provider-mark svg')
-  if ((await providerMarks.count()) !== 11) {
-    fail(`${viewport} homepage: expected 11 provider marks`)
+  if ((await providerMarks.count()) !== 12) {
+    fail(`${viewport} homepage: expected 12 provider marks`)
   }
   const brokenBrandImages = await page.locator('header img, footer img').evaluateAll((images) =>
     images.filter((image) => !image.complete || image.naturalWidth === 0).map((image) => image.getAttribute('src'))
