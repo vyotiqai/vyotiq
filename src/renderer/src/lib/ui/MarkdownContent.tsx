@@ -441,8 +441,11 @@ export function MarkdownContent({
   )
   // Stable across unrelated re-renders (only reset when the rendered markdown
   // changes) so MemoMarkdownBlock's `components` memo is not defeated every tick.
+  // `markdown` is an intentional reset key: a fresh Map per content change keeps
+  // heading-id counters deterministic across edits.
   const headingUsed = useMemo(
     () => (headingIds ? new Map<string, number>() : undefined),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [headingIds, markdown]
   )
   // Callers often pass an inline `onOpenWorkspaceFile`, whose identity changes

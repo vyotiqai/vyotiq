@@ -1145,6 +1145,7 @@ export const FilesPanel = memo(function FilesPanel({
   }, [activeTab?.path])
 
   const [findInFilesOpen, setFindInFilesOpen] = useState(false)
+  const findInputRef = useRef<HTMLInputElement>(null)
   const [findQuery, setFindQuery] = useState('')
   const [findHits, setFindHits] = useState<Array<{ path: string; line: number; text: string }>>([])
   const [findError, setFindError] = useState<string | null>(null)
@@ -1159,6 +1160,10 @@ export const FilesPanel = memo(function FilesPanel({
   useEffect(() => {
     if (findInFilesNonce > 0) setFindInFilesOpen(true)
   }, [findInFilesNonce])
+
+  useEffect(() => {
+    if (findInFilesOpen) findInputRef.current?.focus()
+  }, [findInFilesOpen])
   const activeDirty = activeTab?.dirty ?? false
   const activeSaveState = activeTab
     ? saveStates[activeTab.id] ?? (activeTab.dirty ? 'pending' : 'saved')
@@ -3538,7 +3543,7 @@ export const FilesPanel = memo(function FilesPanel({
             }}
           >
             <input
-              autoFocus
+              ref={findInputRef}
               className="h-7 min-w-0 flex-1 rounded-md border border-border bg-bg px-2 text-caption text-fg outline-none"
               placeholder="Find in files"
               value={findQuery}

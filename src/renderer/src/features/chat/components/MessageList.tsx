@@ -550,17 +550,9 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   footerUsage = null,
   footerStatus = null,
   footerOmitReceipt = false,
-  footerOmitDuration = false,
-  thoughtRunIndex = 0
+  footerOmitDuration = false
 }: {
   row: TranscriptRow
-  /**
-   * How many Thought rows precede this one within the same turn (chains
-   * interleave with tool rows, which do not reset the count) so a chain of
-   * reasoning reads "Thought 1/2/3" instead of the same bare header repeated
-   * without distinction.
-   */
-  thoughtRunIndex?: number
   onImageClick: (url: string, label: string) => void
   onLoadToolContent?: (toolCallId: string) => Promise<string | null>
   onThinkingToggle?: (messageId: string, expanded: boolean) => void
@@ -634,7 +626,6 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
         content={row.item.thinking ?? ''}
         streaming={row.item.thinkingStreaming}
         expanded={row.item.thinkingExpanded}
-        repeatedCount={thoughtRunIndex}
         onToggle={
           onThinkingToggle ? (next) => onThinkingToggle(row.item.id, next) : undefined
         }
@@ -738,36 +729,6 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
 
   return null
 })
-
-/**
- * Position of each Thought row within its turn. Reasoning chains interleave
- * with tool rows ("Thought → Ran → Thought → Ran → Thought"), so counting
- * only back-to-back rows would label every step plain "Thought" — the exact
- * ambiguity this numbering exists to remove. Resets at user/turn boundaries
- * only. Keyed by row id so virtualization (which renders a sparse window)
- * still labels a row correctly without walking neighbours that are not
- * mounted.
- */
-function computeThoughtRunIndexes(rows: readonly TranscriptRow[]): Map<string, number> {
-  const map = new Map<string, number>()
-  let turn = -1
-  let run = 0
-  for (const row of rows) {
-    if (row.kind === 'user' || row.kind === 'turn') {
-      turn = -1
-      run = 0
-      continue
-    }
-    if (row.kind !== 'thinking') continue
-    if (row.turnIndex !== turn) {
-      turn = row.turnIndex
-      run = 0
-    }
-    map.set(row.id, run)
-    run += 1
-  }
-  return map
-}
 
 export function MessageList({
   items: itemsProp,
@@ -979,20 +940,6 @@ export function MessageList({
     })
   }, [allRows, collapsedTurnSet, showThinking])
 
-  /**
-   * Position of each Thought row within its turn. Reasoning chains interleave
-   * with tool rows ("Thought → Ran → Thought → Ran → Thought"), so counting
-   * only back-to-back rows would label every step plain "Thought" — the exact
-   * ambiguity this numbering exists to remove. Resets at user/turn boundaries
-   * only. Keyed by row id so virtualization (which renders a sparse window)
-   * still labels a row correctly without walking neighbours that are not
-   * mounted.
-   */
-  const thoughtRunIndexes = useMemo(
-    () => computeThoughtRunIndexes(displayRows),
-    [displayRows]
-  )
-
   const latestUserRowId = useMemo(() => {
     for (let i = displayRows.length - 1; i >= 0; i--) {
       const row = displayRows[i]!
@@ -1016,6 +963,28 @@ export function MessageList({
 
   restoreScrollTopRef.current =
     typeof restoreScrollTop === 'number' ? restoreScrollTop : null
+
+  /**
+   * Shared body of applyRestore and its ResizeObserver twin. Live restores pin
+   * to the tail — the saved top predates tail growth while the pane was away,
+   * so restoring it lands short of the bottom and reads as unpinned; the
+   * reader's intent is the live tail. Non-live restores apply the saved top
+   * and pin only when it already sits at the bottom.
+   */
+  const applySavedScrollTop = useCallback(
+    (el: HTMLDivElement, top: number): void => {
+      programmaticScrollRef.current = true
+      if (liveRef.current) {
+        el.scrollTop = el.scrollHeight
+        pinnedToBottomRef.current = true
+      } else {
+        el.scrollTop = top
+        const contentTall = el.scrollHeight > el.clientHeight + nearBottomPxRef.current
+        pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) <= nearBottomPxRef.current
+      }
+    },
+    []
+  )
 
   const onImageClick = useCallback((url: string, label: string) => {
     setLightbox({ url, label })
@@ -1053,18 +1022,7 @@ export function MessageList({
       if (!restorePendingRef.current && appliedRestoreRef.current === (scrollRestoreToken ?? 0)) {
         return
       }
-      programmaticScrollRef.current = true
-      if (liveRef.current) {
-        // Switch-back to a streaming session: the saved top predates tail
-        // growth while the pane was away, so restoring it lands short of the
-        // bottom and reads as unpinned. The reader's intent is the live tail.
-        el.scrollTop = el.scrollHeight
-        pinnedToBottomRef.current = true
-      } else {
-        el.scrollTop = top
-        const contentTall = el.scrollHeight > el.clientHeight + nearBottomPxRef.current
-        pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) <= nearBottomPxRef.current
-      }
+      applySavedScrollTop(el, top)
       appliedRestoreRef.current = scrollRestoreToken ?? 0
       setScrollRestored(true)
       restorePendingRef.current = false
@@ -1075,7 +1033,7 @@ export function MessageList({
 
     const id = window.requestAnimationFrame(applyRestore)
     return () => window.cancelAnimationFrame(id)
-  }, [scrollRestoreToken])
+  }, [applySavedScrollTop, scrollRestoreToken])
 
   useEffect(() => {
     const el = containerRef.current
@@ -1087,17 +1045,7 @@ export function MessageList({
         restorePendingRef.current = false
         return
       }
-      programmaticScrollRef.current = true
-      if (liveRef.current) {
-        // Same live-tail policy as applyRestore: a resize during restore of a
-        // streaming session must not snap back to the stale saved top.
-        el.scrollTop = el.scrollHeight
-        pinnedToBottomRef.current = true
-      } else {
-        el.scrollTop = top
-        const contentTall = el.scrollHeight > el.clientHeight + nearBottomPxRef.current
-        pinnedToBottomRef.current = !contentTall || distanceFromBottom(el) <= nearBottomPxRef.current
-      }
+      applySavedScrollTop(el, top)
       restorePendingRef.current = false
       window.requestAnimationFrame(() => {
         programmaticScrollRef.current = false
@@ -1107,7 +1055,7 @@ export function MessageList({
     const inner = el.firstElementChild
     if (inner) ro.observe(inner)
     return () => ro.disconnect()
-  }, [scrollRestoreToken])
+  }, [applySavedScrollTop, scrollRestoreToken])
 
   useEffect(() => {
     return () => {
@@ -1728,7 +1676,6 @@ export function MessageList({
     return (
     <TranscriptRowBlock
       row={row}
-      thoughtRunIndex={row.kind === 'thinking' ? (thoughtRunIndexes.get(row.id) ?? 0) : 0}
       onImageClick={onImageClick}
       onLoadToolContent={onLoadToolContent}
       onThinkingToggle={onThinkingToggle}

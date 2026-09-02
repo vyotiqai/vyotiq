@@ -120,13 +120,16 @@ describe('ThinkingBlock', () => {
     expect(body.scrollTop).toBe(1000)
   })
 
-  it('numbers steps in a chain so identical Thought headers stay distinguishable', () => {
-    const { container } = render(<ThinkingBlock content="first step" repeatedCount={0} />)
-    expect(container.textContent).toContain('Thought')
-    const second = render(<ThinkingBlock content="second step" repeatedCount={1} />)
-    expect(second.container.textContent).toMatch(/Thought 2/)
-    const third = render(<ThinkingBlock content="third step" repeatedCount={2} />)
-    expect(third.container.textContent).toMatch(/Thought 3/)
+  it('labels every thought plain "Thought" without numbering steps in a chain', () => {
+    const { container } = render(<ThinkingBlock content="first step" />)
+    expect(container.textContent).toMatch(/Thought/)
+    expect(container.textContent).not.toMatch(/Thought \d/)
+    const second = render(<ThinkingBlock content="second step" />)
+    expect(second.container.textContent).toMatch(/Thought/)
+    expect(second.container.textContent).not.toMatch(/Thought \d/)
+    const third = render(<ThinkingBlock content="third step" />)
+    expect(third.container.textContent).toMatch(/Thought/)
+    expect(third.container.textContent).not.toMatch(/Thought \d/)
   })
 
   it('reserves the overlay-scrollbar gutter in the scrollable body', () => {

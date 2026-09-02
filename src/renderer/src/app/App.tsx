@@ -1247,6 +1247,7 @@ function App() {
     [
       activeWorkspace,
       chat.pendingRun,
+      chat.runId,
       chat.running,
       createSlashHandlers,
       focusedRunId,
@@ -1627,8 +1628,7 @@ function App() {
       update,
       onChatSettingsChangeForWorkspace,
       onProviderModelForWorkspace,
-      onToggleFavorite,
-      paneLayout?.panes.length
+      onToggleFavorite
     ]
   )
 
