@@ -162,7 +162,7 @@ describe('workspaces registry', () => {
     expect(first.openPaths).toContain(storedA)
     expect(first.activePath).toBe(storedA)
     expect(first.recentPaths[0]).toBe(storedA)
-    expect(existsSync(workspaceSessionsRoot(workspaceA))).toBe(true)
+    expect(existsSync(workspaceSessionsRoot(storedA))).toBe(true)
 
     const second = await addWorkspace(null, workspaceB)
     expect(second.openPaths).toEqual(expect.arrayContaining([storedA, storedB]))
