@@ -31,3 +31,9 @@ overrides:
   adm-zip: '>=0.6.0'
   sharp: '>=0.35.3'
   nanoid: '>=3.3.18'
+
+minimumReleaseAgeExclude:
+  - '@astrojs/internal-helpers@0.11.0'
+  - '@astrojs/markdown-satteri@0.4.0'
+  - '@astrojs/sitemap@3.7.4'
+  - astro@7.2.10
