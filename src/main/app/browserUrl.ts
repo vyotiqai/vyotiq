@@ -1,5 +1,5 @@
 import { resolve as resolvePath } from 'path'
-import { canonicalizeWorkspacePath } from '../../shared/utils/workspacePath'
+import { canonicalizeWorkspacePath, isWindowsStylePath } from '../../shared/utils/workspacePath'
 import { assertResolvedInsideWorkspace } from '../workspace/safePath'
 
 /** Agent browser accepts any http(s) URL including localhost and private networks. */
@@ -38,16 +38,22 @@ function assertFileUrlInsideWorkspace(url: URL, workspaceRoot: string): void {
   if (/%5c/i.test(url.pathname)) {
     throw new Error('file: URLs must point inside the workspace')
   }
-  let withoutSlash: string
+  let fsPath: string
   try {
     const rawPath = decodeURIComponent(url.pathname)
-    // file:///C:/dir/file.html → pathname '/C:/dir/file.html'; drop the one
-    // leading slash so the drive-letter path resolves on Windows.
-    withoutSlash = rawPath.startsWith('/') ? rawPath.slice(1) : rawPath
+    // Windows drive form: pathname '/C:/dir/page.html' — drop the leading
+    // slash so the drive path resolves. POSIX pathnames are already ABSOLUTE
+    // and must keep it: stripping the slash made resolve() treat them as
+    // root-relative, so '/var/…' (outside) resolved to root + '/var/…' and
+    // passed the fence (mac/ubuntu CI accepted outside file: URLs).
+    fsPath =
+      isWindowsStylePath(root) && /^[a-zA-Z]:/.test(rawPath.slice(1))
+        ? rawPath.slice(1)
+        : rawPath
   } catch {
     throw new Error('file: URLs must point inside the workspace')
   }
-  const target = resolvePath(root, withoutSlash)
+  const target = resolvePath(root, fsPath)
   try {
     assertResolvedInsideWorkspace(root, target)
   } catch (err) {

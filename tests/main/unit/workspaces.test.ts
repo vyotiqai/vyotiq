@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { canonicalizeWorkspacePath } from '@shared/workspacePath'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
@@ -153,16 +153,21 @@ describe('workspaces registry', () => {
   })
 
   it('adds workspace paths and updates recents', async () => {
+    // addWorkspace stores the canonicalized realpath: on macOS tmpdir sits
+    // under the /var → /private/var symlink, so the stored form differs from
+    // the raw mkdtemp path.
+    const storedA = canonicalizeWorkspacePath(realpathSync(workspaceA))
+    const storedB = canonicalizeWorkspacePath(realpathSync(workspaceB))
     const first = await addWorkspace(null, workspaceA)
-    expect(first.openPaths).toContain(workspaceA)
-    expect(first.activePath).toBe(workspaceA)
-    expect(first.recentPaths[0]).toBe(workspaceA)
+    expect(first.openPaths).toContain(storedA)
+    expect(first.activePath).toBe(storedA)
+    expect(first.recentPaths[0]).toBe(storedA)
     expect(existsSync(workspaceSessionsRoot(workspaceA))).toBe(true)
 
     const second = await addWorkspace(null, workspaceB)
-    expect(second.openPaths).toEqual(expect.arrayContaining([workspaceA, workspaceB]))
-    expect(second.activePath).toBe(workspaceB)
-    expect(second.recentPaths[0]).toBe(workspaceB)
+    expect(second.openPaths).toEqual(expect.arrayContaining([storedA, storedB]))
+    expect(second.activePath).toBe(storedB)
+    expect(second.recentPaths[0]).toBe(storedB)
   })
 
   it('removes from openPaths but keeps ui state for restore', () => {
@@ -345,8 +350,9 @@ describe('workspaces registry', () => {
   it('canonicalizes workspace path on add', async () => {
     const nested = join(workspaceA, 'nested', '..')
     const added = await addWorkspace(null, nested)
-    expect(added.openPaths).toContain(canonicalizeWorkspacePath(workspaceA))
-    expect(added.activePath).toBe(canonicalizeWorkspacePath(workspaceA))
+    const storedA = canonicalizeWorkspacePath(realpathSync(workspaceA))
+    expect(added.openPaths).toContain(storedA)
+    expect(added.activePath).toBe(storedA)
   })
 
   it('interruptOrphanRunsForWorkspaces scans open and recent paths', async () => {

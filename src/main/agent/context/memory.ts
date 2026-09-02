@@ -161,5 +161,8 @@ export function writeMemoryFile(
   const resolved = assertUnderMemory(workspacePath, cleaned)
   mkdirSync(dirname(resolved), { recursive: true })
   writeFileSync(resolved, contents, 'utf8')
-  return relative(memoryRoot(workspacePath), resolved).replace(/\\/g, '/')
+  // Report relative to the REAL memory root: on macOS tmpdir sits under the
+  // /var → /private/var symlink, and relative() between the raw and real root
+  // produced "../../../../…/private/var/…" (mac CI failure).
+  return relative(assertMemoryRootInsideWorkspace(workspacePath), resolved).replace(/\\/g, '/')
 }

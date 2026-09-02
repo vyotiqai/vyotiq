@@ -371,14 +371,17 @@ function assertSkillFileNotAtRoot(skillDir: string, workspacePath?: string | nul
 }
 
 function relativeFromSkillPath(absPath: string, workspacePath?: string | null): string {
-  const personal = resolve(personalSkillsRoot())
+  // Bases must be real paths: `absPath` is realpath-resolved by the write
+  // path, and on macOS tmpdir sits under the /var → /private/var symlink, so
+  // a raw base made isInsideRoot miss and relative() emit an absolute path.
+  const personal = realpathIfExists(personalSkillsRoot())
   if (isInsideRoot(absPath, personal)) {
     const rel = relative(personal, absPath).split(sep).join('/')
     return `~/.vyotiq/skills/${rel}`
   }
   const ws = workspacePath?.trim()
   if (ws) {
-    const wsRoot = resolve(ws)
+    const wsRoot = realpathIfExists(resolve(ws))
     if (isInsideRoot(absPath, wsRoot)) {
       return relative(wsRoot, absPath).split(sep).join('/')
     }

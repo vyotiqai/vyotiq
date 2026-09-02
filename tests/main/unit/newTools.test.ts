@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { toolGlob } from '@main/agent/tools/glob'
@@ -212,7 +212,10 @@ describe('toolMultiEdit', () => {
   it('rolls back completed renames when a later commit fails', () => {
     const originalA = readFileSync(join(root, 'src', 'a.ts'), 'utf8')
     const originalReadme = readFileSync(join(root, 'README.md'), 'utf8')
-    const readme = join(root, 'README.md')
+    // multi_edit resolves through resolveInsideWorkspace, which realpaths;
+    // the injected rename seam receives that form, so match it (macOS tmpdir
+    // sits under the /var → /private/var symlink).
+    const readme = join(realpathSync(root), 'README.md')
     expect(() =>
       toolMultiEdit(
         root,

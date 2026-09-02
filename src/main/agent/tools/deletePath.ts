@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, rmSync, statSync } from 'fs'
+import { existsSync, readdirSync, realpathSync, rmSync, statSync } from 'fs'
 import { resolve } from 'path'
 import { resolveInsideWorkspace, assertResolvedInsideWorkspace } from '../../workspace/safePath'
 import {
@@ -13,7 +13,11 @@ export function toolDelete(workspaceRoot: string, pathArg: string, recursive = f
   if (!target) throw new Error('delete requires a non-empty path')
 
   const resolved = resolveInsideWorkspace(workspaceRoot, target)
-  if (resolve(resolved) === resolve(workspaceRoot)) {
+  // resolved is realpath-resolved inside resolveInsideWorkspace; compare
+  // against the real root too, or a symlinked/aliased root (macOS /var →
+  // /private/var, Windows 8.3 CI temp paths) never matches and '.' deletes
+  // walk into the entry-count error instead of the root refusal.
+  if (resolve(resolved) === resolve(realpathSync(workspaceRoot))) {
     throw new Error('Refusing to delete the workspace root')
   }
   if (!existsSync(resolved)) {

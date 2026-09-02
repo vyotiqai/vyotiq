@@ -270,7 +270,10 @@ describe('toolRead', () => {
     expect(lines).toContain('alpha')
     expect(lines).not.toContain('charlie')
 
-    const bytes = await toolRead(root, 'stored.DOCX', { offset: 0, limit: 5 })
+    // Same-case byte window: ubuntu CI is case-sensitive, so the former
+    // 'stored.DOCX' argument missed the file there ("File not found") instead
+    // of exercising the byte-window path this test pins.
+    const bytes = await toolRead(root, 'stored.docx', { offset: 0, limit: 5 })
     expect(bytes).toMatch(/--- offset 0, limit 5 of \d+ bytes ---/)
     expect(bytes).toContain('alpha')
     expect(bytes).not.toContain('bravo')
