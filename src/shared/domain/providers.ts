@@ -29,6 +29,7 @@ const SEED_MODEL_IDS: Record<ProviderId, string[]> = {
   groq: ['llama-4-scout-17b-16e-instruct'],
   openrouter: ['openrouter/auto'],
   xai: ['grok-4-latest'],
+  modal: ['my-endpoint.us-west.modal.direct'],
   mistral: ['mistral-large-latest'],
   custom: ['gpt-oss-120b', 'llama3.2', 'qwen2.5'],
   // OpenCode Go model ids are NOT hardcoded: they come from the live models.dev
@@ -102,6 +103,7 @@ export const PROVIDER_DEFAULTS: ProviderDefault[] = [
   { id: 'groq', label: 'Groq', models: SEED_MODEL_IDS.groq },
   { id: 'openrouter', label: 'OpenRouter', models: SEED_MODEL_IDS.openrouter },
   { id: 'xai', label: 'xAI', models: SEED_MODEL_IDS.xai },
+  { id: 'modal', label: 'Modal', models: SEED_MODEL_IDS.modal },
   { id: 'mistral', label: 'Mistral', models: SEED_MODEL_IDS.mistral },
   { id: 'custom', label: 'Custom OpenAI-compatible', models: SEED_MODEL_IDS.custom },
   { id: 'opencode', label: 'OpenCode Go', models: seedIdsFor('opencode') }

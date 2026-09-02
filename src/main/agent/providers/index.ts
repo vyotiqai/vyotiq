@@ -21,6 +21,7 @@ import {
   deepseekProvider,
   enrichOllamaModelsWithSelectedShow,
   groqProvider,
+  modalProvider,
   mistralProvider,
   ollamaProvider,
   openaiProvider,
@@ -45,6 +46,7 @@ const providers: Record<ProviderId, LlmProvider> = {
   groq: groqProvider,
   openrouter: openrouterProvider,
   xai: xaiProvider,
+  modal: modalProvider,
   mistral: mistralProvider,
   custom: customProvider,
   opencode: opencodeProvider

@@ -1313,6 +1313,14 @@ export function buildOpenAiCompatBody(
       if (req.thinking.display !== 'omitted') {
         body.include_reasoning = true
       }
+    } else if (providerId === 'modal') {
+      // Modal Shared Endpoints are generic OpenAI-compatible frontends (vLLM /
+      // SGLang): widest-overlap reasoning_effort (+ include_reasoning), same
+      // shape as custom hosts.
+      body.reasoning_effort = normalizeEffortForOpenAiCompatReasoning(effort, 'xai')
+      if (req.thinking.display !== 'omitted') {
+        body.include_reasoning = true
+      }
     }
   } else if (req.thinking?.enabled === false && providerId === 'ollama') {
     const gptOss = isOllamaGptOssModel(req.model)
@@ -1759,6 +1767,14 @@ const OLLAMA_OPTS: OpenAiCompatOptions = {
 const GROQ_OPTS: OpenAiCompatOptions = {
   defaultBaseUrl: 'https://api.groq.com/openai/v1'
 }
+/**
+ * Modal Shared Endpoints (OpenAI-compatible; modal.com docs). The base URL is
+ * region-scoped (`inference.<region>.modal.direct/v1`); proxy-token auth rides
+ * the standard Bearer header. Model IDs are endpoint hostnames from /v1/models.
+ */
+export const MODAL_OPTS: OpenAiCompatOptions = {
+  defaultBaseUrl: 'https://inference.us-west.modal.direct/v1'
+}
 /** Send prompt_cache_key (stable per runId) so upstream providers keep cache affinity across steps. */
 const OPENROUTER_OPTS: OpenAiCompatOptions = {
   defaultBaseUrl: 'https://openrouter.ai/api/v1',
@@ -1788,6 +1804,7 @@ export const openrouterProvider = createOpenAiCompatibleProvider('openrouter', {
   }
 })
 export const xaiProvider = createOpenAiCompatibleProvider('xai', XAI_OPTS)
+export const modalProvider = createOpenAiCompatibleProvider('modal', MODAL_OPTS)
 export const mistralProvider = createOpenAiCompatibleProvider('mistral', MISTRAL_OPTS)
 
 /** Bring-your-own OpenAI-compatible host (Cerebras, Fireworks, Together, vLLM, …). */

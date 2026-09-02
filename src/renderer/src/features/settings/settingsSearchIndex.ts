@@ -82,7 +82,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   {
     id: 'active-provider',
     title: 'Active provider',
-    keywords: ['openai', 'anthropic', 'ollama', 'custom', 'provider'],
+    keywords: ['openai', 'anthropic', 'ollama', 'custom', 'modal', 'provider'],
     section: 'providers'
   },
   {

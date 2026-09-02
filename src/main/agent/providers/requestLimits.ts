@@ -7,6 +7,7 @@ const OPENAI_COMPAT_PROVIDERS = new Set<ProviderId>([
   'mistral',
   'deepseek',
   'openrouter',
+  'modal',
   'ollama',
   'custom',
   // Go's /chat/completions mount is an OpenAI-compat subscription gateway;

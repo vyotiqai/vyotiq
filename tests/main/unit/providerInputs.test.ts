@@ -4,7 +4,7 @@ import {
   serializeToolArgs,
   toInteractionsInput
 } from '@main/agent/providers/geminiInteractions'
-import { estimateMessagesTokens } from '@main/agent/context/estimate'
+import { estimateMessagesTokensAsync } from '@main/agent/context/estimate'
 
 describe('OpenAI Responses input', () => {
   it('sends only trailing tool outputs on continuation', () => {
@@ -312,7 +312,7 @@ describe('OpenAI Responses multimodal input', () => {
 })
 
 describe('token estimation', () => {
-  it('includes thinking and reasoning state in message estimates', () => {
+  it('includes thinking and reasoning state in message estimates', async () => {
     const messages = [
       {
         role: 'user' as const,
@@ -325,8 +325,8 @@ describe('token estimation', () => {
         reasoningState: { kind: 'openai_compat' as const, reasoningContent: 'blob' }
       }
     ]
-    const base = estimateMessagesTokens([{ role: 'user', content: 'hello' }])
-    const full = estimateMessagesTokens(messages)
+    const base = await estimateMessagesTokensAsync([{ role: 'user', content: 'hello' }])
+    const full = await estimateMessagesTokensAsync(messages)
     expect(full).toBeGreaterThan(base)
   })
 })

@@ -51,12 +51,13 @@ Project paths with spaces are fine when using prebuilds; if a source rebuild fai
 2. `pnpm dev` → pick a workspace → send a message.
 3. Confirm tool rows (`read` / `search` / `memory_*` / …), streaming text, and Stop cancels the run.
 
-## Providers (11)
+## Providers (12)
 
-OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI · Mistral · OpenCode Go · Custom (OpenAI-compatible)
+OpenAI · Anthropic · Gemini · Ollama · DeepSeek · Groq · OpenRouter · xAI · Modal · Mistral · OpenCode Go · Custom (OpenAI-compatible)
 
 - **Ollama:** Local daemon by default (no key). Saving an Ollama API key automatically uses Ollama Cloud (`https://ollama.com`).
 - **Custom:** Any OpenAI-compatible `/v1` host (Cerebras, Fireworks, Together, vLLM, …). Set the base URL in Settings; local hosts need no key.
+- **Modal:** OpenAI-compatible Shared Endpoints (`https://inference.<region>.modal.direct/v1`). The API key is the Modal proxy token in its combined form (`wk-<id>.ws-<secret>`); model IDs are endpoint hostnames returned by `/v1/models`.
 - **Extended thinking:** Reasoning-capable models stream a separate thinking channel (collapsed in chat). Configure in the composer model picker (thinking on/off, effort, show/hide), along with compaction.
 - OpenAI GPT-5 / o-series models use the Responses API (`/v1/responses`) by default (thinking off still uses Responses without reasoning). GPT-5.6+ sends explicit prompt-cache breakpoints on the system prefix.
 - Gemini thinking models use the Interactions API (`/v1beta/interactions`) with stateful `previous_interaction_id`.

@@ -7,6 +7,7 @@ export const PROVIDERS = [
   { id: 'groq', name: 'Groq' },
   { id: 'openrouter', name: 'OpenRouter' },
   { id: 'xai', name: 'xAI' },
+  { id: 'modal', name: 'Modal' },
   { id: 'mistral', name: 'Mistral' },
   { id: 'opencode', name: 'OpenCode Go' }
 ] as const

@@ -95,7 +95,7 @@ export function shouldRetryOmitCacheKey(status: number, body: string): boolean {
 }
 
 const PROVIDER_SECRET_RE =
-  /\b(?:sk-[a-zA-Z0-9_-]+|Bearer\s+[a-zA-Z0-9._/=+-]+|api[_-]?key["\s:=]+[a-zA-Z0-9._-]+)/gi
+  /\b(?:sk-[a-zA-Z0-9_-]+|Bearer\s+[a-zA-Z0-9._/=+-]+|wk-[A-Za-z0-9_-]{4,}\.ws-[A-Za-z0-9_-]{4,}|api[_-]?key["\s:=]+[a-zA-Z0-9._-]+)/gi
 
 /** OpenAI often echoes a masked key fragment: "Incorrect API key provided: abcd…wxyz". */
 const INCORRECT_API_KEY_RE =

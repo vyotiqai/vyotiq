@@ -10,6 +10,8 @@ const API_KEY_PATTERNS: RegExp[] = [
   /\bAIza[0-9A-Za-z_-]{20,}\b/g,
   /\bxai-[A-Za-z0-9_-]{8,}\b/g,
   /\bgsk_[A-Za-z0-9_-]{8,}\b/g,
+  // Modal proxy token, combined form wk-<id>.ws-<secret> (modal.com Shared Endpoints)
+  /\bwk-[A-Za-z0-9_-]{4,}\.ws-[A-Za-z0-9_-]{4,}\b/g,
   /\bBearer\s+[A-Za-z0-9._\-+=/]{8,}/gi,
   /\b(?:Authorization|X-Api-Key)\s*[:=]\s*[^\s,;]+/gi,
   /\bapi[_-]?key["']?\s*[:=]\s*["']?[^\s"',}&}]+/gi,

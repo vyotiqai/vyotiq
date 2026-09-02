@@ -72,6 +72,15 @@ describe('formatProviderHttpError', () => {
     expect(msg).not.toMatch(/sk-abcdefghijklmnopqrstuvwxyz/)
   })
 
+  it('scrubs Modal proxy tokens echoed without a Bearer prefix', () => {
+    const body = JSON.stringify({
+      error: { message: 'invalid token wk-Ab12Cd34.ws-Xy56Zv78 for workspace' }
+    })
+    const msg = formatProviderHttpError(401, body, 'modal')
+    expect(msg).toContain('[redacted]')
+    expect(msg).not.toContain('wk-Ab12Cd34.ws-Xy56Zv78')
+  })
+
   it('maps auth failures to a settings hint', () => {
     expect(formatProviderHttpError(401, '', 'openai')).toMatch(/API key/i)
   })
