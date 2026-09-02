@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -82,7 +83,34 @@ export async function launchApp(options: LaunchOptions = {}): Promise<LaunchedAp
 
 export async function closeApp(launched: LaunchedApp): Promise<void> {
   try {
-    await launched.app.close()
+    // app.close() can hang past the hook timeout when the quit path stalls
+    // (before-quit preventDefault + async shutdown; seen on all three CI OSes
+    // and locally as an afterAll timeout in marketplace-mcp-config). Bound the
+    // graceful close and force-kill the Electron process so afterAll always
+    // completes — the test outcome must not depend on quit latency.
+    await Promise.race([
+      launched.app.close(),
+      new Promise<void>((resolve) => {
+        const timer = setTimeout(() => {
+          const proc = launched.app.process()
+          const pid = proc?.pid
+          try {
+            if (process.platform === 'win32' && pid != null) {
+              // Windows children inherit the driver pipe, so killing only the
+              // main process orphans GPU/renderer children and the worker
+              // pipe never closes (Playwright "Worker teardown timeout").
+              spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+            } else {
+              proc?.kill('SIGKILL')
+            }
+          } catch {
+            // already gone
+          }
+          resolve()
+        }, 10_000)
+        timer.unref()
+      })
+    ])
   } finally {
     try {
       rmSync(launched.userDataDir, { recursive: true, force: true })
