@@ -11,6 +11,7 @@ import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { contentDisplayText, contentToText } from '../../shared/ipc'
 import { runGoalFromUserText, findAbsolutePathsInText, outsideWorkspacePathGuidance, stubPastSkillInvocationsInMessages } from '../../shared/slashCommands'
 import {
+  modalPlaceholderModelMessage,
   resolveProviderChatBaseUrl,
   seedModelsFor
 } from '../../shared/providers'
@@ -28,7 +29,6 @@ import {
   streamRetryBackoffMsFor as streamRetryBackoffMs
 } from './streamRetry'
 import { isRetriableProviderMessage } from './providers/fetchWithRetry'
-import { providerHttpErrorCode } from './providers/httpErrors'
 import { circuitKeyProvider, isCircuitOpenError } from './circuitBreaker'
 import {
   QUOTA_EXHAUSTED_STOP_CODE,
@@ -317,15 +317,9 @@ function dedupeNewMessagesAgainstDisk(
  */
 function classifyIncompleteTurn(
   stopReason: StopReason | undefined,
-  assistantText: string,
-  droppedFrames = 0
+  assistantText: string
 ): IncompleteReason | undefined {
   const hasVisibleAnswer = Boolean(assistantText.trim())
-  // Corrupted SSE frames mean the model's answer is not fully on the wire —
-  // a short-but-plausible text must not end the turn as finished.
-  if (droppedFrames > 0 && stopReason !== 'length') {
-    return hasVisibleAnswer ? 'truncated' : 'empty_response'
-  }
   if (stopReason === 'length') return 'truncated'
   if (stopReason === 'content_filter') return 'filtered'
   // tool_calls with zero parsed tools usually means truncated/malformed deltas,
@@ -666,16 +660,13 @@ function* emitTerminalRunError(opts: {
   flushWriteCheckpoint: () => Generator<AgentEvent, void, unknown>
   writeStatus: (patch: { status: 'error'; error: string; resumable?: true }) => void
 }): Generator<AgentEvent, void, unknown> {
-  const { runId, invokeId, runDir, message, flushWriteCheckpoint, writeStatus } = opts
-  // A missing code must not drop the message: default it so the renderer always
-  // receives (and persists) the error event alongside status:'error'.
-  const emitError = opts.emitErrorEvent !== false
-  const errorCode = opts.code ?? 'AGENT_LOOP'
+  const { runId, invokeId, runDir, message, code, flushWriteCheckpoint, writeStatus } = opts
+  const emitError = opts.emitErrorEvent !== false && code != null
   if (opts.dropFollowUpsReason) {
     yield* dropPendingFollowUps(runId, runDir, opts.dropFollowUpsReason)
   }
   if (emitError) {
-    yield { type: 'error', runId, invokeId, message, code: errorCode }
+    yield { type: 'error', runId, invokeId, message, code }
   }
   if (!opts.skipCheckpoint) {
     yield* flushWriteCheckpoint()
@@ -684,7 +675,7 @@ function* emitTerminalRunError(opts: {
   writeStatus({ status: 'error', error: message, ...(opts.resumable ? { resumable: true } : {}) })
   if (runDir) {
     if (emitError) {
-      appendEvent(runDir, { type: 'error', runId, invokeId, message, code: errorCode })
+      appendEvent(runDir, { type: 'error', runId, invokeId, message, code })
     }
     appendEvent(runDir, { type: 'status', runId, invokeId, status: 'error' })
   }
@@ -1404,6 +1395,24 @@ export async function* runAgent(input: {
       return
     }
 
+    // Modal-only guard: an unresolved placeholder model ID is guaranteed to
+    // 404 ("unknown inference model") because Modal has no static catalog —
+    // valid IDs are endpoint hostnames that exist only after /v1/models
+    // succeeds. Fail the turn up front with fix steps instead of burning the
+    // run on a provider 404 mid-stream.
+    if (providerId === 'modal' && modelInfo.isPlaceholder) {
+      yield* emitTerminalRunError({
+        runId,
+        invokeId,
+        runDir,
+        message: modalPlaceholderModelMessage(settings.model),
+        code: 'PROVIDER_AUTH',
+        flushWriteCheckpoint,
+        writeStatus
+      })
+      return
+    }
+
     // Marketplace Force on/off applies from marketplaceOverrides even when the
     // provider/model workspace override toggle is off.
     const marketplaceOverrides = override?.marketplaceOverrides
@@ -1796,10 +1805,9 @@ export async function* runAgent(input: {
         skillsSection,
         pluginRulesSection,
         userRules: getSettings().userRules ?? [],
-        persona: settings.agentPersona || undefined,
-        tone: settings.agentTone || undefined,
-        responseLanguage: settings.responseLanguage || undefined,
-        responseVerbosity: settings.responseVerbosity,
+        persona: getSettings().agentPersona || undefined,
+        responseLanguage: getSettings().responseLanguage || undefined,
+        responseVerbosity: getSettings().responseVerbosity,
         focusedFile: input.focusedFile,
         modeSection:
           modeSectionMarkdown(agentMode, {
@@ -2126,7 +2134,6 @@ export async function* runAgent(input: {
       let streamFinished = false
       let streamSteered = false
       let streamGotDone = false
-      let stepDroppedFrames = 0
       let lastStreamSnapshotAt = 0
       let lastStreamFailureMessage = ''
       let lastStreamFailureCode = 'PROVIDER_STREAM'
@@ -2178,7 +2185,6 @@ export async function* runAgent(input: {
           liveForwardedToolIds.clear()
           streamSteered = false
           streamGotDone = false
-          stepDroppedFrames = 0
         },
         waitBeforeRetry: async function* (attempt) {
           yield* yieldStreamRetryWait(
@@ -2355,7 +2361,6 @@ export async function* runAgent(input: {
             }
           } else if (chunk.type === 'done') {
             streamGotDone = true
-            stepDroppedFrames = chunk.droppedFrames ?? 0
             if (chunk.reasoningState) stepReasoningState = chunk.reasoningState
             if (chunk.stopReason) stepStopReason = chunk.stopReason
             if (chunk.usage) {
@@ -2523,18 +2528,13 @@ export async function* runAgent(input: {
             }
           } else if (chunk.type === 'error') {
             const message = chunk.error ?? 'Provider error'
-            // 401/402/403 are permanent (auth/plan/credits) — classify them out
-            // of retryable PROVIDER_HTTP so the UI never offers a doomed Retry.
             const errorCode =
-              chunk.errorCode === 'PROVIDER_HTTP'
-                ? providerHttpErrorCode(chunk.httpStatus)
-                : chunk.errorCode === 'PROVIDER_NETWORK' ||
-                    chunk.errorCode === 'PROVIDER_TIMEOUT' ||
-                    chunk.errorCode === 'CIRCUIT_OPEN' ||
-                    chunk.errorCode === 'PROVIDER_AUTH' ||
-                    chunk.errorCode === 'PROVIDER_BILLING'
-                  ? chunk.errorCode
-                  : 'PROVIDER_STREAM'
+              chunk.errorCode === 'PROVIDER_HTTP' ||
+              chunk.errorCode === 'PROVIDER_NETWORK' ||
+              chunk.errorCode === 'PROVIDER_TIMEOUT' ||
+              chunk.errorCode === 'CIRCUIT_OPEN'
+                ? chunk.errorCode
+                : 'PROVIDER_STREAM'
             lastStreamFailureHttpStatus = chunk.httpStatus
             if (isQuotaExhaustedMessage(message)) {
               stepQuotaExhausted = true
@@ -2958,11 +2958,7 @@ export async function* runAgent(input: {
         appendEvent(runDir, assistantMsgEv)
         yield assistantMsgEv
 
-        const incomplete = classifyIncompleteTurn(
-          stepStopReason,
-          scrubbedAssistantText,
-          stepDroppedFrames
-        )
+        const incomplete = classifyIncompleteTurn(stepStopReason, scrubbedAssistantText)
         if (incomplete === 'truncated' && !controller.signal.aborted) {
           truncationContinues += 1
           persistLoopCheckpoint()
