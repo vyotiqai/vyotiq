@@ -2,11 +2,13 @@ import { readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import sharp from 'sharp'
+import png2icons from 'png2icons'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const sourcePath = path.join(root, 'resources', 'branding', 'identity', 'vyotiq.com-dark.png')
 const runtimePath = path.join(root, 'resources', 'icon.png')
 const outputPath = path.join(root, 'resources', 'icon.ico')
+const icnsPath = path.join(root, 'resources', 'icon.icns')
 const sizes = [16, 24, 32, 48, 64, 128, 256]
 
 function iconDirectory(images) {
@@ -44,6 +46,11 @@ const images = await Promise.all(
 
 await writeFile(runtimePath, runtimePng)
 await writeFile(outputPath, iconDirectory(images))
+// icns is built from the same 1024px master; png2icons emits the full Retina
+// mip ladder (16-1024) so electron-builder packs the macOS bundle deterministically.
+const icns = png2icons.createICNS(runtimePng, png2icons.BILINEAR, 0)
+if (!icns) throw new Error('[sync-app-icon] png2icons produced no ICNS output')
+await writeFile(icnsPath, icns)
 console.log(
-  `[sync-app-icon] synced identity artwork to ${path.relative(root, runtimePath)} and ${path.relative(root, outputPath)}`
+  `[sync-app-icon] synced identity artwork to ${path.relative(root, runtimePath)}, ${path.relative(root, outputPath)}, and ${path.relative(root, icnsPath)}`
 )

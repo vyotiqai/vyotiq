@@ -74,6 +74,7 @@ nsis:
   deleteAppDataOnUninstall: false
   runAfterFinish: true
 mac:
+  icon: resources/icon.icns
   target:
     - dmg
     - zip

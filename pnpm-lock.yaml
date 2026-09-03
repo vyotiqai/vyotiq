@@ -162,6 +162,9 @@ importers:
       '@xterm/xterm':
         specifier: ^6.0.0
         version: 6.0.0
+      add:
+        specifier: ^2.0.9
+        version: 2.0.9
       babel-plugin-react-compiler:
         specifier: ^1.0.0
         version: 1.0.0
@@ -201,6 +204,9 @@ importers:
       opentype.js:
         specifier: ^2.0.0
         version: 2.0.0
+      png2icons:
+        specifier: ^2.0.1
+        version: 2.0.1
       react:
         specifier: ^19.2.1
         version: 19.2.8
@@ -3453,6 +3459,9 @@ packages:
     engines: {node: '>=0.4.0'}
     hasBin: true
 
+  add@2.0.9:
+    resolution: {integrity: sha512-a6+u7hP0xmII7EBQenAIb6oMp9/vcW6EmrsD0ngUbLnE69Xtwj4yCbmHLUi5LZ6ggJB+AufHTaDbW1XBiYJwFw==}
+
   adm-zip@0.6.0:
     resolution: {integrity: sha512-XleryMhbuksdKtofnWZ9Sk+4CUTbms4Mb/EU32SZwToAyZ5RgVos/ki8n+yr0LWHOGKuakbXTuuYNHLQjhddgg==}
     engines: {node: '>=14.0'}
@@ -6181,6 +6190,10 @@ packages:
   plist@3.1.0:
     resolution: {integrity: sha512-uysumyrvkUX0rX/dEVqt8gC3sTBzd4zoWfLeS29nb53imdaXVvLINYXTI2GNqzaMuvacNx4uJQ8+b3zXR0pkgQ==}
     engines: {node: '>=10.4.0'}
+
+  png2icons@2.0.1:
+    resolution: {integrity: sha512-GDEQJr8OG4e6JMp7mABtXFSEpgJa1CCpbQiAR+EjhkHJHnUL9zPPtbOrjsMD8gUbikgv3j7x404b0YJsV3aVFA==}
+    hasBin: true
 
   polished@4.3.1:
     resolution: {integrity: sha512-OBatVyC/N7SCW/FaDHrSd+vn0o5cS855TOmYi4OkdWUMSJCET/xip//ch8xGUvtr3i44X9LVyWwQlRMTN3pwSA==}
@@ -11003,6 +11016,8 @@ snapshots:
 
   acorn@8.18.0: {}
 
+  add@2.0.9: {}
+
   adm-zip@0.6.0: {}
 
   agent-base@7.1.4: {}
@@ -14585,6 +14600,8 @@ snapshots:
       '@xmldom/xmldom': 0.8.13
       base64-js: 1.5.1
       xmlbuilder: 15.1.1
+
+  png2icons@2.0.1: {}
 
   polished@4.3.1:
     dependencies:

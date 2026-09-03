@@ -16,8 +16,7 @@ const destBrand = path.join(root, 'landing', 'public', 'brand')
 const destProviders = path.join(root, 'landing', 'src', 'assets', 'providers')
 const lobehub = path.join(root, 'node_modules', '@lobehub', 'icons', 'es')
 
-/** Product provider id -> @lobehub/icons folder. Same named hosts as ProviderIdSchema minus custom.
- * `modal` has no @lobehub mark (verified absent in 5.15.0) — ships a raw letter-mark below. */
+/** Product provider id -> @lobehub/icons folder. Same named hosts as ProviderIdSchema minus custom. */
 const providerLogos = [
   ['openai', 'OpenAI'],
   ['anthropic', 'Anthropic'],
@@ -27,19 +26,9 @@ const providerLogos = [
   ['groq', 'Groq'],
   ['openrouter', 'OpenRouter'],
   ['xai', 'XAI'],
-  ['modal', null],
   ['mistral', 'Mistral'],
   ['opencode', 'OpenCode']
 ]
-
-/** Raw monochrome marks for providers that @lobehub/icons does not ship. */
-const RAW_PROVIDER_SVGS = {
-  modal: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" fill-rule="evenodd" role="img" aria-hidden="true">
-  <title>Modal</title>
-  <path d="M4 20V4h3.4l4.6 7.1L16.6 4H20v16h-3.2v-9.3L12 16.2 7.2 10.7V20H4z"/>
-</svg>
-`
-}
 
 /** Transparent chrome assets + OG board. Do not copy filled presentation boards into UI paths. */
 const identityCopies = [
@@ -77,12 +66,6 @@ ${pathEls}
 }
 
 async function writeProviderLogo(id, folder) {
-  if (folder == null) {
-    const raw = RAW_PROVIDER_SVGS[id]
-    if (!raw) throw new Error(`[sync-landing-brand] no raw provider mark for ${id}`)
-    await writeFile(path.join(destProviders, `${id}.svg`), raw, 'utf8')
-    return
-  }
   const monoFile = path.join(lobehub, folder, 'components', 'Mono.js')
   if (!existsSync(monoFile)) {
     throw new Error(`[sync-landing-brand] missing provider mark: ${path.relative(root, monoFile)}`)
@@ -107,6 +90,8 @@ async function sync() {
   }
 
   await copyRequired(path.join(root, 'resources', 'icon.png'), path.join(destBrand, 'favicon.png'))
+  // Root-level legacy fallback: crawlers and bookmarks probe /favicon.ico directly.
+  await copyRequired(path.join(root, 'resources', 'icon.ico'), path.join(root, 'landing', 'public', 'favicon.ico'))
 
   const brandKeep = new Set([...identityCopies.map(([, to]) => to), 'favicon.png'])
   for (const name of await readdir(destBrand)) {
@@ -119,7 +104,7 @@ async function sync() {
   }
 
   console.log(
-    `[sync-landing-brand] synced ${identityCopies.length + providerLogos.length + 2} files`
+    `[sync-landing-brand] synced ${identityCopies.length + providerLogos.length + 3} files`
   )
 }
 
