@@ -60,7 +60,10 @@ test('opens Files, edits a real workspace file, and saves it', async () => {
   const editor = window.locator('[data-code-editor] .cm-content')
   await expect(editor).toBeVisible()
   await editor.click()
-  await window.keyboard.press('Control+A')
+  // macOS maps select-all to Cmd+A; Ctrl+A moves the caret there, leaving
+  // the original line above the typed one (CI run 33609263586 retry #1:
+  // received file kept "export const value = 1\n" before the new line).
+  await window.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A')
   await window.keyboard.type('export const value = 2\n')
 
   await expect

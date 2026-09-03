@@ -92,9 +92,13 @@ export async function closeApp(launched: LaunchedApp): Promise<void> {
       launched.app.close(),
       new Promise<void>((resolve) => {
         const timer = setTimeout(() => {
-          const proc = launched.app.process()
-          const pid = proc?.pid
           try {
+            // app.process() throws once Playwright has disposed the
+            // ElectronApplication (close() finished during this window) — the
+            // kill is then unnecessary anyway, so it must live inside try/catch
+            // or the uncaught throw crashes the worker (CI run 33609263586).
+            const proc = launched.app.process()
+            const pid = proc?.pid
             if (process.platform === 'win32' && pid != null) {
               // Windows children inherit the driver pipe, so killing only the
               // main process orphans GPU/renderer children and the worker

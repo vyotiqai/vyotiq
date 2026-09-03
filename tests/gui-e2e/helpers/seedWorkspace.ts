@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DEFAULT_SETTINGS } from '../../../src/shared/ipc/schemas/settings'
 import { workspaceIdFromPath } from '../../../src/shared/utils/workspaceId'
@@ -18,13 +18,25 @@ export type SeededInterruptedRun = SeededRun & {
   step?: number
 }
 
+/**
+ * Canonical form the app itself stores: addWorkspace realpath-resolves the
+ * root before canonicalizing (workspaces.ts), so seeds must derive the
+ * workspace ID from the same resolution — otherwise seeded runs land under
+ * a different workspace ID than listRuns looks up (mac /var → /private/var;
+ * CI run 33609263586 chatPane.drag listRuns === []).
+ */
+function appCanonicalWorkspacePath(workspacePath: string): string {
+  const resolved = existsSync(workspacePath) ? realpathSync(workspacePath) : workspacePath
+  return canonicalizeWorkspacePath(resolved)
+}
+
 /** Write run status files into the Electron userData sessions tree. */
 export function seedRunsInUserData(
   userDataDir: string,
   workspacePath: string,
   runs: SeededRun[]
 ): void {
-  const canonical = canonicalizeWorkspacePath(workspacePath)
+  const canonical = appCanonicalWorkspacePath(workspacePath)
   const id = workspaceIdFromPath(canonical)
   const sessionsRoot = join(userDataDir, 'workspaces', id, 'sessions')
   mkdirSync(sessionsRoot, { recursive: true })
@@ -60,7 +72,7 @@ export function seedInterruptedRun(
   workspacePath: string,
   run: SeededInterruptedRun
 ): void {
-  const canonical = canonicalizeWorkspacePath(workspacePath)
+  const canonical = appCanonicalWorkspacePath(workspacePath)
   const id = workspaceIdFromPath(canonical)
   const dir = join(userDataDir, 'workspaces', id, 'sessions', run.runId)
   mkdirSync(dir, { recursive: true })
@@ -94,7 +106,7 @@ export function seedWorkspacesRegistry(
   workspacePath: string,
   activeRunId: string | null
 ): void {
-  const canonical = canonicalizeWorkspacePath(workspacePath)
+  const canonical = appCanonicalWorkspacePath(workspacePath)
   mkdirSync(userDataDir, { recursive: true })
   writeFileSync(
     join(userDataDir, 'workspaces.json'),
