@@ -13,6 +13,79 @@ import { RunReceiptSchema } from '@shared/ipc'
 import type { ChatMessage, PersistedEvent, RunStatus } from '@shared/ipc'
 
 describe('runReceipt', () => {
+  it('stamps codebase_search semantic health from result headers', () => {
+    const messages: ChatMessage[] = [
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'codebase_search', arguments: '{"query":"where is X"}' }]
+      },
+      {
+        role: 'tool',
+        toolCallId: 'c1',
+        toolName: 'codebase_search',
+        ok: true,
+        content:
+          'index: 100 chunks / 10 files · model=lightonai/mDenseOn@onnx-int8 · hits=5\n\n1. src/a.ts:1-2 [function f] score=0.5'
+      },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c2', name: 'codebase_search', arguments: '{"query":"legacy model"}' }]
+      },
+      {
+        role: 'tool',
+        toolCallId: 'c2',
+        toolName: 'codebase_search',
+        ok: true,
+        content:
+          'index: 100 chunks / 10 files · model=onnx-community/DenseOn@onnx-int8 · lexical-only · hits=3\nQuery embedder does not match the indexed model.'
+      },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c3', name: 'codebase_search', arguments: '{"query":"offline"}' }]
+      },
+      {
+        role: 'tool',
+        toolCallId: 'c3',
+        toolName: 'codebase_search',
+        ok: true,
+        content:
+          'index: 100 chunks / 10 files · model=local-hash-v1 · fallback=hash · hits=2\nNeural embeddings are unavailable.'
+      },
+      {
+        role: 'tool',
+        toolCallId: 'c4',
+        toolName: 'codebase_search',
+        ok: false,
+        content: 'index: 0 chunks / 0 files · model=local-hash-v1 · fallback=hash · hits=0'
+      }
+    ]
+    const receipt = buildRunReceipt({
+      runId: 'run-cbs',
+      status: {
+        status: 'done',
+        step: 2,
+        updatedAt: '2026-09-03T00:00:00.000Z'
+      },
+      messages,
+      events: [],
+      contract: '## Goal\n\ncbs health\n'
+    })
+    expect(receipt.codebaseSearch).toEqual({
+      calls: 3,
+      lexicalOnly: 1,
+      hashFallback: 1,
+      queryModels: [
+        'lightonai/mDenseOn@onnx-int8',
+        'onnx-community/DenseOn@onnx-int8',
+        'local-hash-v1'
+      ]
+    })
+    expect(RunReceiptSchema.parse(receipt).codebaseSearch?.calls).toBe(3)
+  })
+
   it('aggregates tool stats, failures, unread edits, and diagnostics', () => {
     const messages: ChatMessage[] = [
       {
@@ -98,6 +171,7 @@ describe('runReceipt', () => {
     expect(receipt.toolStats.totalCalls).toBe(3)
     expect(receipt.toolStats.failed).toBe(1)
     expect(receipt.toolStats.byName.str_replace?.failed).toBe(1)
+    expect(receipt.codebaseSearch).toBeUndefined()
     expect(receipt.failureClusters[0]?.key).toMatch(/str_replace/)
     expect(receipt.unreadEditPaths).toContain('b.ts')
     expect(receipt.unreadEditPaths).not.toContain('a.ts')

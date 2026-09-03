@@ -342,15 +342,37 @@ export function ModelPicker({
     modelMetaByValue
   ])
 
+  /**
+   * Manual model-ID row for the Custom provider: any host without a model-list
+   * endpoint (e.g. Cloudflare Workers AI compat API) leaves the catalog empty,
+   * so the typed query itself becomes selectable (`custom::<id>`).
+   */
+  const manualModelOption = useMemo<ModelPickerOption | null>(() => {
+    if (browsedProvider !== 'custom') return null
+    const id = query.trim()
+    if (!id) return null
+    const lowered = id.toLowerCase()
+    for (const opts of Object.values(optionsByProvider)) {
+      for (const opt of opts) {
+        if (opt.value.toLowerCase() === lowered || opt.label.toLowerCase() === lowered) {
+          return null
+        }
+      }
+    }
+    return { value: modelSelectionKey('custom', id), label: `Use "${id}"` }
+  }, [browsedProvider, query, optionsByProvider])
+
   const flatOptions = useMemo(() => {
-    if (visibleOptions.mode === 'flat') return visibleOptions.items
+    if (visibleOptions.mode === 'flat') {
+      return manualModelOption ? [...visibleOptions.items, manualModelOption] : visibleOptions.items
+    }
     return visibleOptions.sections.flatMap((s) => s.items)
-  }, [visibleOptions])
+  }, [visibleOptions, manualModelOption])
 
   // Keep the keyboard-active row visible in long catalogs (same as slash/mention menus).
   useEffect(() => {
     if (!open || activeIndex < 0) return
-    optionRefs.current[activeIndex]?.scrollIntoView({ block: 'nearest' })
+    optionRefs.current[activeIndex]?.scrollIntoView?.({ block: 'nearest' })
   }, [activeIndex, open])
 
   const pickModel = useCallback(
@@ -489,7 +511,9 @@ export function ModelPicker({
                     : query.trim()
                       ? 'No matches'
                       : browsedWarning
-                        ? 'No live models available. Fix the issue above or refresh.'
+                        ? browsedProvider === 'custom'
+                          ? 'No live models available. Type a model ID above and press Enter to use it manually.'
+                          : 'No live models available. Fix the issue above or refresh.'
                         : 'No models available for this provider.'}
                 </li>
               ) : visibleOptions.mode === 'flat' ? (

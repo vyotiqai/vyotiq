@@ -42,7 +42,6 @@ export const ALLOWED_LOG_FIELD_KEYS = new Set([
   'generation',
   'dsnConfigured',
   'telemetryEnabled',
-  'cacheHitRatio',
   'inputTokens',
   'cachedInputTokens',
   'cacheCreationInputTokens',

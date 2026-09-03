@@ -198,7 +198,11 @@ import {
   NotificationMutateRequestSchema,
   type NotificationList
 } from '../../shared/ipc'
-import { resolveProviderListBaseUrl } from '../../shared/providers'
+import {
+  resolveProviderListBaseUrl,
+  validateCustomOpenAiBaseUrl,
+  validateOllamaBaseUrl
+} from '../../shared/providers'
 import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { writeFile } from 'fs/promises'
 import { formatError, AppError, isAbortError, isAppError } from '../../shared/errors'
@@ -460,7 +464,9 @@ export { chatCancelResult }
 
 const dictationTranscriptions = new Map<string, AbortController>()
 
-function senderOk(event: Electron.IpcMainInvokeEvent): boolean {
+type IpcSender = { sender: Electron.WebContents; senderFrame?: Electron.WebFrameMain | null | undefined }
+
+function senderOk(event: IpcSender): boolean {
   const win = BrowserWindow.fromWebContents(event.sender)
   if (!win || win.isDestroyed()) return false
   const mainWindow = getMainWindow()
@@ -686,7 +692,7 @@ export function registerIpc(): void {
         await syncMcpServers(resolveMcpServersForSessionMap())
         const warmPath = next.activePath ?? req.path
         if (warmPath) {
-          warmWorkspaceIndexes(warmPath, { warmCodeIndex: false })
+          warmWorkspaceIndexes(warmPath)
           pruneStaleInstanceWorktreesBestEffort(
             warmPath,
             new Set(listActiveRuns().map((run) => run.runId))
@@ -741,7 +747,7 @@ export function registerIpc(): void {
         const { path } = WorkspacesSetActiveRequestSchema.parse(raw)
         const state = await enqueueWorkspaceMutation(() => setActiveWorkspace(path))
         setMcpStdioWorkspace(path)
-        warmWorkspaceIndexes(path, { warmCodeIndex: false })
+        warmWorkspaceIndexes(path)
         pruneStaleInstanceWorktreesBestEffort(
           path,
           new Set(listActiveRuns().map((run) => run.runId))
@@ -889,6 +895,15 @@ export function registerIpc(): void {
       if (!senderOk(event)) return fail('Invalid sender')
       try {
         const req = ListModelsRequestSchema.parse(raw ?? {})
+        if (req.baseUrl && (req.provider === 'custom' || req.provider === 'ollama')) {
+          // Gate direct catalog requests too: a bad base must error clearly
+          // instead of silently falling back to the local default.
+          const check =
+            req.provider === 'custom'
+              ? validateCustomOpenAiBaseUrl(req.baseUrl)
+              : validateOllamaBaseUrl(req.baseUrl)
+          if (!check.ok) return fail(check.error)
+        }
         const settings = getSettings()
         const apiKey = getSecret(req.provider)
         const baseUrl = resolveProviderListBaseUrl(

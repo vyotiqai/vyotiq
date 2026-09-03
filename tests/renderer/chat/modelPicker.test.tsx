@@ -331,3 +331,168 @@ describe('ModelPicker', () => {
     }
   })
 })
+
+const CUSTOM_WARNING =
+  'Cannot reach custom OpenAI-compatible host at https://example.com/v1 (HTTP 404). Check the base URL and that the server is running. Showing seed defaults (not live models).'
+
+function renderCustomPicker(overrides: {
+  optionsByProvider?: Partial<Record<string, ModelPickerOption[]>>
+  warningsByProvider?: Partial<Record<string, string | null>>
+  onModelChange?: ReturnType<typeof vi.fn>
+}): void {
+  const onModelChange = overrides.onModelChange ?? vi.fn()
+  render(
+    <ModelPicker
+      providers={['custom']}
+      optionsByProvider={
+        { ...optionsByProvider, custom: overrides.optionsByProvider?.custom ?? [] } as Record<
+          import('@shared/ipc').ProviderId,
+          ModelPickerOption[]
+        >
+      }
+      seedsByProvider={
+        { ...seedsByProvider, custom: [] } as Record<
+          import('@shared/ipc').ProviderId,
+          ModelPickerOption[]
+        >
+      }
+      modelMetaByValue={{}}
+      provider="custom"
+      model="gpt-oss-120b"
+      favoriteModels={[]}
+      recentModels={[]}
+      warningsByProvider={overrides.warningsByProvider ?? { custom: CUSTOM_WARNING }}
+      serviceTier="default"
+      onModelChange={onModelChange}
+      onToggleFavorite={vi.fn()}
+      onServiceTierChange={vi.fn()}
+      onRefreshCatalog={vi.fn()}
+      triggerClassName="test-trigger"
+    />
+  )
+  fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
+}
+
+describe('ModelPicker manual model ID (custom provider)', () => {
+  it('shows manual-entry empty-state copy and offers the typed query as a model ID under a seed fallback warning', () => {
+    const onModelChange = vi.fn()
+    renderCustomPicker({ onModelChange })
+
+    expect(
+      screen.getByText(
+        /No live models available\. Type a model ID above and press Enter to use it manually\./i
+      )
+    ).toBeTruthy()
+
+    const search = screen.getByLabelText('Search models')
+    fireEvent.change(search, { target: { value: '@cf/openai/gpt-oss-120b' } })
+    const row = screen.getByRole('option', { name: /Use "@cf\/openai\/gpt-oss-120b"/i })
+    fireEvent.click(row)
+    expect(onModelChange).toHaveBeenCalledWith('custom', '@cf/openai/gpt-oss-120b')
+  })
+
+  it('picks the manual model ID with Enter when no option is active', () => {
+    const onModelChange = vi.fn()
+    renderCustomPicker({ onModelChange })
+
+    const search = screen.getByLabelText('Search models')
+    fireEvent.change(search, { target: { value: '@cf/openai/gpt-oss-120b' } })
+    fireEvent.keyDown(search, { key: 'Enter' })
+    expect(onModelChange).toHaveBeenCalledWith('custom', '@cf/openai/gpt-oss-120b')
+  })
+
+  it('hides the manual row when the query exactly matches an existing option', () => {
+    renderCustomPicker({
+      optionsByProvider: {
+        custom: [
+          {
+            value: 'custom::my-model',
+            label: 'my-model',
+            group: 'Custom OpenAI-compatible',
+            meta: {
+              id: 'my-model',
+              inputModalities: ['text'],
+              outputModalities: ['text'],
+              supportsTools: true,
+              supportsVision: false,
+              supportsThinking: false
+            }
+          }
+        ]
+      }
+    })
+
+    const search = screen.getByLabelText('Search models')
+    fireEvent.change(search, { target: { value: 'my-model' } })
+    expect(screen.getByRole('option', { name: /my-model/i })).toBeTruthy()
+    expect(screen.queryByRole('option', { name: /Use "my-model"/i })).toBeNull()
+  })
+
+  it('does not offer a manual row for non-custom providers', () => {
+    render(
+      <ModelPicker
+        providers={['ollama']}
+        optionsByProvider={{ ...optionsByProvider, ollama: [] } as Record<
+          import('@shared/ipc').ProviderId,
+          ModelPickerOption[]
+        >}
+        seedsByProvider={{ ...seedsByProvider, ollama: [] } as Record<
+          import('@shared/ipc').ProviderId,
+          ModelPickerOption[]
+        >}
+        modelMetaByValue={{}}
+        provider="ollama"
+        model="qwen2.5"
+        favoriteModels={[]}
+        recentModels={[]}
+        warningsByProvider={{
+          ollama:
+            'Cannot reach Ollama at http://127.0.0.1:11434. Showing seed defaults (not live models).'
+        }}
+        serviceTier="default"
+        onModelChange={vi.fn()}
+        onToggleFavorite={vi.fn()}
+        onServiceTierChange={vi.fn()}
+        onRefreshCatalog={vi.fn()}
+        triggerClassName="test-trigger"
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Select model/i }))
+    fireEvent.change(screen.getByLabelText('Search models'), {
+      target: { value: 'some-typed-id' }
+    })
+    expect(screen.queryByRole('option', { name: /Use "some-typed-id"/i })).toBeNull()
+    expect(screen.getByText(/No matches/i)).toBeTruthy()
+  })
+
+  it('still offers the manual row when the live catalog loaded and the query is unlisted', () => {
+    const onModelChange = vi.fn()
+    renderCustomPicker({
+      optionsByProvider: {
+        custom: [
+          {
+            value: 'custom::listed-model',
+            label: 'listed-model',
+            group: 'Custom OpenAI-compatible',
+            meta: {
+              id: 'listed-model',
+              inputModalities: ['text'],
+              outputModalities: ['text'],
+              supportsTools: true,
+              supportsVision: false,
+              supportsThinking: false
+            }
+          }
+        ]
+      },
+      warningsByProvider: { custom: null },
+      onModelChange
+    })
+
+    const search = screen.getByLabelText('Search models')
+    fireEvent.change(search, { target: { value: '@cf/openai/gpt-oss-120b' } })
+    fireEvent.click(screen.getByRole('option', { name: /Use "@cf\/openai\/gpt-oss-120b"/i }))
+    expect(onModelChange).toHaveBeenCalledWith('custom', '@cf/openai/gpt-oss-120b')
+  })
+})

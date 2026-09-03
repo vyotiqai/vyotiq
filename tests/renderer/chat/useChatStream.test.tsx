@@ -533,7 +533,7 @@ describe('useChatStream', () => {
     })
 
     expect(result.current.running).toBe(false)
-    expect(result.current.error).toBe('Run failed')
+    expect(result.current.error).toBe('Failed')
   })
 
   it('ignores orphan stream events after loadTranscript races chatStart', async () => {

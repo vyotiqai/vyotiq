@@ -115,11 +115,11 @@ export function removeLegacyWorkspaceIndexDirs(workspaceRoot: string): void {
 /**
  * Warm indexes (boot / workspace open / scheduled sync) via a single background job.
  *
- * The heavy embedding (code) index loads an ONNX/transformers model and walks the
- * whole workspace, so it is only warmed when `warmCodeIndex` is true. Boot and
- * workspace open/switch pass `warmCodeIndex: false` — the code index is instead
- * built lazily on the first `codebase_search` (runCodebaseSearch already calls
- * ensureCodeIndexSynced). This keeps startup and workspace switches responsive.
+ * The code index is warmed by default (`warmCodeIndex` !== false) so it is
+ * dense-ready on the agent's first `codebase_search` — boot passes no options.
+ * The sync runs as a background job (concurrency-1 queue, embedding in the
+ * utility process) and the embedder unloads after 5 idle minutes, so boot
+ * responsiveness and steady-state memory stay bounded.
  */
 export function warmWorkspaceIndexes(
   workspaceRoot: string,

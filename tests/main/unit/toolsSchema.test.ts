@@ -114,11 +114,15 @@ describe('toolsSchema', () => {
     expect(termProps.working_directory?.description).toMatch(/Ignored when polling/)
   })
 
-  it('keeps codebase_search conceptual vs exact-id guidance in the tool schema', () => {
+  it('presents codebase_search as the default way to locate code, grep for exhaustive/regex', () => {
     const tool = AGENT_TOOLS.find((t) => t.name === 'codebase_search')
     expect(tool).toBeDefined()
-    expect(tool!.description).toMatch(/conceptual/i)
-    expect(tool!.description).toMatch(/grep\/search/i)
+    // Locating unseen code is the common case: the ranked hybrid search is the
+    // default probe. The old wording reserved it for rare conceptual asks and
+    // steered every symbol-aware query to grep.
+    expect(tool!.description).toMatch(/default way to locate code/i)
+    expect(tool!.description).not.toMatch(/conceptual/i)
+    expect(tool!.description).toMatch(/grep/)
     expect(tool!.description).toMatch(/docs\//)
     expect(tool!.description).toMatch(/search time/i)
     expect(tool!.description).not.toMatch(/nomic-embed/i)
@@ -127,7 +131,8 @@ describe('toolsSchema', () => {
         properties: { query?: { description?: string }; mode?: { description?: string } }
       }
     ).properties
-    expect(props.query?.description).toMatch(/grep/i)
+    expect(props.query?.description).toMatch(/camelCase/i)
+    expect(props.query?.description).not.toMatch(/use grep for every exact symbol occurrence/i)
     expect(props.mode?.description).toMatch(/lexical/i)
     expect(props.mode?.description).toMatch(/symbol/i)
   })

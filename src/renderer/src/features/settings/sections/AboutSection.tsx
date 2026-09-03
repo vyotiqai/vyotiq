@@ -81,14 +81,18 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
     let cancelled = false
     const api = window.vyotiq?.getAppInfo
     if (!api) return
-    void api().then((res) => {
-      if (cancelled) return
-      if (!res.ok) {
-        setErrorRef.current(res.error)
-        return
-      }
-      setInfo(res.data)
-    })
+    void api()
+      .then((res) => {
+        if (cancelled) return
+        if (!res.ok) {
+          setErrorRef.current(res.error)
+          return
+        }
+        setInfo(res.data)
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setErrorRef.current(err instanceof Error ? err.message : String(err))
+      })
     return () => {
       cancelled = true
       if (copyTimerRef.current != null) window.clearTimeout(copyTimerRef.current)
@@ -99,10 +103,15 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
     let cancelled = false
     const api = window.vyotiq
     if (!api?.getUpdaterStatus) return
-    void api.getUpdaterStatus().then((res) => {
-      if (cancelled) return
-      if (res.ok) setUpdater(res.data)
-    })
+    void api
+      .getUpdaterStatus()
+      .then((res) => {
+        if (cancelled) return
+        if (res.ok) setUpdater(res.data)
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setErrorRef.current(err instanceof Error ? err.message : String(err))
+      })
     const stop = api.onUpdaterStatus?.((status) => {
       if (!cancelled) setUpdater(status)
     })
@@ -136,19 +145,27 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
       .then((res) => {
         if (!res.ok) form.setErrorMessage(res.error ?? 'Update failed')
       })
+      .catch((err: unknown) => {
+        form.setErrorMessage(err instanceof Error ? err.message : String(err))
+      })
       .finally(() => setUpdaterBusy(false))
   }
 
   return (
     <SettingsStack>
-      <div data-settings-field="about" className="flex flex-col gap-2 px-0.5 pb-1">
-        <VyotiqLockup markSize={36} />
-        <p className="m-0 text-xs leading-snug tracking-[var(--vy-tracking)] text-secondary">
-          Agent V. A product of Vyotiq.com.
-        </p>
-        <p className="m-0 text-xs leading-snug tracking-[var(--vy-tracking)] text-muted">
-          © {year} Vyotiq
-        </p>
+      <div
+        data-settings-field="about"
+        className="rounded-xl border border-border/70 bg-surface p-5"
+      >
+        <div className="flex flex-col gap-2">
+          <VyotiqLockup markSize={36} />
+          <p className="m-0 text-xs leading-snug tracking-[var(--vy-tracking)] text-secondary">
+            Agent V. A product of Vyotiq.com.
+          </p>
+          <p className="m-0 text-xs leading-snug tracking-[var(--vy-tracking)] text-muted">
+            © {year} Vyotiq
+          </p>
+        </div>
       </div>
 
       <SettingsGroup title="Build">
@@ -167,7 +184,7 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
           hint="Electron host, Chromium, and Node.js shipped in this app."
           wide
         >
-          <dl className="m-0 grid grid-cols-[7.5rem_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-sm tracking-[var(--vy-tracking)]">
+          <dl className="m-0 grid grid-cols-[7.5rem_minmax(0,1fr)] gap-x-4 gap-y-2 text-sm tracking-[var(--vy-tracking)]">
             <dt className="text-secondary">Electron</dt>
             <dd className="m-0 min-w-0 tabular-nums text-fg">{info?.electron ?? dash}</dd>
             <dt className="text-secondary">Chromium</dt>
@@ -299,6 +316,9 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
                 .then((res) => {
                   if (!res.ok) form.setErrorMessage(res.error)
                 })
+                .catch((err: unknown) => {
+                  form.setErrorMessage(err instanceof Error ? err.message : String(err))
+                })
                 .finally(() => setOpeningSite(false))
             }}
           >
@@ -322,6 +342,9 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
                 .shellOpenExternal(new URL('/docs', info.homepage).href)
                 .then((res) => {
                   if (!res.ok) form.setErrorMessage(res.error)
+                })
+                .catch((err: unknown) => {
+                  form.setErrorMessage(err instanceof Error ? err.message : String(err))
                 })
                 .finally(() => setOpeningDocs(false))
             }}

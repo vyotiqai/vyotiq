@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  CUSTOM_OPENAI_DEFAULT,
+  hostSanityError,
   isOllamaCloudHost,
   normalizeCustomOpenAiBaseUrl,
   ollamaNativeHost,
@@ -9,7 +11,9 @@ import {
   resolveOllamaListBaseUrl,
   resolveProviderChatBaseUrl,
   resolveProviderListBaseUrl,
-  seedModelsFor
+  seedModelsFor,
+  validateCustomOpenAiBaseUrl,
+  validateOllamaBaseUrl
 } from '@shared/domain/providers'
 
 describe('ollama host helpers', () => {
@@ -135,5 +139,87 @@ describe('custom OpenAI-compatible host helpers', () => {
         customOpenAiBaseUrl: 'https://api.deepinfra.com/v1/openai/v1'
       })
     ).toBe('https://api.deepinfra.com/v1/openai')
+  })
+})
+
+describe('base URL paste validation (2026-09 settings audit)', () => {
+  it('extracts the real endpoint from duplicated-scheme and prose pastes', () => {
+    // Duplicated scheme: the real host is the last scheme occurrence.
+    expect(
+      validateCustomOpenAiBaseUrl(
+        'https://https://api.cloudflare.com/client/v4/accounts/a35f'
+      )
+    ).toEqual({
+      ok: true,
+      url: 'https://api.cloudflare.com/client/v4/accounts/a35f/v1'
+    })
+    expect(
+      validateCustomOpenAiBaseUrl('https https://api.groq.com/openai/v1')
+    ).toEqual({ ok: true, url: 'https://api.groq.com/openai/v1' })
+    expect(
+      validateCustomOpenAiBaseUrl('Endpoint: https://api.deepinfra.com/v1/openai.')
+    ).toEqual({ ok: true, url: 'https://api.deepinfra.com/v1/openai' })
+  })
+
+  it('rejects garbled hosts instead of silently saving or defaulting them', () => {
+    // The exact corrupted value from the 2026-09 screenshot: unparseable, so
+    // the validator must error — never persist it and never fall back to the
+    // local default (that produced the ECONNREFUSED 127.0.0.1:8080 error).
+    const garbled = validateCustomOpenAiBaseUrl(
+      'https://xn--%20https-yp6e//api.cloudflare.com/client/v4/accounts/a35f'
+    )
+    expect(garbled.ok).toBe(false)
+    if (!garbled.ok) {
+      // Throws at URL-parse time, so the user is told it is not a valid URL.
+      expect(garbled.error).toContain('not a valid http(s) URL')
+    }
+    // Single-slash duplicated scheme parses with host "https" — still rejected.
+    expect(
+      validateCustomOpenAiBaseUrl('https://https//api.cloudflare.com/client/x').ok
+    ).toBe(false)
+    expect(validateCustomOpenAiBaseUrl('').ok).toBe(false)
+    // Scheme-less bare words are prose, not endpoints (long-standing Ollama
+    // field rule, now shared by both providers).
+    expect(validateCustomOpenAiBaseUrl('not-a-url').ok).toBe(false)
+    expect(validateOllamaBaseUrl('not-a-url').ok).toBe(false)
+  })
+
+  it('keeps legitimate base URLs working', () => {
+    expect(validateCustomOpenAiBaseUrl('http://127.0.0.1:8080')).toEqual({
+      ok: true,
+      url: 'http://127.0.0.1:8080/v1'
+    })
+    expect(
+      validateCustomOpenAiBaseUrl('https://api.deepinfra.com/v1/openai')
+    ).toEqual({ ok: true, url: 'https://api.deepinfra.com/v1/openai' })
+    expect(validateCustomOpenAiBaseUrl('my-endpoint.us-west.modal.direct')).toEqual({
+      ok: true,
+      url: 'https://my-endpoint.us-west.modal.direct/v1'
+    })
+  })
+
+  it('never returns a mangled URL from the normalizer (load-time repair)', () => {
+    expect(
+      normalizeCustomOpenAiBaseUrl('https://https//api.cloudflare.com/client/v4/accounts/a35f')
+    ).toBe(CUSTOM_OPENAI_DEFAULT)
+  })
+
+  it('validates Ollama base URLs the same way', () => {
+    expect(validateOllamaBaseUrl('http://127.0.0.1:11434')).toEqual({
+      ok: true,
+      url: 'http://127.0.0.1:11434'
+    })
+    expect(validateOllamaBaseUrl('https://ollama.com/v1')).toEqual({
+      ok: true,
+      url: 'https://ollama.com'
+    })
+    expect(validateOllamaBaseUrl('').ok).toBe(false)
+    expect(validateOllamaBaseUrl('https://https//x').ok).toBe(false)
+  })
+
+  it('describes the sanity gate in user-facing terms', () => {
+    expect(hostSanityError('https://api.deepinfra.com/v1/openai')).toBeNull()
+    expect(hostSanityError('ftp://api.deepinfra.com')).toContain('http or https')
+    expect(hostSanityError('https://https//api.example.com')).toContain('duplicated')
   })
 })

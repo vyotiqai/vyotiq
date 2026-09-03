@@ -57,6 +57,33 @@ function toolStatsFromMessages(messages: readonly SeedToolMessage[]): RunReceipt
   return { totalCalls, ok, failed, byName }
 }
 
+/** Extract codebase_search semantic-health stamps from tool result headers. */
+export function codebaseSearchHealthFromMessages(
+  messages: readonly SeedToolMessage[]
+): {
+  calls: number
+  lexicalOnly: number
+  hashFallback: number
+  queryModels: string[]
+} {
+  let calls = 0
+  let lexicalOnly = 0
+  let hashFallback = 0
+  const queryModels = new Set<string>()
+  for (const msg of messages) {
+    if (msg.role !== 'tool' || msg.toolName !== 'codebase_search') continue
+    if (msg.ok === false) continue
+    calls++
+    const content = contentToText(msg.content ?? '')
+    const header = content.split('\n')[0] ?? ''
+    if (header.includes('fallback=hash')) hashFallback++
+    else if (header.includes('lexical-only')) lexicalOnly++
+    const model = header.match(/model=([^\s·]+)/)?.[1]
+    if (model) queryModels.add(model)
+  }
+  return { calls, lexicalOnly, hashFallback, queryModels: [...queryModels].slice(0, 8) }
+}
+
 /** Normalize em/en dashes and common UTF-8 mojibake to ASCII `-` for stable cluster keys. */
 export function normalizeFailureClusterText(text: string): string {
   return text
@@ -340,6 +367,9 @@ export function buildRunReceipt(input: {
     ...(tokenUsage ? { tokenUsage } : {}),
     compactionCount: compactionCountFromEvents(input.events),
     toolStats: toolStatsFromMessages(input.messages),
+    ...(codebaseSearchHealthFromMessages(input.messages).calls > 0
+      ? { codebaseSearch: codebaseSearchHealthFromMessages(input.messages) }
+      : {}),
     failureClusters: failureClustersFromMessages(input.messages),
     ...(maxConsecutiveToolFailuresFromMessages(input.messages) > 0
       ? { maxConsecutiveToolFailures: maxConsecutiveToolFailuresFromMessages(input.messages) }

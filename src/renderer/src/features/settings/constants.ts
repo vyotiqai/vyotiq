@@ -45,6 +45,12 @@ export const TERMINAL_SCREEN_READER_OPTIONS = [
   { value: 'off', label: 'Off' }
 ]
 
+export const RESPONSE_VERBOSITY_OPTIONS = [
+  { value: 'concise', label: 'Concise' },
+  { value: 'balanced', label: 'Balanced' },
+  { value: 'detailed', label: 'Detailed' }
+]
+
 export const ACTIVE_PROVIDER_OPTIONS = PROVIDER_DEFAULTS.map((p) => ({
   value: p.id,
   label: p.label

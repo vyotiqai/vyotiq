@@ -93,6 +93,30 @@ describe('SSE frame parsing', () => {
     expect(drops.dropped).toBe(1)
   })
 
+  it('salvages a complete JSON frame followed by trailing junk', async () => {
+    const { res } = chunkedResponse([
+      'data: {"choices":[{"delta":{"content":"hi"}}]} {"trailing":\n\n'
+    ])
+    const drops = { dropped: 0 }
+    const out: Record<string, unknown>[] = []
+    for await (const ev of iterateSseJson(res, new AbortController().signal, drops)) {
+      out.push(ev)
+    }
+    expect(out).toEqual([{ choices: [{ delta: { content: 'hi' } }] }])
+    expect(drops.dropped).toBe(0)
+  })
+
+  it('closes containers the host cut before the frame ended', async () => {
+    const { res } = chunkedResponse(['data: {"choices":[{"delta":{"content":"hi"}}]\n\n'])
+    const drops = { dropped: 0 }
+    const out: Record<string, unknown>[] = []
+    for await (const ev of iterateSseJson(res, new AbortController().signal, drops)) {
+      out.push(ev)
+    }
+    expect(out).toEqual([{ choices: [{ delta: { content: 'hi' } }] }])
+    expect(drops.dropped).toBe(0)
+  })
+
   it('cancels the response body when the consumer stops reading early', async () => {
     const { res, cancelled } = neverEndingResponse(['data: {"a":1}\n\n', 'data: {"b":2}\n\n'])
     for await (const _data of iterateSseData(res, new AbortController().signal)) {
@@ -437,6 +461,24 @@ describe('DeepInfra DeepSeek dual-field SSE', () => {
         choices: [{ delta: { tool_calls: [] } }]
       })
     ).toBe('rate limited')
+  })
+
+  it('reports dropped SSE frames on the done chunk', async () => {
+    const { customProvider } = await import('@main/agent/providers/openai')
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        sseBody([
+          'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n',
+          'data: {\n\n',
+          'data: {"choices":[{"finish_reason":"stop"}]}\n\n'
+        ])
+      )
+    )
+
+    const chunks = await collect(customProvider.streamChat(flash0731Req()))
+    const done = chunks.find((c) => c.type === 'done')
+    expect(done?.droppedFrames).toBe(1)
   })
 
   it('yields thinking_delta from delta.reasoning_content only (Flash-0731)', async () => {

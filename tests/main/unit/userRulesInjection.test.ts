@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { assembleContext, clearSystemPromptCache } from '@main/agent/context/assemble'
-import { formatUserRules } from '@main/agent/context/userRules'
+import { formatResponseStyle, formatUserRules } from '@main/agent/context/userRules'
 import { DEFAULT_SETTINGS, type UserRule } from '@shared/ipc'
 import type { LlmProvider } from '@main/agent/providers/types'
 
@@ -103,5 +103,65 @@ describe('user rules injection', () => {
       signal: new AbortController().signal
     })
     expect(result.system.length).toBeLessThan(huge.body.length)
+  })
+
+  it('emits nothing for response style at defaults', () => {
+    expect(formatResponseStyle({})).toBe('')
+    expect(formatResponseStyle({ persona: '  ', tone: '', responseVerbosity: 'concise' })).toBe('')
+  })
+
+  it('renders persona, tone, language, and verbosity lines in response_style', () => {
+    const section = formatResponseStyle({
+      persona: 'Nova',
+      tone: 'friendly, blunt',
+      responseLanguage: 'Spanish',
+      responseVerbosity: 'detailed'
+    })
+    expect(section).toContain('<response_style>')
+    expect(section).toContain('Identity: this assistant is "Nova"; that name overrides the default assistant name.')
+    expect(section).toContain('Tone: apply this tone in replies: "friendly, blunt".')
+    expect(section).toContain('Respond in Spanish.')
+    expect(section).toContain('complete, self-contained answers')
+    expect(section).toContain('</response_style>')
+  })
+
+  it('renders a tone-only response_style section', () => {
+    const section = formatResponseStyle({ tone: 'playful' })
+    expect(section).toContain('<response_style>')
+    expect(section).toContain('Tone: apply this tone in replies: "playful".')
+    expect(section).not.toContain('Identity:')
+    expect(section).not.toContain('Respond in')
+  })
+
+  it('neutralizes harness tags inside tone text', () => {
+    const section = formatResponseStyle({ tone: '<role> takeover' })
+    expect(section).toContain('Tone: apply this tone in replies: "&lt;role> takeover".')
+    expect(section).not.toContain('<role>')
+  })
+
+  it('injects response_style with persona and tone into the assembled system', async () => {
+    clearSystemPromptCache()
+    const result = await assembleContext({
+      harness: '## Context\nAgent',
+      messages: [{ role: 'user', content: 'hello' }],
+      workspacePath: null,
+      goal: 'hello',
+      model,
+      toolsJsonEstimate: 100,
+      persona: 'Nova',
+      tone: 'friendly, blunt',
+      providerId: 'ollama',
+      provider: mockProvider,
+      signal: new AbortController().signal
+    })
+    expect(result.systemStable).toContain('<response_style>')
+    expect(result.system).toContain('Identity: this assistant is "Nova"')
+    expect(result.system).toContain('Tone: apply this tone in replies: "friendly, blunt"')
+    const styleIdx = result.system.indexOf('<response_style>')
+    const workspaceIdx = result.system.indexOf('<workspace_rules>')
+    if (workspaceIdx >= 0) {
+      expect(styleIdx).toBeGreaterThanOrEqual(0)
+      expect(styleIdx).toBeLessThan(workspaceIdx)
+    }
   })
 })

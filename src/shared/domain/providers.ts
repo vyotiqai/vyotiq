@@ -29,7 +29,6 @@ const SEED_MODEL_IDS: Record<ProviderId, string[]> = {
   groq: ['llama-4-scout-17b-16e-instruct'],
   openrouter: ['openrouter/auto'],
   xai: ['grok-4-latest'],
-  modal: ['my-endpoint.us-west.modal.direct'],
   mistral: ['mistral-large-latest'],
   custom: ['gpt-oss-120b', 'llama3.2', 'qwen2.5'],
   // OpenCode Go model ids are NOT hardcoded: they come from the live models.dev
@@ -103,7 +102,6 @@ export const PROVIDER_DEFAULTS: ProviderDefault[] = [
   { id: 'groq', label: 'Groq', models: SEED_MODEL_IDS.groq },
   { id: 'openrouter', label: 'OpenRouter', models: SEED_MODEL_IDS.openrouter },
   { id: 'xai', label: 'xAI', models: SEED_MODEL_IDS.xai },
-  { id: 'modal', label: 'Modal', models: SEED_MODEL_IDS.modal },
   { id: 'mistral', label: 'Mistral', models: SEED_MODEL_IDS.mistral },
   { id: 'custom', label: 'Custom OpenAI-compatible', models: SEED_MODEL_IDS.custom },
   { id: 'opencode', label: 'OpenCode Go', models: seedIdsFor('opencode') }
@@ -115,16 +113,6 @@ export function seedModelsFor(provider: ProviderId): ModelInfo[] {
 
 export function defaultModelFor(provider: ProviderId): string {
   return seedIdsFor(provider)[0]!
-}
-
-/**
- * User-facing failure for chat/compaction on a Modal placeholder model ID.
- * Modal has no static catalog — valid model IDs are endpoint hostnames that
- * exist only after GET /v1/models succeeds, so an illustrative seed ID is
- * guaranteed to 404 ("unknown inference model") upstream.
- */
-export function modalPlaceholderModelMessage(modelId: string): string {
-  return `Modal model "${modelId}" is an illustrative placeholder — the live Modal catalog has not loaded, so this ID does not exist on Modal. Open Settings → Providers, expand Modal, confirm the saved proxy token uses the combined form wk-<id>.ws-<secret>, click "Refresh models" in Catalog, then pick your endpoint hostname (…us-west.modal.direct) in the model picker.`
 }
 
 export function providerLabel(provider: ProviderId): string {
@@ -261,9 +249,8 @@ export function normalizeCustomOpenAiBaseUrl(url: string): string {
   if (!trimmed) return CUSTOM_OPENAI_DEFAULT
   if (!/^https?:\/\//i.test(trimmed)) {
     // Scheme-less input: default https for public hosts (cloud endpoint
-    // hostnames are the common paste — e.g. Modal's my-endpoint.us-west.
-    // modal.direct); http only for loopback/private LAN targets, matching
-    // the keyless-LAN rule in isPrivateOrLoopbackHost.
+    // hostnames are the common paste); http only for loopback/private LAN
+    // targets, matching the keyless-LAN rule in isPrivateOrLoopbackHost.
     trimmed = `${isPrivateOrLoopbackHost(`http://${trimmed}`) ? 'http' : 'https'}://${trimmed}`
   }
 
@@ -271,6 +258,22 @@ export function normalizeCustomOpenAiBaseUrl(url: string): string {
   try {
     parsed = new URL(trimmed)
   } catch {
+    return CUSTOM_OPENAI_DEFAULT
+  }
+  // Repair guard: a bare parse is not proof of a sane paste. Duplicated /
+  // garbled scheme pastes (`https://https://…`, fullwidth-colon garble →
+  // `xn--https-yp6e` = "htt㩇ps") parse with the real host swallowed into the
+  // path, then fail catalog/chat with ECONNREFUSED against a host the user
+  // never entered (2026-09 settings audit). Never return such values; entry
+  // points validate user input with validateCustomOpenAiBaseUrl instead.
+  const sanityHost = parsed.hostname.toLowerCase()
+  if (
+    !sanityHost ||
+    sanityHost.includes('%') ||
+    sanityHost === 'http' ||
+    sanityHost === 'https' ||
+    parsed.pathname.startsWith('//')
+  ) {
     return CUSTOM_OPENAI_DEFAULT
   }
 
@@ -294,6 +297,105 @@ export function normalizeCustomOpenAiBaseUrl(url: string): string {
 type ProviderBaseUrlSettings = {
   ollamaBaseUrl?: string
   customOpenAiBaseUrl?: string
+}
+
+/**
+ * User-facing reason a base URL is unsafe to persist or route to, or null when
+ * it is a sane http(s) endpoint. A bare `new URL()` parse is not enough:
+ * duplicated-scheme pastes (`https://https://api.example.com/…`) parse with the
+ * real host swallowed into the path (`https://https//…`), and garbled non-ASCII
+ * schemes get punycode-encoded into junk `xn--…` hosts (`xn--https-yp6e`
+ * decodes to "htt㩇ps"). Those values later fail catalog/chat with confusing
+ * ECONNREFUSED errors against a host the user never entered (2026-09 settings
+ * audit). Used for every user-entered provider base URL (custom and Ollama).
+ */
+export function hostSanityError(url: string): string | null {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return 'is not a valid http(s) URL — paste a single endpoint like https://api.deepinfra.com/v1/openai'
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return 'must use http or https'
+  }
+  const host = parsed.hostname.toLowerCase()
+  if (
+    !host ||
+    host.includes('%') ||
+    host === 'http' ||
+    host === 'https' ||
+    parsed.pathname.startsWith('//')
+  ) {
+    return 'looks like a duplicated or garbled scheme paste — paste one endpoint URL like https://api.deepinfra.com/v1/openai'
+  }
+  return null
+}
+
+/**
+ * Pull a single endpoint URL out of pasted text: strips wrapping quotes,
+ * surrounding prose, and duplicated schemes ("https https://…",
+ * "https://https://…") where the real endpoint is the last scheme occurrence.
+ * Scheme-less pastes (e.g. bare vendor hostnames) pass through.
+ */
+function extractPastedEndpoint(raw: string): string {
+  const trimmed = raw
+    .trim()
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .trim()
+  if (!trimmed) return ''
+  const schemeRe = /https?:\/\//gi
+  let last: RegExpExecArray | null = null
+  for (let m = schemeRe.exec(trimmed); m; m = schemeRe.exec(trimmed)) last = m
+  if (!last) return trimmed.replace(/\s+/g, '')
+  let candidate = trimmed.slice(last.index)
+  const stop = candidate.search(/[\s'"<>]/)
+  if (stop > 0) candidate = candidate.slice(0, stop)
+  return candidate.replace(/[.,;:)\]]+$/, '')
+}
+
+/**
+ * Scheme-less input must look like a host before we auto-prepend a scheme:
+ * require a dot (domain/IP), an explicit numeric port, or localhost. Bare
+ * words like "not-a-url" are prose, not endpoints (matches the long-standing
+ * Ollama field rule; now shared by both providers).
+ */
+function schemelessHostLooksSane(input: string): boolean {
+  const hostPart = input.split(/[/?#]/)[0]
+  const colon = hostPart.lastIndexOf(':')
+  const host = colon === -1 ? hostPart : hostPart.slice(0, colon)
+  const port = colon === -1 ? '' : hostPart.slice(colon + 1)
+  if (port !== '' && !/^\d{1,5}$/.test(port)) return false
+  return host.includes('.') || host === 'localhost' || port !== ''
+}
+
+export type ParsedBaseUrl = { ok: true; url: string } | { ok: false; error: string }
+
+/** Validate + normalize a user-entered custom OpenAI-compatible base URL. */
+export function validateCustomOpenAiBaseUrl(raw: string): ParsedBaseUrl {
+  const input = extractPastedEndpoint(raw)
+  if (!input) {
+    return { ok: false, error: 'Custom OpenAI base URL cannot be empty.' }
+  }
+  if (!/^https?:\/\//i.test(input) && !schemelessHostLooksSane(input)) {
+    return { ok: false, error: 'Custom OpenAI base URL must be a valid http(s) URL.' }
+  }
+  const reason = hostSanityError(/^https?:\/\//i.test(input) ? input : `http://${input}`)
+  if (reason) return { ok: false, error: `Custom OpenAI base URL ${reason}` }
+  return { ok: true, url: normalizeCustomOpenAiBaseUrl(input) }
+}
+
+/** Validate + normalize a user-entered Ollama base URL (native host form). */
+export function validateOllamaBaseUrl(raw: string): ParsedBaseUrl {
+  const input = extractPastedEndpoint(raw)
+  if (!input) return { ok: false, error: 'Ollama base URL cannot be empty.' }
+  if (!/^https?:\/\//i.test(input) && !schemelessHostLooksSane(input)) {
+    return { ok: false, error: 'Ollama base URL must be a valid http(s) URL.' }
+  }
+  const normalized = ollamaNativeHost(input)
+  const reason = hostSanityError(normalized)
+  if (reason) return { ok: false, error: `Ollama base URL ${reason}` }
+  return { ok: true, url: normalized }
 }
 
 /** Chat / listModels base URL when the provider uses a configurable host. */

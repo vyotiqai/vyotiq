@@ -38,6 +38,8 @@ Check in this order:
 
 Seed model names can remain visible when the live catalog fails. They are fallback metadata, not proof that chat will succeed.
 
+For a Custom host that serves no model list (HTTP 404 or 405 on `GET /models`), the catalog can never load. Type the model ID in the composer model picker search and press Enter to use it manually; a wrong ID surfaces as the host's own HTTP error during the run.
+
 ## A model cannot use an attachment or control
 
 The selected model metadata may not advertise image, native file, audio, tools, thinking, structured output, or a service tier. Choose a model with the required capability. Do not force a provider-specific parameter by changing unrelated settings.

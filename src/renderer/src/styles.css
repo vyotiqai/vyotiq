@@ -81,8 +81,8 @@
   --vy-fg-strong: var(--vy-gray-950);
   --vy-accent: var(--vy-gray-900);
   --vy-accent-fg: var(--vy-gray-50);
-  --vy-focus: var(--vy-gray-400);
-  --vy-success: #16a34a;
+  --vy-focus: var(--vy-gray-500);
+  --vy-success: #15803d;
   --vy-danger: #b91c1c;
   --vy-warning: #a16207;
   --vy-composer: var(--vy-gray-100);
@@ -146,7 +146,7 @@
   --vy-fg-strong: var(--vy-gray-950);
   --vy-accent: var(--vy-gray-900);
   --vy-accent-fg: var(--vy-gray-50);
-  --vy-focus: var(--vy-gray-400);
+  --vy-focus: var(--vy-gray-500);
   --vy-success: #22c55e;
   --vy-danger: #f87171;
   --vy-warning: #fbbf24;

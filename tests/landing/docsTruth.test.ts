@@ -287,7 +287,7 @@ describe('landing docs architecture and truth', () => {
       'utf8'
     )
     const secrets = emptySecretStatus()
-    expect(PROVIDER_DEFAULTS).toHaveLength(12)
+    expect(PROVIDER_DEFAULTS).toHaveLength(11)
     for (const entry of PROVIDER_DEFAULTS) {
       expect(providers, `missing provider ${entry.id}`).toContain(`\`${entry.id}\``)
     }
@@ -409,7 +409,6 @@ describe('landing docs architecture and truth', () => {
       'groq',
       'openrouter',
       'xai',
-      'modal',
       'mistral',
       'opencode'
     ]) {

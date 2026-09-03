@@ -424,7 +424,8 @@ export const geminiProvider: LlmProvider = {
     yield {
       type: 'done',
       usage: lastUsage,
-      stopReason
+      stopReason,
+      ...(drops.dropped > 0 ? { droppedFrames: drops.dropped } : {})
     }
   }
 }

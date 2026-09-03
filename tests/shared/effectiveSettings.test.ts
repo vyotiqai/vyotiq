@@ -25,7 +25,11 @@ describe('resolveEffectiveSettings', () => {
       thinkingEffort: 'high',
       showThinking: false,
       keepRecentTurns: 20,
-      autoCompactThresholdRatio: 0.35
+      autoCompactThresholdRatio: 0.35,
+      agentPersona: 'Nova',
+      agentTone: 'friendly, blunt',
+      responseLanguage: 'Spanish',
+      responseVerbosity: 'detailed'
     })
     expect(effective).toEqual({
       provider: 'openai',
@@ -37,7 +41,22 @@ describe('resolveEffectiveSettings', () => {
       showThinking: false,
       keepRecentTurns: 20,
       autoCompactThresholdRatio: 0.35,
-      toolApproval: DEFAULT_SETTINGS.toolApproval
+      toolApproval: DEFAULT_SETTINGS.toolApproval,
+      agentPersona: 'Nova',
+      agentTone: 'friendly, blunt',
+      responseLanguage: 'Spanish',
+      responseVerbosity: 'detailed'
     })
+  })
+
+  it('falls back to global persona/tone/style when the override leaves them unset', () => {
+    const effective = resolveEffectiveSettings(
+      { ...DEFAULT_SETTINGS, agentPersona: 'Atlas', agentTone: 'formal', responseVerbosity: 'balanced' },
+      { useOverride: true, provider: 'openai', model: 'gpt-5.6' }
+    )
+    expect(effective.agentPersona).toBe('Atlas')
+    expect(effective.agentTone).toBe('formal')
+    expect(effective.responseLanguage).toBe('')
+    expect(effective.responseVerbosity).toBe('balanced')
   })
 })

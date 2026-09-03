@@ -520,6 +520,7 @@ export async function* streamOpenAiResponses(
     type: 'done',
     usage: lastUsage,
     stopReason,
+    ...(drops.dropped > 0 ? { droppedFrames: drops.dropped } : {}),
     reasoningState:
       outputItems.length || responseId
         ? {

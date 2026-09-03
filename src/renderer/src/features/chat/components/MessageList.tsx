@@ -1,4 +1,4 @@
-import { memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, memo, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useAppVirtualizer } from '@renderer/lib/hooks/useAppVirtualizer'
 import { Icon } from '@renderer/lib/icons'
 import { cn, ImageLightbox, MarkdownContent } from '@renderer/lib/ui'
@@ -15,11 +15,15 @@ import {
 } from '@renderer/lib/chat/transcriptFind'
 import type { TurnOutcome, UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
 import type { ToolApprovalDecision } from '@shared/ipc'
+import { isRetryableTurnFailure } from '@shared/errors'
 import {
   CHAT_COLUMN,
   CHAT_GUTTER,
   CHAT_STAGE_INSET,
   CHAT_STAGE_TOP_INSET,
+  COMPOSER_DOCK_CLEARANCE_PX,
+  COMPOSER_DOCK_RESERVE_VAR,
+  COMPOSER_FLOAT_BOTTOM_INSET_PX,
   TRANSCRIPT_CONTAINER,
   TOOL_BODY_CLAMP_PX,
   TOOL_GROUP_LIST_ESTIMATE_MIN_PX,
@@ -227,41 +231,8 @@ export function transcriptRowsContentRevision(rows: readonly TranscriptRow[]): s
   return transcriptRowFingerprint(rows[rows.length - 1]!)
 }
 
-/** Vertical inset of the stuck turn header below the scrollport's top edge. */
-const STICKY_PROMPT_TOP_PX = 10
-/** Cap on prompt text carried into the sticky turn header. */
-const STICKY_PROMPT_MAX_CHARS = 220
-
-/** One visual line of prompt text: collapse whitespace, truncate with an ellipsis. */
-export function excerptTurnPrompt(content: string | undefined): string {
-  const text = (content ?? '').replace(/\s+/g, ' ').trim()
-  if (text.length <= STICKY_PROMPT_MAX_CHARS) return text
-  return `${text.slice(0, STICKY_PROMPT_MAX_CHARS - 1).trimEnd()}…`
-}
-
-export type StickyPromptTarget = {
-  row: Extract<TranscriptRow, { kind: 'user' }>
-  index: number
-}
-
-/**
- * Latest turn's user prompt for the sticky turn header. Long transcripts scroll
- * the prompt far off-screen while its work streams, so the header keeps the
- * turn's ask visible. Suppressed while a run is live — the pinned tail already
- * shows the streaming turn beside its prompt.
- */
-export function stickyPromptTarget(
-  rows: readonly TranscriptRow[],
-  running: boolean,
-  pendingRun: boolean
-): StickyPromptTarget | null {
-  if (running || pendingRun) return null
-  for (let i = rows.length - 1; i >= 0; i -= 1) {
-    const row = rows[i]!
-    if (row.kind === 'user') return { row, index: i }
-  }
-  return null
-}
+/** Vertical inset of the pinned turn prompt below the scrollport's top edge. */
+const STICKY_TURN_TOP_PX = 10
 
 /** Minimum pin slack when no dock reserve is known yet. */
 const NEAR_BOTTOM_MIN_PX = 80
@@ -324,11 +295,15 @@ export function captureScrollAnchor(
 
   const liveFlow = el.querySelector('[data-live-turn-flow]')
   if (liveFlow) {
-    const children = liveFlow.children
-    for (let i = 0; i < children.length; i++) {
-      const rect = children[i]!.getBoundingClientRect()
+    const rows = liveFlow.querySelectorAll('[data-transcript-row]')
+    for (let i = 0; i < rows.length; i++) {
+      const rect = rows[i]!.getBoundingClientRect()
       if (rect.bottom > containerTop + 1) {
-        return { index: flowStartIndex + i, offsetPx: containerTop - rect.top }
+        const attr = rows[i]!.getAttribute('data-transcript-row')
+        return {
+          index: attr != null ? Number(attr) : flowStartIndex + i,
+          offsetPx: containerTop - rect.top
+        }
       }
     }
   }
@@ -349,11 +324,15 @@ export function captureScrollAnchor(
       column.style.height !== '' &&
       column.querySelector('.absolute')
     if (!isVirtualColumn) {
-      const children = column.children
-      for (let i = 0; i < children.length; i++) {
-        const rect = children[i]!.getBoundingClientRect()
+      const rows = column.querySelectorAll('[data-transcript-row]')
+      for (let i = 0; i < rows.length; i++) {
+        const rect = rows[i]!.getBoundingClientRect()
         if (rect.bottom > containerTop + 1) {
-          return { index: i, offsetPx: containerTop - rect.top }
+          const attr = rows[i]!.getAttribute('data-transcript-row')
+          return {
+            index: attr != null ? Number(attr) : i,
+            offsetPx: containerTop - rect.top
+          }
         }
       }
     }
@@ -564,6 +543,7 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onTurnToggle,
   onApprovalDecision,
   onQuestionSubmit,
+  onRetryNetwork,
   autoFocusApproval = true,
   turnCollapsed = false,
   showThinking = true,
@@ -597,6 +577,8 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
   onQuestionSubmit?: (requestId: string, answers: UiAgentQuestionAnswer[]) => void | Promise<void>
+  /** Retry affordance for retryable run_error rows. */
+  onRetryNetwork?: () => void
   autoFocusApproval?: boolean
   turnCollapsed?: boolean
   showThinking?: boolean
@@ -688,12 +670,27 @@ const TranscriptRowBlock = memo(function TranscriptRowBlock({
   }
 
   if (row.kind === 'run_error') {
+    // Terminal errors lose the composer banner (suppressed when this row
+    // exists) — carry the retry affordance here so transient failures keep it.
+    const canRetry =
+      Boolean(onRetryNetwork) && isRetryableTurnFailure({ errorCode: row.code })
     return (
       <div
         className="rounded-xl border border-danger/30 bg-danger/5 px-3 py-2 text-xs text-danger [overflow-wrap:anywhere]"
         role="alert"
       >
-        {row.message}
+        <div className="flex items-start justify-between gap-2">
+          <span className="min-w-0">{row.message}</span>
+          {canRetry ? (
+            <button
+              type="button"
+              className="shrink-0 rounded-xl border border-border px-2 py-0.5 text-caption font-medium text-fg transition-colors hover:bg-surface"
+              onClick={onRetryNetwork}
+            >
+              Retry
+            </button>
+          ) : null}
+        </div>
       </div>
     )
   }
@@ -781,6 +778,7 @@ export function MessageList({
   onTurnToggle,
   onApprovalDecision,
   onQuestionSubmit,
+  onRetryNetwork,
   approvalAutoFocus = true,
   collapsedTurns,
   showThinking = true,
@@ -819,6 +817,8 @@ export function MessageList({
   onTurnToggle?: (turnIndex: number) => void
   onApprovalDecision?: (requestId: string, decision: ToolApprovalDecision) => void | Promise<void>
   onQuestionSubmit?: (requestId: string, answers: UiAgentQuestionAnswer[]) => void | Promise<void>
+  /** Retry affordance for retryable run_error rows (banner is suppressed at terminal). */
+  onRetryNetwork?: () => void
   /** Autofocus Allow once only when this transcript is the focused visible pane. */
   approvalAutoFocus?: boolean
   /** Persisted turn-summary collapse state from the chat stream controller. */
@@ -983,42 +983,6 @@ export function MessageList({
     }
     return null
   }, [displayRows])
-
-  const stickyPrompt = useMemo(
-    () => stickyPromptTarget(displayRows, running, pendingRun),
-    [displayRows, running, pendingRun]
-  )
-  const stickyPromptRef = useRef(stickyPrompt)
-  stickyPromptRef.current = stickyPrompt
-  const [stickyPromptVisible, setStickyPromptVisible] = useState(false)
-
-  /**
-   * Show the header once the turn's prompt row has scrolled fully above the
-   * scrollport's top edge. Virtualized rows unmount off-screen, so an absent
-   * row counts as past-top only when the mounted window has moved past its
-   * index; a zero-sized rect (no layout info yet) stays hidden.
-   */
-  const evaluateStickyPrompt = useCallback((): void => {
-    const target = stickyPromptRef.current
-    const el = containerRef.current
-    if (!el || !target) {
-      setStickyPromptVisible(false)
-      return
-    }
-    const node = el.querySelector(`[data-transcript-row="${target.index}"]`)
-    if (node instanceof HTMLElement) {
-      const rect = node.getBoundingClientRect()
-      const containerTop = el.getBoundingClientRect().top
-      setStickyPromptVisible(rect.height > 0 && rect.bottom <= containerTop + 1)
-      return
-    }
-    if (shouldVirtualizeRef.current) {
-      const items = rowVirtualizerRef.current?.getVirtualItems() ?? []
-      setStickyPromptVisible(items.length > 0 && items[items.length - 1]!.index >= target.index)
-      return
-    }
-    setStickyPromptVisible(false)
-  }, [])
 
   const findMatches = useMemo(
     () => findTranscriptRowMatches(displayRows, findQuery),
@@ -1573,7 +1537,6 @@ export function MessageList({
 
   const handleScroll = useCallback(
     (scrollTop: number) => {
-      evaluateStickyPrompt()
       const el = containerRef.current
       const prevTop = lastScrollTopRef.current
       lastScrollTopRef.current = scrollTop
@@ -1603,7 +1566,7 @@ export function MessageList({
         onScrollTopChange?.(scrollTop)
       }
     },
-    [onScrollTopChange, recordScrollAnchor, evaluateStickyPrompt]
+    [onScrollTopChange, recordScrollAnchor]
   )
 
   const remasureMountedRows = useCallback(() => {
@@ -1703,12 +1666,6 @@ export function MessageList({
     remasureMountedRows()
   }, [rowsContentRevision, shouldVirtualize, remasureMountedRows])
 
-  // Re-evaluate without a scroll event: run end surfaces the target, layout
-  // flips remount rows, scroll restore lands the reader mid-transcript.
-  useEffect(() => {
-    evaluateStickyPrompt()
-  }, [stickyPrompt, layoutMode, scrollRestored, evaluateStickyPrompt])
-
   useLayoutEffect(() => {
     if (!scrollRestored || displayRows.length === 0) return
     // Honor explicit restore only when the reader is not pinned to the tail.
@@ -1733,7 +1690,7 @@ export function MessageList({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional one-shot pin
   }, [scrollRestored, scrollRestoreToken, shouldVirtualize])
 
-  const renderRow = (row: TranscriptRow): ReactNode => {
+  const renderRow = (row: TranscriptRow, omitTasksBand = false): ReactNode => {
     const footerSpan =
       row.kind === 'text' && row.final
         ? footerTurnSpan(
@@ -1763,6 +1720,7 @@ export function MessageList({
       onTurnToggle={handleTurnToggle}
       onApprovalDecision={onApprovalDecision}
       onQuestionSubmit={onQuestionSubmit}
+      onRetryNetwork={onRetryNetwork}
       autoFocusApproval={approvalAutoFocus}
       turnCollapsed={collapsedTurnSet.has(row.turnIndex)}
       showThinking={showThinking}
@@ -1784,7 +1742,10 @@ export function MessageList({
       running={running}
       pendingRun={pendingRun}
       showTasksBand={
-        row.kind === 'user' && tasksAnchorUserId != null && row.item.id === tasksAnchorUserId
+        !omitTasksBand &&
+        row.kind === 'user' &&
+        tasksAnchorUserId != null &&
+        row.item.id === tasksAnchorUserId
       }
       citationCatalog={citationCatalogs.get(row.turnIndex) ?? EMPTY_CITATION_CATALOG}
       footerStartedAt={footerSpan?.startedAt ?? null}
@@ -1804,10 +1765,65 @@ export function MessageList({
     )
   }
 
-  const stickyPromptText = stickyPrompt
-    ? excerptTurnPrompt(stickyPrompt.row.item.content)
-    : ''
-  const showStickyPrompt = stickyPromptVisible && stickyPromptText !== ''
+  /**
+   * Turn-grouped flow rendering: rows are wrapped per turn so the turn's user
+   * prompt bubble pins natively (position: sticky) while its content scrolls and
+   * releases when the next turn pushes it out. The original user prompt bubble pins
+   * inline with native scroll behavior, edge-to-edge floating without any complete
+   * row background fills.
+   */
+  const renderTurnGroups = (
+    entries: readonly { row: TranscriptRow; index: number }[],
+    keyPrefix: string
+  ): ReactNode => {
+    const groups: {
+      turnIndex: number
+      start: number
+      items: { row: TranscriptRow; index: number }[]
+    }[] = []
+    for (const entry of entries) {
+      const last = groups[groups.length - 1]
+      if (last && last.turnIndex === entry.row.turnIndex) last.items.push(entry)
+      else groups.push({ turnIndex: entry.row.turnIndex, start: entry.index, items: [entry] })
+    }
+    return groups.map((group) => (
+      <div
+        key={`${keyPrefix}-turn-${group.start}`}
+        data-turn-group={group.turnIndex}
+        className={group.turnIndex > 0 ? TRANSCRIPT_TURN_GAP : undefined}
+      >
+        {group.items.map(({ row, index }) => {
+          const isUser = row.kind === 'user'
+          const hasTasksBand =
+            isUser && tasksAnchorUserId != null && row.item.id === tasksAnchorUserId
+          return (
+            <Fragment key={row.id}>
+              <div
+                data-transcript-row={index}
+                data-find-current={currentFindRow === index ? '' : undefined}
+                id={turnWorkPanelId(row, displayRows, index)}
+                data-sticky-turn-prompt={isUser ? '' : undefined}
+                className={cn(
+                  isUser
+                    ? 'sticky z-sticky mb-2.5'
+                    : rowSpacingClass(row, displayRows[index + 1]),
+                  currentFindRow === index && 'rounded-md ring-1 ring-accent/40'
+                )}
+                style={isUser ? { top: `${STICKY_TURN_TOP_PX}px` } : undefined}
+              >
+                {renderRow(row, isUser)}
+              </div>
+              {hasTasksBand ? (
+                <div key={`${row.id}-tasks-band`} className="mt-1 pb-2.5">
+                  <TasksCeilingBand key={row.item.id} running={running} />
+                </div>
+              ) : null}
+            </Fragment>
+          )
+        })}
+      </div>
+    ))
+  }
 
   return (
     <>
@@ -1857,7 +1873,16 @@ export function MessageList({
         <div
           ref={containerRef}
           data-transcript-scroll
-          style={isUnpinned ? { paddingBottom: JUMP_TO_BOTTOM_CLEARANCE_PX } : undefined}
+          style={{
+            // Floating composer overlays this scrollport — reserve its measured
+            // height (published on the stage via COMPOSER_DOCK_RESERVE_VAR) so the
+            // last row can scroll fully clear; jump-to-bottom adds its own clearance.
+            paddingBottom: `calc(var(${COMPOSER_DOCK_RESERVE_VAR}, 0px) + ${
+              COMPOSER_DOCK_CLEARANCE_PX +
+              COMPOSER_FLOAT_BOTTOM_INSET_PX +
+              (isUnpinned ? JUMP_TO_BOTTOM_CLEARANCE_PX : 0)
+            }px)`
+          }}
           className={cn(
             TRANSCRIPT_CONTAINER,
             'relative min-h-0 flex-1 overflow-auto [scrollbar-gutter:stable]',
@@ -1954,20 +1979,10 @@ export function MessageList({
                   <>
                     {loadingOverlay}
                     <div className={cn('flex w-full flex-col', CHAT_COLUMN)} data-chat-column>
-                      {displayRows.map((row, index) => (
-                        <div
-                          key={row.id}
-                          data-transcript-row={index}
-                          data-find-current={currentFindRow === index ? '' : undefined}
-                          id={turnWorkPanelId(row, displayRows, index)}
-                          className={cn(
-                            rowSpacingClass(row, displayRows[index + 1]),
-                            currentFindRow === index && 'rounded-md ring-1 ring-accent/40'
-                          )}
-                        >
-                          {renderRow(row)}
-                        </div>
-                      ))}
+                      {renderTurnGroups(
+                        displayRows.map((row, index) => ({ row, index })),
+                        'flow'
+                      )}
                     </div>
                     {compactStatus}
                   </>
@@ -2008,23 +2023,13 @@ export function MessageList({
                       })}
                     </div>
                     <div className={cn('flex w-full flex-col', CHAT_COLUMN)} data-live-turn-flow>
-                      {flowSuffixRows.map((row, localIndex) => {
-                        const index = flowStartIndex + localIndex
-                        return (
-                          <div
-                            key={row.id}
-                            data-transcript-row={index}
-                            data-find-current={currentFindRow === index ? '' : undefined}
-                            id={turnWorkPanelId(row, displayRows, index)}
-                            className={cn(
-                              rowSpacingClass(row, displayRows[index + 1]),
-                              currentFindRow === index && 'rounded-md ring-1 ring-accent/40'
-                            )}
-                          >
-                            {renderRow(row)}
-                          </div>
-                        )
-                      })}
+                      {renderTurnGroups(
+                        flowSuffixRows.map((row, localIndex) => ({
+                          row,
+                          index: flowStartIndex + localIndex
+                        })),
+                        'suffix'
+                      )}
                     </div>
                     {compactStatus}
                   </>
@@ -2086,30 +2091,6 @@ export function MessageList({
               >
                 <Icon name="chevron" size={12} />
                 {unpinnedNewCount > 0 ? `Latest · ${unpinnedNewCount}` : 'Latest'}
-              </button>
-            </div>
-          ) : null}
-          {showStickyPrompt ? (
-            <div
-              data-sticky-turn-prompt
-              className={cn(
-                'pointer-events-none sticky z-sticky flex h-0 w-full justify-center',
-                CHAT_COLUMN
-              )}
-              style={{ top: `${STICKY_PROMPT_TOP_PX}px` }}
-            >
-              <button
-                type="button"
-                onClick={() => stickyPrompt && scrollToDisplayRow(stickyPrompt.index)}
-                aria-label="Scroll to the prompt that started this section"
-                title="Scroll to prompt"
-                className={cn(
-                  'pointer-events-auto inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border bg-surface px-3 py-1.5 text-caption text-secondary shadow-md vy-transition',
-                  'hover:bg-surface-2 hover:text-fg focus-visible:outline-none focus-visible:vy-focus-ring'
-                )}
-              >
-                <Icon name="arrowUp" size={12} className="shrink-0 text-muted" />
-                <span className="truncate">{stickyPromptText}</span>
               </button>
             </div>
           ) : null}

@@ -936,7 +936,8 @@ function hydrateFromDisk(
           events,
           opts?.idle ? { treatRunningAs: 'cancelled' } : undefined
         ),
-        events
+        events,
+        dismissedErrorMessage
       ),
       events
     ),
@@ -990,26 +991,53 @@ function costHintFromEvents(events: PersistedEvent[]): string | null {
   return hint
 }
 
-function appendRunErrorItems(items: UiItem[], events: PersistedEvent[]): UiItem[] {
-  for (let i = events.length - 1; i >= 0; i--) {
+function appendRunErrorItems(
+  items: UiItem[],
+  events: PersistedEvent[],
+  dismissedErrorMessage: string | null = null
+): UiItem[] {
+  const out = [...items]
+  // Mirror the live terminal handler: one error box per failed run — the last
+  // error event before each status:'error', scoped by the next status:'running'.
+  let lastError: { row: PersistedEvent; index: number; message: string; code?: string } | null =
+    null
+  const pushBox = (): void => {
+    if (!lastError || lastError.message === dismissedErrorMessage) return
+    const id = `run-error:${lastError.row.at}:${lastError.index}`
+    if (out.some((item) => item.kind === 'run_error' && item.id === id)) return
+    out.push({
+      kind: 'run_error',
+      id,
+      message: lastError.message,
+      ...(lastError.code ? { code: lastError.code } : {}),
+      at: lastError.row.at
+    })
+  }
+  for (let i = 0; i < events.length; i++) {
     const row = events[i]
     const event = row?.event
     if (!isAgentEvent(event)) continue
-    if (event.type !== 'error') continue
-    const id = `run-error:${row.at}:${i}`
-    if (items.some((item) => item.kind === 'run_error' && item.id === id)) return items
-    return [
-      ...items,
-      {
-        kind: 'run_error' as const,
-        id,
-        message: event.message,
-        ...(event.code ? { code: event.code } : {}),
-        at: row.at
+    if (event.type === 'status') {
+      if (event.status === 'running') {
+        lastError = null
+      } else if (event.status === 'error') {
+        pushBox()
+        lastError = null
       }
-    ]
+      continue
+    }
+    if (event.type === 'error') {
+      lastError = {
+        row,
+        index: i,
+        message: event.message,
+        ...(event.code ? { code: event.code } : {})
+      }
+    }
   }
-  return items
+  // Trailing error with no terminal status (truncated/legacy logs) — keep the box.
+  pushBox()
+  return out
 }
 
 export type PendingFollowUpState = {
@@ -2597,7 +2625,7 @@ export function createChatStreamController(
         )
         const errorMessage =
           event.status === 'error' && !state.error
-            ? lastRunErrorMessage ?? 'Run failed'
+            ? lastRunErrorMessage ?? 'Failed'
             : state.error
         const withRunError =
           event.status === 'error' && errorMessage
@@ -2867,6 +2895,14 @@ export function createChatStreamController(
       awaitingRun = false
       const message = res.error
       logger.error(`chatStart failed: ${message}`, { scope: 'chat', err: res.error, code: res.code })
+      // Append the box here too — without it the banner is not suppressed and
+      // the turn summary would repeat the message (the duplicate-error path).
+      const runErrorItem: UiItem = {
+        kind: 'run_error',
+        id: `run-error:resume:${state.runTerminalTick + 1}`,
+        message,
+        ...(res.code ? { code: res.code } : {})
+      }
       patch({
         error: message,
         errorCode: res.code ?? null,
@@ -2874,7 +2910,9 @@ export function createChatStreamController(
         running: false,
         runStartedAt: null,
         pendingRun: false,
-        runId: continuingRunId
+        runId: continuingRunId,
+        runTerminalTick: state.runTerminalTick + 1,
+        items: [...state.items, runErrorItem]
       })
       return false
     }
@@ -3213,7 +3251,10 @@ export function createChatStreamController(
     const user: ChatMessage = { role: 'user', content, at: new Date().toISOString() }
     const displayText = contentDisplayText(content)
     const preview = displayText.trim() || (uiAttachments(content).length ? uiAttachments(content)[0]!.name : 'Follow-up')
-    const res = await window.vyotiq.chatFollowUp({ runId: id, message: user })
+    const res = await window.vyotiq.chatFollowUp({
+      runId: id,
+      message: user
+    })
     if (!res.ok) {
       logger.warn('chatFollowUp failed', {
         scope: 'chat',
@@ -3912,8 +3953,17 @@ export function createChatStreamController(
   }
 
   const clearError = (): void => {
-    if (state.error) dismissedErrorMessage = state.error
-    patch({ error: null, errorCode: null })
+    const dismissed = state.error
+    if (dismissed) dismissedErrorMessage = dismissed
+    patch({
+      error: null,
+      errorCode: null,
+      // Symmetric with the banner: dismiss drops the matching error boxes too,
+      // and hydration skips them so they stay dismissed for the session.
+      items: dismissed
+        ? state.items.filter((item) => !(item.kind === 'run_error' && item.message === dismissed))
+        : state.items
+    })
   }
 
   const setThinkingExpanded = (messageId: string, expanded: boolean): void => {

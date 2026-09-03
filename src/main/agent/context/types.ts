@@ -1,4 +1,4 @@
-import type { ChatMessage, ModelInfo, UserRule } from '../../../shared/ipc'
+import type { ChatMessage, ModelInfo, ResponseVerbosity, UserRule } from '../../../shared/ipc'
 import type { TokenUsage } from '../providers/types'
 import {
   BUDGET_SHARES as SHARED_BUDGET_SHARES,
@@ -95,10 +95,12 @@ export type AssembleInput = {
   userRules?: UserRule[]
   /** Optional assistant identity override (settings.agentPersona). */
   persona?: string
+  /** Optional tone directive (settings.agentTone). Empty/omitted = spine default. */
+  tone?: string
   /** Preferred response language (settings.responseLanguage). Empty/omitted = auto. */
   responseLanguage?: string
   /** Default answer length (settings.responseVerbosity). */
-  responseVerbosity?: 'concise' | 'balanced' | 'detailed'
+  responseVerbosity?: ResponseVerbosity
   modeSection?: string
   plan?: string
   /**

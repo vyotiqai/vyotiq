@@ -43,7 +43,7 @@ const composerProps = {
 }
 
 describe('Composer layout', () => {
-  it('places the input full width above the compact toolbar', () => {
+  it('lays the input and controls out in one inline row', () => {
     render(<Composer {...composerProps} />)
 
     const shell = document.querySelector('[data-composer-shell]')
@@ -51,32 +51,32 @@ describe('Composer layout', () => {
     const form = shell?.querySelector('form')
     expect(form).toBeTruthy()
     expect(form?.className).toMatch(/\bpx-2\.5\b/)
-    expect(form?.className).toMatch(/(?:^|\s)py-1(?:\s|$)/)
-    expect(form?.className).not.toMatch(/(?:^|\s)py-1\.5(?:\s|$)/)
+    expect(form?.className).toMatch(/(?:^|\s)py-1\.5(?:\s|$)/)
+    expect(form?.className).not.toMatch(/(?:^|\s)py-2(?:\s|$)/)
     expect(form?.className).toMatch(/(?:^|\s)gap-1(?:\s|$)/)
     expect(form?.className).not.toMatch(/(?:^|\s)gap-1\.5(?:\s|$)/)
 
     const textarea = screen.getByRole('combobox', { name: /^Message$/i })
     const toolbar = form?.querySelector('[data-composer-toolbar]')
-    const plus = screen.getByRole('button', { name: /^Attach files$/i })
     const primary = screen.getByRole('button', { name: /^Dictate$/i })
     expect(toolbar).toBeTruthy()
     expect(toolbar?.contains(textarea)).toBe(false)
     expect(form?.contains(textarea)).toBe(true)
-    expect(textarea.className).toMatch(/\bw-full\b/)
+    // Input and controls share one row — no full-width chrome rows.
+    const row = toolbar?.parentElement
+    expect(row?.hasAttribute('data-composer-row')).toBe(true)
+    expect(row?.className).toMatch(/\bitems-center\b/)
+    expect(row?.firstElementChild?.className).toMatch(/\bflex-1\b/)
     expect(textarea.className).toMatch(/\bmin-h-7\b/)
-    expect(toolbar?.contains(plus)).toBe(true)
-    expect(toolbar?.contains(primary)).toBe(true)
     expect(toolbar?.className).toMatch(/\bh-7\b/)
     expect(toolbar?.className).toMatch(/(?:^|\s)gap-1(?:\s|$)/)
     expect(toolbar?.className).toMatch(/\bitems-center\b/)
+    expect(toolbar?.className).not.toMatch(/col-span-full/)
     expect(toolbar?.className).not.toMatch(/border-t/)
     expect(toolbar?.className).not.toMatch(/\bmin-h-8\b/)
-    expect(plus.className).toMatch(/\brounded-md\b/)
     expect(primary.className).toMatch(/\brounded-md\b/)
     expect(primary.className).not.toMatch(/\brounded-xl\b/)
 
-    expect(textarea.compareDocumentPosition(plus) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(textarea.compareDocumentPosition(primary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 

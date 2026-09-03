@@ -111,6 +111,53 @@ describe('local dictation Whisper cache', () => {
     expect(transcribe).toHaveBeenCalledWith(Buffer.from(pcm.buffer).toString('base64'), 16000)
   })
 
+  it('re-ensures the worker session when the utility restarted between utterances', async () => {
+    const modelId = 'whisper-tiny.en' as const
+    writeRequiredFiles(join(modelsRoot, modelId))
+    getSettingsMock.mockReturnValue({
+      ...DEFAULT_SETTINGS,
+      dictation: { ...DEFAULT_SETTINGS.dictation, engine: 'local', localModelId: modelId }
+    })
+
+    // First backend: normal load + transcribe (sets the loadedModelId cache).
+    setDictationWhisperBackendForTests({
+      ensure: vi.fn(async () => undefined),
+      transcribe: vi.fn(async () => 'first'),
+      dispose: vi.fn(async () => undefined)
+    })
+    await transcribeLocalDictation({
+      data: Buffer.from('webm').toString('base64'),
+      mime: 'audio/webm',
+      pcm16k: Buffer.from([0, 0, 1, 0]).toString('base64')
+    })
+
+    // The utility process dies and respawns (abort teardown / crash): a fresh
+    // backend with no session. The stale loadedModelId cache must not skip the
+    // ensure handshake, or transcribe hits "call ensure first".
+    let ensured = false
+    const secondEnsure = vi.fn(async () => {
+      ensured = true
+    })
+    const secondTranscribe = vi.fn(async () => {
+      if (!ensured) throw new Error('Whisper session not loaded — call ensure first')
+      return 'second'
+    })
+    setDictationWhisperBackendForTests({
+      ensure: secondEnsure,
+      transcribe: secondTranscribe,
+      dispose: vi.fn(async () => undefined)
+    })
+
+    const res = await transcribeLocalDictation({
+      data: Buffer.from('webm').toString('base64'),
+      mime: 'audio/webm',
+      pcm16k: Buffer.from([0, 0, 1, 0]).toString('base64')
+    })
+    expect(secondEnsure).toHaveBeenCalledTimes(1)
+    expect(secondTranscribe).toHaveBeenCalledTimes(1)
+    expect(res).toEqual({ text: 'second' })
+  })
+
   it('publishes error phase when Whisper load fails after files are on disk', async () => {
     const modelId = 'whisper-tiny.en' as const
     writeRequiredFiles(join(modelsRoot, modelId))

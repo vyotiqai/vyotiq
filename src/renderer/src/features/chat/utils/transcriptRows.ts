@@ -798,9 +798,13 @@ function withTurnSummaries(
               })
         : null
       const failed = terminalStatus === 'error'
-      const failureLabel = failed
-        ? options?.turnFailureLabel?.trim() || 'Connection lost'
-        : undefined
+      // A run_error row in this turn already renders the full message — the
+      // summary falls back to TurnSummary's short "Failed" instead of repeating it.
+      const turnHasRunError = turnRows.some((row) => row.kind === 'run_error')
+      const failureLabel =
+        failed && !turnHasRunError
+          ? options?.turnFailureLabel?.trim() || 'Failed'
+          : undefined
 
       out.push({
         kind: 'turn',

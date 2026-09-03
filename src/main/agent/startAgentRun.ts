@@ -19,7 +19,7 @@ import {
 } from '../ipc/streamBatch'
 import { resolveRunDir } from '@main/storage/paths'
 import { logger } from '../../shared/logger'
-import { loadStatus } from './state'
+import { appendEvent, loadStatus } from './state'
 import { hydrateFollowUpsFromDisk } from './followUpStore'
 import { registerParentInstanceEmitter, registerRunIpcSender, handleInlineInstanceFinished } from './agentInstances'
 import { runAgent } from './loop'
@@ -199,8 +199,23 @@ export function startAgentRunInBackground(input: StartAgentRunInput): void {
         err
       })
       if (!terminalSent) {
-        batcher.push({ type: 'error', runId, message, code: 'AGENT_LOOP' })
-        batcher.push({ type: 'status', runId, status: 'error' })
+        const crashEvents = [
+          { type: 'error', runId, message, code: 'AGENT_LOOP' },
+          { type: 'status', runId, status: 'error' }
+        ] as const
+        // Persist the crash so a reload shows the failure instead of a
+        // silently dead run.
+        try {
+          const runDir = resolveRunDir(workspacePath, runId)
+          for (const ev of crashEvents) appendEvent(runDir, ev)
+        } catch (persistErr) {
+          logger.warn('Failed to persist crash terminal events', {
+            scope: 'ipc',
+            correlationId: runId,
+            err: persistErr
+          })
+        }
+        for (const ev of crashEvents) batcher.push(ev)
         terminalStatus = 'error'
       }
     } finally {

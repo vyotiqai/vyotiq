@@ -6,6 +6,10 @@ import type { StreamChunk } from '@main/agent/providers/types'
 
 const userData = join(tmpdir(), `vyotiq-eff-${process.pid}-${Date.now()}`)
 
+const { assembleContextMock } = vi.hoisted(() => ({
+  assembleContextMock: vi.fn()
+}))
+
 vi.mock('electron', () => ({
   app: {
     getPath: (name: string) => {
@@ -33,6 +37,9 @@ vi.mock('@main/settings/settings', () => ({
     ollamaBaseUrl: 'http://127.0.0.1:11434',
     theme: 'system',
     telemetryEnabled: false,
+    agentPersona: 'GlobalBot',
+    agentTone: 'calm',
+    responseVerbosity: 'balanced'
   }),
   readLegacyWorkspacePath: () => null,
   clearSettingsCacheForTests: () => undefined
@@ -52,14 +59,7 @@ vi.mock('@main/agent/context', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@main/agent/context')>()
   return {
     ...actual,
-    assembleContext: async (input: { messages: unknown[] }) => ({
-      messages: input.messages,
-      system: 'system',
-      estimatedTokens: 100,
-      layers: { system: 10, history: 50, tools: 20, buffer: 20 },
-      anthropicNative: undefined,
-      compaction: null
-    }),
+    assembleContext: assembleContextMock,
     ensureMemoryLayout: () => undefined
   }
 })
@@ -102,6 +102,15 @@ describe('runAgent effective workspace settings', () => {
     resetActiveRunsForTests()
     resetWorkspacesForTests()
     streamChat.mockReset()
+    assembleContextMock.mockReset()
+    assembleContextMock.mockImplementation(async (input: { messages: unknown[] }) => ({
+      messages: input.messages,
+      system: 'system',
+      estimatedTokens: 100,
+      layers: { system: 10, history: 50, tools: 20, buffer: 20 },
+      anthropicNative: undefined,
+      compaction: null
+    }))
     saveWorkspacesState({
       ...defaultWorkspacesState(),
       openPaths: [workspace],
@@ -145,5 +154,80 @@ describe('runAgent effective workspace settings', () => {
     const request = streamChat.mock.calls[0]?.[0] as { model?: string }
     expect(request.model).toBe('override-model')
     expect(events.some((e) => e.type === 'status' && e.status === 'done')).toBe(true)
+  })
+
+  it('uses global persona and tone when no workspace override is active', async () => {
+    saveWorkspacesState({
+      ...defaultWorkspacesState(),
+      openPaths: [workspace],
+      activePath: workspace,
+      recentPaths: [],
+      settingsOverridesByPath: {}
+    })
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'hello' }
+      yield { type: 'done' }
+    })
+
+    for await (const _ev of runAgent({
+      runId: 'global-persona',
+      messages: [{ role: 'user', content: 'hi' }],
+      workspacePath: workspace
+    })) {
+      void _ev
+    }
+
+    expect(assembleContextMock).toHaveBeenCalled()
+    const input = assembleContextMock.mock.calls[0]?.[0] as {
+      persona?: string
+      tone?: string
+      responseVerbosity?: string
+    }
+    expect(input.persona).toBe('GlobalBot')
+    expect(input.tone).toBe('calm')
+    expect(input.responseVerbosity).toBe('balanced')
+  })
+
+  it('uses workspace override persona and tone instead of global settings', async () => {
+    saveWorkspacesState({
+      ...defaultWorkspacesState(),
+      openPaths: [workspace],
+      activePath: workspace,
+      recentPaths: [],
+      settingsOverridesByPath: {
+        [workspace]: {
+          useOverride: true,
+          provider: 'ollama',
+          model: 'override-model',
+          agentPersona: 'OverrideBot',
+          agentTone: 'terse',
+          responseLanguage: 'German'
+        }
+      }
+    })
+    streamChat.mockImplementation(async function* (): AsyncGenerator<StreamChunk> {
+      yield { type: 'text', text: 'hello' }
+      yield { type: 'done' }
+    })
+
+    for await (const _ev of runAgent({
+      runId: 'override-persona',
+      messages: [{ role: 'user', content: 'hi' }],
+      workspacePath: workspace
+    })) {
+      void _ev
+    }
+
+    expect(assembleContextMock).toHaveBeenCalled()
+    const input = assembleContextMock.mock.calls[0]?.[0] as {
+      persona?: string
+      tone?: string
+      responseLanguage?: string
+      responseVerbosity?: string
+    }
+    expect(input.persona).toBe('OverrideBot')
+    expect(input.tone).toBe('terse')
+    expect(input.responseLanguage).toBe('German')
+    expect(input.responseVerbosity).toBe('balanced')
   })
 })

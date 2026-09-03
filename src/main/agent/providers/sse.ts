@@ -1,5 +1,6 @@
 /** Iterate SSE `data:` payloads from a fetch Response body. */
 import { isAbortError } from '../../../shared/errors'
+import { closeUnterminatedJson, completeJsonPrefix } from '../../../shared/utils/jsonish'
 import { isRetriableNetworkError, RetriableStreamError } from './fetchWithRetry'
 import { logProviderFailure } from './log'
 
@@ -192,6 +193,29 @@ function formatStreamReadError(err: unknown): string {
  */
 export type SseDropCounter = { dropped: number }
 
+/**
+ * Recover a corrupted frame when the failure is a known, safe class: a complete
+ * value followed by junk (`{…}{…}` / proxy garbage) or a stream cut after a
+ * complete value with containers still open (missing `]`/`}` — hosts that flush
+ * early). Truncation inside a string never parses as complete, so it is not
+ * fabricated content.
+ */
+function salvageSseJson(text: string): Record<string, unknown> | undefined {
+  if (text[0] !== '{' && text[0] !== '[') return undefined
+  for (const candidate of [completeJsonPrefix(text), closeUnterminatedJson(text)]) {
+    if (!candidate) continue
+    try {
+      const parsed = JSON.parse(candidate) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>
+      }
+    } catch {
+      // next candidate
+    }
+  }
+  return undefined
+}
+
 export async function* iterateSseJson(
   res: Response,
   signal: AbortSignal,
@@ -199,12 +223,21 @@ export async function* iterateSseJson(
   opts?: IterateSseOptions
 ): AsyncGenerator<Record<string, unknown>> {
   for await (const data of iterateSseData(res, signal, opts)) {
-    if (!data.trim()) continue
+    const text = data.trim()
+    if (!text) continue
     try {
-      yield JSON.parse(data) as Record<string, unknown>
+      yield JSON.parse(text) as Record<string, unknown>
+      continue
     } catch {
-      if (drops) drops.dropped++
-      logProviderFailure('sse', 'parse', { bytes: data.length })
+      // salvage below
     }
+    const salvaged = salvageSseJson(text)
+    if (salvaged) {
+      logProviderFailure('sse', 'parse', { bytes: text.length, message: 'frame salvaged' })
+      yield salvaged
+      continue
+    }
+    if (drops) drops.dropped++
+    logProviderFailure('sse', 'parse', { bytes: text.length })
   }
 }

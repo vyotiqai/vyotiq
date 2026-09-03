@@ -1,9 +1,33 @@
 import { runCodebaseSearch } from '../codeindex'
 import type { CodebaseSearchMode, CodeIndexEmbedderId } from '../codeindex'
-import { DEFAULT_SEARCH_LIMIT, isHashEmbedderModelId } from '../codeindex/types'
+import {
+  DEFAULT_SEARCH_LIMIT,
+  denseModelIdsCompatible,
+  isHashEmbedderModelId
+} from '../codeindex/types'
 import { logger } from '../../../shared/logger'
 
 export { DEFAULT_SEARCH_LIMIT as CODEBASE_SEARCH_DEFAULT_LIMIT }
+
+/**
+ * Why a codebase_search result degrades to lexical. True mismatch = cross-family /
+ * incompatible stores. Same-family ids (e.g. stored DenseOn-ONNX vs resolved
+ * mDenseOn) share an embedding space and the dense path already ran — those are
+ * never labeled lexical-only. Hash on either side is always a fallback.
+ */
+export function codebaseSearchLexicalOnlyReason(
+  statusModelId: string,
+  queryModelId: string
+): { hashFallback: boolean; queryIndexMismatch: boolean } {
+  const hashFallback =
+    isHashEmbedderModelId(statusModelId) || isHashEmbedderModelId(queryModelId)
+  const queryIndexMismatch =
+    !hashFallback &&
+    queryModelId.trim() !== '' &&
+    statusModelId.trim() !== '' &&
+    !denseModelIdsCompatible(statusModelId, queryModelId)
+  return { hashFallback, queryIndexMismatch }
+}
 
 /** Warn once per process when semantic search silently degrades to lexical/hash. */
 let hashFallbackWarned = false
@@ -35,13 +59,10 @@ export async function toolCodebaseSearch(
   if (!status.ready && status.chunkCount === 0 && formatted.includes('disabled')) {
     return formatted
   }
-  const hashFallback =
-    isHashEmbedderModelId(status.modelId) || isHashEmbedderModelId(queryModelId)
-  const queryIndexMismatch =
-    !hashFallback &&
-    queryModelId.trim() !== '' &&
-    status.modelId.trim() !== '' &&
-    queryModelId !== status.modelId
+  const { hashFallback, queryIndexMismatch } = codebaseSearchLexicalOnlyReason(
+    status.modelId,
+    queryModelId
+  )
   const lexicalOnly = hashFallback || queryIndexMismatch
   if (hashFallback && !hashFallbackWarned) {
     hashFallbackWarned = true

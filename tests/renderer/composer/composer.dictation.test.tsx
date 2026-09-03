@@ -185,20 +185,17 @@ describe('Composer dictation', () => {
     expect(screen.getByRole('button', { name: /^Stop dictation$/i })).toBeTruthy()
     expect(screen.getByRole('status', { name: /Listening/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^Cancel dictation$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Attach files$/i })).toBeTruthy()
     const strip = screen.getByRole('status', { name: /Listening/i })
     expect(strip.className).toMatch(/\bh-7\b/)
     expect(strip.className).toMatch(/(?:^|\s)gap-1(?:\s|$)/)
     expect(strip.className).not.toMatch(/\bh-8\b/)
-    const plus = screen.getByRole('button', { name: /^Attach files$/i })
     const cancel = screen.getByRole('button', { name: /^Cancel dictation$/i })
     const confirm = screen.getByRole('button', { name: /^Stop dictation$/i })
-    // Plus and Cancel share the neutral chrome button; the primary Stop button is accented.
-    expect(plus.className).toBe(cancel.className)
+    // Cancel keeps the neutral chrome button; the primary Stop button is accented.
+    expect(cancel.className).not.toMatch(/\bbg-accent\b/)
     expect(confirm.className).toMatch(/\bbg-accent\b/)
-    expect(plus.className).not.toMatch(/(?:^|\s)bg-surface(?:\s|$)/)
-    expect(plus.className).toMatch(/\brounded-md\b/)
-    expect(plus.className).not.toMatch(/\brounded-full\b/)
+    expect(cancel.className).toMatch(/\brounded-md\b/)
+    expect(cancel.className).not.toMatch(/\brounded-full\b/)
     const shell = document.querySelector('[data-composer-shell]')
     expect(shell?.className).toMatch(/\bvy-chrome\b/)
     expect(shell?.className).not.toMatch(/\brounded-full\b/)
@@ -210,8 +207,8 @@ describe('Composer dictation', () => {
     const form = document.querySelector('[data-composer-shell] form')
     expect(form?.className).toMatch(/(?:^|\s)gap-1(?:\s|$)/)
     expect(form?.className).not.toMatch(/(?:^|\s)gap-1\.5(?:\s|$)/)
-    expect(form?.className).toMatch(/(?:^|\s)py-1(?:\s|$)/)
-    expect(form?.className).not.toMatch(/(?:^|\s)py-1\.5(?:\s|$)/)
+    expect(form?.className).toMatch(/(?:^|\s)py-1\.5(?:\s|$)/)
+    expect(form?.className).not.toMatch(/(?:^|\s)py-2(?:\s|$)/)
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /^Stop dictation$/i }))
@@ -318,7 +315,6 @@ describe('Composer dictation', () => {
     expect(toolbar?.getAttribute('data-dictation-session')).toBe('listening')
     expect(screen.getByRole('button', { name: /^Stop dictation$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^Cancel dictation$/i })).toBeTruthy()
-    expect(screen.getByRole('button', { name: /^Attach files$/i })).toBeTruthy()
     expect(document.querySelector('[data-composer-git-leading]')).toBeNull()
   })
 

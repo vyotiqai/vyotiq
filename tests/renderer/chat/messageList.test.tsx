@@ -78,6 +78,28 @@ describe('MessageList', () => {
     expect(document.querySelector('[data-chat-empty-state]')).toBeNull()
   })
 
+  it('offers Retry on run_error rows only for retryable failure codes', () => {
+    const onRetryNetwork = vi.fn()
+    const retryable: UiItem[] = [
+      {
+        kind: 'run_error',
+        id: 're1',
+        message: 'Connection dropped mid-stream',
+        code: 'PROVIDER_NETWORK'
+      }
+    ]
+    const { rerender } = render(<MessageList items={retryable} onRetryNetwork={onRetryNetwork} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
+    expect(onRetryNetwork).toHaveBeenCalledTimes(1)
+
+    // Permanent failures (bad key / plan gating) must not offer a doomed Retry.
+    const permanent: UiItem[] = [
+      { kind: 'run_error', id: 're2', message: 'Plan required', code: 'PROVIDER_AUTH' }
+    ]
+    rerender(<MessageList items={permanent} onRetryNetwork={onRetryNetwork} />)
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull()
+  })
+
   it('keeps the narration between tool batches on the page', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'a1', role: 'assistant', content: 'First look.' },
@@ -634,7 +656,7 @@ describe('MessageList', () => {
     expect(screen.getByText('file.ts')).toBeTruthy()
 
     const column = scroll!.querySelector('[data-chat-column]')
-    const order = [...(column?.querySelectorAll('[data-chat-column] > div') ?? [])]
+    const order = [...(column?.querySelectorAll('[data-transcript-row]') ?? [])]
     // Chronological in-scroll: user → tools → TurnSummary. No external pin.
     expect(document.querySelector('[data-prompt-pin]')).toBeNull()
     expect(order.length).toBe(3)
@@ -1005,7 +1027,8 @@ describe('MessageList', () => {
     expect(flow).toBeTruthy()
     expect(screen.queryByText('Line 0')).toBeNull()
     expect(screen.queryByText('Line 50')).toBeNull()
-    const flowRows = flow?.querySelectorAll(':scope > div').length ?? 0
+    // Suffix rows sit inside turn-group wrappers; count the rows themselves.
+    const flowRows = flow?.querySelectorAll('[data-transcript-row]').length ?? 0
     expect(flowRows).toBeGreaterThan(30)
     expect(flowRows).toBeLessThanOrEqual(45)
 

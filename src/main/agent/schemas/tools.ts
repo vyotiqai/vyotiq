@@ -252,7 +252,7 @@ const codebaseSearchArgs = z
       .trim()
       .min(1)
       .describe(
-        'Natural-language or keyword query over indexed functions/classes. Prefer camelCase identifiers once known; use grep for every exact symbol occurrence.'
+        'Natural-language or keyword query over indexed functions/classes. Prefer camelCase identifiers once known (the lexical side tokenizes them).'
       ),
     maxResults: z
       .number()
@@ -1027,7 +1027,7 @@ export const TOOL_REGISTRY = {
   },
   codebase_search: {
     description:
-      'Local codebase search over the indexed repository. Prefers dense semantic ranking when an embedding model is configured (Ollama or a downloaded model); otherwise it transparently falls back to lexical/FTS matching. Workspace docs/ and Word .docx are matched at search time (extracted text), not stored in the index. Use for conceptual questions; use grep/search for exact identifiers or regex. The tool result states which mode was used. Not memory RAG. Cite hits as [[path]] or [[path:line]].',
+      'Ranked local search over the indexed repository — the default way to locate code when you do not already know where it lives: dense semantic ranking fused with lexical/FTS matching (hybrid) finds paraphrases and related code that substring search misses. Workspace docs/ and Word .docx are matched at search time (extracted text), not stored in the index. Use grep for every occurrence of a known symbol or regex verification; use glob/list_dir for paths only. The tool result states which mode was used. Not memory RAG. Cite hits as [[path]] or [[path:line]].',
     schema: codebaseSearchArgs
   },
   list_dir: {

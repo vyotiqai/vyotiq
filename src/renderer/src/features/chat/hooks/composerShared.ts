@@ -24,14 +24,57 @@ import type { ChatMetaStore } from '../chatStores'
 import type { IncompleteTurnState, PendingFollowUpState } from '@renderer/lib/hooks/createChatStreamController'
 import type { ContextUsageState } from '../components/composer/ContextMeter'
 import type { SlashClientHandlers } from '../components/composer/slashCommandExecute'
+import { useHasTranscriptRunError } from '../components/ChatStreamLeaves'
+import type { ChatItemsStore } from '../chatStores'
+import { isRetryableTurnFailure } from '@shared/errors'
+import type { TurnOutcome } from '@shared/transcript'
 
-/** Suppress composer banner when transcript already shows a run_error row. */
-export function useSuppressedChatError(
-  items: readonly UiItem[],
+export type ChatErrorSurfaces = {
+  hasTranscriptRunError: boolean
+  chatBannerError: string | null
+  turnFailed: boolean
+  turnFailureLabel: string | null
+}
+
+export type ChatErrorSurfacesArgs = {
   error: string | null
-): string | null {
-  const hasTranscriptRunError = items.some((item) => item.kind === 'run_error')
-  return hasTranscriptRunError ? null : error
+  errorCode?: string | null
+  incomplete?: IncompleteTurnState | null
+  turnStatus?: TurnOutcome | null
+}
+
+/**
+ * Single derivation of the banner / turn-failure presentation shared by
+ * ChatView and SessionChatColumn — the suppression rule (composer banner off
+ * when the transcript already shows a run_error row) and the failure-label
+ * vocabulary live here so the surfaces cannot drift.
+ */
+export function deriveChatErrorSurfaces(
+  hasTranscriptRunError: boolean,
+  args: ChatErrorSurfacesArgs
+): ChatErrorSurfaces {
+  const turnFailed = isRetryableTurnFailure({
+    errorCode: args.errorCode,
+    incompleteReason: args.incomplete?.reason
+  })
+  return {
+    hasTranscriptRunError,
+    chatBannerError: hasTranscriptRunError ? null : args.error,
+    turnFailed,
+    turnFailureLabel: turnFailed
+      ? args.incomplete?.message ?? (args.error ?? 'Failed')
+      : args.turnStatus === 'error'
+        ? 'Failed'
+        : null
+  }
+}
+
+/** Store-subscribed variant for live chat surfaces. */
+export function useChatErrorSurfaces(
+  args: ChatErrorSurfacesArgs & { itemsStore?: ChatItemsStore; items: UiItem[] }
+): ChatErrorSurfaces {
+  const hasTranscriptRunError = useHasTranscriptRunError(args.itemsStore, args.items)
+  return deriveChatErrorSurfaces(hasTranscriptRunError, args)
 }
 
 export type ComposerEditSeeds = {

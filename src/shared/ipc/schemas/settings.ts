@@ -130,6 +130,10 @@ export type TerminalShell = z.infer<typeof TerminalShellSchema>
 export const AgentInteractionModeSchema = z.enum(['ask', 'plan', 'agent'])
 export type AgentInteractionMode = z.infer<typeof AgentInteractionModeSchema>
 
+/** Default answer length for conversational replies. */
+export const ResponseVerbositySchema = z.enum(['concise', 'balanced', 'detailed'])
+export type ResponseVerbosity = z.infer<typeof ResponseVerbositySchema>
+
 export const SearchEngineSchema = z.enum(['duckduckgo', 'bing', 'google'])
 export type SearchEngineId = z.infer<typeof SearchEngineSchema>
 
@@ -323,9 +327,9 @@ export type DictationSettings = z.infer<typeof DictationSettingsSchema>
 export const DEFAULT_DICTATION_SETTINGS: DictationSettings = {
   engine: 'openai',
   localModelId: '',
-  waveformStyle: 'bars',
-  qwen3AsrServerUrl: 'http://127.0.0.1:8000/v1',
-  qwen3AsrApiKey: ''
+   waveformStyle: 'bars',
+   qwen3AsrServerUrl: 'http://127.0.0.1:8000/v1',
+   qwen3AsrApiKey: ''
 }
 
 export const DictationModelPhaseSchema = z.enum([
@@ -476,11 +480,13 @@ export const SettingsSchema = z.object({
    */
   userRules: z.array(UserRuleSchema).max(MAX_USER_RULES).default([]),
   /** Optional assistant identity surfaced in the stable prompt zone. Empty = default. */
-  agentPersona: z.string().max(120).default(''),
+  agentPersona: z.string().max(1000).default(''),
+  /** Optional tone directive for replies. Empty = default spine tone. */
+  agentTone: z.string().max(2000).default(''),
   /** Preferred response language. Empty = follow the user's language. */
   responseLanguage: z.string().max(64).default(''),
   /** Default answer length for conversational replies. */
-  responseVerbosity: z.enum(['concise', 'balanced', 'detailed']).default('concise'),
+  responseVerbosity: ResponseVerbositySchema.default('concise'),
   /**
    * App-wide inbox + OS toast preferences. Not a workspace override.
    */
@@ -538,6 +544,7 @@ export const DEFAULT_SETTINGS: Settings = {
   runTokenLimit: 0,
   userRules: [],
   agentPersona: '',
+  agentTone: '',
   responseLanguage: '',
   responseVerbosity: 'concise',
   notifications: DEFAULT_NOTIFICATION_SETTINGS,

@@ -19,7 +19,7 @@ Open Settings from the sidebar, /settings, or Open settings (Ctrl+, / ⌘,). Sea
 | --- | --- |
 | Active model | opens the composer model picker, or jump to Providers. Workspace Override can pin a different provider/model per folder |
 | Tab autocomplete | ghost text in the Files editor from the active model. Tab accepts, Esc dismisses. On by default |
-| Workspaces | open workspace tabs. `Add workspace`. Enable Override for per-workspace provider, model, and agent settings. Override seeds thinking, compaction, and approval from global defaults when first enabled |
+| Workspaces | open workspace tabs. `Add workspace`. Enable Override for per-workspace provider, model, and agent settings. Override seeds thinking, persona & style, compaction, and approval from global defaults when first enabled |
 | Share crash & error reports | optional opt-in. Local rotating logs are always written. Unavailable in builds with no Sentry DSN. Never includes chat contents, API keys, or file bodies |
 | Enable notifications | master switch for the inbox and desktop toasts |
 | Desktop notifications | Off, When unfocused, Always |
@@ -47,6 +47,10 @@ See [Providers](/docs/customize/providers). **Active provider**, API keys, `Refr
 | Control | Options and notes |
 | --- | --- |
 | Show thinking in chat | collapsed thinking blocks above assistant replies |
+| Persona | assistant identity claimed in replies. Blank = default Agent V identity |
+| Tone | free-form description of how replies sound (e.g. friendly, blunt, playful). Blank = default tone |
+| Response language | preferred reply language. Blank = follow your language |
+| Answer length | Concise (default), Balanced, Detailed |
 | Keep recent turns | 4–50 turns preserved during compaction |
 | Auto-compact threshold | 5–95% of the model content window |
 | Workspace rules | loaded from AGENTS.md, CLAUDE.md, .cursorrules, .cursor/rules/, and .vyotiq/rules/. Edit in Marketplace → Manage → **Rules** |

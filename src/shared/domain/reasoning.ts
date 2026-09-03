@@ -278,7 +278,6 @@ export function modelSupportsThinking(id: string, providerId?: ProviderId): bool
     case 'gemini':
     case 'deepseek':
     case 'xai':
-    case 'modal':
     case undefined:
       return sharedThinkingModelMatch(id)
     case 'opencode':
@@ -312,7 +311,6 @@ export function thinkingApiFor(
     case 'openrouter':
     case 'groq':
     case 'xai':
-    case 'modal':
     case 'mistral':
     case 'ollama':
     case 'custom':

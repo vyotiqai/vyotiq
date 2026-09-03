@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   buildComposerSendProps,
-  useSuppressedChatError
+  deriveChatErrorSurfaces
 } from '@renderer/features/chat/hooks/composerShared'
 import type { UiItem } from '@shared/transcript'
 import { DEFAULT_SETTINGS, emptySecretStatus } from '@shared/ipc'
@@ -28,12 +28,40 @@ describe('P3 surfaceKey + composer shared hooks', () => {
     expect(column).not.toMatch(/activeRunId \?\? 'draft'/)
   })
 
-  it('useSuppressedChatError clears banner when transcript has run_error', () => {
+  it('deriveChatErrorSurfaces clears banner when transcript has run_error', () => {
     const withRunError: UiItem[] = [
       { kind: 'run_error', id: 'e1', message: 'boom' }
     ]
-    expect(useSuppressedChatError(withRunError, 'composer boom')).toBeNull()
-    expect(useSuppressedChatError([], 'composer boom')).toBe('composer boom')
+    const surfaces = deriveChatErrorSurfaces(true, {
+      error: 'composer boom',
+      errorCode: 'PROVIDER_NETWORK'
+    })
+    expect(surfaces.chatBannerError).toBeNull()
+    expect(surfaces.turnFailed).toBe(true)
+    expect(surfaces.turnFailureLabel).toBe('composer boom')
+
+    const clean = deriveChatErrorSurfaces(false, {
+      error: 'composer boom',
+      errorCode: 'PROVIDER_NETWORK'
+    })
+    expect(clean.chatBannerError).toBe('composer boom')
+  })
+
+  it('deriveChatErrorSurfaces treats auth/plan/billing failures as permanent', () => {
+    expect(
+      deriveChatErrorSurfaces(false, { error: 'bad key', errorCode: 'PROVIDER_AUTH' }).turnFailed
+    ).toBe(false)
+    expect(
+      deriveChatErrorSurfaces(false, { error: 'no credits', errorCode: 'PROVIDER_BILLING' })
+        .turnFailed
+    ).toBe(false)
+    // Permanent + terminal: the summary shows the short generic label, no Retry.
+    const permanent = deriveChatErrorSurfaces(false, {
+      error: 'plan required',
+      errorCode: 'PROVIDER_AUTH',
+      turnStatus: 'error'
+    })
+    expect(permanent.turnFailureLabel).toBe('Failed')
   })
 
   it('buildComposerSendProps mirrors shared dock fields', () => {

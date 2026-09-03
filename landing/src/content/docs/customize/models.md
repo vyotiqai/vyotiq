@@ -22,6 +22,8 @@ The composer model picker shows configured providers and retains the current act
 
 Seed model IDs are local fallback metadata. A successful refresh replaces or supplements them with the host's current catalog. A visible seed name does not prove the endpoint is online.
 
+If a host does not offer a model list at all, the picker stays empty by design. For the Custom OpenAI-compatible provider, type any model ID into the picker search box and press Enter to select it; the ID goes to the host verbatim and appears in recents.
+
 ## Capabilities
 
 Model information can identify:

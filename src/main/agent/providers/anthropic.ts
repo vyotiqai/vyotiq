@@ -712,6 +712,7 @@ export const anthropicProvider: LlmProvider = {
       type: 'done',
       usage: lastUsage,
       stopReason,
+      ...(drops.dropped > 0 ? { droppedFrames: drops.dropped } : {}),
       compaction: compactionText.trim() || undefined,
       reasoningState:
         thinkingBlocks.length > 0

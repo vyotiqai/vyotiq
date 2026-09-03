@@ -20,8 +20,7 @@ import {
 } from '@shared/utils/agentInstance'
 import {
   useGitRevision,
-  useHasChatItems,
-  useHasTranscriptRunError
+  useHasChatItems
 } from './components/ChatStreamLeaves'
 import { useGitChrome } from './components/GitChrome'
 import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
@@ -33,8 +32,8 @@ import type {
   ToolApprovalDecision,
   WorkspaceEditorRecoveryLoadResult
 } from '@shared/ipc'
-import { isRetryableTurnFailure } from '@shared/errors'
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
+import { useChatErrorSurfaces } from './hooks/composerShared'
 import { Alert, PanelResizeHandle, pushToast } from '@renderer/lib/ui'
 import { useConfirm } from '@renderer/lib/hooks/useConfirm'
 import { usePersistedBoolean } from '@renderer/lib/hooks/usePersistedBoolean'
@@ -129,7 +128,8 @@ function TranscriptPane({
   onOpenAgentInstance,
   onOpenWorkspaceFile,
   turnUsage,
-  metaStore
+  metaStore,
+  onContinue
 }: {
   items: UiItem[]
   /** When set, MessageList subscribes via store so TranscriptPane skips token patches. */
@@ -176,6 +176,8 @@ function TranscriptPane({
   onOpenWorkspaceFile?: (path: string, options?: import('./components/FilesPanel').WorkspaceFileOpenOptions) => void
   turnUsage?: readonly StepUsageTotals[]
   metaStore?: ChatMetaStore
+  /** Retry affordance handed to the transcript's run_error rows. */
+  onContinue?: () => void
 }) {
   const runSession = useMemo(
     () => ({
@@ -218,6 +220,7 @@ function TranscriptPane({
         onTurnToggle={onTurnToggle}
         onApprovalDecision={onApprovalDecision}
         onQuestionSubmit={onQuestionSubmit}
+        onRetryNetwork={onContinue}
         collapsedTurns={collapsedTurns}
         showThinking={showThinking}
         mcpServerNames={mcpServerNames}
@@ -527,19 +530,15 @@ const runGoal = useRunGoal({
   // Item subscription stays on the leaves (MessageList/ChangesPanel); ChatView
   // reads only Object.is-stable booleans so token patches skip these levels.
   const hasItems = useHasChatItems(itemsStore, items)
-  const hasTranscriptRunError = useHasTranscriptRunError(itemsStore, items)
-  const chatBannerError = hasTranscriptRunError ? null : error
-  const operationalBannerError = operationalError ?? null
-  const turnFailed = isRetryableTurnFailure({
+  const { chatBannerError, turnFailed, turnFailureLabel } = useChatErrorSurfaces({
+    itemsStore,
+    items,
+    error,
     errorCode,
-    incompleteReason: incomplete?.reason
+    incomplete,
+    turnStatus
   })
-  const turnFailureLabel =
-    turnFailed
-      ? incomplete?.message ?? (error ?? 'Connection lost')
-      : turnStatus === 'error'
-        ? 'Run failed'
-        : null
+  const operationalBannerError = operationalError ?? null
   const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
   const [prNumber, setPrNumber] = useState<number | null>(null)
   /** Accumulated dock title tabs (multi-panel strip). */
@@ -1255,6 +1254,7 @@ const runGoal = useRunGoal({
               turnFailed={turnFailed}
               turnFailureLabel={turnFailureLabel}
               turnStatus={turnStatus}
+              onContinue={onContinue}
               agentInstances={agentInstances}
               onOpenAgentInstance={onOpenAgentInstance}
               onOpenWorkspaceFile={openWorkspaceFile}

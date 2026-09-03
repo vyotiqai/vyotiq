@@ -8,7 +8,6 @@ import type {
 } from '../../shared/ipc'
 import { contentToText } from '../../shared/ipc'
 import {
-  modalPlaceholderModelMessage,
   providerNeedsKey,
   resolveProviderChatBaseUrl
 } from '../../shared/domain/providers'
@@ -246,11 +245,6 @@ export async function planCompact(input: {
   const abort = createCompactAbort(input.signal)
   const provider = getProvider(providerId)
   const model = await resolveModelInfo(providerId, settings.model, apiKey, baseUrl, abort.signal)
-  // Same Modal placeholder guard as the agent loop — the summarize request
-  // would 404 "unknown inference model" against an unloaded catalog.
-  if (providerId === 'modal' && model.isPlaceholder) {
-    throw new CompactionUnavailableError(modalPlaceholderModelMessage(settings.model))
-  }
   const historyBudget = allocateBudget(model, providerId).history
 
   const keepRecent = manualKeepRecentTurns(countUserTurns(working), configuredKeep)

@@ -317,6 +317,16 @@ describe('parseOpenAiCompatUsage cache metrics', () => {
     expect(usage?.cachedInputTokens).toBe(400)
   })
 
+  it('reads xAI top-level cached_prompt_text_tokens', () => {
+    const usage = parseOpenAiCompatUsage({
+      prompt_tokens: 800,
+      completion_tokens: 30,
+      cached_prompt_text_tokens: 700
+    })
+    expect(usage?.cachedInputTokens).toBe(700)
+    expect(usage?.inputTokens).toBe(800)
+  })
+
   it('returns undefined for empty usage payloads', () => {
     expect(parseOpenAiCompatUsage(null)).toBeUndefined()
     expect(parseOpenAiCompatUsage({})).toBeUndefined()

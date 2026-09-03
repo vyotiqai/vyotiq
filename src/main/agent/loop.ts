@@ -10,11 +10,7 @@ import type {
 import { DEFAULT_SETTINGS } from '../../shared/ipc'
 import { contentDisplayText, contentToText } from '../../shared/ipc'
 import { runGoalFromUserText, findAbsolutePathsInText, outsideWorkspacePathGuidance, stubPastSkillInvocationsInMessages } from '../../shared/slashCommands'
-import {
-  modalPlaceholderModelMessage,
-  resolveProviderChatBaseUrl,
-  seedModelsFor
-} from '../../shared/providers'
+import { resolveProviderChatBaseUrl, seedModelsFor } from '../../shared/providers'
 import { formatError, isAbortError } from '../../shared/errors'
 import { logger, logErrorSummary } from '../../shared/logger'
 import { workspaceIdFromPath } from '../../shared/workspaceId'
@@ -1395,24 +1391,6 @@ export async function* runAgent(input: {
       return
     }
 
-    // Modal-only guard: an unresolved placeholder model ID is guaranteed to
-    // 404 ("unknown inference model") because Modal has no static catalog —
-    // valid IDs are endpoint hostnames that exist only after /v1/models
-    // succeeds. Fail the turn up front with fix steps instead of burning the
-    // run on a provider 404 mid-stream.
-    if (providerId === 'modal' && modelInfo.isPlaceholder) {
-      yield* emitTerminalRunError({
-        runId,
-        invokeId,
-        runDir,
-        message: modalPlaceholderModelMessage(settings.model),
-        code: 'PROVIDER_AUTH',
-        flushWriteCheckpoint,
-        writeStatus
-      })
-      return
-    }
-
     // Marketplace Force on/off applies from marketplaceOverrides even when the
     // provider/model workspace override toggle is off.
     const marketplaceOverrides = override?.marketplaceOverrides
@@ -1805,9 +1783,10 @@ export async function* runAgent(input: {
         skillsSection,
         pluginRulesSection,
         userRules: getSettings().userRules ?? [],
-        persona: getSettings().agentPersona || undefined,
-        responseLanguage: getSettings().responseLanguage || undefined,
-        responseVerbosity: getSettings().responseVerbosity,
+        persona: settings.agentPersona || undefined,
+        tone: settings.agentTone || undefined,
+        responseLanguage: settings.responseLanguage || undefined,
+        responseVerbosity: settings.responseVerbosity,
         focusedFile: input.focusedFile,
         modeSection:
           modeSectionMarkdown(agentMode, {

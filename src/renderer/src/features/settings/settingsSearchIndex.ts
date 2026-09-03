@@ -82,7 +82,7 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
   {
     id: 'active-provider',
     title: 'Active provider',
-    keywords: ['openai', 'anthropic', 'ollama', 'custom', 'modal', 'provider'],
+    keywords: ['openai', 'anthropic', 'ollama', 'custom', 'provider'],
     section: 'providers'
   },
   {
@@ -125,6 +125,30 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     id: 'auto-compact-threshold',
     title: 'Auto-compact threshold',
     keywords: ['compaction', 'context', 'threshold', 'auto-compact'],
+    section: 'agent'
+  },
+  {
+    id: 'agent-persona',
+    title: 'Persona',
+    keywords: ['persona', 'identity', 'name', 'assistant'],
+    section: 'agent'
+  },
+  {
+    id: 'agent-tone',
+    title: 'Tone',
+    keywords: ['tone', 'voice', 'style', 'friendly', 'attitude'],
+    section: 'agent'
+  },
+  {
+    id: 'response-language',
+    title: 'Response language',
+    keywords: ['language', 'locale', 'translate', 'reply'],
+    section: 'agent'
+  },
+  {
+    id: 'response-verbosity',
+    title: 'Answer length',
+    keywords: ['verbosity', 'concise', 'balanced', 'detailed', 'length'],
     section: 'agent'
   },
   {

@@ -254,14 +254,20 @@ async function ensureLoaded(modelId: DictationLocalModelId, signal?: AbortSignal
     })
     return
   }
-  if (loadedModelId === modelId) return
-  publishStatus({
-    phase: 'loading',
-    progress: null,
-    error: null,
-    message: `Loading ${modelId}`,
-    activeModelId: modelId
-  })
+  // Always re-establish the worker session: the utility process can die
+  // between utterances (abort teardown, crash), and a stale `loadedModelId`
+  // must not skip the ensure handshake — transcribe would then reach a fresh
+  // worker with no session ("call ensure first"). `ensure` is idempotent when
+  // the same model is already loaded, so the repeated call is cheap.
+  if (loadedModelId !== modelId) {
+    publishStatus({
+      phase: 'loading',
+      progress: null,
+      error: null,
+      message: `Loading ${modelId}`,
+      activeModelId: modelId
+    })
+  }
   try {
     const backend = await resolveBackend()
     if (loadedModelId && loadedModelId !== modelId) {

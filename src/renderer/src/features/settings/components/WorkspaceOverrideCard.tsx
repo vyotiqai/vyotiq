@@ -3,7 +3,7 @@ import type { ProviderId, SecretProvider, Settings, WorkspaceSettingsOverride } 
 import {
   CUSTOM_OPENAI_DEFAULT,
   defaultModelFor,
-  normalizeCustomOpenAiBaseUrl,
+  validateCustomOpenAiBaseUrl,
   providerLabel,
   providerOptionsForConfigured
 } from '@shared/providers'
@@ -110,7 +110,11 @@ export function WorkspaceOverrideCard({
                   showThinking: globalSettings.showThinking,
                   keepRecentTurns: globalSettings.keepRecentTurns,
                   autoCompactThresholdRatio: globalSettings.autoCompactThresholdRatio,
-                  toolApproval: globalSettings.toolApproval
+                  toolApproval: globalSettings.toolApproval,
+                  agentPersona: globalSettings.agentPersona,
+                  agentTone: globalSettings.agentTone,
+                  responseLanguage: globalSettings.responseLanguage,
+                  responseVerbosity: globalSettings.responseVerbosity
                 }).then((res) => {
                   if (!res.ok) onOverrideError?.(res.error)
                 })
@@ -170,14 +174,25 @@ export function WorkspaceOverrideCard({
               placeholder={CUSTOM_OPENAI_DEFAULT}
               onChange={(e) => setCustomUrl(e.target.value)}
               onBlur={() => {
-                const normalized = normalizeCustomOpenAiBaseUrl(
-                  customUrl.trim() || CUSTOM_OPENAI_DEFAULT
-                )
-                setCustomUrl(normalized)
                 const current =
                   override?.customOpenAiBaseUrl ?? globalSettings.customOpenAiBaseUrl
-                if (normalized !== current) {
-                  void persist({ customOpenAiBaseUrl: normalized })
+                if (!customUrl.trim()) {
+                  // Empty keeps the previous affordance: fall back to the
+                  // local default rather than erroring.
+                  setCustomUrl(CUSTOM_OPENAI_DEFAULT)
+                  if (CUSTOM_OPENAI_DEFAULT !== current) {
+                    void persist({ customOpenAiBaseUrl: CUSTOM_OPENAI_DEFAULT })
+                  }
+                  return
+                }
+                const parsed = validateCustomOpenAiBaseUrl(customUrl)
+                if (!parsed.ok) {
+                  onOverrideError?.(parsed.error)
+                  return
+                }
+                setCustomUrl(parsed.url)
+                if (parsed.url !== current) {
+                  void persist({ customOpenAiBaseUrl: parsed.url })
                 }
               }}
             />

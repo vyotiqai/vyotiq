@@ -364,6 +364,7 @@ export async function* streamGeminiInteractions(
     type: 'done',
     usage: lastUsage,
     stopReason,
+    ...(drops.dropped > 0 ? { droppedFrames: drops.dropped } : {}),
     reasoningState
   }
 }

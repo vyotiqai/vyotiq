@@ -18,6 +18,7 @@ import {
   type WorkspaceUiState
 } from '../../shared/ipc'
 import { logger } from '../../shared/logger'
+import { validateCustomOpenAiBaseUrl } from '../../shared/providers'
 import { canonicalizeWorkspacePath, workspacePathsEqual } from '../../shared/workspacePath'
 import { interruptOrphanRuns } from '../agent/state'
 import { clearSettingsCacheForTests, readLegacyWorkspacePath } from '@main/settings/settings'
@@ -644,6 +645,12 @@ export function setWorkspaceSettingsOverride(
   if (override === null) {
     delete settingsOverridesByPath[key]
   } else {
+    // Write-boundary gate: a mangled base URL paste must never reach the
+    // workspace override that catalog/chat resolve against (2026-09 audit).
+    if (override.customOpenAiBaseUrl !== undefined) {
+      const check = validateCustomOpenAiBaseUrl(override.customOpenAiBaseUrl)
+      if (!check.ok) throw new Error(check.error)
+    }
     settingsOverridesByPath[key] = override
   }
   return saveWorkspacesState({ ...state, settingsOverridesByPath })

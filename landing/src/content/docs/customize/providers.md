@@ -1,6 +1,6 @@
 ---
 title: Providers and API keys
-description: Configure one of twelve provider hosts, store credentials securely, and make a configured provider active.
+description: Configure one of eleven provider hosts, store credentials securely, and make a configured provider active.
 section: customize
 order: 1
 type: guide
@@ -11,7 +11,7 @@ related:
   - start/quickstart
 ---
 
-Open [Settings → Providers](/docs/customize/providers). Agent V supports twelve provider IDs:
+Open [Settings → Providers](/docs/customize/providers). Agent V supports eleven provider IDs:
 
 | Provider | ID | Credential rule |
 | --- | --- | --- |
@@ -23,7 +23,6 @@ Open [Settings → Providers](/docs/customize/providers). Agent V supports twelv
 | Groq | `groq` | API key |
 | **OpenRouter** | `openrouter` | API key |
 | xAI | `xai` | API key |
-| Modal | `modal` | API key (Modal proxy token, combined form `wk-<id>.ws-<secret>`) |
 | Mistral | `mistral` | API key |
 | Custom OpenAI-compatible | `custom` | Key required for public hosts; private and loopback hosts can be keyless |
 | OpenCode Go | `opencode` | API key |
@@ -47,6 +46,8 @@ Set Ollama base URL. The local default is `http://127.0.0.1:11434`. A saved Olla
 ## Configure an OpenAI-compatible host
 
 Set Custom **OpenAI** base URL. The default is `http://127.0.0.1:8080/v1.` The app normalizes the scheme and /v1 path and preserves vendor suffixes that already include a v1 mount.
+
+If the host has no model-list endpoint (for example, the Cloudflare Workers AI compatible API), the live catalog cannot load. Type the model ID into the composer model picker search box and press Enter to use it directly; the typed ID is sent to the host as the model name.
 
 ## Troubleshoot activation
 

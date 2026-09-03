@@ -14,22 +14,6 @@ export function workspaceShort(path: string | null): string {
   return formatWorkspaceName(path)
 }
 
-/** Modal proxy token combined form: wk-<id>.ws-<secret> (modal.com endpoint docs). */
-const MODAL_PROXY_TOKEN_RE = /^wk-[A-Za-z0-9_-]{4,}\.ws-[A-Za-z0-9_-]{4,}$/
-
-/**
- * Clean a pasted Modal proxy token: strip a leading Bearer scheme and
- * surrounding quotes; return the token only when it matches the combined form.
- */
-export function cleanModalProxyToken(raw: string): string | null {
-  const v = raw
-    .trim()
-    .replace(/^bearer\s+/i, '')
-    .replace(/^["'`]+|["'`]+$/g, '')
-    .trim()
-  return MODAL_PROXY_TOKEN_RE.test(v) ? v : null
-}
-
 export function defaultKeyProvider(
   settingsProvider: Settings['provider'],
   _secrets: Record<SecretProvider, boolean>

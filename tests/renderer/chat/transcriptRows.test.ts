@@ -301,6 +301,44 @@ describe('buildTranscriptRows', () => {
     }
   })
 
+  it('does not repeat the run_error message in the turn summary label', () => {
+    // The run_error row already renders the full message — the summary line
+    // falling back to "Failed" must not print the same string twice.
+    const message = 'Command Code rejected this request (HTTP 403): the Go plan has no API access.'
+    const items: UiItem[] = [
+      { kind: 'message', id: 'u1', role: 'user', content: 'hi' },
+      { kind: 'run_error', id: 'run-error:live:1', message, code: 'PROVIDER_HTTP' }
+    ]
+    const rows = buildTranscriptRows(items, {
+      turnFailed: true,
+      turnFailureLabel: message,
+      turnStatus: 'error'
+    })
+    const summary = rows.find((row) => row.kind === 'turn')
+    expect(summary?.kind).toBe('turn')
+    if (summary?.kind !== 'turn') return
+    expect(summary.span.failed).toBe(true)
+    expect(summary.span.failureLabel).toBeUndefined()
+    expect(
+      rows.some((row) => row.kind === 'run_error' && row.message === message)
+    ).toBe(true)
+  })
+
+  it('keeps the turn failure label when the turn has no run_error row', () => {
+    // A network drop leaves the error only in state — the summary label is the
+    // sole place the message is visible, so it must survive.
+    const items: UiItem[] = [{ kind: 'message', id: 'u1', role: 'user', content: 'hi' }]
+    const rows = buildTranscriptRows(items, {
+      turnFailed: true,
+      turnFailureLabel: 'Connection lost'
+    })
+    const summary = rows.find((row) => row.kind === 'turn')
+    expect(summary?.kind).toBe('turn')
+    if (summary?.kind !== 'turn') return
+    expect(summary.span.failed).toBe(true)
+    expect(summary.span.failureLabel).toBe('Connection lost')
+  })
+
   it('omits the turn summary when a turn did no work', () => {
     const items: UiItem[] = [
       { kind: 'message', id: 'u1', role: 'user', content: 'hi' },

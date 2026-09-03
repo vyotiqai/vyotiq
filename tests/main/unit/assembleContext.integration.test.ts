@@ -1,13 +1,15 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { assembleContext } from '@main/agent/context/assemble'
+import { KEEP_LAST_TOOL_RESULTS } from '@main/agent/context/types'
 import { shouldTriggerAutoCompact } from '@main/agent/context/estimate'
 import { clearRulesCache } from '@main/agent/context/rules'
 import { clearWorkspaceSnapshotCache } from '@main/agent/context/workspaceSnapshot'
 import { volatileSessionMessage } from '@main/agent/providers/systemZones'
 import type { LlmProvider } from '@main/agent/providers/types'
+import { contentToText } from '@shared/ipc'
 import { SKILL_BODY_STUB } from '@shared/slashCommands'
 
 const mockProvider: LlmProvider = {
@@ -51,6 +53,36 @@ describe('assembleContext integration', () => {
         ? `${result.systemStable}\n\n${result.systemVolatile}`
         : result.systemStable
     )
+  })
+
+  it('elides stale ephemeral tool results once history crosses the compaction trigger', async () => {
+    // Prose tokens (BPE ~1 token per word) so the estimate reliably crosses the
+    // 0.55 × content-window trigger of the small model window.
+    const body = 'lorem ipsum dolor sit amet '.repeat(230)
+    const toolResults = Array.from({ length: KEEP_LAST_TOOL_RESULTS + 2 }, (_, i) => ({
+      role: 'tool' as const,
+      toolName: 'read_file',
+      toolCallId: `t${i}`,
+      content: `RESULT-${i}:${body}`
+    }))
+    const result = await assembleContext({
+      harness: 'harness',
+      messages: [{ role: 'user', content: 'go' }, ...toolResults],
+      workspacePath: null,
+      goal: 'go',
+      model: { ...model, contextWindow: 8_000 },
+      toolsJsonEstimate: 50,
+      providerId: 'ollama',
+      provider: mockProvider,
+      signal: new AbortController().signal
+    })
+    const tools = result.messages.filter((m) => m.role === 'tool')
+    expect(tools).toHaveLength(KEEP_LAST_TOOL_RESULTS + 2)
+    for (let i = 0; i < tools.length; i++) {
+      const text = contentToText(tools[i]!.content)
+      if (i < tools.length - KEEP_LAST_TOOL_RESULTS) expect(text).toBe('[cleared]')
+      else expect(text).toBe(`RESULT-${i}:${body}`)
+    }
   })
 
   it('preserves prior compaction in system prompt', async () => {
@@ -454,6 +486,46 @@ describe('assembleContext integration', () => {
     expect(folded.systemStable).toContain('Folded billing work')
     expect(folded.systemStable).not.toContain('Folded auth work')
     expect(folded.systemStable).not.toBe(second.systemStable)
+  })
+
+  it('keeps the compaction age line byte-stable across clock advances (provider prefix cache)', async () => {
+    // The fold line sits in the STABLE system, so its bytes must not depend on
+    // the wall clock — otherwise every app restart (or first rebuild after
+    // enough time passes) rewrites the stable prefix and busts the provider
+    // prompt cache for the system + entire history on that step.
+    const { clearSystemPromptCache } = await import('@main/agent/context/assemble')
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-08-01T12:00:00.000Z'))
+      const base = {
+        harness: '## Role\nStable agent',
+        contract: '## Goal\nShip',
+        messages: [{ role: 'user' as const, content: 'hi' }],
+        workspacePath: null as string | null,
+        goal: 'hi',
+        model,
+        toolsJsonEstimate: 50,
+        providerId: 'ollama' as const,
+        provider: mockProvider,
+        signal: new AbortController().signal,
+        priorCompaction: {
+          summary: 'Folded refactor work',
+          createdAt: '2026-08-01T09:30:00.000Z',
+          tokenEstimate: 10
+        }
+      }
+      const first = await assembleContext({ ...base })
+      // Simulated restart: same fold, wall clock advanced 2.5h (past the age
+      // rounding boundary), fingerprint cache cleared.
+      vi.setSystemTime(new Date('2026-08-01T14:30:00.000Z'))
+      clearSystemPromptCache()
+      const second = await assembleContext({ ...base })
+      expect(second.systemStable).toBe(first.systemStable)
+      expect(second.systemStable).not.toMatch(/\d+[hm] ago/)
+      expect(second.systemStable).toContain('messages at 2026-08-01T09:30:00.000Z')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('does not force trim when provider input is above estimate but under window', async () => {

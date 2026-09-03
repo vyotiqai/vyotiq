@@ -199,4 +199,16 @@ describe('harness', () => {
     expect(text).not.toMatch(/re-orient/i)
     expect(text).not.toMatch(/after (?:context )?compaction/i)
   })
+
+  it('tool_policy prefers codebase_search for code discovery instead of demoting it as heavyweight', () => {
+    const text = readFileSync(
+      join(process.cwd(), 'resources', 'harness', 'default.md'),
+      'utf8'
+    )
+    // The indexed ranked search is the default first probe for locating unseen
+    // code; grep/glob keep their exhaustive/paths-only roles.
+    expect(text).toContain('codebase_search first when locating code you have not seen yet')
+    // The old clause actively steered every symbol-aware query to grep.
+    expect(text).not.toContain('heavyweight index search')
+  })
 })

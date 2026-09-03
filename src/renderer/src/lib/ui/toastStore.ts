@@ -1,5 +1,4 @@
 import { useCallback, useSyncExternalStore } from 'react'
-import { announceLive } from '@renderer/lib/a11y'
 
 /**
  * Global transient notifications. One surface for app-level notices that do
@@ -89,7 +88,6 @@ export function pushToast(
     ...(onClick ? { onClick } : {})
   }
   toasts = [...toasts, item].slice(-MAX_TOASTS)
-  announceLive(text, kind === 'error' ? 'assertive' : 'polite')
   if (durationMs > 0) {
     timers.set(id, setTimeout(() => dismissToast(id), durationMs))
   }

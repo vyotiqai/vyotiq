@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   SECRET_PROVIDERS,
   type ProviderId,
@@ -12,8 +12,8 @@ import {
   PROVIDER_DEFAULTS,
   defaultModelFor,
   providerLabel,
-  ollamaNativeHost,
-  normalizeCustomOpenAiBaseUrl,
+  validateCustomOpenAiBaseUrl,
+  validateOllamaBaseUrl,
   providerNeedsKey,
   isLocalOllamaHost,
   isOllamaCloudHost,
@@ -24,7 +24,7 @@ import { findByWorkspacePath } from '@shared/workspacePathMatch'
 import { useEscapeToClose } from '@renderer/lib/hooks/useEscapeToClose'
 import { useModelCatalog } from '@renderer/lib/hooks/useModelCatalog'
 import type { SettingsErrorField, SettingsSection, SettingsViewProps } from '../types'
-import { cleanModalProxyToken, defaultKeyProvider, isValidHttpUrl } from '../utils/settingsHelpers'
+import { defaultKeyProvider } from '../utils/settingsHelpers'
 
 export type AgentSettingsPatch = Partial<
   Pick<
@@ -35,6 +35,10 @@ export type AgentSettingsPatch = Partial<
     | 'showThinking'
     | 'thinkingEnabled'
     | 'thinkingEffort'
+    | 'agentPersona'
+    | 'agentTone'
+    | 'responseLanguage'
+    | 'responseVerbosity'
   >
 >
 
@@ -328,18 +332,13 @@ export function useSettingsForm({
   }
 
   const commitOllamaUrl = async (): Promise<string | null> => {
-    const trimmed = ollamaUrl.trim()
-    if (!trimmed) {
+    const parsed = validateOllamaBaseUrl(ollamaUrl)
+    if (!parsed.ok) {
       setOllamaUrl(settings.ollamaBaseUrl)
-      setFieldError('ollama', 'Ollama base URL cannot be empty.')
+      setFieldError('ollama', parsed.error)
       return null
     }
-    if (!isValidHttpUrl(trimmed)) {
-      setOllamaUrl(settings.ollamaBaseUrl)
-      setFieldError('ollama', 'Ollama base URL must be a valid http(s) URL.')
-      return null
-    }
-    const normalized = ollamaNativeHost(trimmed)
+    const normalized = parsed.url
     if (normalized !== ollamaUrl) setOllamaUrl(normalized)
     if (normalized === settings.ollamaBaseUrl) return normalized
     const ok = await runUpdate({ ollamaBaseUrl: normalized })
@@ -351,18 +350,13 @@ export function useSettingsForm({
   }
 
   const commitCustomUrl = async (): Promise<string | null> => {
-    const trimmed = customUrl.trim()
-    if (!trimmed) {
+    const parsed = validateCustomOpenAiBaseUrl(customUrl)
+    if (!parsed.ok) {
       setCustomUrl(settings.customOpenAiBaseUrl)
-      setFieldError('customUrl', 'Custom OpenAI base URL cannot be empty.')
+      setFieldError('customUrl', parsed.error)
       return null
     }
-    if (!isValidHttpUrl(trimmed.startsWith('http') ? trimmed : `http://${trimmed}`)) {
-      setCustomUrl(settings.customOpenAiBaseUrl)
-      setFieldError('customUrl', 'Custom OpenAI base URL must be a valid http(s) URL.')
-      return null
-    }
-    const normalized = normalizeCustomOpenAiBaseUrl(trimmed)
+    const normalized = parsed.url
     if (normalized !== customUrl) setCustomUrl(normalized)
     if (normalized === settings.customOpenAiBaseUrl) return normalized
     const ok = await runUpdate({ customOpenAiBaseUrl: normalized })
@@ -411,7 +405,15 @@ export function useSettingsForm({
       let customHost: string | undefined
       if (provider === 'ollama') {
         if (effectiveOllama) {
-          ollamaHost = ollamaNativeHost(effectiveOllama)
+          // Saved/override value bypasses the field commit — still validate so
+          // a bad host errors here instead of failing catalog/chat against a
+          // host the user never entered.
+          const parsed = validateOllamaBaseUrl(effectiveOllama)
+          if (!parsed.ok) {
+            setError(`Saved ${parsed.error} — fix it in Settings, then refresh.`)
+            return
+          }
+          ollamaHost = parsed.url
         } else {
           const host = await commitOllamaUrl()
           if (!host) return
@@ -420,7 +422,12 @@ export function useSettingsForm({
       }
       if (provider === 'custom') {
         if (effectiveCustom) {
-          customHost = normalizeCustomOpenAiBaseUrl(effectiveCustom)
+          const parsed = validateCustomOpenAiBaseUrl(effectiveCustom)
+          if (!parsed.ok) {
+            setError(`Saved ${parsed.error} — fix it in Settings, then refresh.`)
+            return
+          }
+          customHost = parsed.url
         } else {
           const host = await commitCustomUrl()
           if (!host) return
@@ -456,20 +463,6 @@ export function useSettingsForm({
     if (!value) {
       setFieldError('apikey', 'API key cannot be empty.')
       return
-    }
-    if (keyProvider === 'modal') {
-      // Combined-form proxy tokens are easy to paste with the Bearer prefix
-      // from curl examples; clean wrappers and require the wk-<id>.ws-<secret>
-      // shape so a malformed save cannot 401 every later catalog/chat call.
-      const cleaned = cleanModalProxyToken(value)
-      if (!cleaned) {
-        setFieldError(
-          'apikey',
-          'Modal proxy tokens use the combined form wk-<id>.ws-<secret>. Paste the full token without "Bearer".'
-        )
-        return
-      }
-      value = cleaned
     }
     clearErrors()
     setModelsInfo(null)
@@ -523,19 +516,13 @@ export function useSettingsForm({
   // ones that are valid and changed on unmount, leave invalid drafts alone.
   const flushUrlDraftsRef = useRef<() => void>(() => {})
   flushUrlDraftsRef.current = () => {
-    const ollama = ollamaUrl.trim()
-    if (ollama && isValidHttpUrl(ollama)) {
-      const normalized = ollamaNativeHost(ollama)
-      if (normalized !== settings.ollamaBaseUrl) {
-        void runUpdate({ ollamaBaseUrl: normalized })
-      }
+    const ollama = validateOllamaBaseUrl(ollamaUrl)
+    if (ollama.ok && ollama.url !== settings.ollamaBaseUrl) {
+      void runUpdate({ ollamaBaseUrl: ollama.url })
     }
-    const custom = customUrl.trim()
-    if (custom && isValidHttpUrl(custom.startsWith('http') ? custom : `http://${custom}`)) {
-      const normalized = normalizeCustomOpenAiBaseUrl(custom)
-      if (normalized !== settings.customOpenAiBaseUrl) {
-        void runUpdate({ customOpenAiBaseUrl: normalized })
-      }
+    const custom = validateCustomOpenAiBaseUrl(customUrl)
+    if (custom.ok && custom.url !== settings.customOpenAiBaseUrl) {
+      void runUpdate({ customOpenAiBaseUrl: custom.url })
     }
   }
   useEffect(() => {

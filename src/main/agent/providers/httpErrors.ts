@@ -149,16 +149,6 @@ export function formatProviderHttpError(
     return scrubbedMessage ?? 'Insufficient provider credits for this request.'
   }
 
-  // Modal-specific guidance: the endpoint docs use combined-form proxy tokens
-  // and hostname model IDs, so 401/404 have a canonical fix each.
-  if (providerId === 'modal' && status === 401) {
-    return `Modal rejected the proxy token (HTTP 401). Modal proxy tokens use the combined form wk-<id>.ws-<secret> — re-save the full token in Settings → Providers.${scrubbedMessage ? ` Modal said: ${scrubbedMessage}` : ''}`
-  }
-
-  if (providerId === 'modal' && status === 404) {
-    return `Modal has no inference endpoint for this model ID (HTTP 404). Model IDs are endpoint hostnames listed by GET /v1/models — refresh the Modal catalog in Settings → Providers and pick your endpoint.${scrubbedMessage ? ` Modal said: ${scrubbedMessage}` : ''}`
-  }
-
   if (
     providerId === 'openrouter' &&
     isOpenRouterNoEndpointsError(status, body)
@@ -186,4 +176,19 @@ export function formatProviderHttpError(
 
   const snippet = scrubProviderErrorText(body.trim())
   return snippet ? `HTTP ${status}: ${snippet}` : `HTTP ${status}`
+}
+
+/**
+ * Terminal failure class for a provider HTTP status. 401/403 (auth/plan) and
+ * 402 (credits) are permanent user-action failures — they must not ride the
+ * retryable PROVIDER_HTTP code, or the UI offers a Retry that can never
+ * succeed. 404/429/5xx stay PROVIDER_HTTP (transient or re-issuable).
+ * Mirrors the log classification in providers/log.ts.
+ */
+export function providerHttpErrorCode(
+  status: number | undefined
+): 'PROVIDER_AUTH' | 'PROVIDER_BILLING' | 'PROVIDER_HTTP' {
+  if (status === 401 || status === 403) return 'PROVIDER_AUTH'
+  if (status === 402) return 'PROVIDER_BILLING'
+  return 'PROVIDER_HTTP'
 }

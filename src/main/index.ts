@@ -178,11 +178,14 @@ if (!gotLock) {
         seen.add(key)
         purgeLegacyProjectHarness(root)
       }
-      // Do NOT eagerly warm the embedding (code) index at boot — that loads an
-      // ONNX/transformers model and walks the whole workspace before any user
-      // action. The code index is built lazily on the first codebase_search.
+      // Warm the code (embedding) index for the active workspace at boot so it is
+      // dense-ready on the agent's first codebase_search — a cold first search
+      // would otherwise run a full walk+embed (and a first-use model download)
+      // inside the tool call. Warm runs as a background job (concurrency-1 queue,
+      // embedding in the utility process) and the embedder unloads after 5 idle
+      // minutes, so startup stays responsive and steady-state memory bounded.
       const active = workspaces.activePath
-      if (active) warmWorkspaceIndexes(active, { warmCodeIndex: false })
+      if (active) warmWorkspaceIndexes(active)
       const n = await interruptOrphanRunsForWorkspaces(workspaces)
       if (n > 0) {
         logger.info(`Interrupted ${n} orphan run(s)`, { scope: 'main' })

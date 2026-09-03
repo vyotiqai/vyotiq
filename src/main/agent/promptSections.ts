@@ -3,6 +3,7 @@ import { HARNESS_SECTION_TAGS } from './harnessSections'
 /** Overlay XML tags assembled around the spine. Not HARNESS_SECTION_TAGS. */
 export const OVERLAY_SECTION_TAGS = [
   'mode',
+  'voice_style',
   'run_contract',
   'plan',
   'available_skills',

@@ -751,7 +751,10 @@ describe('ChatView composer placement', () => {
     const rail = document.querySelector('[data-chat-side-rail]')
     expect(rail?.className).toMatch(/absolute/)
     expect(rail?.className).toMatch(/right-0/)
-    expect(document.querySelector('[data-composer-dock]')?.className).toMatch(/pr-10/)
+    // Floating composer column aligns edge to edge with the transcript column.
+    const dock = document.querySelector('[data-composer-dock]')
+    expect(dock?.className).toMatch(/inset-x-0/)
+    expect(dock?.className).toMatch(/pr-10/)
     expect(document.querySelector('[data-transcript-scroll]')?.className).toMatch(/pr-10/)
   })
 
@@ -783,11 +786,14 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-transcript-scroll]')?.className).not.toMatch(/pr-10/)
   })
 
-  it('docks the empty-chat composer with symmetric gutter and column', () => {
+  it('floats the empty-chat composer over the transcript column', () => {
     render(<ChatView {...baseProps} items={[]} />)
 
     expect(document.querySelector('[data-chat-hero]')).toBeNull()
     const dock = document.querySelector('[data-composer-dock]')
+    expect(dock?.className).toMatch(/absolute/)
+    expect(dock?.className).toMatch(/bottom-2/)
+    // Same gutters as the transcript so the column edges line up.
     expect(dock?.className).toMatch(/pl-4/)
     expect(dock?.className).toMatch(/pr-10/)
 
@@ -826,10 +832,10 @@ describe('ChatView composer placement', () => {
     expect(rail?.className).toMatch(/pt-4/)
   })
 
-  it('uses symmetric gutter on empty chat (rail overlays edge)', () => {
+  it('aligns the floating composer with the transcript column under the rail', () => {
     render(<ChatView {...baseProps} items={[]} />)
     const dock = document.querySelector('[data-composer-dock]')
-    expect(dock?.className).toMatch(/pl-4/)
+    expect(dock?.className).toMatch(/inset-x-0/)
     expect(dock?.className).toMatch(/pr-10/)
     expect(document.querySelector('[data-chat-side-rail]')).toBeTruthy()
   })
@@ -1049,7 +1055,7 @@ describe('ChatView composer placement', () => {
     })
   })
 
-  it('renders docked composer in-flow under the transcript', () => {
+  it('renders the composer floating over the chat stage', () => {
     render(
       <ChatView
         {...baseProps}
@@ -1066,10 +1072,11 @@ describe('ChatView composer placement', () => {
     )
 
     const composerRoot = document.querySelector('[data-composer-dock]')
-    expect(composerRoot?.className).toMatch(/pl-4/)
-    expect(composerRoot?.className).toMatch(/pr-10/)
-    expect(composerRoot?.className).toMatch(/shrink-0/)
-    expect(composerRoot?.className).not.toMatch(/absolute/)
+    expect(composerRoot?.className).toMatch(/absolute/)
+    expect(composerRoot?.className).toMatch(/inset-x-0/)
+    expect(composerRoot?.className).toMatch(/bottom-2/)
+    expect(composerRoot?.className).toMatch(/z-20/)
+    expect(composerRoot?.className).not.toMatch(/shrink-0/)
   })
 
   it('uses dock layout while loading transcript for an active run', () => {
@@ -1120,7 +1127,7 @@ describe('ChatView composer placement', () => {
     expect(document.querySelector('[data-composer-dock]')).toBeTruthy()
   })
 
-  it('aligns docked composer with the transcript column', () => {
+  it('keeps transcript and composer in the same centered floating column', () => {
     render(
       <ChatView
         {...baseProps}
@@ -1137,22 +1144,24 @@ describe('ChatView composer placement', () => {
     )
 
     const transcriptColumn = document.querySelector('[data-chat-column]')
+    expect(transcriptColumn?.className).toMatch(/mx-auto/)
+    expect(transcriptColumn?.className).toMatch(/max-w-\[840px\]/)
+    expect(transcriptColumn?.className).toMatch(/w-full/)
+
     const composerColumn = document.querySelector('[data-composer-column]')
-    for (const el of [transcriptColumn, composerColumn]) {
-      expect(el?.className).toMatch(/mx-auto/)
-      expect(el?.className).toMatch(/max-w-\[840px\]/)
-      expect(el?.className).toMatch(/w-full/)
-    }
+    expect(composerColumn?.className).toMatch(/mx-auto/)
+    expect(composerColumn?.className).toMatch(/max-w-\[840px\]/)
+    expect(composerColumn?.className).toMatch(/w-full/)
 
     const composerRoot = document.querySelector('[data-composer-dock]')
+    expect(composerRoot?.className).toMatch(/absolute/)
+    expect(composerRoot?.className).toMatch(/inset-x-0/)
     expect(composerRoot?.className).toMatch(/pl-4/)
     expect(composerRoot?.className).toMatch(/pr-10/)
-    expect(composerRoot?.className).toMatch(/shrink-0/)
-    expect(composerRoot?.className).not.toMatch(/absolute/)
     expect(composerRoot?.className).not.toMatch(/\bbg-bg\b/)
   })
 
-  it('keeps the transcript free of composer overlay padding', () => {
+  it('reserves floating composer height on the transcript scrollport', () => {
     render(
       <ChatView
         {...baseProps}
@@ -1172,8 +1181,10 @@ describe('ChatView composer placement', () => {
     const transcript = document.querySelector('[data-transcript-scroll]') as HTMLElement | null
     expect(stage).toBeTruthy()
     expect(transcript).toBeTruthy()
-    expect(stage!.style.getPropertyValue('--vy-dock-h')).toBe('')
-    expect(transcript!.style.paddingBottom).toBe('')
+    // The floating dock publishes its measured height on the stage (jsdom: 0px)
+    // and the transcript reserves it plus clearance.
+    expect(stage!.style.getPropertyValue('--vy-composer-dock-height')).toMatch(/px$/)
+    expect(transcript!.style.paddingBottom).toContain('var(--vy-composer-dock-height')
     expect(document.querySelector('[data-composer-dock]')).toBeTruthy()
   })
 

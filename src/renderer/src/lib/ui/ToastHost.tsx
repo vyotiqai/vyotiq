@@ -72,6 +72,8 @@ export function ToastHost() {
           }}
           onPointerEnter={() => pauseToast(toast.id)}
           onPointerLeave={() => resumeToast(toast.id)}
+          onFocus={() => pauseToast(toast.id)}
+          onBlur={() => resumeToast(toast.id)}
         >
           <Icon
             name={KIND_ICON[toast.kind]}

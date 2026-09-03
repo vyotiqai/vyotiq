@@ -283,6 +283,36 @@ describe('workspaces registry', () => {
     })
   })
 
+  it('round-trips persona/tone/style fields in workspace settings overrides', () => {
+    saveWorkspacesState({
+      ...defaultWorkspacesState(),
+      openPaths: [workspaceA],
+      activePath: workspaceA
+    })
+    const withStyle = setWorkspaceSettingsOverride(workspaceA, {
+      useOverride: true,
+      provider: 'openai',
+      model: 'gpt-4.1',
+      agentPersona: 'Nova',
+      agentTone: 'friendly, blunt',
+      responseLanguage: 'Spanish',
+      responseVerbosity: 'detailed'
+    })
+    expect(withStyle.settingsOverridesByPath[workspaceA]).toMatchObject({
+      useOverride: true,
+      agentPersona: 'Nova',
+      agentTone: 'friendly, blunt',
+      responseLanguage: 'Spanish',
+      responseVerbosity: 'detailed'
+    })
+    const reread = readWorkspacesState()
+    expect(reread.settingsOverridesByPath[workspaceA]?.agentPersona).toBe('Nova')
+    expect(reread.settingsOverridesByPath[workspaceA]?.agentTone).toBe('friendly, blunt')
+
+    const cleared = setWorkspaceSettingsOverride(workspaceA, null)
+    expect(cleared.settingsOverridesByPath[workspaceA]).toBeUndefined()
+  })
+
   it('strips deprecated ollamaBaseUrl from workspace settings overrides on read', () => {
     mkdirSync(userData, { recursive: true })
     writeFileSync(

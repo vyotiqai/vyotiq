@@ -1,8 +1,10 @@
 import { IconButton, cn } from '@renderer/lib/ui'
+import type { IconName } from '@renderer/lib/icons'
 import { shortcutLabel, type ShortcutId } from '@renderer/lib/shortcuts'
 import { CHAT_SIDE_RAIL_WIDTH, CHAT_STAGE_TOP_INSET, type ChatRightPanelId } from '@renderer/lib/utils/layout'
 import { DOCK_PANELS } from '@renderer/lib/utils/dockPanels'
-import { TasksRailChip } from './TasksFloatingList'
+import { useRunTodos } from '../hooks/useRunTodos'
+import { TasksRailButton } from './TasksFloatingList'
 
 const RAIL_ICON_ACTIVE =
   'bg-surface text-fg ring-1 ring-inset ring-border/50 rounded-lg'
@@ -14,6 +16,62 @@ const PANEL_SHORTCUT: Partial<Record<ChatRightPanelId, ShortcutId>> = {
   changes: 'panelChanges',
   plan: 'panelPlan',
   pr: 'panelPr'
+}
+
+/**
+ * Plan rail slot: the standard doc-icon button until the run has tasks, then
+ * the live tasks button itself (status icon + count + hover card) — never both.
+ */
+function PlanRailRow({
+  open,
+  baseLabel,
+  title,
+  docIcon,
+  workspacePath,
+  runId,
+  running,
+  onSelectPanel
+}: {
+  open: boolean
+  baseLabel: string
+  title: string
+  docIcon: IconName
+  workspacePath: string | null
+  runId: string | null
+  running: boolean
+  onSelectPanel: (panel: ChatRightPanelId) => void
+}) {
+  const { data } = useRunTodos({
+    workspacePath,
+    runId,
+    running,
+    active: Boolean(workspacePath && runId),
+    live: true
+  })
+
+  if (!data || data.items.length === 0) {
+    return (
+      <IconButton
+        icon={docIcon}
+        label={baseLabel}
+        title={title}
+        variant="ghost"
+        size="sm"
+        aria-pressed={open}
+        className={cn('text-muted hover:text-fg', open && RAIL_ICON_ACTIVE)}
+        onClick={() => onSelectPanel('plan')}
+      />
+    )
+  }
+
+  return (
+    <TasksRailButton
+      data={data}
+      running={running}
+      onOpenPlan={() => onSelectPanel('plan')}
+      labelSuffix={` · ${baseLabel}`}
+    />
+  )
 }
 
 /**
@@ -75,26 +133,15 @@ export function ChatSideRail({
           }
           return (
             <div key={item.id} className="relative" data-plan-rail-row>
-              {activePanel !== 'plan' ? (
-                <div className="absolute right-full top-1/2 max-w-[min(12rem,40vw)] -translate-y-1/2 pr-0.5">
-                  <TasksRailChip
-                    workspacePath={workspacePath}
-                    runId={runId}
-                    running={running}
-                    onOpenPlan={() => onSelectPanel('plan')}
-                    className="max-w-full truncate"
-                  />
-                </div>
-              ) : null}
-              <IconButton
-                icon={item.icon}
-                label={baseLabel}
+              <PlanRailRow
+                open={open}
+                baseLabel={baseLabel}
                 title={title}
-                variant="ghost"
-                size="sm"
-                aria-pressed={open}
-                className={cn('text-muted hover:text-fg', open && RAIL_ICON_ACTIVE)}
-                onClick={() => onSelectPanel(item.id)}
+                docIcon={item.icon}
+                workspacePath={workspacePath}
+                runId={runId}
+                running={running}
+                onSelectPanel={onSelectPanel}
               />
             </div>
           )

@@ -1,4 +1,4 @@
-import type { UserRule } from '../../../shared/ipc'
+import type { ResponseVerbosity, UserRule } from '../../../shared/ipc'
 import { wrapPromptSection } from '../promptSections'
 
 /**
@@ -22,24 +22,29 @@ export function formatUserRules(rules: readonly UserRule[]): string {
 export type ResponseStyleInput = {
   /** Assistant identity override. Empty = default spine name. */
   persona?: string
+  /** Tone directive for replies. Empty = default spine tone. */
+  tone?: string
   /** Preferred response language. Empty = follow the user's language. */
   responseLanguage?: string
   /** Default answer length. `concise` is the spine default and emits nothing. */
-  responseVerbosity?: 'concise' | 'balanced' | 'detailed'
+  responseVerbosity?: ResponseVerbosity
 }
 
 /**
- * Optional user persona/language/verbosity preferences from settings, rendered
- * as a stable-zone section mirroring `<user_rules>`. Emits nothing at defaults.
+ * Optional user persona/tone/language/verbosity preferences from settings,
+ * rendered as a stable-zone section mirroring `<user_rules>`. Emits nothing at
+ * defaults.
  */
 export function formatResponseStyle(input: ResponseStyleInput): string {
   const persona = input.persona?.trim() ?? ''
+  const tone = input.tone?.trim() ?? ''
   const language = input.responseLanguage?.trim() ?? ''
   const verbosity = input.responseVerbosity ?? 'concise'
   const lines: string[] = []
   if (persona) {
     lines.push(`Identity: this assistant is "${persona}"; that name overrides the default assistant name.`)
   }
+  if (tone) lines.push(`Tone: apply this tone in replies: "${tone}".`)
   if (language) lines.push(`Respond in ${language}.`)
   if (verbosity === 'detailed') {
     lines.push('Default to complete, self-contained answers with full context; keep them skimmable.')

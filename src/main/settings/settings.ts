@@ -7,7 +7,13 @@ import {
   DEFAULT_AUTO_COMPACT_THRESHOLD_RATIO,
   LEGACY_AUTO_COMPACT_THRESHOLD_RATIO
 } from '../../shared/domain/contextBudget'
-import { defaultModelFor, normalizeCustomOpenAiBaseUrl, ollamaNativeHost } from '../../shared/providers'
+import {
+  defaultModelFor,
+  normalizeCustomOpenAiBaseUrl,
+  ollamaNativeHost,
+  validateCustomOpenAiBaseUrl,
+  validateOllamaBaseUrl
+} from '../../shared/providers'
 import { logger } from '../../shared/logger'
 import { atomicWriteJson } from '../storage/atomicWrite'
 import { sanitizeMcpManifestEnv } from '../marketplace/sanitizeMcpEnv'
@@ -647,6 +653,18 @@ export function setSettings(
     ...(codeIndex !== undefined ? { codeIndex } : {}),
     ...(dictation !== undefined ? { dictation } : {}),
     ...(notifications !== undefined ? { notifications } : {})
+  }
+  // Gate the incoming patch at the write boundary so a mangled base URL paste
+  // can never be persisted (2026-09 settings audit). Already-persisted legacy
+  // garbage is not re-gated here (it would brick unrelated updates); the
+  // normalize calls below repair it to the safe defaults.
+  if (partial.ollamaBaseUrl !== undefined) {
+    const check = validateOllamaBaseUrl(partial.ollamaBaseUrl)
+    if (!check.ok) throw new Error(check.error)
+  }
+  if (partial.customOpenAiBaseUrl !== undefined) {
+    const check = validateCustomOpenAiBaseUrl(partial.customOpenAiBaseUrl)
+    if (!check.ok) throw new Error(check.error)
   }
   if (typeof merged.ollamaBaseUrl === 'string') {
     merged.ollamaBaseUrl = ollamaNativeHost(merged.ollamaBaseUrl)

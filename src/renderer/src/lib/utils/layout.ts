@@ -5,9 +5,10 @@ export const CHAT_GUTTER = 'px-4 sm:px-5'
 export const SETTINGS_GUTTER = CHAT_GUTTER
 
 /**
- * Horizontal inset for the docked chat stage (transcript + composer).
- * Left matches {@link CHAT_GUTTER}; right clears the floating side rail (`w-10`)
- * so content never sits under the icon strip while the scrollbar stays edge-flush.
+ * Horizontal inset for the docked chat stage (transcript only — the composer
+ * is floating edge-to-edge). Left matches {@link CHAT_GUTTER}; right clears the
+ * floating side rail (`w-10`) so content never sits under the icon strip while
+ * the scrollbar stays edge-flush.
  */
 export const CHAT_STAGE_INSET = 'pl-4 pr-10 sm:pl-5'
 
@@ -56,7 +57,29 @@ export const CHAT_COLUMN_MAX = 'max-w-[840px]'
 export const CHAT_COLUMN = `mx-auto w-full ${CHAT_COLUMN_MAX}`
 
 /**
- * Fade painted above a legacy floating composer dock (`before:h-6`). Kept for
+ * Floating edge-to-edge composer dock — overlays the chat stage bottom with a
+ * small gap so the shell's rounded border never reads as clipped by the window
+ * edge. Anchors to the nearest positioned ancestor (`[data-chat-stage]`); the
+ * shell keeps `pointer-events-auto` so the wrapper never blocks the transcript.
+ */
+export const COMPOSER_FLOAT_DOCK = 'pointer-events-none absolute inset-x-0 bottom-2 z-20'
+
+/** Gap between the floating composer shell and the pane bottom (`bottom-2`). */
+export const COMPOSER_FLOAT_BOTTOM_INSET_PX = 8
+
+/** Fade strip above the floating composer so transcript rows dissolve behind it. */
+export const COMPOSER_FLOAT_FADE =
+  'pointer-events-none absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-[var(--vy-chrome-surface)] to-transparent'
+
+/**
+ * CSS variable the floating composer publishes its measured height to (on the
+ * chat stage root); MessageList reserves that height so the last transcript
+ * row can scroll fully clear of the bar.
+ */
+export const COMPOSER_DOCK_RESERVE_VAR = '--vy-composer-dock-height'
+
+/**
+ * Height of the fade painted above the floating composer dock. Kept for
  * MessageList reserve math when `reserveComposerSpace` is enabled in tests.
  */
 export const COMPOSER_DOCK_FADE_PX = 24
@@ -120,7 +143,7 @@ export const USER_PROMPT_TEXT =
   'text-sm leading-relaxed tracking-[var(--vy-tracking-body)] text-fg [overflow-wrap:anywhere]'
 
 /** User prompt block — thin border matching composer chrome. */
-export const USER_PROMPT_SURFACE = `vy-chrome px-2.5 py-2 bg-[var(--vy-prompt-surface)] ${USER_PROMPT_TEXT}`
+export const USER_PROMPT_SURFACE = `vy-chrome w-full px-2.5 py-2 bg-[var(--vy-prompt-surface)] shadow-[var(--vy-shadow-chrome)] ${USER_PROMPT_TEXT}`
 
 /** Quiet activity row — no fill, no border. */
 export const ACTIVITY_ROW = 'text-xs tracking-[var(--vy-tracking)]'

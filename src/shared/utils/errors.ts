@@ -1,22 +1,40 @@
 import { ZodError } from 'zod'
 import { scrubString } from './scrub'
 
+/**
+ * Every code emitted at runtime. AgentEvent.code travels as a plain string over
+ * IPC, so the compiler cannot catch drift — keep this union in sync with the
+ * string literals actually attached to error events and AppErrors.
+ */
 export type ErrorCode =
   | 'AGENT_LOOP'
   | 'AGENT_QUESTION'
+  | 'AGENT_QUESTION_INVALID'
+  | 'AGENT_QUESTION_WAIT'
+  | 'AGENT_INCOMPLETE'
+  | 'AGENT_FINALLY_FLUSH'
+  | 'AGENT_FINALLY_DISPOSE'
+  | 'BUDGET_EXHAUSTED'
   | 'CATALOG_PROBE'
+  | 'COMPACTION'
+  | 'CIRCUIT_OPEN'
   | 'IPC_VALIDATION'
   | 'IPC_HANDLER'
   | 'IPC_CLIENT'
+  | 'LOOP_SAFETY'
   | 'MCP_CONNECT'
   | 'MCP_SPAWN'
+  | 'PERSIST'
+  | 'QUOTA_EXHAUSTED'
   | 'RENDERER_CRASH'
   | 'PROVIDER_AUTH'
+  | 'PROVIDER_BILLING'
   | 'PROVIDER_HTTP'
-  | 'PROVIDER_RATE'
+  | 'PROVIDER_NETWORK'
   | 'PROVIDER_STREAM'
   | 'PROVIDER_TIMEOUT'
-  | 'CIRCUIT_OPEN'
+  | 'PROVIDER_KEYCHAIN'
+  | 'PROVIDER_KEY_DECRYPT'
   | 'SECRETS'
   | 'SETTINGS'
   | 'TOOL_APPROVAL'
@@ -128,10 +146,11 @@ const EXPECTED_CODES = new Set<ErrorCode>([
   'CIRCUIT_OPEN'
 ])
 
-// `PROVIDER_NETWORK` is emitted at runtime (e.g. providers/log.ts) even though
-// it is not yet part of the `ErrorCode` union — keep it so network failures are
-// retryable. PROVIDER_HTTP / PROVIDER_TIMEOUT are also real emitted codes.
-const RETRYABLE_TURN_ERROR_CODES = new Set([
+// Codes excluded here are permanent user-action failures (bad key, missing
+// plan, exhausted credits) — the UI must not offer Retry for them. PROVIDER_HTTP
+// stays retryable for 404/429/5xx; 401/402/403 arrive pre-mapped to PROVIDER_AUTH
+// / PROVIDER_BILLING by the loop (see providerHttpErrorCode).
+const RETRYABLE_TURN_ERROR_CODES = new Set<ErrorCode>([
   'PROVIDER_NETWORK',
   'PROVIDER_HTTP',
   'PROVIDER_TIMEOUT',
@@ -166,7 +185,9 @@ export function isRetryableTurnFailure(opts: {
   const code = opts.errorCode
   const reason = opts.incompleteReason
   return (
-    (typeof code === 'string' && RETRYABLE_TURN_ERROR_CODES.has(code)) ||
+    // Codes cross the IPC boundary as plain strings — unknown codes fall out of
+    // the retryable set (fail closed), known ones classify normally.
+    (typeof code === 'string' && RETRYABLE_TURN_ERROR_CODES.has(code as ErrorCode)) ||
     (typeof reason === 'string' && RETRYABLE_INCOMPLETE_REASONS.has(reason))
   )
 }

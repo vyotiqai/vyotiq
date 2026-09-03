@@ -1,7 +1,6 @@
 import type { Ref } from 'react'
 import { memo, useCallback, useMemo } from 'react'
 import type { AgentInstanceUiState } from '@shared/utils/agentInstance'
-import { isRetryableTurnFailure } from '@shared/errors'
 import type { UiAgentQuestionAnswer, UiItem } from '@shared/transcript'
 import type {
   AgentInteractionMode,
@@ -14,7 +13,7 @@ import type {
 import type { ChatSettingsPatch, EffectiveChatSettings } from '@shared/effectiveSettings'
 import type { ChatStreamController } from '@renderer/lib/hooks/createChatStreamController'
 import { Composer } from './components/composer'
-import { useHasChatItems, useHasTranscriptRunError } from './components/ChatStreamLeaves'
+import { useHasChatItems } from './components/ChatStreamLeaves'
 import { RunSessionProvider } from './RunSessionContext'
 import { MessageList } from './components/MessageList'
 import { AgentInstancePane } from './components/AgentInstancePane'
@@ -24,6 +23,7 @@ import { useInlineInstanceUi } from './hooks/useInlineInstanceUi'
 import {
   buildComposerSendProps,
   lastUserMessageIndex,
+  useChatErrorSurfaces,
   useComposerEditState
 } from './hooks/composerShared'
 import type { ChatItemsStore, ChatMetaStore } from './chatStores'
@@ -217,19 +217,15 @@ export function SessionChatColumn({
   } = useInlineInstanceUi(agentInstances, activeRunId, instanceOpenControlled)
 
   const hasItems = useHasChatItems(itemsStore, items)
-  const hasTranscriptRunError = useHasTranscriptRunError(itemsStore, items)
-  const chatBannerError = hasTranscriptRunError ? null : error
-  const operationalBannerError = operationalError ?? null
-  const turnFailed = isRetryableTurnFailure({
+  const { chatBannerError, turnFailed, turnFailureLabel } = useChatErrorSurfaces({
+    itemsStore,
+    items,
+    error,
     errorCode,
-    incompleteReason: incomplete?.reason
+    incomplete,
+    turnStatus
   })
-  const turnFailureLabel =
-    turnFailed
-      ? incomplete?.message ?? (error ?? 'Connection lost')
-      : turnStatus === 'error'
-        ? 'Run failed'
-        : null
+  const operationalBannerError = operationalError ?? null
   // Match ChatView: remount on workspace/epoch only — not draft→run (avoids composer wipe).
   const surfaceKey = `${workspacePath ?? 'none'}:${chatSurfaceEpoch}`
 
@@ -435,6 +431,7 @@ export function SessionChatColumn({
                   onTurnToggle={onTurnToggle}
                   onApprovalDecision={onApprovalDecision}
                   onQuestionSubmit={onQuestionSubmit}
+                  onRetryNetwork={onContinue}
                   approvalAutoFocus={approvalAutoFocus}
                   collapsedTurns={collapsedTurns}
                   showThinking={showThinking}

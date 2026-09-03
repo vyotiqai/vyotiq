@@ -62,6 +62,12 @@ export interface StreamChunk {
   reasoningState?: ProviderReasoningState
   /** Set on `done` chunks so the loop can tell a truncated turn from a finished one. */
   stopReason?: StopReason
+  /**
+   * SSE JSON frames the provider parser could not decode (corrupted upstream
+   * stream). Non-zero on `done` means the turn may be missing text — the loop
+   * classifies it as incomplete instead of trusting a short answer.
+   */
+  droppedFrames?: number
 }
 
 export interface ListModelsRequest {

@@ -29,12 +29,14 @@ import {
   CHAT_COLUMN,
   CHAT_GUTTER,
   CHAT_STAGE_INSET,
+  COMPOSER_DOCK_RESERVE_VAR,
+  COMPOSER_FLOAT_DOCK,
+  COMPOSER_FLOAT_FADE,
   FLOATING_CHROME,
   FLOATING_CHROME_SHADOW_BOTTOM
 } from '@renderer/lib/utils/layout'
 import { ComposerMentionInput, type ComposerMentionInputHandle } from './ComposerMentionInput'
 import { ComposerToolbar, type ComposerVariant } from './ComposerToolbar'
-import { ComposerPlusButton } from './ComposerPlusButton'
 import { ComposerAttachments } from './ComposerAttachments'
 import {
   DictationErrorBanner,
@@ -70,7 +72,7 @@ import { resolveComposerPlaceholder } from './composerPlaceholder'
 import { filesFromDataTransfer } from './dataTransferFiles'
 import { focusComposerMessage, isMainComposerTarget } from '@renderer/lib/shortcuts'
 
-const COMPOSER_FORM_LAYOUT = '@container relative grid gap-1 px-2.5 py-1'
+const COMPOSER_FORM_LAYOUT = '@container relative grid gap-1 px-2.5 py-1.5'
 
 function composerLayoutKind(variant: ComposerVariant): ComposerVariant {
   switch (variant) {
@@ -803,6 +805,28 @@ export function Composer({
     if (isInline) taRef.current?.focus()
   }, [isInline])
 
+  // Floating dock publishes its measured height so the transcript can reserve
+  // scroll clearance (consumed by MessageList's scroll container).
+  const dockRef = useRef<HTMLDivElement | null>(null)
+  useLayoutEffect(() => {
+    if (!isDock) return
+    const el = dockRef.current
+    if (!el) return
+    const stage = el.closest<HTMLElement>('[data-chat-stage]')
+    if (!stage) return
+    const apply = (): void => {
+      stage.style.setProperty(COMPOSER_DOCK_RESERVE_VAR, `${el.offsetHeight}px`)
+    }
+    apply()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(apply)
+    observer.observe(el)
+    return () => {
+      observer.disconnect()
+      stage.style.removeProperty(COMPOSER_DOCK_RESERVE_VAR)
+    }
+  }, [isDock])
+
   const sendDisabledReason = !canSend
     ? disabled
       ? hasWorkspace
@@ -839,24 +863,6 @@ export function Composer({
     dictationStripState?.kind === 'checking' ||
     dictationStripState?.kind === 'listening' ||
     dictationStripState?.kind === 'transcribing'
-
-  const openAttach = (): void => {
-    slash.dismiss()
-    mentions.dismiss()
-    if (images.length >= MAX_IMAGES && files.length >= MAX_FILES) {
-      setImageError(`You can attach up to ${MAX_IMAGES} images and ${MAX_FILES} files.`)
-      return
-    }
-    fileRef.current?.click()
-  }
-
-  const plusButton = (
-    <ComposerPlusButton
-      disabled={inputLocked}
-      attachFull={images.length >= MAX_IMAGES && files.length >= MAX_FILES}
-      onAttach={openAttach}
-    />
-  )
 
   const composerShellChrome = cn(
     FLOATING_CHROME,
@@ -1013,100 +1019,102 @@ export function Composer({
         />
       ) : null}
 
-      {!dictationActive && (
-        <div ref={mentionAnchorRef} className="col-span-full min-w-0 w-full">
-          <ComposerMentionInput
-            ref={taRef}
-            className="min-h-7 w-full min-w-0 border-0 bg-transparent p-0 text-md leading-snug shadow-none focus-visible:ring-0"
-            value={text}
-            onChange={(next) => {
-              setText(next)
-              requestAnimationFrame(syncCursor)
-            }}
-            onKeyDown={(e) => {
-              onKeyDown(e)
-              requestAnimationFrame(syncCursor)
-            }}
-            onCaretChange={(offset) => setCursor(offset)}
-            onPasteFiles={(files) => {
-              void onPickAttachments(files)
-            }}
-            placeholder={resolveComposerPlaceholder({
-              hasWorkspace: Boolean(hasWorkspace),
-              running,
-              agentMode,
-              hasTranscript: Boolean(hasTranscript),
-              override: composerPlaceholder
-            })}
-            disabled={inputLocked}
-            onFocus={onFocus}
-            aria-expanded={slash.open || mentions.open}
-            aria-controls={
-              slash.open
-                ? slashListId
-                : mentions.open
-                  ? mentionListId
-                  : undefined
-            }
-            aria-autocomplete={slash.open || mentions.open ? 'list' : undefined}
-            aria-activedescendant={
-              slash.open && slash.activeCommand
-                ? `${slashListId}-opt-${slash.activeCommand.id}`
-                : mentions.open && mentions.activeItem
-                  ? `${mentionListId}-opt-${mentions.activeItem.id}`
-                  : undefined
-            }
-          />
-        </div>
-      )}
-      <ComposerToolbar
-        variant={variant}
-        disabled={disabled}
-        locked={settingsLocked}
-        plus={plusButton}
-        providers={providers}
-        optionsByProvider={optionsByProvider}
-        seedsByProvider={seedsByProvider}
-        modelMetaByValue={modelMetaByValue}
-        provider={provider}
-        model={model}
-        favoriteModels={favoriteModels}
-        recentModels={recentModels}
-        warningsByProvider={warningsByProvider}
-        serviceTier={serviceTier}
-        onModelChange={onProviderModel}
-        onToggleFavorite={onToggleFavorite}
-        onServiceTierChange={onServiceTierChange}
-        onRefreshCatalog={() => {
-          setRefreshingCatalog(true)
-          void refreshCatalog({ forceRefresh: true, provider: browsedProvider }).finally(() =>
-            setRefreshingCatalog(false)
-          )
-        }}
-        onBrowseProvider={setBrowsedProvider}
-        catalogLoading={catalogLoading}
-        chatSettings={chatSettings}
-        onChatSettingsChange={onChatSettingsChange}
-        agentMode={agentMode}
-        onAgentModeChange={onAgentModeChange}
-        running={running}
-        canSend={canSend}
-        hasContent={hasContent}
-        sendDisabledReason={sendDisabledReason}
-        onStop={onStop}
-        contextUsage={contextUsage}
-        metaStore={metaStore}
-        onCompactContext={onCompactContext}
-        onCancelEdit={isInline ? onCancelEdit : undefined}
-        focusInput={focusInput}
-        dictationPhase={dictation.phase}
-        dictationEngineHint={dictation.engineHint}
-        onDictationToggle={dictation.toggle}
-        dictationWaveform={dictation.waveform}
-        dictationElapsedMs={dictation.elapsedMs}
-        dictationWaveformStyle={dictation.waveformStyle}
-        onDictationCancel={dictation.cancel}
-      />
+      {/* Single inline row — input and controls share one line; no full-width chrome rows. */}
+      <div className="col-span-full flex min-w-0 items-center gap-1" data-composer-row>
+        {!dictationActive && (
+          <div ref={mentionAnchorRef} className="min-w-0 flex-1">
+            <ComposerMentionInput
+              ref={taRef}
+              className="min-h-7 w-full min-w-0 border-0 bg-transparent p-0 text-md leading-snug shadow-none focus-visible:ring-0"
+              value={text}
+              onChange={(next) => {
+                setText(next)
+                requestAnimationFrame(syncCursor)
+              }}
+              onKeyDown={(e) => {
+                onKeyDown(e)
+                requestAnimationFrame(syncCursor)
+              }}
+              onCaretChange={(offset) => setCursor(offset)}
+              onPasteFiles={(files) => {
+                void onPickAttachments(files)
+              }}
+              placeholder={resolveComposerPlaceholder({
+                hasWorkspace: Boolean(hasWorkspace),
+                running,
+                agentMode,
+                hasTranscript: Boolean(hasTranscript),
+                override: composerPlaceholder
+              })}
+              disabled={inputLocked}
+              onFocus={onFocus}
+              aria-expanded={slash.open || mentions.open}
+              aria-controls={
+                slash.open
+                  ? slashListId
+                  : mentions.open
+                    ? mentionListId
+                    : undefined
+              }
+              aria-autocomplete={slash.open || mentions.open ? 'list' : undefined}
+              aria-activedescendant={
+                slash.open && slash.activeCommand
+                  ? `${slashListId}-opt-${slash.activeCommand.id}`
+                  : mentions.open && mentions.activeItem
+                    ? `${mentionListId}-opt-${mentions.activeItem.id}`
+                    : undefined
+              }
+            />
+          </div>
+        )}
+        <ComposerToolbar
+          variant={variant}
+          disabled={disabled}
+          locked={settingsLocked}
+          providers={providers}
+          optionsByProvider={optionsByProvider}
+          seedsByProvider={seedsByProvider}
+          modelMetaByValue={modelMetaByValue}
+          provider={provider}
+          model={model}
+          favoriteModels={favoriteModels}
+          recentModels={recentModels}
+          warningsByProvider={warningsByProvider}
+          serviceTier={serviceTier}
+          onModelChange={onProviderModel}
+          onToggleFavorite={onToggleFavorite}
+          onServiceTierChange={onServiceTierChange}
+          onRefreshCatalog={() => {
+            setRefreshingCatalog(true)
+            void refreshCatalog({ forceRefresh: true, provider: browsedProvider }).finally(() =>
+              setRefreshingCatalog(false)
+            )
+          }}
+          onBrowseProvider={setBrowsedProvider}
+          catalogLoading={catalogLoading}
+          chatSettings={chatSettings}
+          onChatSettingsChange={onChatSettingsChange}
+          agentMode={agentMode}
+          onAgentModeChange={onAgentModeChange}
+          running={running}
+          canSend={canSend}
+          hasContent={hasContent}
+          sendDisabledReason={sendDisabledReason}
+          onStop={onStop}
+          contextUsage={contextUsage}
+          metaStore={metaStore}
+          onCompactContext={onCompactContext}
+          onCancelEdit={isInline ? onCancelEdit : undefined}
+          focusInput={focusInput}
+          dictationPhase={dictation.phase}
+          dictationEngineHint={dictation.engineHint}
+          onDictationToggle={dictation.toggle}
+          dictationWaveform={dictation.waveform}
+          dictationElapsedMs={dictation.elapsedMs}
+          dictationWaveformStyle={dictation.waveformStyle}
+          onDictationCancel={dictation.cancel}
+        />
+      </div>
 
           {!dictationActive ? (
             <>
@@ -1143,12 +1151,11 @@ export function Composer({
 
   return (
     <div
+      ref={isDock ? dockRef : undefined}
       className={cn(
-        isDock
-          ? // In-flow dock under the transcript — never overlays plan/chat text.
-            // Scrollbar-gutter matches the transcript; side-rail pad clears the rail.
-            'shrink-0 overflow-x-hidden overflow-y-hidden pb-2 pt-1 [scrollbar-gutter:stable]'
-          : 'shrink-0 w-full pb-0 pt-0',
+        isDock ? COMPOSER_FLOAT_DOCK : 'shrink-0 w-full pb-0 pt-0',
+        // Same gutters as the transcript so the floating column's edges line up
+        // exactly with the transcript column (edge to edge with the content).
         isDock ? (sideRailPad ? CHAT_STAGE_INSET : CHAT_GUTTER) : '',
         className
       )}
@@ -1186,17 +1193,15 @@ export function Composer({
         ) : null}
 
         {isDock ? (
-          <div className="flex min-w-0 flex-col">
+          <div className="relative flex min-w-0 flex-col">
+            <div aria-hidden className={COMPOSER_FLOAT_FADE} />
             <div
               className={composerShellChrome}
               data-composer-shell
               onDragOver={onAttachmentDragOver}
               onDrop={onAttachmentDrop}
             >
-              <form
-                onSubmit={submit}
-                className={COMPOSER_FORM_LAYOUT}
-              >
+              <form onSubmit={submit} className={COMPOSER_FORM_LAYOUT}>
                 {composerFields}
               </form>
             </div>

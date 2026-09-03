@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SettingsFormState } from '../hooks/useSettingsForm'
 import type {
   DictationEngine,
@@ -112,6 +112,23 @@ function VoiceProgressBar({
   )
 }
 
+function VoiceModelError({
+  status,
+  modelId
+}: {
+  status: DictationRuntimeStatus | null
+  modelId: DictationLocalModelId
+}) {
+  if (status?.phase !== 'error' || status.activeModelId !== modelId || !status.error) return null
+  return (
+    <div className="rounded-md border border-danger/40 bg-danger/10 px-3 py-2">
+      <p className="m-0 text-xs text-danger" role="alert">
+        {status.error}
+      </p>
+    </div>
+  )
+}
+
 export function VoiceSection({
   form,
   secrets
@@ -122,17 +139,21 @@ export function VoiceSection({
   const dictation = form.settings.dictation ?? DEFAULT_DICTATION_SETTINGS
   const [runtime, setRuntime] = useState<DictationRuntimeStatus | null>(null)
   const [busy, setBusy] = useState(false)
-  const [statusError, setStatusError] = useState<string | null>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [serverUrl, setServerUrl] = useState(dictation.qwen3AsrServerUrl)
   const [serverKey, setServerKey] = useState(dictation.qwen3AsrApiKey)
+  const statusSeq = useRef(0)
 
   const refreshStatus = useCallback(() => {
+    const seq = ++statusSeq.current
     void window.vyotiq.dictationStatus().then((res) => {
+      if (seq !== statusSeq.current) return
       if (res.ok) {
         setRuntime(res.data)
-        setStatusError(null)
+        setLoadError(null)
       } else {
-        setStatusError(res.error ?? 'Failed to load voice status')
+        setLoadError(res.error ?? 'Failed to load voice status')
       }
     })
   }, [])
@@ -147,8 +168,9 @@ export function VoiceSection({
     const unsub =
       typeof window.vyotiq.onDictationStatus === 'function'
         ? window.vyotiq.onDictationStatus((status) => {
+            statusSeq.current++
             setRuntime(status)
-            setStatusError(null)
+            setLoadError(null)
           })
         : undefined
     const id =
@@ -208,14 +230,16 @@ export function VoiceSection({
     action: () => Promise<{ ok: true; data: DictationRuntimeStatus } | { ok: false; error?: string }>
   ) => {
     setBusy(true)
-    setStatusError(null)
+    setActionError(null)
     void action()
       .then((res) => {
         if (!res.ok) {
-          setStatusError(res.error ?? 'Voice action failed')
+          setActionError(res.error ?? 'Voice action failed')
           return
         }
+        statusSeq.current++
         setRuntime(res.data)
+        setLoadError(null)
       })
       .finally(() => setBusy(false))
   }
@@ -303,11 +327,7 @@ export function VoiceSection({
                   {isRecommended ? ' · Recommended for this PC' : ''}
                 </p>
                 <VoiceProgressBar status={runtime} modelId={model.id} />
-                {runtime?.phase === 'error' && runtime.activeModelId === model.id && runtime.error ? (
-                  <p className="m-0 text-xs text-danger" role="alert">
-                    {runtime.error}
-                  </p>
-                ) : null}
+                <VoiceModelError status={runtime} modelId={model.id} />
                 <div className="flex flex-wrap gap-2">
                   {!installed ? (
                     <Button
@@ -360,11 +380,6 @@ export function VoiceSection({
             </SettingsField>
           )
         })}
-        {statusError ? (
-          <p className="m-0 px-3 pb-3 text-xs text-danger" role="alert">
-            {statusError}
-          </p>
-        ) : null}
       </SettingsGroup>
 
       <SettingsGroup title="Qwen3-ASR (local server)">
@@ -382,6 +397,12 @@ export function VoiceSection({
             value={serverUrl}
             disabled={form.formLocked}
             onChange={(e) => setServerUrl(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                e.currentTarget.blur()
+              }
+            }}
             onBlur={() => {
               if (serverUrl !== dictation.qwen3AsrServerUrl) patchServerUrl(serverUrl)
             }}
@@ -401,6 +422,12 @@ export function VoiceSection({
             value={serverKey}
             disabled={form.formLocked}
             onChange={(e) => setServerKey(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                e.currentTarget.blur()
+              }
+            }}
             onBlur={() => {
               if (serverKey !== dictation.qwen3AsrApiKey) patchServerKey(serverKey)
             }}
@@ -470,11 +497,7 @@ export function VoiceSection({
                   {inUse ? ' · In use' : ''}
                 </p>
                 <VoiceProgressBar status={runtime} modelId={model.id} />
-                {runtime?.phase === 'error' && runtime.activeModelId === model.id && runtime.error ? (
-                  <p className="m-0 text-xs text-danger" role="alert">
-                    {runtime.error}
-                  </p>
-                ) : null}
+                <VoiceModelError status={runtime} modelId={model.id} />
                 <div className="flex flex-wrap gap-2">
                   {!installed ? (
                     <Button
@@ -533,6 +556,16 @@ export function VoiceSection({
           )
         })}
       </SettingsGroup>
+      {actionError ? (
+        <p className="m-0 text-xs text-danger" role="alert">
+          {actionError}
+        </p>
+      ) : null}
+      {loadError ? (
+        <p className="m-0 text-xs text-danger" role="alert">
+          {loadError}
+        </p>
+      ) : null}
     </SettingsStack>
   )
 }

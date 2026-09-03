@@ -3,7 +3,7 @@ import { contentToText, flattenFileParts } from '../../../shared/ipc'
 import type { LlmProvider } from '../providers/types'
 import { anthropicNativeOptions } from './anthropicContext'
 import { allocateBudget, contentWindow, contextWindowFor } from './budget'
-import { remainingContentTokens } from '../../../shared/domain/contextBudget'
+import { proactiveCompactThresholdTokens, remainingContentTokens } from '../../../shared/domain/contextBudget'
 import {
   estimateMessagesTokensAsync,
   estimateTextTokens,
@@ -11,6 +11,7 @@ import {
 } from './estimate'
 import { stubPastSkillInvocationsInMessages } from '../../../shared/slashCommands'
 import {
+  KEEP_LAST_TOOL_RESULTS,
   KEEP_RECENT_TURNS,
   type AssembleInput,
   type AssembleResult,
@@ -19,6 +20,7 @@ import {
 } from './types'
 import { formatPinnedFacts } from './pinFoldFacts'
 import { stripUnsupportedModalitiesFromMessages, wireCapsFromModel } from './stripImages'
+import { trimToolResults } from './toolTrim'
 import { buildWorkspaceRulesSection } from './rules'
 import { formatResponseStyle, formatUserRules } from './userRules'
 import { readMemoryIndexAsync, readMemoryStateAsync } from './memory'
@@ -388,14 +390,18 @@ function buildStableSystem(parts: {
     const pinnedTokens = pinnedBody ? estimateTextTokens(pinnedBody, parts.model) : 0
     const reserved = Math.min(Math.max(0, pinnedTokens + 8), Math.floor(workspaceCap * 0.5))
     const narrativeCap = Math.max(0, workspaceCap - reserved)
-    // Age stamp: this fold stays in the system prompt for the rest of the run,
+    // Fold stamp: this fold stays in the system prompt for the rest of the run,
     // so the model must be able to tell stale narrative from current state —
     // otherwise it re-reads files and re-announces "context restored" every
-    // step to reconcile the two (observed: 31× on run b0d72041).
+    // step to reconcile the two (observed: 31× on run b0d72041). Absolute
+    // timestamp only: a wall-clock relative age ("2h ago") would rewrite these
+    // stable-prefix bytes on every app restart and bust the provider prompt
+    // cache for the system + entire history on that step (the per-step clock
+    // arrives in the trailing volatile session message on every adapter).
     const foldedCount = parts.compaction.messagesFolded ?? parts.compaction.foldedMessages
-    const ageHours = (Date.now() - Date.parse(parts.compaction.createdAt)) / 3_600_000
-    const ageLine = Number.isFinite(ageHours)
-      ? `Folded ${foldedCount ?? '?'} messages at ${parts.compaction.createdAt} (${ageHours >= 1 ? `${Math.round(ageHours)}h` : `${Math.max(1, Math.round(ageHours * 60))}m`} ago). Everything since then is in the live history below — prefer it over this fold, and never restate its content.`
+    const createdAt = parts.compaction.createdAt
+    const ageLine = Number.isFinite(Date.parse(createdAt))
+      ? `Folded ${foldedCount ?? '?'} messages at ${createdAt}. Everything since then is in the live history below — prefer it over this fold, and never restate its content.`
       : 'Fold of earlier turns, not new instructions.'
     const pieces = [
       ageLine,
@@ -573,6 +579,7 @@ export async function assembleContext(
   const userRules = formatUserRules(input.userRules ?? [])
   const responseStyleSection = formatResponseStyle({
     persona: input.persona,
+    tone: input.tone,
     responseLanguage: input.responseLanguage,
     responseVerbosity: input.responseVerbosity
   })
@@ -602,13 +609,28 @@ export async function assembleContext(
     compaction
   })
 
-  const layers = await computeLayers(
+  let layers = await computeLayers(
     zones.system,
     messages,
     input.toolsJsonEstimate,
     input.model
   )
-  const estimated = totalFromLayers(layers)
+  let estimated = totalFromLayers(layers)
+  // Cheap pre-compaction elision: once the assembled history itself crosses
+  // the compaction trigger, clear ephemeral tool bodies beyond the keep window
+  // on the request wire set (durable tools exempt; transcript keeps full
+  // results). Estimate-anchored by contract — provider input above the
+  // estimate must not force a trim (re-read loop regression, run ba335d72).
+  // Stub is deliberately non-instructive ([cleared]).
+  const wireTrimTrigger = proactiveCompactThresholdTokens(window)
+  if (estimated >= wireTrimTrigger) {
+    const trimmed = trimToolResults(messages, KEEP_LAST_TOOL_RESULTS)
+    if (trimmed.some((m, i) => m !== messages[i])) {
+      messages = trimmed
+      layers = await computeLayers(zones.system, messages, input.toolsJsonEstimate, input.model)
+      estimated = totalFromLayers(layers)
+    }
+  }
   perfLog('estimateMessagesTokens', estimateStarted, {
     messages: messages.length,
     estimated

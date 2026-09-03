@@ -688,8 +688,8 @@ describe('settings', () => {
       />
     )
     fireEvent.click(screen.getByRole('button', { name: /^Providers$/i }))
-    // modal joined SECRET_PROVIDERS (11 → 12) on the Modal-provider branch.
-    expect(screen.getByText(/1\/12 saved/i)).toBeTruthy()
+    // modal left SECRET_PROVIDERS (12 → 11) when the Modal provider was removed.
+    expect(screen.getByText(/1\/11 saved/i)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Refresh models' }))
     expect(
       await screen.findByText(/seed models for Ollama.*Cannot reach Ollama/i)
@@ -739,10 +739,15 @@ describe('settings', () => {
           ollamaBaseUrl: DEFAULT_SETTINGS.ollamaBaseUrl,
           customOpenAiBaseUrl: 'http://192.168.1.50:9000/v1',
           keepRecentTurns: DEFAULT_SETTINGS.keepRecentTurns,
+          autoCompactThresholdRatio: DEFAULT_SETTINGS.autoCompactThresholdRatio,
           thinkingEnabled: DEFAULT_SETTINGS.thinkingEnabled,
           thinkingEffort: DEFAULT_SETTINGS.thinkingEffort,
           showThinking: DEFAULT_SETTINGS.showThinking,
-          toolApproval: DEFAULT_SETTINGS.toolApproval
+          toolApproval: DEFAULT_SETTINGS.toolApproval,
+          agentPersona: DEFAULT_SETTINGS.agentPersona,
+          agentTone: DEFAULT_SETTINGS.agentTone,
+          responseLanguage: DEFAULT_SETTINGS.responseLanguage,
+          responseVerbosity: DEFAULT_SETTINGS.responseVerbosity
         }}
         onClose={vi.fn()}
         onUpdate={vi.fn(async () => ({ ok: true as const }))}
@@ -1007,6 +1012,129 @@ describe('settings', () => {
     expect(document.querySelector('[data-settings-field="memory-files"]')).toBeTruthy()
     expect(document.querySelector('[data-settings-field="codeindex-enabled"]')).toBeNull()
     expect(document.querySelector('[data-settings-field="tool-approval"]')).toBeNull()
+  })
+
+  it('Agent section renders the persona & style group', () => {
+    render(
+      <SettingsView
+        settings={{ ...baseSettings, agentPersona: 'Nova', agentTone: 'friendly, blunt' }}
+        secrets={emptySecrets}
+        onClose={vi.fn()}
+        onUpdate={vi.fn(async () => ({ ok: true as const }))}
+        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
+        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
+        section="agent"
+      />
+    )
+    expect(document.querySelector('[data-settings-field="agent-persona"]')).toBeTruthy()
+    expect(document.querySelector('[data-settings-field="agent-tone"]')).toBeTruthy()
+    expect(document.querySelector('[data-settings-field="response-language"]')).toBeTruthy()
+    expect(document.querySelector('[data-settings-field="response-verbosity"]')).toBeTruthy()
+    expect((screen.getByLabelText('Persona') as HTMLInputElement).value).toBe('Nova')
+    expect((screen.getByLabelText('Tone') as HTMLInputElement).value).toBe('friendly, blunt')
+    expect((screen.getByLabelText('Response language') as HTMLInputElement).value).toBe('')
+  })
+
+  it('persists persona, tone, and language edits on blur', async () => {
+    const onUpdate = vi.fn(async () => ({ ok: true as const }))
+    render(
+      <SettingsView
+        settings={baseSettings}
+        secrets={emptySecrets}
+        onClose={vi.fn()}
+        onUpdate={onUpdate}
+        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
+        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
+        section="agent"
+      />
+    )
+
+    fireEvent.change(screen.getByLabelText('Persona'), { target: { value: 'Nova' } })
+    fireEvent.blur(screen.getByLabelText('Persona'))
+    fireEvent.change(screen.getByLabelText('Tone'), { target: { value: 'friendly, blunt' } })
+    fireEvent.blur(screen.getByLabelText('Tone'))
+    fireEvent.change(screen.getByLabelText('Response language'), { target: { value: 'Spanish' } })
+    fireEvent.blur(screen.getByLabelText('Response language'))
+
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ agentPersona: 'Nova' }))
+    })
+    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ agentTone: 'friendly, blunt' }))
+    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ responseLanguage: 'Spanish' }))
+  })
+
+  it('answer length menu persists the selected verbosity', () => {
+    const onUpdate = vi.fn(async () => ({ ok: true as const }))
+    render(
+      <SettingsView
+        settings={baseSettings}
+        secrets={emptySecrets}
+        onClose={vi.fn()}
+        onUpdate={onUpdate}
+        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
+        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
+        section="agent"
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /^Answer length$/i }))
+    const listbox = screen.getByRole('listbox')
+    fireEvent.click(within(listbox).getByText('Detailed'))
+    expect(onUpdate).toHaveBeenCalledWith(expect.objectContaining({ responseVerbosity: 'detailed' }))
+  })
+
+  it('routes persona edits through the workspace override when active', async () => {
+    const onUpdate = vi.fn(async () => ({ ok: true as const }))
+    const onSetSettingsOverride = vi.fn(async () => ({ ok: true as const, data: {} as never }))
+    const workspacePath = 'C:/work/demo'
+    render(
+      <SettingsView
+        settings={baseSettings}
+        secrets={emptySecrets}
+        onClose={vi.fn()}
+        onUpdate={onUpdate}
+        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
+        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
+        activeWorkspacePath={workspacePath}
+        settingsOverridesByPath={{
+          [workspacePath]: {
+            useOverride: true,
+            provider: 'openai',
+            model: 'gpt-5.6'
+          }
+        }}
+        effectiveChatSettings={{
+          provider: 'openai',
+          model: 'gpt-5.6',
+          ollamaBaseUrl: DEFAULT_SETTINGS.ollamaBaseUrl,
+          customOpenAiBaseUrl: DEFAULT_SETTINGS.customOpenAiBaseUrl,
+          keepRecentTurns: DEFAULT_SETTINGS.keepRecentTurns,
+          autoCompactThresholdRatio: DEFAULT_SETTINGS.autoCompactThresholdRatio,
+          thinkingEnabled: DEFAULT_SETTINGS.thinkingEnabled,
+          thinkingEffort: DEFAULT_SETTINGS.thinkingEffort,
+          showThinking: DEFAULT_SETTINGS.showThinking,
+          toolApproval: DEFAULT_SETTINGS.toolApproval,
+          agentPersona: 'OverrideBot',
+          agentTone: '',
+          responseLanguage: '',
+          responseVerbosity: 'concise'
+        }}
+        onSetSettingsOverride={onSetSettingsOverride}
+        section="agent"
+      />
+    )
+
+    expect((screen.getByLabelText('Persona') as HTMLInputElement).value).toBe('OverrideBot')
+    fireEvent.change(screen.getByLabelText('Persona'), { target: { value: 'Changed' } })
+    fireEvent.blur(screen.getByLabelText('Persona'))
+
+    await waitFor(() => {
+      expect(onSetSettingsOverride).toHaveBeenCalledWith(
+        workspacePath,
+        expect.objectContaining({ useOverride: true, agentPersona: 'Changed' })
+      )
+    })
+    expect(onUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ agentPersona: 'Changed' }))
   })
 
   it('Indexing section owns codebase index controls', () => {
@@ -1736,5 +1864,161 @@ describe('settings', () => {
     })
     const payload = onUpdate.mock.calls[0]?.[0] as { notifications?: { enabled?: boolean } }
     expect(payload.notifications?.enabled).toBe(false)
+  })
+
+  it('renders organized structure across About, Voice, and Agent sections', async () => {
+    const onUpdate = vi.fn(async () => ({ ok: true as const }))
+    render(
+      <SettingsView
+        settings={{
+          ...baseSettings,
+          agentPersona: 'Code Specialist',
+          agentTone: 'Terse and accurate',
+          dictation: {
+            ...DEFAULT_SETTINGS.dictation,
+            engine: 'local',
+            localModelId: 'whisper-small.en'
+          }
+        }}
+        secrets={emptySecrets}
+        onClose={vi.fn()}
+        onUpdate={onUpdate}
+        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
+        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
+      />
+    )
+
+    // About Section
+    fireEvent.click(screen.getByRole('button', { name: /^About$/i }))
+    expect(document.querySelector('[data-settings-field="about"]')).toBeTruthy()
+    expect(screen.getByText('Build')).toBeTruthy()
+    expect(screen.getByText('Updates')).toBeTruthy()
+    expect(screen.getByText('Links')).toBeTruthy()
+
+    // Agent Section
+    fireEvent.click(screen.getByRole('button', { name: /^Agent$/i }))
+    expect(document.querySelector('[data-settings-field="agent-persona"]')).toBeTruthy()
+    expect(document.querySelector('[data-settings-field="agent-tone"]')).toBeTruthy()
+    expect(screen.getByText(/15\/1000/)).toBeTruthy()
+    expect(screen.getByText(/18\/2000/)).toBeTruthy()
+    expect(screen.getByText('turns')).toBeTruthy()
+
+    // Compaction input commits on blur (Enter blurs in the browser)
+    const turnsInput = screen.getByLabelText('Keep recent turns')
+    fireEvent.change(turnsInput, { target: { value: '20' } })
+    fireEvent.blur(turnsInput)
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({ keepRecentTurns: 20 })
+      )
+    })
+
+    // Voice Section
+    fireEvent.click(screen.getByRole('button', { name: /^Voice$/i }))
+    await waitFor(() => expect(window.vyotiq.dictationStatus).toHaveBeenCalled())
+    expect(screen.getByText('Local Whisper models')).toBeTruthy()
+    expect(screen.getByText('Qwen3-ASR (local server)')).toBeTruthy()
+    expect(screen.getByText('Qwen3-ASR (on-device)')).toBeTruthy()
+    await waitFor(() => {
+      const smallField = document.querySelector('[data-settings-field="dictation-whisper-small"]')
+      expect(smallField?.textContent).toMatch(/Recommended for this PC/)
+    })
+
+    // Server URL input commits on blur (Enter blurs in the browser)
+    const serverUrlInput = screen.getByLabelText('Qwen3-ASR server URL')
+    fireEvent.change(serverUrlInput, { target: { value: 'http://127.0.0.1:9000/v1' } })
+    fireEvent.blur(serverUrlInput)
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          dictation: expect.objectContaining({ qwen3AsrServerUrl: 'http://127.0.0.1:9000/v1' })
+        })
+      )
+    })
+  })
+
+  it('Voice action errors persist across status pushes', async () => {
+    const status = {
+      phase: 'idle' as const,
+      progress: null,
+      message: null,
+      error: null,
+      installed: [{ id: 'whisper-tiny.en' as const, bytesOnDisk: 41, loaded: false }],
+      recommendedModelId: 'whisper-small.en' as const,
+      engine: 'openai' as const,
+      activeModelId: null,
+      loadedModelId: null
+    }
+    let pushStatus: ((s: Record<string, unknown>) => void) | undefined
+    // @ts-expect-error test bridge
+    window.vyotiq.dictationStatus = vi.fn(async () => ({ ok: true as const, data: status }))
+    // @ts-expect-error test bridge
+    window.vyotiq.onDictationStatus = vi.fn((cb: (s: Record<string, unknown>) => void) => {
+      pushStatus = cb
+      return () => {}
+    })
+    // @ts-expect-error test bridge
+    window.vyotiq.dictationDeleteCache = vi.fn(async () => ({
+      ok: false as const,
+      error: 'cache delete boom'
+    }))
+    render(
+      <SettingsView
+        settings={baseSettings}
+        secrets={emptySecrets}
+        onClose={vi.fn()}
+        onUpdate={vi.fn(async () => ({ ok: true as const }))}
+        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
+        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /^Voice$/i }))
+    const deleteButton = await waitFor(() =>
+      screen.getByRole('button', { name: /Delete Whisper Tiny cache/i })
+    )
+    fireEvent.click(deleteButton)
+    await waitFor(() => expect(screen.getByText('cache delete boom')).toBeTruthy())
+    pushStatus?.({ ...status, phase: 'ready' })
+    await waitFor(() => expect(screen.getByText(/Ready · on disk/i)).toBeTruthy())
+    expect(screen.getByText('cache delete boom')).toBeTruthy()
+  })
+
+  it('Voice load errors clear on the next status refresh', async () => {
+    const status = {
+      phase: 'idle' as const,
+      progress: null,
+      message: null,
+      error: null,
+      installed: [],
+      recommendedModelId: 'whisper-small.en' as const,
+      engine: 'openai' as const,
+      activeModelId: null,
+      loadedModelId: null
+    }
+    let pushStatus: ((s: Record<string, unknown>) => void) | undefined
+    // @ts-expect-error test bridge
+    window.vyotiq.dictationStatus = vi.fn(async () => ({
+      ok: false as const,
+      error: 'status endpoint down'
+    }))
+    // @ts-expect-error test bridge
+    window.vyotiq.onDictationStatus = vi.fn((cb: (s: Record<string, unknown>) => void) => {
+      pushStatus = cb
+      return () => {}
+    })
+    render(
+      <SettingsView
+        settings={baseSettings}
+        secrets={emptySecrets}
+        onClose={vi.fn()}
+        onUpdate={vi.fn(async () => ({ ok: true as const }))}
+        onSaveSecret={vi.fn(async () => ({ ok: true as const }))}
+        onClearSecret={vi.fn(async () => ({ ok: true as const }))}
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /^Voice$/i }))
+    await waitFor(() => expect(screen.getByText('status endpoint down')).toBeTruthy())
+    pushStatus?.(status)
+    await waitFor(() => expect(screen.queryByText('status endpoint down')).toBeNull())
   })
 })

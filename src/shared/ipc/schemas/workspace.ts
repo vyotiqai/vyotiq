@@ -3,6 +3,7 @@ import { ProviderIdSchema, ThinkingEffortSchema } from './providers'
 import { MarketplaceOverridesSchema } from './marketplace'
 import {
   AgentInteractionModeSchema,
+  ResponseVerbositySchema,
   ToolApprovalSettingsSchema
 } from './settings'
 
@@ -34,6 +35,14 @@ export const WorkspaceSettingsOverrideSchema = z.object({
   thinkingEnabled: z.boolean().optional(),
   thinkingEffort: ThinkingEffortSchema.optional(),
   showThinking: z.boolean().optional(),
+  /** Assistant identity override; empty/undefined = global setting. */
+  agentPersona: z.string().max(1000).optional(),
+  /** Tone directive override; empty/undefined = global setting. */
+  agentTone: z.string().max(2000).optional(),
+  /** Preferred response language override; undefined = global setting. */
+  responseLanguage: z.string().max(64).optional(),
+  /** Default answer length override; undefined = global setting. */
+  responseVerbosity: ResponseVerbositySchema.optional(),
   toolApproval: ToolApprovalSettingsSchema.optional(),
   /** Per-id enable overrides for marketplace MCP / skills / plugins. */
   marketplaceOverrides: MarketplaceOverridesSchema.optional(),

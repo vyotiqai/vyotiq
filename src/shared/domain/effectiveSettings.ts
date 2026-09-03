@@ -12,6 +12,10 @@ export type EffectiveChatSettings = Pick<
   | 'thinkingEffort'
   | 'showThinking'
   | 'toolApproval'
+  | 'agentPersona'
+  | 'agentTone'
+  | 'responseLanguage'
+  | 'responseVerbosity'
 >
 
 export type ChatSettingsPatch = Partial<
@@ -34,7 +38,11 @@ export function resolveEffectiveSettings(
       thinkingEnabled: global.thinkingEnabled,
       thinkingEffort: global.thinkingEffort,
       showThinking: global.showThinking,
-      toolApproval: global.toolApproval
+      toolApproval: global.toolApproval,
+      agentPersona: global.agentPersona,
+      agentTone: global.agentTone,
+      responseLanguage: global.responseLanguage,
+      responseVerbosity: global.responseVerbosity
     }
   }
   return {
@@ -48,6 +56,10 @@ export function resolveEffectiveSettings(
     thinkingEnabled: override.thinkingEnabled ?? global.thinkingEnabled,
     thinkingEffort: override.thinkingEffort ?? global.thinkingEffort,
     showThinking: override.showThinking ?? global.showThinking,
-    toolApproval: override.toolApproval ?? global.toolApproval
+    toolApproval: override.toolApproval ?? global.toolApproval,
+    agentPersona: override.agentPersona ?? global.agentPersona,
+    agentTone: override.agentTone ?? global.agentTone,
+    responseLanguage: override.responseLanguage ?? global.responseLanguage,
+    responseVerbosity: override.responseVerbosity ?? global.responseVerbosity
   }
 }

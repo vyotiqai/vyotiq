@@ -1,4 +1,4 @@
-import { useCallback, useSyncExternalStore, type ReactNode } from 'react'
+import { useCallback, useSyncExternalStore } from 'react'
 import { Icon } from '@renderer/lib/icons'
 import { Tooltip, cn } from '@renderer/lib/ui'
 import { shortcutLabel } from '@renderer/lib/shortcuts'
@@ -234,7 +234,6 @@ export function ComposerToolbar({
   variant,
   disabled,
   locked,
-  plus,
   providers,
   optionsByProvider,
   seedsByProvider,
@@ -277,7 +276,6 @@ export function ComposerToolbar({
   variant: ComposerVariant
   disabled?: boolean
   locked: boolean
-  plus: ReactNode
   providers: ProviderId[]
   optionsByProvider: Record<ProviderId, ModelPickerOption[]>
   seedsByProvider: Record<ProviderId, ModelPickerOption[]>
@@ -469,12 +467,11 @@ export function ComposerToolbar({
 
   return (
     <div
-      className={cn('col-span-full overflow-hidden', chromeRow)}
+      className={chromeRow}
       data-composer-toolbar
       data-dictation-session={dictationKind ?? undefined}
       aria-busy={dictationBusy || undefined}
     >
-      {plus}
       <div
         className={cn(zone, 'min-w-0 flex-1 overflow-hidden')}
         role={dictationLive ? 'status' : undefined}
