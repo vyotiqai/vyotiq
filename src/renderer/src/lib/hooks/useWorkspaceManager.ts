@@ -764,6 +764,18 @@ export function useWorkspaceManager(options?: {
     persistTimersRef.current.set(path, timerId)
   }, [])
 
+  // Cancel pending UI-state persist timers on unmount. A debounce that fires
+  // after the host environment is gone touches `window` post-teardown and the
+  // unhandled error fails the whole vitest run even when every test passes
+  // (CI run 33769648262 macos "Test (with coverage)", useWorkspaceManager.ts:749).
+  useEffect(
+    () => () => {
+      for (const timer of persistTimersRef.current.values()) window.clearTimeout(timer)
+      persistTimersRef.current.clear()
+    },
+    []
+  )
+
   const flushPersistUiState = useCallback((path?: string) => {
     if (path) {
       const timer = persistTimersRef.current.get(path)

@@ -1000,6 +1000,18 @@ export const RunReceiptSchema = z.object({
     failed: z.number().int().min(0),
     byName: z.record(z.string(), RunReceiptToolStatSchema)
   }),
+  /** codebase_search semantic-health stamps mined from tool result headers (v5-tolerant optional). */
+  codebaseSearch: z
+    .object({
+      calls: z.number().int().min(0),
+      /** Results labeled lexical-only (true cross-family model mismatch). */
+      lexicalOnly: z.number().int().min(0),
+      /** Results labeled fallback=hash (neural embedder unavailable). */
+      hashFallback: z.number().int().min(0),
+      /** Distinct resolved query embedder model ids seen in result headers. */
+      queryModels: z.array(z.string()).max(8)
+    })
+    .optional(),
   failureClusters: z.array(
     z.object({
       key: z.string(),
