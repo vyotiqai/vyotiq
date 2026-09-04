@@ -30,6 +30,7 @@ import {
   CHAT_GUTTER,
   CHAT_STAGE_INSET,
   COMPOSER_DOCK_RESERVE_VAR,
+  COMPOSER_FLOAT_BODY,
   COMPOSER_FLOAT_DOCK,
   COMPOSER_FLOAT_FADE,
   FLOATING_CHROME,
@@ -864,6 +865,22 @@ export function Composer({
     dictationStripState?.kind === 'listening' ||
     dictationStripState?.kind === 'transcribing'
 
+  // Multiline drafts stack the controls under a full-width input (standard
+  // composer anatomy) so tall text is never squeezed beside the toolbar; the
+  // resting draft keeps the single inline row. The latch covers soft-wrapped
+  // single-line drafts (no newline, still >1 visual line) and re-evaluates on
+  // every text edit so deleting back to one line restores the inline row.
+  const [stackedLatch, setStackedLatch] = useState(false)
+  useLayoutEffect(() => {
+    setStackedLatch(false)
+  }, [text])
+  useLayoutEffect(() => {
+    if (dictationActive || stackedLatch) return
+    const el = mentionAnchorRef.current
+    if (el && el.offsetHeight > 40) setStackedLatch(true)
+  }, [dictationActive, stackedLatch, text])
+  const stacked = !dictationActive && (stackedLatch || text.includes('\n'))
+
   const composerShellChrome = cn(
     FLOATING_CHROME,
     FLOATING_CHROME_SHADOW_BOTTOM,
@@ -1019,10 +1036,19 @@ export function Composer({
         />
       ) : null}
 
-      {/* Single inline row — input and controls share one line; no full-width chrome rows. */}
-      <div className="col-span-full flex min-w-0 items-center gap-1" data-composer-row>
+      {/* Single inline row at rest — input and controls share one line. Once the
+          draft is multiline the input takes the full width and the controls
+          drop to their own row below it (no squeezed text column). */}
+      <div
+        className={cn(
+          'col-span-full flex min-w-0 gap-1',
+          stacked ? 'flex-col items-stretch' : 'items-end'
+        )}
+        data-composer-row
+        data-composer-stacked={stacked || undefined}
+      >
         {!dictationActive && (
-          <div ref={mentionAnchorRef} className="min-w-0 flex-1">
+          <div ref={mentionAnchorRef} className={cn('min-w-0', stacked ? 'w-full' : 'flex-1')}>
             <ComposerMentionInput
               ref={taRef}
               className="min-h-7 w-full min-w-0 border-0 bg-transparent p-0 text-md leading-snug shadow-none focus-visible:ring-0"
@@ -1071,6 +1097,10 @@ export function Composer({
           variant={variant}
           disabled={disabled}
           locked={settingsLocked}
+          // While dictation replaces the input, the toolbar is the row's only
+          // child — fill the row so the waveform expands and the actions
+          // right-align. In stacked mode it owns its full-width row.
+          className={dictationActive ? 'flex-1' : stacked ? 'w-full' : undefined}
           providers={providers}
           optionsByProvider={optionsByProvider}
           seedsByProvider={seedsByProvider}
@@ -1164,10 +1194,25 @@ export function Composer({
       data-composer-hero={variant === 'hero' ? true : undefined}
       data-composer-inline={isInline ? true : undefined}
     >
-      <div
-        className={cn(isDock && CHAT_COLUMN, 'flex flex-col gap-2')}
-        data-composer-column={isDock ? true : undefined}
-      >
+      {/* Fade sits outside the scroll-clipped body so it can rise above the bar;
+          gutters + column keep its width matched to the shell. */}
+      {isDock ? (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-x-0 bottom-full h-6"
+        >
+          <div className={cn('h-full', sideRailPad ? CHAT_STAGE_INSET : CHAT_GUTTER)}>
+            <div className={cn('mx-auto h-full w-full max-w-[840px]', COMPOSER_FLOAT_FADE)} />
+          </div>
+        </div>
+      ) : null}
+      {/* Scroll-clipped body — reserves the transcript's scrollbar gutter so the
+          centered column lines up exactly with the transcript column. */}
+      <div className={cn(isDock && COMPOSER_FLOAT_BODY)}>
+        <div
+          className={cn(isDock && CHAT_COLUMN, 'flex flex-col gap-2')}
+          data-composer-column={isDock ? true : undefined}
+        >
         {(isDock || isInline) && (bannerError || secondaryBannerError) ? (
           <div className="pointer-events-auto flex shrink-0 flex-col gap-2">
             {secondaryBannerError ? (
@@ -1194,7 +1239,6 @@ export function Composer({
 
         {isDock ? (
           <div className="relative flex min-w-0 flex-col">
-            <div aria-hidden className={COMPOSER_FLOAT_FADE} />
             <div
               className={composerShellChrome}
               data-composer-shell
@@ -1218,6 +1262,7 @@ export function Composer({
             {composerFields}
           </form>
         )}
+        </div>
       </div>
     </div>
   )

@@ -1,44 +1,44 @@
-import { useEffect, useState } from 'react'
-import type { ResponseVerbosity } from '@shared/ipc'
+import type {
+  AutonomousSkipQuestions,
+  OfflineWaitMode,
+  ResponseVerbosity
+} from '@shared/ipc'
 import type { SettingsFormState } from '../hooks/useSettingsForm'
 import { Input, Menu, Switch } from '@renderer/lib/ui'
+import { AutoTextarea } from '../components/AutoTextarea'
 import { SettingsField, SettingsGroup, SettingsStack } from '../components/SettingsField'
-import { RESPONSE_VERBOSITY_OPTIONS } from '../constants'
+import {
+  AUTONOMOUS_QUESTIONS_OPTIONS,
+  LANGUAGE_MAX_LENGTH,
+  OFFLINE_WAIT_OPTIONS,
+  PERSONA_MAX_LENGTH,
+  RESPONSE_LANGUAGE_SUGGESTIONS,
+  RESPONSE_VERBOSITY_OPTIONS,
+  TONE_MAX_LENGTH
+} from '../constants'
+
+/** Counter + save-status line under the persona/tone textareas. */
+function DraftMeta({ value, max, dirty }: { value: string; max: number; dirty: boolean }) {
+  const edgeWhitespace = value.length > 0 && value.trim() !== value
+  return (
+    <div className="flex items-center justify-between gap-2 text-2xs text-muted">
+      <span aria-live="polite">
+        {dirty
+          ? 'Unsaved — saved when you leave the field'
+          : edgeWhitespace
+            ? 'Extra spaces at the start/end are removed on save'
+            : ''}
+      </span>
+      <span className="tabular-nums">
+        {value.length}/{max}
+      </span>
+    </div>
+  )
+}
 
 export function AgentSection({ form }: { form: SettingsFormState }) {
   const showThinking =
     form.effectiveChatSettings?.showThinking ?? form.settings.showThinking
-
-  const persistedPersona = form.effectiveChatSettings?.agentPersona ?? form.settings.agentPersona ?? ''
-  const [personaDraft, setPersonaDraft] = useState(persistedPersona)
-  useEffect(() => {
-    setPersonaDraft(persistedPersona)
-  }, [persistedPersona])
-  const persistPersona = (): void => {
-    if (personaDraft === persistedPersona) return
-    void form.runAgentUpdate({ agentPersona: personaDraft })
-  }
-
-  const persistedTone = form.effectiveChatSettings?.agentTone ?? form.settings.agentTone ?? ''
-  const [toneDraft, setToneDraft] = useState(persistedTone)
-  useEffect(() => {
-    setToneDraft(persistedTone)
-  }, [persistedTone])
-  const persistTone = (): void => {
-    if (toneDraft === persistedTone) return
-    void form.runAgentUpdate({ agentTone: toneDraft })
-  }
-
-  const persistedLanguage =
-    form.effectiveChatSettings?.responseLanguage ?? form.settings.responseLanguage ?? ''
-  const [languageDraft, setLanguageDraft] = useState(persistedLanguage)
-  useEffect(() => {
-    setLanguageDraft(persistedLanguage)
-  }, [persistedLanguage])
-  const persistLanguage = (): void => {
-    if (languageDraft === persistedLanguage) return
-    void form.runAgentUpdate({ responseLanguage: languageDraft })
-  }
 
   return (
     <SettingsStack>
@@ -46,8 +46,8 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
         <p className="m-0 rounded-xl bg-surface px-4 py-3 text-xs text-secondary">
           Workspace override on — persona &amp; style, show thinking, and keep recent turns apply
           to this workspace only. Tool approval (Settings → Tools) also honors this override.
-          Shell, search engine, browser domain allowlist, and automatic mode switching stay
-          app-wide.
+          Shell, search engine, browser domain allowlist, automatic mode switching, autonomy,
+          and run budget stay app-wide.
         </p>
       ) : null}
 
@@ -91,30 +91,26 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
           wide
         >
           <div className="flex w-full flex-col gap-1.5">
-            <Input
-              className="w-full"
+            <AutoTextarea
               placeholder="e.g. Nova — a terse, senior pair programmer"
               aria-label="Persona"
-              maxLength={1000}
+              maxLength={PERSONA_MAX_LENGTH}
+              maxRows={6}
               disabled={form.formLocked}
-              value={personaDraft}
+              value={form.personaDraft}
               key={`agent-persona-${form.workspaceOverrideActive}`}
               onChange={(e) => {
-                setPersonaDraft(e.target.value)
+                form.setPersonaDraft(e.target.value)
               }}
               onBlur={() => {
-                persistPersona()
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  ;(e.target as HTMLInputElement).blur()
-                }
+                void form.persistPersona()
               }}
             />
-            <div className="text-right text-2xs tabular-nums text-muted">
-              {personaDraft.length}/1000
-            </div>
+            <DraftMeta
+              value={form.personaDraft}
+              max={PERSONA_MAX_LENGTH}
+              dirty={form.personaDirty}
+            />
           </div>
         </SettingsField>
 
@@ -130,30 +126,22 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
           wide
         >
           <div className="flex w-full flex-col gap-1.5">
-            <Input
-              className="w-full"
+            <AutoTextarea
               placeholder="Friendly, direct, playful…"
               aria-label="Tone"
-              maxLength={2000}
+              maxLength={TONE_MAX_LENGTH}
+              maxRows={6}
               disabled={form.formLocked}
-              value={toneDraft}
+              value={form.toneDraft}
               key={`agent-tone-${form.workspaceOverrideActive}`}
               onChange={(e) => {
-                setToneDraft(e.target.value)
+                form.setToneDraft(e.target.value)
               }}
               onBlur={() => {
-                persistTone()
-              }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  ;(e.target as HTMLInputElement).blur()
-                }
+                void form.persistTone()
               }}
             />
-            <div className="text-right text-2xs tabular-nums text-muted">
-              {toneDraft.length}/2000
-            </div>
+            <DraftMeta value={form.toneDraft} max={TONE_MAX_LENGTH} dirty={form.toneDirty} />
           </div>
         </SettingsField>
 
@@ -167,27 +155,40 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
               : "Leave blank to follow your language."
           }
         >
-          <Input
-            className="w-full sm:w-64"
-            placeholder="e.g. Spanish, 日本語, Deutsch"
-            aria-label="Response language"
-            maxLength={64}
-            disabled={form.formLocked}
-            value={languageDraft}
-            key={`response-language-${form.workspaceOverrideActive}`}
-            onChange={(e) => {
-              setLanguageDraft(e.target.value)
-            }}
-            onBlur={() => {
-              persistLanguage()
-            }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                ;(e.target as HTMLInputElement).blur()
-              }
-            }}
-          />
+          <div className="flex w-full flex-col gap-1 sm:w-72">
+            <Input
+              className="w-full"
+              placeholder="e.g. Spanish, 日本語, Deutsch"
+              aria-label="Response language"
+              maxLength={LANGUAGE_MAX_LENGTH}
+              list="response-language-options"
+              disabled={form.formLocked}
+              value={form.languageDraft}
+              key={`response-language-${form.workspaceOverrideActive}`}
+              onChange={(e) => {
+                form.setLanguageDraft(e.target.value)
+              }}
+              onBlur={() => {
+                void form.persistLanguage()
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  ;(e.target as HTMLInputElement).blur()
+                }
+              }}
+            />
+            <datalist id="response-language-options">
+              {RESPONSE_LANGUAGE_SUGGESTIONS.map((language) => (
+                <option value={language} key={language} />
+              ))}
+            </datalist>
+            <DraftMeta
+              value={form.languageDraft}
+              max={LANGUAGE_MAX_LENGTH}
+              dirty={form.languageDirty}
+            />
+          </div>
         </SettingsField>
 
         <SettingsField
@@ -305,6 +306,147 @@ export function AgentSection({ form }: { form: SettingsFormState }) {
             <span className="text-xs text-secondary">%</span>
           </div>
           {form.fieldError.autoCompactThreshold}
+        </SettingsField>
+      </SettingsGroup>
+
+      <SettingsGroup title="Autonomy & budget">
+        <SettingsField
+          id="agent-autonomous-mode"
+          title="Autonomous mode"
+          hint="Unattended runs: auto-approve gated tools (high-risk stays gated)."
+          help="Also relaxes offline waiting per the wait budget below. Off by default."
+        >
+          <Switch
+            size="md"
+            checked={form.settings.autonomousMode}
+            disabled={form.formLocked}
+            label="Autonomous mode"
+            onCheckedChange={(checked) => {
+              void form.runUpdate({ autonomousMode: checked })
+            }}
+          />
+        </SettingsField>
+
+        <SettingsField
+          id="agent-autonomous-questions"
+          title="Questions in autonomous mode"
+          hint="What the agent does when it would ask a question mid-run."
+          help="Skip ends the ask immediately; wait holds the run until the 15-minute question timeout."
+        >
+          <Menu
+            aria-label="Questions in autonomous mode"
+            value={form.settings.autonomousSkipQuestions}
+            options={AUTONOMOUS_QUESTIONS_OPTIONS}
+            searchable={false}
+            placement="down"
+            disabled={form.formLocked || !form.settings.autonomousMode}
+            onChange={(v) => {
+              void form.runUpdate({ autonomousSkipQuestions: v as AutonomousSkipQuestions })
+            }}
+          />
+        </SettingsField>
+
+        <SettingsField
+          id="agent-offline-wait"
+          title="Offline wait budget"
+          hint="How long unattended runs wait out a lost connection."
+          help="Wait indefinitely requires autonomous mode; otherwise the default budget applies."
+        >
+          <Menu
+            aria-label="Offline wait budget"
+            value={form.settings.offlineWaitMode}
+            options={OFFLINE_WAIT_OPTIONS}
+            searchable={false}
+            placement="down"
+            disabled={form.formLocked}
+            onChange={(v) => {
+              void form.runUpdate({ offlineWaitMode: v as OfflineWaitMode })
+            }}
+          />
+        </SettingsField>
+
+        <SettingsField
+          id="agent-run-spend-limit"
+          title="Run spend limit"
+          hint="Stop the run once cumulative provider cost reaches this USD amount (0 disables)."
+          help="Checked at each step boundary against provider-reported cost."
+        >
+          <div className="flex items-center gap-1.5">
+            <Input
+              type="number"
+              className="w-28"
+              aria-label="Run spend limit in US dollars"
+              min={0}
+              max={100000}
+              step="0.01"
+              disabled={form.formLocked}
+              defaultValue={form.settings.runSpendLimitUsd}
+              key={`run-spend-${form.settings.runSpendLimitUsd}`}
+              aria-invalid={form.errorField === 'runSpendLimit' ? true : undefined}
+              aria-describedby={
+                form.errorField === 'runSpendLimit' ? 'run-spend-limit-error' : undefined
+              }
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  e.currentTarget.blur()
+                }
+              }}
+              onBlur={(e) => {
+                form.commitNumberField('runSpendLimit', e.target, {
+                  label: 'Run spend limit',
+                  min: 0,
+                  max: 100000,
+                  current: form.settings.runSpendLimitUsd,
+                  apply: (usd) => ({ runSpendLimitUsd: usd })
+                })
+              }}
+            />
+            <span className="text-xs text-secondary">USD</span>
+          </div>
+          {form.fieldError.runSpendLimit}
+        </SettingsField>
+
+        <SettingsField
+          id="agent-run-token-limit"
+          title="Run token limit"
+          hint="Stop the run once billed input + output tokens reach this total (0 disables)."
+          help="Checked at each step boundary against cumulative provider usage."
+        >
+          <div className="flex items-center gap-1.5">
+            <Input
+              type="number"
+              className="w-36"
+              aria-label="Run token limit"
+              min={0}
+              max={100000000}
+              disabled={form.formLocked}
+              defaultValue={form.settings.runTokenLimit}
+              key={`run-tokens-${form.settings.runTokenLimit}`}
+              aria-invalid={form.errorField === 'runTokenLimit' ? true : undefined}
+              aria-describedby={
+                form.errorField === 'runTokenLimit' ? 'run-token-limit-error' : undefined
+              }
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  e.currentTarget.blur()
+                }
+              }}
+              onBlur={(e) => {
+                form.commitNumberField('runTokenLimit', e.target, {
+                  label: 'Run token limit',
+                  min: 0,
+                  max: 100000000,
+                  integer: true,
+                  current: form.settings.runTokenLimit,
+                  apply: (tokens) => ({ runTokenLimit: tokens })
+                })
+              }}
+            />
+            <span className="text-xs text-secondary">tokens</span>
+          </div>
+          {form.fieldError.runTokenLimit}
         </SettingsField>
       </SettingsGroup>
 

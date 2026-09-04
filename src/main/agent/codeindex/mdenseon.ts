@@ -1,5 +1,6 @@
 import { existsSync } from 'fs'
 import { isAbortError } from '../../../shared/errors'
+import { logger } from '../../../shared/logger'
 import type { Embedder } from './embed'
 import { downloadModelFiles, modelFilesPresent } from './modelDownload'
 import { codeIndexModelDir } from './modelPaths'
@@ -61,6 +62,59 @@ export function neuralWeightsOnDisk(modelId: string): boolean {
   const art = getNeuralArtifact(modelId)
   if (!art) return false
   return modelFilesPresent(codeIndexModelDir(art.artifactId), art.files)
+}
+
+let bootstrapWeightsPromise: Promise<boolean> | null = null
+
+/**
+ * Fetch the public DenseOn bootstrap weights on the caller's lane. Main-process
+ * sync paths call this on the write chain (progress events + refreshable
+ * timeout); read lanes (searchCode RPCs) must never download — they rely on
+ * this having completed first. Idempotent and single-flight.
+ */
+export async function ensureLightOnBootstrapWeights(
+  opts: { signal?: AbortSignal; fetchImpl?: typeof fetch } = {}
+): Promise<boolean> {
+  for (const art of ARTIFACTS) {
+    if (!art.allowAutoDownload) continue
+    if (modelFilesPresent(codeIndexModelDir(art.artifactId), art.files)) return true
+  }
+  if (bootstrapWeightsPromise) return bootstrapWeightsPromise
+  bootstrapWeightsPromise = (async () => {
+    const art = ARTIFACTS.find((a) => a.allowAutoDownload)
+    if (!art) return false
+    const modelDir = codeIndexModelDir(art.artifactId)
+    setCodeIndexRuntimeStatus({
+      phase: 'downloading',
+      modelId: art.modelId,
+      modelDir,
+      progress: 0,
+      message: `Downloading ${art.artifactId} (code index embedder)`,
+      error: null
+    })
+    try {
+      const ok = await downloadModelFiles(modelDir, art.files, {
+        fetchImpl: opts.fetchImpl,
+        signal: opts.signal,
+        hardError: false
+      })
+      if (ok) {
+        logger.info('codeindex: dense embedder weights ready', {
+          scope: 'codeindex',
+          modelDir
+        })
+      } else {
+        logger.warn(
+          'codeindex: dense embedder weights download failed — dense search stays unavailable',
+          { scope: 'codeindex' }
+        )
+      }
+      return ok
+    } finally {
+      bootstrapWeightsPromise = null
+    }
+  })()
+  return bootstrapWeightsPromise
 }
 
 let cachedSession: OnnxEmbedSession | null = null

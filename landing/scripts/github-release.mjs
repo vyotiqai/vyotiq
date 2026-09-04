@@ -56,6 +56,16 @@ export function sanitizeSnapshot(value) {
   }
 }
 
+/** Pick the DMG to advertise for mac: arm64 (Apple Silicon majority) first,
+ * then the legacy arch-less name, then any remaining arch DMG. */
+function pickMacDmg(candidates) {
+  const arm64 = candidates.find((candidate) => candidate.name.endsWith('-arm64.dmg'))
+  if (arm64) return arm64
+  const legacy = candidates.find((candidate) => !/-[a-z0-9]+\.dmg$/i.test(candidate.name))
+  if (legacy) return legacy
+  return candidates[0] ?? null
+}
+
 /** Map a GitHub release JSON payload to packaged NSIS / DMG / AppImage assets. */
 export function mapGithubRelease(release) {
   if (release == null || typeof release !== 'object' || release.draft === true) {
@@ -69,23 +79,29 @@ export function mapGithubRelease(release) {
   const expected = version
     ? {
         win: `Vyotiq-${version}-setup.exe`,
-        mac: `Vyotiq-${version}.dmg`,
         linux: `Vyotiq-${version}.AppImage`
       }
     : null
+  // electron-builder names per-arch mac DMGs `Vyotiq-<v>-<arch>.dmg` when a
+  // release ships arm64 + x64; the arch-less name only appears for single-arch
+  // (x64) mac builds, so match all three shapes and prefer arm64.
+  const macPattern = version
+    ? new RegExp(`^Vyotiq-${version}(?:-arm64|-x64)?\\.dmg$`, 'i')
+    : null
 
   const assets = {}
+  const macCandidates = []
   for (const asset of list) {
     if (asset == null || typeof asset !== 'object') continue
     const name = typeof asset.name === 'string' ? asset.name : ''
     const url = httpsUrl(asset.browser_download_url)
     if (!name || !url) continue
-    if (expected) {
-      if (name === expected.win) assets.win = { name, url }
-      else if (name === expected.mac) assets.mac = { name, url }
-      else if (name === expected.linux) assets.linux = { name, url }
-    }
+    if (expected && name === expected.win) assets.win = { name, url }
+    else if (expected && name === expected.linux) assets.linux = { name, url }
+    else if (macPattern && macPattern.test(name)) macCandidates.push({ name, url })
   }
+  const mac = pickMacDmg(macCandidates)
+  if (mac) assets.mac = mac
 
   for (const asset of list) {
     if (asset == null || typeof asset !== 'object') continue
@@ -93,6 +109,11 @@ export function mapGithubRelease(release) {
     const url = httpsUrl(asset.browser_download_url)
     const platform = classifyInstaller(name)
     if (!platform || !url || assets[platform]) continue
+    if (platform === 'mac') {
+      const picked = pickMacDmg([{ name, url }, ...macCandidates])
+      if (picked) assets.mac = picked
+      continue
+    }
     assets[platform] = { name, url }
   }
 

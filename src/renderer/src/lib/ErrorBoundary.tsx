@@ -1,6 +1,12 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { logger } from '@shared/logger'
 import { isReactMaxUpdateDepth } from '@renderer/logging/reactMaxUpdateDepth'
+import {
+  isStaleChunkFailure,
+  rearmStaleChunkReload,
+  reloadWindow,
+  takeStaleChunkReload
+} from './staleChunk'
 import { Button } from './ui'
 
 type Props = {
@@ -29,6 +35,16 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
+    if (isStaleChunkFailure(error) && takeStaleChunkReload()) {
+      // A rebuild replaced out/ under the running window; the new build is
+      // already on disk — one reload re-enters on the fresh entry chunk.
+      logger.warn('Stale renderer chunk after rebuild — reloading window', {
+        scope: 'renderer',
+        code: 'STALE_CHUNK'
+      })
+      reloadWindow()
+      return
+    }
     const is185 = isReactMaxUpdateDepth(error.message)
     logger.fatal(is185 ? 'React maximum update depth (#185)' : 'Renderer crash', {
       scope: 'renderer',
@@ -39,7 +55,8 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   private reload = (): void => {
-    window.location.reload()
+    rearmStaleChunkReload()
+    reloadWindow()
   }
 
   private openLogs = (): void => {

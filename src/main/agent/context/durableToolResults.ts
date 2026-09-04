@@ -11,7 +11,12 @@ export const DURABLE_TOOL_RESULT_NAMES = [
   'memory_list',
   'memory_write',
   'todo_write',
-  'ask_question'
+  'ask_question',
+  // Verification evidence: the harness spine forbids claiming a test or check
+  // succeeded unless its result was observed, and these results capture a past
+  // command's output that cannot be re-fetched — so they must survive trims.
+  'run_tests',
+  'diagnostics'
 ] as const
 
 export type DurableToolResultName = (typeof DURABLE_TOOL_RESULT_NAMES)[number]

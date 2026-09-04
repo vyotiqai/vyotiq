@@ -51,6 +51,7 @@ import { logProviderFailure, providerFetchFailureChunk } from './log'
 import { CHAT_FETCH_MAX_ATTEMPTS, fetchWithRetry } from './fetchWithRetry'
 import { assertAllowedUrl, fetchWithValidatedRedirects } from '@main/agent/tools/webFetch'
 import { mergeOpenAiCompatToolArgDelta, wireToolCallArguments } from '../toolArgWire'
+import { mergeStreamedToolName } from '../../../shared/utils/toolName'
 import {
   formatProviderHttpError,
   parseOpenRouterAffordableOutputTokens,
@@ -80,7 +81,12 @@ export function openAiCompatMessageReasoningDelta(
   if (messageReasoning.startsWith(accumulated) && accumulated.length > 0) {
     return messageReasoning.slice(accumulated.length) || null
   }
-  return accumulated ? messageReasoning : messageReasoning
+  if (accumulated.length === 0) return messageReasoning
+  // Snapshot that is not a prefix-extension (host replaced/rewrote the
+  // buffer): re-emitting the full text duplicated the thinking block mid-
+  // stream. Suppress — the later thinking_done carries the authoritative
+  // buffer as a replace.
+  return null
 }
 
 /**
@@ -1650,14 +1656,12 @@ export function createOpenAiCompatibleProvider(
             }
             if (chunkId) existing.id = chunkId
             if (fn?.name) {
-              // Prefer whole name when chunk includes id (xAI whole-chunk); else append deltas
-              if (chunkId && fn.name) existing.name = fn.name
-              else if (!existing.name) existing.name = fn.name
-              else if (!existing.name.endsWith(fn.name) && !fn.name.startsWith(existing.name)) {
-                existing.name += fn.name
-              } else if (fn.name.length > existing.name.length) {
-                existing.name = fn.name
-              }
+              // Hosts either re-send the whole name per chunk (xAI whole-chunk,
+              // id-echoing gateways) or stream true fragments; a single merge
+              // rule handles both (replace on prefix-extension, append on
+              // fragments). The old branch clobbered the name on every id-
+              // carrying delta, producing "unknown tool" mid-run.
+              existing.name = mergeStreamedToolName(existing.name, fn.name)
             }
             const argChunk = openAiCompatArgumentsChunk(fn?.arguments)
             let yieldArguments = argChunk ?? ''

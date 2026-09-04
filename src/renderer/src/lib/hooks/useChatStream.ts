@@ -89,6 +89,7 @@ export function useChatStream(workspacePath: string | null) {
     send: controller.send.bind(controller),
     editAndResend: controller.editAndResend.bind(controller),
     revertToUserMessage: controller.revertToUserMessage.bind(controller),
+    previewRewindToUserMessage: controller.previewRewindToUserMessage.bind(controller),
     removeFollowUp: controller.removeFollowUp.bind(controller),
     editFollowUp: controller.editFollowUp.bind(controller),
     sendFollowUpNow: controller.sendFollowUpNow.bind(controller),

@@ -71,8 +71,7 @@ export const PLAN_ARTIFACT_NAMES = new Set(['contract.md', 'plan.md'])
 
 export function isPlanArtifactPath(pathArg: string): boolean {
   const p = pathArg.replace(/\\/g, '/').replace(/^\.\//, '')
-  if (PLAN_ARTIFACT_NAMES.has(basename(p))) return true
-  return /^\.hermes\/plans\/[^/]+\.md$/i.test(p)
+  return PLAN_ARTIFACT_NAMES.has(basename(p))
 }
 
 /** Workspace-relative path with `./` stripped — not nested `src/contract.md`. */
@@ -136,8 +135,8 @@ export function modeSectionMarkdown(
           ...(opts?.inlineInstance
             ? []
             : [
-                'Root-only agent-instance tools may be available. When the plan has 2+ independent workstreams (separate files or subsystems, each verifiable alone), delegate each to a child agent instance with a complete self-contained brief — outcome, sub-tasks, done-when, affected paths — since the child sees nothing of this conversation; follow the catalog schemas for the spawn, await, and merge lifecycle.',
-                'Parallel work does not require instances: batch independent tool calls within a step first, and delegate only when the workstreams would each run several steps or genuinely proceed in parallel.'
+                'Root-only agent-instance tools may be available. By default, decompose the plan into a structured set of small, independent workstreams (separate files or subsystems, each verifiable alone) and delegate each to a child agent instance with a complete self-contained brief — outcome, sub-tasks, done-when, affected paths — since the child sees nothing of this conversation; keep one workstream per instance so no child is overloaded, and follow the catalog schemas for the spawn, await, and merge lifecycle.',
+                'Batch independent tool calls within a step first; whole workstreams that would each run several steps go to child instances as small briefs rather than being executed step-by-step in the parent.'
               ])
         ].join('\n')
       )
@@ -159,7 +158,7 @@ export function modeSectionMarkdown(
         [
           'Plan mode. Inspect the workspace with read-only tools before drafting. Plans must name paths and symbols verified in this run.',
           'Use `ask_question` for blocking choices, then publish the complete plan with `create_plan`. Include goal, success criteria, scope, approach, ordered steps, verification, and risks.',
-          'Only plan.md and contract.md may be edited. Do not change product files, delete files, run `terminal`, write memory, or invoke MCP server tools. `diagnostics` may run the configured check command subject to approval.',
+          'Only plan.md and contract.md may be edited. Do not change product files, delete files, run `terminal`, write memory, or invoke MCP server tools. `diagnostics` and `run_tests` may run checks subject to approval.',
           ...autoModeSwitchBanner(mode, auto),
           ...(auto
             ? []

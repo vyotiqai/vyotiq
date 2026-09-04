@@ -67,9 +67,25 @@ export const COMPOSER_FLOAT_DOCK = 'pointer-events-none absolute inset-x-0 botto
 /** Gap between the floating composer shell and the pane bottom (`bottom-2`). */
 export const COMPOSER_FLOAT_BOTTOM_INSET_PX = 8
 
-/** Fade strip above the floating composer so transcript rows dissolve behind it. */
+/**
+ * Fade painted above the floating composer so transcript rows dissolve behind
+ * it into the stage background. Must start from `--vy-bg`, never the
+ * composer's `--vy-chrome-surface`: skins where the two diverge (bench) paint
+ * a floating band of composer surface above the shell that reads as a stray
+ * shadow. Gradient layer only — wrap it in the stage gutters + chat column so
+ * its width matches the composer shell, inside an `absolute inset-x-0
+ * bottom-full` anchor that sits above the scroll-clipped dock body.
+ */
 export const COMPOSER_FLOAT_FADE =
-  'pointer-events-none absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-[var(--vy-chrome-surface)] to-transparent'
+  'h-full w-full bg-gradient-to-t from-[var(--vy-bg)] to-transparent'
+
+/**
+ * Scroll-clipped dock body — reserves the same scrollbar gutter as the
+ * transcript scrollport so the centered composer column lines up exactly with
+ * the transcript column under classic (space-reserving) scrollbars.
+ */
+export const COMPOSER_FLOAT_BODY =
+  'w-full overflow-x-hidden overflow-y-hidden [scrollbar-gutter:stable]'
 
 /**
  * CSS variable the floating composer publishes its measured height to (on the

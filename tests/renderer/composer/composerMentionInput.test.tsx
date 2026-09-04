@@ -57,19 +57,14 @@ describe('ComposerMentionInput sync', () => {
     expect(screen.queryByText('Ask anything…')).toBeNull()
   })
 
-  it('forwards pasted files and still inserts plain text', () => {
+  it('forwards pasted files and inserts plain text in one pass', () => {
     const onPasteFiles = vi.fn()
-    const exec = vi.fn(() => true)
-    Object.defineProperty(document, 'execCommand', {
-      configurable: true,
-      writable: true,
-      value: exec
-    })
+    const onChange = vi.fn()
     const file = new File(['png'], 'shot.png', { type: 'image/png' })
     render(
       <ComposerMentionInput
         value=""
-        onChange={vi.fn()}
+        onChange={onChange}
         onKeyDown={vi.fn()}
         onPasteFiles={onPasteFiles}
       />
@@ -84,6 +79,46 @@ describe('ComposerMentionInput sync', () => {
     })
     expect(onPasteFiles).toHaveBeenCalledTimes(1)
     expect(onPasteFiles.mock.calls[0]![0][0]).toBe(file)
-    expect(exec).toHaveBeenCalledWith('insertText', false, 'hello')
+    expect(el.textContent).toBe('hello')
+    expect(onChange).toHaveBeenCalledWith('hello')
+  })
+
+  it('inserts multi-line paste as text nodes and <br>, no execCommand', () => {
+    const exec = vi.fn(() => true)
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      writable: true,
+      value: exec
+    })
+    const onChange = vi.fn()
+    render(<ComposerMentionInput value="" onChange={onChange} onKeyDown={vi.fn()} />)
+    const el = screen.getByRole('combobox', { name: /^message$/i })
+    fireEvent.paste(el, {
+      clipboardData: {
+        files: [],
+        items: [],
+        getData: (type: string) => (type === 'text/plain' ? 'line1\nline2' : '')
+      }
+    })
+    expect(el.textContent).toBe('line1line2')
+    expect(el.querySelectorAll('br')).toHaveLength(1)
+    expect(onChange).toHaveBeenCalledWith('line1\nline2')
+    expect(exec).not.toHaveBeenCalled()
+  })
+
+  it('reports a serialized caret offset after paste without cloning the DOM', () => {
+    const ref = createRef<ComposerMentionInputHandle>()
+    render(
+      <ComposerMentionInput ref={ref} value="" onChange={vi.fn()} onKeyDown={vi.fn()} />
+    )
+    const el = screen.getByRole('combobox', { name: /^message$/i })
+    fireEvent.paste(el, {
+      clipboardData: {
+        files: [],
+        items: [],
+        getData: (type: string) => (type === 'text/plain' ? 'abcdef' : '')
+      }
+    })
+    expect(ref.current?.getSelectionStart()).toBe(6)
   })
 })

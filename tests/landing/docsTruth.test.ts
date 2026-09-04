@@ -311,7 +311,7 @@ describe('landing docs architecture and truth', () => {
     }
     expect(providers).toContain('**Active provider** shows local Ollama')
     expect(features).toContain('New settings initially select Ollama with <code>qwen2.5</code>')
-    expect(features).toContain('ten named cloud providers')
+    expect(features).toContain('nine cloud providers')
     expect(features).toContain('custom OpenAI-compatible host')
     expect(features).not.toMatch(/default provider/i)
     expect(providers).not.toMatch(/default provider/i)

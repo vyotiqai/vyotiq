@@ -36,7 +36,7 @@ const transcribeDictationMock = vi.hoisted(() => vi.fn())
 const runExistsMock = vi.hoisted(() => vi.fn())
 const isActiveMock = vi.hoisted(() => vi.fn(() => false))
 const resolveWritesMock = vi.hoisted(() => vi.fn())
-const undoWritesMock = vi.hoisted(() => vi.fn())
+const planRewindWritesMock = vi.hoisted(() => vi.fn(() => ({ checkpointIds: [], files: [] })))
 const renameRunMock = vi.hoisted(() => vi.fn())
 const previewHarnessApplyMock = vi.hoisted(() =>
   vi.fn(() => {
@@ -130,8 +130,8 @@ vi.mock('@main/agent/rewindRun', () => ({
 }))
 
 vi.mock('@main/agent/checkpoints', () => ({
-  undoWrites: (...args: unknown[]) => undoWritesMock(...args),
   resolveWrites: (...args: unknown[]) => resolveWritesMock(...args),
+  planRewindWrites: (...args: unknown[]) => planRewindWritesMock(...args),
   getWriteCheckpointMeta: vi.fn(() => null)
 }))
 
@@ -278,7 +278,8 @@ describe('registerIpc', () => {
     waitUntilRunInactiveMock.mockResolvedValue(true)
     isActiveMock.mockReturnValue(false)
     resolveWritesMock.mockReset()
-    undoWritesMock.mockReset()
+    planRewindWritesMock.mockReset()
+    planRewindWritesMock.mockReturnValue({ checkpointIds: [], files: [] })
     renameRunMock.mockReset()
     previewHarnessApplyMock.mockReset()
     previewHarnessApplyMock.mockImplementation(() => {
@@ -857,66 +858,58 @@ describe('registerIpc', () => {
     })
   })
 
-  describe('runsUndoWrites', () => {
-    it('maps already-undone checkpoint errors to user-facing fail', async () => {
-      undoWritesMock.mockImplementation(() => {
-        throw new Error('That checkpoint was already undone')
-      })
-      const handler = handlers.get(IPC.runsUndoWrites)
-      const result = await handler!(
-        { sender: mockWc, senderFrame: mockMainFrame },
-        {
-          workspacePath: '/ws',
-          runId: 'run-1',
-          checkpointId: 'cp-1'
-        }
-      )
+  describe('chatRewindPreview', () => {
+    const previewPayload = {
+      workspacePath: '/ws',
+      runId: 'run-revert',
+      userMessageIndex: 0
+    }
 
-      expect(result.ok).toBe(false)
-      if (!result.ok) {
-        expect(result.error).toMatch(/already undone/i)
-        expect(result.code).not.toBe('IPC_HANDLER')
-      }
+    it('returns the planned file set without mutating anything', async () => {
+      runExistsMock.mockReturnValue(true)
+      isActiveMock.mockReturnValue(false)
+      planRewindWritesMock.mockReturnValue({
+        checkpointIds: ['cp-1'],
+        files: [{ path: 'a.txt', action: 'modified', undoable: true }]
+      })
+
+      const handler = handlers.get(IPC.chatRewindPreview)
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, previewPayload)
+
+      expect(result).toEqual({
+        ok: true,
+        data: {
+          checkpointIds: ['cp-1'],
+          files: [{ path: 'a.txt', action: 'modified', undoable: true }]
+        }
+      })
+      expect(planRewindWritesMock).toHaveBeenCalledWith(expect.any(String), 0)
     })
 
-    it('maps checkpoint-not-found errors to user-facing fail', async () => {
-      undoWritesMock.mockImplementation(() => {
-        throw new Error('Checkpoint not found: cp-missing')
-      })
-      const handler = handlers.get(IPC.runsUndoWrites)
-      const result = await handler!(
-        { sender: mockWc, senderFrame: mockMainFrame },
-        {
-          workspacePath: '/ws',
-          runId: 'run-1',
-          checkpointId: 'cp-missing'
-        }
-      )
+    it('refuses while a run is active', async () => {
+      runExistsMock.mockReturnValue(true)
+      isActiveMock.mockReturnValue(true)
+
+      const handler = handlers.get(IPC.chatRewindPreview)
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, previewPayload)
 
       expect(result.ok).toBe(false)
       if (!result.ok) {
-        expect(result.error).toMatch(/checkpoint not found/i)
-        expect(result.code).not.toBe('IPC_HANDLER')
+        expect(result.error).toMatch(/stop the run/i)
       }
+      expect(planRewindWritesMock).not.toHaveBeenCalled()
     })
 
-    it('maps invalid checkpoint id errors to user-facing fail', async () => {
-      undoWritesMock.mockImplementation(() => {
-        throw new Error('Invalid checkpoint id: not-a-uuid')
-      })
-      const handler = handlers.get(IPC.runsUndoWrites)
-      const result = await handler!(
-        { sender: mockWc, senderFrame: mockMainFrame },
-        {
-          workspacePath: '/ws',
-          runId: 'run-1',
-          checkpointId: 'not-a-uuid'
-        }
-      )
+    it('maps run-not-found to user-facing fail', async () => {
+      runExistsMock.mockReturnValue(false)
+      isActiveMock.mockReturnValue(false)
+
+      const handler = handlers.get(IPC.chatRewindPreview)
+      const result = await handler!({ sender: mockWc, senderFrame: mockMainFrame }, previewPayload)
 
       expect(result.ok).toBe(false)
       if (!result.ok) {
-        expect(result.error).toMatch(/invalid checkpoint/i)
+        expect(result.error).toMatch(/run not found/i)
         expect(result.code).not.toBe('IPC_HANDLER')
       }
     })

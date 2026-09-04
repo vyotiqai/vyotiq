@@ -9,6 +9,29 @@ let current: UpdaterStatus = { state: 'idle' }
 let initialized = false
 
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+// A hung check must not wedge the UI: while state is 'checking' the settings
+// Check button stays disabled, so an unbounded await would permanently disable
+// manual checks. Race the action and recover to a visible error state.
+const UPDATE_ACTION_TIMEOUT_MS = 60_000
+let checkInFlight = false
+
+function withActionTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out. Check your network connection and try again.`))
+    }, UPDATE_ACTION_TIMEOUT_MS)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err: unknown) => {
+        clearTimeout(timer)
+        reject(err instanceof Error ? err : new Error(String(err)))
+      }
+    )
+  })
+}
 
 function broadcast(status: UpdaterStatus): void {
   current = status
@@ -16,8 +39,12 @@ function broadcast(status: UpdaterStatus): void {
     if (win.isDestroyed()) continue
     try {
       win.webContents.send(IPC.updaterStatusEvent, status)
-    } catch {
-      /* ignore */
+    } catch (err) {
+      // A destroyed-mid-send window races the isDestroyed() check routinely;
+      // record it instead of swallowing silently.
+      logger.debug('[updater] broadcast to window failed', {
+        error: err instanceof Error ? err.message : String(err)
+      })
     }
   }
 }
@@ -115,8 +142,12 @@ export async function checkForAppUpdates(): Promise<UpdaterStatus> {
     broadcast(status)
     return status
   }
+  // A manual check and the 6-hour tick can overlap; run one at a time so
+  // concurrent electron-updater requests cannot interleave their events.
+  if (checkInFlight) return current
+  checkInFlight = true
   try {
-    await autoUpdater.checkForUpdates()
+    await withActionTimeout(autoUpdater.checkForUpdates(), 'Update check')
     return current
   } catch (err) {
     const status: UpdaterStatus = {
@@ -125,6 +156,8 @@ export async function checkForAppUpdates(): Promise<UpdaterStatus> {
     }
     broadcast(status)
     return status
+  } finally {
+    checkInFlight = false
   }
 }
 
@@ -139,7 +172,7 @@ export async function downloadAppUpdate(): Promise<UpdaterStatus> {
     return status
   }
   try {
-    await autoUpdater.downloadUpdate()
+    await withActionTimeout(autoUpdater.downloadUpdate(), 'Update download')
     return current
   } catch (err) {
     const status: UpdaterStatus = {

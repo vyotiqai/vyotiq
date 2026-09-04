@@ -151,6 +151,13 @@ export function summarizeWeaknesses(
   let toolCallTotal = 0
   let compactionHeavy = 0
   let memoryToolFails = 0
+  let verificationStale = 0
+  let diagCalls = 0
+  let diagClean = 0
+  let testsOk = 0
+  let testsCalls = 0
+  let lastPassed: number | undefined
+  let lastFailed: number | undefined
 
   for (const { runId, receipt } of receipts) {
     toolCallTotal += receipt.toolStats.totalCalls
@@ -158,6 +165,17 @@ export function summarizeWeaknesses(
     if ((receipt.maxConsecutiveToolFailures ?? 0) >= 3) {
       highFailureStreaks++
       highFailureRuns.add(runId)
+    }
+    if (receipt.verification && receipt.verification.verifiedAfterLastMutation === false) {
+      verificationStale++
+    }
+    diagCalls += receipt.diagnostics?.calls ?? 0
+    diagClean += receipt.diagnostics?.clean ?? 0
+    if (receipt.tests) {
+      testsCalls += receipt.tests.calls
+      testsOk += receipt.tests.ok
+      if (receipt.tests.lastPassed != null) lastPassed = receipt.tests.lastPassed
+      if (receipt.tests.lastFailed != null) lastFailed = receipt.tests.lastFailed
     }
     for (const cluster of receipt.failureClusters) {
       failureCounts.set(cluster.key, (failureCounts.get(cluster.key) ?? 0) + cluster.count)
@@ -217,6 +235,19 @@ export function summarizeWeaknesses(
       `${compactionHeavy} run(s) compacted ≥ 2 times (context pressure)${formatRunSources(compactionHeavyRuns)}.`
     )
   }
+  if (diagCalls > 0) {
+    bullets.push(`Diagnostics: ${diagClean}/${diagCalls} clean across sampled runs.`)
+  }
+  if (testsCalls > 0) {
+    const lastBit =
+      lastPassed != null ? `; latest run: ${lastPassed} passed, ${lastFailed ?? 0} failed` : ''
+    bullets.push(`run_tests: ${testsOk}/${testsCalls} exited clean${lastBit}.`)
+  }
+  if (verificationStale > 0) {
+    bullets.push(
+      `${verificationStale} run(s) ended with file mutations after the last successful check (unverified).`
+    )
+  }
   if (bullets.length === 1) {
     bullets.push('No strong weakness signals in the sampled receipts.')
   }
@@ -246,6 +277,13 @@ export function summarizeWeaknesses(
       compactionHeavy > 0
         ? `${compactionHeavy} compaction-heavy run(s).`
         : `Memory tool failure clusters (${memoryToolFails}×).`
+    )
+  }
+  if (verificationStale > 0) {
+    pushBucket(
+      bucketMap,
+      'tool_policy',
+      `${verificationStale} run(s) ended with file mutations after the last successful diagnostics/run_tests check.`
     )
   }
 

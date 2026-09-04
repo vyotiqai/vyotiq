@@ -135,6 +135,33 @@ describe('Composer', () => {
     })
   })
 
+  it('normalizes whitespace-only drafts so the composer stays one line', async () => {
+    render(
+      <Composer
+        provider="ollama"
+        model="qwen2.5"
+        running={false}
+        secrets={testSecrets}
+        chatSettings={chatSettings}
+        onChatSettingsChange={vi.fn()}
+        onProviderModel={vi.fn()}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+      />
+    )
+
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
+    ta.textContent = '\n\n\n\n\n\n\n\n\n\n'
+    fireEvent.input(ta)
+
+    // Whitespace-only input normalizes to an empty draft — the controlled DOM
+    // re-renders empty so invisible blank lines never stretch the composer body.
+    await waitFor(() => {
+      expect(ta.textContent).toBe('')
+    })
+    expect(screen.getByRole('button', { name: /^Dictate$/i })).toBeTruthy()
+  })
+
   it('does not overwrite a newer draft when an earlier send fails', async () => {
     let finishSend: ((ok: boolean) => void) | undefined
     const onSend = vi.fn(

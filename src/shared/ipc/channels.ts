@@ -8,6 +8,10 @@ export const IPC = {
   workspacesUpdateUiState: 'workspaces:update-ui-state',
   workspacesUpdateUiStateSync: 'workspaces:update-ui-state-sync',
   workspacesSetSettingsOverride: 'workspaces:set-settings-override',
+  /** Persisted composer attachment buckets (images / files / audio) per workspace+run key. */
+  composerAttachmentsGet: 'composer-attachments:get',
+  composerAttachmentsSet: 'composer-attachments:set',
+  composerAttachmentsClear: 'composer-attachments:clear',
   getSettings: 'settings:get',
   setSettings: 'settings:set',
   setSecret: 'secrets:set',
@@ -18,6 +22,8 @@ export const IPC = {
   chatCancel: 'chat:cancel',
   chatRewindAndStart: 'chat:rewindAndStart',
   chatRewind: 'chat:rewind',
+  /** Read-only preview of which files a chatRewind would restore. */
+  chatRewindPreview: 'chat:rewindPreview',
   chatFollowUp: 'chat:followUp',
   chatFollowUpRemove: 'chat:followUpRemove',
   chatFollowUpUpdate: 'chat:followUpUpdate',
@@ -53,7 +59,6 @@ export const IPC = {
   runsExport: 'runs:export',
   runsRename: 'runs:rename',
   runsActive: 'runs:active',
-  runsUndoWrites: 'runs:undoWrites',
   runsResolveWrites: 'runs:resolveWrites',
   runsReadArtifact: 'runs:readArtifact',
   runsSetGoalStatus: 'runs:setGoalStatus',

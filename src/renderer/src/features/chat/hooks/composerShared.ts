@@ -170,10 +170,8 @@ export function useComposerEditState(args: {
   const beginPromptRevert = useCallback(
     async (messageIndex: number) => {
       if (!onRevertToUserMessage) return
-      const confirmed = window.confirm(
-        'Revert to this prompt? File changes and messages after it will be removed.'
-      )
-      if (!confirmed) return
+      // Confirmation (with the affected-file list) is owned by the handler —
+      // do not add a second native confirm here.
       const ok = await onRevertToUserMessage(messageIndex)
       if (ok !== false) onAfterRevert?.()
     },

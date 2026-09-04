@@ -8,6 +8,9 @@ import {
   ChatStartRequestSchema,
   ChatUiSubscribeRequestSchema,
   ChatUiSubscribeAddRequestSchema,
+  ComposerAttachmentsClearRequestSchema,
+  ComposerAttachmentsGetRequestSchema,
+  ComposerAttachmentsSetRequestSchema,
   ChatRewindAndStartRequestSchema,
   ChatRewindRequestSchema,
   CancelRunRequestSchema,
@@ -17,7 +20,6 @@ import {
   ChatFollowUpPromoteRequestSchema,
   ChatQueueModeRequestSchema,
   CompactRunRequestSchema,
-  UndoWritesRequestSchema,
   ResolveWritesRequestSchema,
   ReadRunArtifactRequestSchema,
   HarnessReviewRequestSchema,
@@ -152,6 +154,7 @@ import {
   type ToolApprovalRequest,
   type ChatStartResult,
   type ChatRewindResult,
+  type ChatRewindPreviewResult,
   type ChatFollowUpResult,
   type ChatFollowUpRemoveResult,
   type ChatFollowUpUpdateResult,
@@ -159,7 +162,6 @@ import {
   type ChatQueueModeResult,
   type ChatMessage,
   type CompactRunResult,
-  type UndoWritesResult,
   type ResolveWritesResult,
   type ReadRunArtifactResult,
   type HarnessReviewResult,
@@ -196,6 +198,7 @@ import {
   BrowserSetBoundsRequestSchema,
   BrowserTakeScreenshotRequestSchema,
   NotificationMutateRequestSchema,
+  type ComposerAttachmentsGetResult,
   type NotificationList
 } from '../../shared/ipc'
 import {
@@ -276,11 +279,16 @@ import {
   CompactionUnavailableError,
   CompactionVerifyFailedError
 } from '../agent/compactRun'
-import { undoWrites, resolveWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
+import { resolveWrites, planRewindWrites, getWriteCheckpointMeta } from '../agent/checkpoints'
 import { prepareRewindAndReplaceUserMessage, prepareRewindToUserMessage } from '../agent/rewindRun'
 import { resolveRunDir, workspaceBrowserArtifactsDir } from '@main/storage/paths'
   import { focusAgentBrowser, closeAgentBrowser, getAgentBrowserState, selectBrowserTab, browserGoBack, browserGoForward, setAgentBrowserBounds, navigateUrl, clearAgentBrowserData, takeBrowserScreenshot, disposeAgentBrowserForWorkspace, takeBrowserControl, releaseBrowserControl, manageTabs } from '@main/app/agentBrowser'
 import { extractAttachment } from '../attachments/extract'
+import {
+  clearComposerAttachmentsForWorkspace,
+  listComposerAttachmentsForWorkspace,
+  setComposerAttachmentsForWorkspace
+} from '../attachments/composerStore'
 import { transcribeDictation } from '../dictation/transcribe'
 import {
   listPendingToolApprovals,
@@ -967,7 +975,9 @@ export function registerIpc(): void {
       }
       const { invokeId } = registered
       if (resume) {
-        hydrateRunFollowUps(req.workspacePath, runId)
+        // Dedupe against the freshly sent messages: a crash between enqueue and
+        // apply followed by a manual resend must not apply the text twice.
+        hydrateRunFollowUps(req.workspacePath, runId, req.newMessages)
       }
       logger.info('Chat start', {
         scope: 'ipc',
@@ -1221,6 +1231,44 @@ export function registerIpc(): void {
       }
     }
   )
+
+  ipcMain.handle(
+    IPC.composerAttachmentsGet,
+    async (event, raw): Promise<IpcResult<ComposerAttachmentsGetResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ComposerAttachmentsGetRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+        return ok({ buckets: await listComposerAttachmentsForWorkspace(req.workspacePath) })
+      } catch (err) {
+        return failFrom(err, IPC.composerAttachmentsGet)
+      }
+    }
+  )
+
+  ipcMain.handle(IPC.composerAttachmentsSet, async (event, raw): Promise<IpcResult<true>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = ComposerAttachmentsSetRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      await setComposerAttachmentsForWorkspace(req.workspacePath, req.buckets)
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.composerAttachmentsSet)
+    }
+  })
+
+  ipcMain.handle(IPC.composerAttachmentsClear, async (event, raw): Promise<IpcResult<true>> => {
+    if (!senderOk(event)) return fail('Invalid sender')
+    try {
+      const req = ComposerAttachmentsClearRequestSchema.parse(raw)
+      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
+      await clearComposerAttachmentsForWorkspace(req.workspacePath, req.key)
+      return ok(true)
+    } catch (err) {
+      return failFrom(err, IPC.composerAttachmentsClear)
+    }
+  })
 
   ipcMain.handle(
     IPC.attachmentExtract,
@@ -1534,37 +1582,35 @@ export function registerIpc(): void {
     }
   })
 
-  ipcMain.handle(IPC.runsUndoWrites, async (event, raw): Promise<IpcResult<UndoWritesResult>> => {
-    if (!senderOk(event)) return fail('Invalid sender')
-    try {
-      const req = UndoWritesRequestSchema.parse(raw)
-      if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
-      if (isActive(req.runId)) {
-        return fail('Stop the run before undoing agent writes.')
+  ipcMain.handle(
+    IPC.chatRewindPreview,
+    async (event, raw): Promise<IpcResult<ChatRewindPreviewResult>> => {
+      if (!senderOk(event)) return fail('Invalid sender')
+      try {
+        const req = ChatRewindRequestSchema.parse(raw)
+        if (!isOpenWorkspace(req.workspacePath)) {
+          return fail('Workspace is not open')
+        }
+        if (!existsSync(req.workspacePath)) {
+          return fail('Workspace path does not exist')
+        }
+        if (!runExists(req.workspacePath, req.runId)) {
+          return fail('Run not found')
+        }
+        if (isActive(req.runId)) {
+          return fail('Stop the run before reverting.')
+        }
+        const runDir = resolveRunDir(req.workspacePath, req.runId)
+        return ok(planRewindWrites(runDir, req.userMessageIndex))
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err)
+        if (/userMessageIndex|run not found/i.test(msg)) {
+          return fail(msg)
+        }
+        return failFrom(err, IPC.chatRewindPreview)
       }
-      const runDir = resolveRunDir(req.workspacePath, req.runId)
-      const result = undoWrites(runDir, req.workspacePath, req.checkpointId)
-      invalidateGitStatusCache(req.workspacePath)
-      persistWriteCheckpointEvent(runDir, req.runId, result.checkpointId)
-      logger.info('Undid agent writes', {
-        scope: 'ipc',
-        correlationId: req.runId,
-        channel: IPC.runsUndoWrites,
-        checkpointId: result.checkpointId,
-        restored: result.restored.length
-      })
-      return ok(result)
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (/no undoable write checkpoint/i.test(msg)) {
-        return fail('Nothing to undo — no write checkpoint for this run.')
-      }
-      if (/already undone|checkpoint not found|invalid checkpoint/i.test(msg)) {
-        return fail(msg)
-      }
-      return failFrom(err, IPC.runsUndoWrites)
     }
-  })
+  )
 
   ipcMain.handle(
     IPC.runsResolveWrites,
@@ -1854,7 +1900,7 @@ export function registerIpc(): void {
       try {
         const req = RenameRunRequestSchema.parse(raw)
         if (!isOpenWorkspace(req.workspacePath)) return fail('Workspace is not open')
-        return ok(renameRun(req.workspacePath, req.runId, req.goal))
+        return ok(await renameRun(req.workspacePath, req.runId, req.goal))
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err)
         // Same user-state class as runsDelete result.error (active / missing / corrupt).

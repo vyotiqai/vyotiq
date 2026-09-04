@@ -1,4 +1,10 @@
 import { z } from 'zod'
+import {
+  AttachmentAudioPartSchema,
+  AttachmentFilePartSchema,
+  AttachmentNativeFilePartSchema,
+  MAX_IMAGE_DATA_URL_CHARS
+} from './agent'
 import { ProviderIdSchema, ThinkingEffortSchema } from './providers'
 import { MarketplaceOverridesSchema } from './marketplace'
 import {
@@ -22,9 +28,59 @@ export const WorkspaceUiStateSchema = z.object({
    * Monotonic client write generation. Main ignores updates with a lower
    * generation than the last accepted write for that path (out-of-order IPC).
    */
-  writeGeneration: z.number().int().nonnegative().optional()
+  writeGeneration: z.number().int().nonnegative().optional(),
+  /**
+   * Renderer boot epoch. A changed epoch means the renderer reloaded and its
+   * generation counter restarted — main must re-seed the stale-write guard
+   * instead of silently dropping every write until the counter catches up.
+   */
+  writeEpoch: z.string().optional()
 })
 export type WorkspaceUiState = z.infer<typeof WorkspaceUiStateSchema>
+
+/** Max pending attachments of one kind per run bucket (renderer store parity). */
+export const COMPOSER_ATTACHMENT_BUCKET_LIMIT = 24
+/** Per-workspace cap on persisted run buckets; oldest savedAt is evicted. */
+export const COMPOSER_ATTACHMENT_MAX_BUCKETS = 200
+
+/** One run's (or the new-chat draft's) pending attachment bucket. */
+export const ComposerAttachmentsBucketSchema = z.object({
+  images: z
+    .array(z.string().min(1).max(MAX_IMAGE_DATA_URL_CHARS))
+    .max(COMPOSER_ATTACHMENT_BUCKET_LIMIT)
+    .default([]),
+  files: z.array(AttachmentFilePartSchema).max(COMPOSER_ATTACHMENT_BUCKET_LIMIT).default([]),
+  nativeFiles: z
+    .array(AttachmentNativeFilePartSchema)
+    .max(COMPOSER_ATTACHMENT_BUCKET_LIMIT)
+    .default([]),
+  audio: z.array(AttachmentAudioPartSchema).max(COMPOSER_ATTACHMENT_BUCKET_LIMIT).default([])
+})
+export type ComposerAttachmentsBucket = z.infer<typeof ComposerAttachmentsBucketSchema>
+
+export const ComposerAttachmentsGetRequestSchema = z.object({
+  workspacePath: z.string().min(1)
+})
+export type ComposerAttachmentsGetRequest = z.infer<typeof ComposerAttachmentsGetRequestSchema>
+
+/** Whole-workspace read used to seed the renderer store when a workspace opens. */
+export const ComposerAttachmentsGetResultSchema = z.object({
+  buckets: z.record(z.string(), ComposerAttachmentsBucketSchema).default({})
+})
+export type ComposerAttachmentsGetResult = z.infer<typeof ComposerAttachmentsGetResultSchema>
+
+export const ComposerAttachmentsSetRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  /** Whole-workspace replace from the renderer's in-memory view (debounced). */
+  buckets: z.record(z.string(), ComposerAttachmentsBucketSchema).default({})
+})
+export type ComposerAttachmentsSetRequest = z.infer<typeof ComposerAttachmentsSetRequestSchema>
+
+export const ComposerAttachmentsClearRequestSchema = z.object({
+  workspacePath: z.string().min(1),
+  key: z.string().min(1).max(700)
+})
+export type ComposerAttachmentsClearRequest = z.infer<typeof ComposerAttachmentsClearRequestSchema>
 
 export const WorkspaceSettingsOverrideSchema = z.object({
   provider: ProviderIdSchema.optional(),

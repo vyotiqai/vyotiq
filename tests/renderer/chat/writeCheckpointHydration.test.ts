@@ -16,6 +16,7 @@ function cpEvent(opts: {
   path: string
   undone?: boolean
   resolved?: 'kept' | 'discarded'
+  conflicted?: boolean
 }): unknown {
   return {
     at: '2026-01-01T00:00:00.000Z',
@@ -29,7 +30,8 @@ function cpEvent(opts: {
           path: opts.path,
           action: 'modified' as const,
           undoable: true,
-          ...(opts.resolved ? { resolved: opts.resolved } : {})
+          ...(opts.resolved ? { resolved: opts.resolved } : {}),
+          ...(opts.conflicted ? { conflicted: opts.conflicted } : {})
         }
       ]
     }
@@ -98,5 +100,14 @@ describe('writes_checkpoint hydration (newest-row-wins regression)', () => {
     await controller.syncFromDisk('r1')
     // All files resolved → banner suppressed even though row.undone is absent.
     expect(controller.writeCheckpoint).toBeNull()
+  })
+
+  it('conflicted state survives reload so "Edited since" stays visible', async () => {
+    setupBridge([
+      cpEvent({ checkpointId: 'cp-1', path: 'a.ts', conflicted: true })
+    ])
+    const controller = createChatStreamController({ workspacePath: '/ws', runId: 'r1' })
+    await controller.syncFromDisk('r1')
+    expect(controller.writeCheckpoint?.files[0]?.conflicted).toBe(true)
   })
 })

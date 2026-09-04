@@ -136,8 +136,8 @@ export const ChangeSummary = memo(function ChangeSummary({
     return resolvablePaths.has(path) || normalizedResolvablePaths.has(normalizeRelPath(path))
   }
 
-  const totalAdded = visibleFiles.reduce((sum, file) => sum + file.added, 0)
-  const totalRemoved = visibleFiles.reduce((sum, file) => sum + file.removed, 0)
+  const totalAdded = visibleFiles.reduce((sum, file) => sum + (file.added ?? 0), 0)
+  const totalRemoved = visibleFiles.reduce((sum, file) => sum + (file.removed ?? 0), 0)
   const unresolved = visibleFiles.filter((f) => {
     if (!isResolvablePath(f.path)) return false
     const norm = normalizeRelPath(f.path)
@@ -184,8 +184,8 @@ export const ChangeSummary = memo(function ChangeSummary({
                 <FileBadge path={file.path} />
                 <ChangeFileName path={file.path} onOpenFile={onOpenFile} />
                 <span className="ml-auto flex shrink-0 items-center gap-2 tabular-nums">
-                  {file.added > 0 ? <span className="text-success">+{file.added}</span> : null}
-                  {file.removed > 0 ? <span className="text-danger">-{file.removed}</span> : null}
+                  {(file.added ?? 0) > 0 ? <span className="text-success">+{file.added}</span> : null}
+                  {(file.removed ?? 0) > 0 ? <span className="text-danger">-{file.removed}</span> : null}
                   <FileActionBadge action={file.action} />
                 </span>
               </div>
@@ -272,7 +272,7 @@ export const ChangeSummary = memo(function ChangeSummary({
           const resolution = fileResolutions?.get(norm) ?? fileResolutions?.get(file.path)
           const lines = fileDiffs?.get(norm) ?? fileDiffs?.get(file.path)
           const expanded = expandedPaths.has(file.path)
-          const canExpand = Boolean(lines && lines.length > 0) || file.removed > 0
+          const canExpand = Boolean(lines && lines.length > 0) || file.action === 'deleted'
           const conflicted = Boolean(conflictedPaths?.has(norm) ?? conflictedPaths?.has(file.path))
           const showResolve = canResolve && isResolvablePath(file.path) && !conflicted
 
@@ -302,8 +302,8 @@ export const ChangeSummary = memo(function ChangeSummary({
                 <FileBadge path={file.path} />
                 <ChangeFileName path={file.path} onOpenFile={onOpenFile} />
                 <span className="ml-auto flex shrink-0 items-center gap-2 tabular-nums">
-                  {file.added > 0 ? <span className="text-success">+{file.added}</span> : null}
-                  {file.removed > 0 ? <span className="text-danger">-{file.removed}</span> : null}
+                  {(file.added ?? 0) > 0 ? <span className="text-success">+{file.added}</span> : null}
+                  {(file.removed ?? 0) > 0 ? <span className="text-danger">-{file.removed}</span> : null}
                   <FileActionBadge action={file.action} />
                   {conflicted ? (
                     <span

@@ -501,11 +501,11 @@ describe('listRuns / interruptOrphanRuns', () => {
     expect(loadMessages(workspace, runId)).toEqual(messages)
   })
 
-  it('renames run goal atomically in status and contract', () => {
+  it('renames run goal atomically in status and contract', async () => {
     const runId = 'rename-run'
     const dir = createRun(workspace, runId, 'old goal')
     writeFileSync(join(dir, 'contract.md'), '# Run contract\n\n## Goal\n\nold goal\n\n## Done when\n\nx\n', 'utf8')
-    const summary = renameRun(workspace, runId, 'new goal')
+    const summary = await renameRun(workspace, runId, 'new goal')
     expect(summary.goal).toBe('new goal')
     const status = JSON.parse(readFileSync(join(dir, 'status.json'), 'utf8')) as { goal?: string }
     expect(status.goal).toBe('new goal')

@@ -34,10 +34,13 @@ import {
 import {
   clearComposerAttachments,
   clearComposerAttachmentsForWorkspace,
-  composerAttachmentKey
+  composerAttachmentKey,
+  flushComposerAttachmentsToDisk,
+  seedComposerAttachmentsFromDisk
 } from './composerAttachmentStore'
 import { pushToast } from '@renderer/lib/ui'
 import { focusComposerMessage } from '@renderer/lib/shortcuts'
+
 import {
   backgroundRunFinishedMessage,
   finishedBackgroundRuns,
@@ -73,6 +76,13 @@ export type PaneCapacityContext = {
 const ACTIVE_RUNS_POLL_MS = 5_000
 const ACTIVE_RUNS_WARN_INTERVAL_MS = 60_000
 const INTERRUPTED_RUNS_TOAST_KEY = 'vyotiq:interrupted-runs-toast'
+
+/**
+ * Renderer boot epoch, regenerated on every module load (reload, crash
+ * recovery). Main pairs it with writeGeneration to re-seed the stale-write
+ * guard after a reload instead of dropping every UI-state write.
+ */
+const UI_WRITE_EPOCH = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
 
 /** Rehydrate ask_question cards after remount while main is still waiting. */
 async function restorePendingQuestions(
@@ -751,7 +761,7 @@ export function useWorkspaceManager(options?: {
       const gen = (uiWriteGenerationRef.current.get(path) ?? 0) + 1
       uiWriteGenerationRef.current.set(path, gen)
       void Promise.resolve(
-        update(path, { ...uiStateFromContext(ctx), writeGeneration: gen })
+        update(path, { ...uiStateFromContext(ctx), writeGeneration: gen, writeEpoch: UI_WRITE_EPOCH })
       ).then((res) => {
         if (!res || res.ok) return
         logger.warn('updateWorkspaceUiState failed', {
@@ -795,7 +805,7 @@ export function useWorkspaceManager(options?: {
       if (!ctx) continue
       const gen = (uiWriteGenerationRef.current.get(workspacePath) ?? 0) + 1
       uiWriteGenerationRef.current.set(workspacePath, gen)
-      const ui = { ...uiStateFromContext(ctx), writeGeneration: gen }
+      const ui = { ...uiStateFromContext(ctx), writeGeneration: gen, writeEpoch: UI_WRITE_EPOCH }
       const api = window.vyotiq
       if (!api) continue
       const sync = (
@@ -1417,6 +1427,11 @@ export function useWorkspaceManager(options?: {
   useEffect(() => {
     if (!registry) return
     const open = new Set(registry.openPaths)
+    // Seed persisted composer attachments (staged images/files/audio) once per
+    // workspace open — merges into memory without clobbering newer local state.
+    for (const path of open) {
+      void seedComposerAttachmentsFromDisk(path)
+    }
     for (const path of open) {
       const ctx = contextsRef.current[path] ?? contexts[path]
       if (!ctx) continue
@@ -1518,6 +1533,7 @@ export function useWorkspaceManager(options?: {
   useEffect(() => {
     const onBeforeUnload = (): void => {
       flushPersistUiState()
+      void flushComposerAttachmentsToDisk()
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => {
@@ -2647,6 +2663,9 @@ export function useWorkspaceManager(options?: {
             send: activeController.send.bind(activeController),
             editAndResend: activeController.editAndResend.bind(activeController),
             revertToUserMessage: activeController.revertToUserMessage.bind(activeController),
+            previewRewindToUserMessage: activeController.previewRewindToUserMessage.bind(
+              activeController
+            ),
             removeFollowUp: activeController.removeFollowUp.bind(activeController),
             editFollowUp: activeController.editFollowUp.bind(activeController),
             sendFollowUpNow: activeController.sendFollowUpNow.bind(activeController),

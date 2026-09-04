@@ -18,12 +18,15 @@ export function useRunTodos(opts: {
 }): {
   data: TodoParsed | null
   loading: boolean
+  /** True once the first load attempt for the current run has completed. */
+  loaded: boolean
   error: string | null
   reload: (opts?: { quiet?: boolean }) => Promise<void>
 } {
   const { workspacePath, runId, running = false, active = true, live = true } = opts
   const [data, setData] = useState<TodoParsed | null>(null)
   const [loading, setLoading] = useState(false)
+  const [loaded, setLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const wasRunningRef = useRef(running)
   const loadSeqRef = useRef(0)
@@ -36,6 +39,7 @@ export function useRunTodos(opts: {
         setData(null)
         setError(null)
         setLoading(false)
+        setLoaded(false)
         return
       }
       if (!loadOpts?.quiet) {
@@ -69,7 +73,10 @@ export function useRunTodos(opts: {
         setData(parsed)
         setError(null)
       } finally {
-        if (seq === loadSeqRef.current) setLoading(false)
+        if (seq === loadSeqRef.current) {
+          setLoading(false)
+          setLoaded(true)
+        }
       }
     },
     [workspacePath, runId]
@@ -103,7 +110,7 @@ export function useRunTodos(opts: {
     return () => window.clearInterval(id)
   }, [active, workspacePath, runId, running, live, hasVisibleTodos, load])
 
-  return { data, loading, error, reload: load }
+  return { data, loading, loaded, error, reload: load }
 }
 
 /** True when todos.json has at least one task. */

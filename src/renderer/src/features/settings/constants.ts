@@ -51,6 +51,41 @@ export const RESPONSE_VERBOSITY_OPTIONS = [
   { value: 'detailed', label: 'Detailed' }
 ]
 
+/** Mirrors the zod maxes in shared/ipc/schemas/settings.ts. */
+export const PERSONA_MAX_LENGTH = 1000
+export const TONE_MAX_LENGTH = 2000
+export const LANGUAGE_MAX_LENGTH = 64
+
+export const RESPONSE_LANGUAGE_SUGGESTIONS = [
+  'English',
+  'Spanish',
+  'French',
+  'German',
+  'Portuguese',
+  'Italian',
+  'Dutch',
+  'Russian',
+  'Ukrainian',
+  'Polish',
+  'Turkish',
+  'Arabic',
+  'Hindi',
+  'Chinese',
+  'Japanese',
+  'Korean'
+]
+
+export const AUTONOMOUS_QUESTIONS_OPTIONS = [
+  { value: 'wait', label: 'Wait for answers' },
+  { value: 'skip', label: 'Skip questions' }
+]
+
+export const OFFLINE_WAIT_OPTIONS = [
+  { value: 'default', label: 'Default wait budget' },
+  { value: 'extended', label: 'Extended wait budget' },
+  { value: 'wait_forever', label: 'Wait indefinitely' }
+]
+
 export const ACTIVE_PROVIDER_OPTIONS = PROVIDER_DEFAULTS.map((p) => ({
   value: p.id,
   label: p.label

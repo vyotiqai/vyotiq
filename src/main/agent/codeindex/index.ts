@@ -10,6 +10,7 @@ import {
   createMDenseOnEmbedder,
   createNeuralOnnxEmbedder,
   clearEmbedderFailCache,
+  ensureLightOnBootstrapWeights,
   isEmbedderFailCached,
   rememberEmbedderFail,
   mDenseOnWeightsOnDisk,
@@ -78,7 +79,8 @@ export {
   clearEmbedderFailCacheForTests,
   setEmbedderFailCacheTtlMsForTests,
   isEmbedderFailCached,
-  mDenseOnWeightsOnDisk
+  mDenseOnWeightsOnDisk,
+  ensureLightOnBootstrapWeights
 } from './mdenseon'
 export { NEURAL_ARTIFACTS, getNeuralArtifact } from './registry'
 export { loadGenericOnnxSession } from './onnxGeneric'
@@ -628,6 +630,16 @@ async function ensureCodeIndexSyncedUnlocked(
   }
   const { embedder, usedFallback } = await resolveEmbedder(opts)
   const useUtility = canUseIndexSyncUtility()
+
+  // Weights are acquired here — on the write chain (sync lane) with progress
+  // events and a refreshable timeout — never inside a read-lane searchCode
+  // RPC (that channel has a hard idle timeout and no progress events).
+  // Soft-fail: sync proceeds with the resolved embedder; a hash fallback
+  // preserves any existing neural index via preserveNeural. Never for an
+  // explicitly selected hash embedder — those users opted out of dense.
+  if (!usedFallback && settings.autoDownload && !isHashEmbedderModelId(embedder.modelId)) {
+    await ensureLightOnBootstrapWeights({ signal: opts.signal })
+  }
 
   setCodeIndexRuntimeStatus({
     phase: 'indexing',

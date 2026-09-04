@@ -42,6 +42,17 @@ export function shouldRetryProviderStreamError(message: string, attempt: number)
 }
 
 /**
+ * Messages that mark a status-less in-band stream failure as permanent (auth,
+ * billing, bad request). Everything else upstream mid-stream — overloads, rate
+ * limits, provider hiccups — is treated as transient.
+ */
+export function isPermanentInBandStreamMessage(message: string): boolean {
+  return /invalid api key|invalid_api_key|authentication|unauthorized|forbidden|permission denied|insufficient (credits|balance|quota)|billing|quota exceeded|model not found|invalid request|invalid_request|does not exist|not allowed|unsupported/i.test(
+    message
+  )
+}
+
+/**
  * Status-aware mid-stream retry. A `PROVIDER_HTTP` failure retries only for
  * transient statuses (429/408/5xx) — auth, billing, and bad-request errors are
  * permanent and must surface to the user immediately.
@@ -62,7 +73,12 @@ export function shouldRetryStreamErrorChunk(
   }
   if (errorCode === 'PROVIDER_HTTP') {
     if (httpStatus != null) return attempt < MAX_STREAM_ATTEMPTS && isRetriableHttpStatus(httpStatus)
-    return attempt < MAX_STREAM_ATTEMPTS && isRetriableProviderMessage(message)
+    // Status-less in-band stream errors (OpenRouter error frames, Anthropic
+    // `event: error`, Gemini in-band errors) are upstream failures mid-stream.
+    // They never matched the connect-error message regex, so a transient
+    // overload after several streamed seconds ended the run. Retry them like
+    // an equivalent connect-time 5xx unless the message is clearly permanent.
+    return attempt < MAX_STREAM_ATTEMPTS && !isPermanentInBandStreamMessage(message)
   }
   return shouldRetryProviderStreamError(message, attempt)
 }

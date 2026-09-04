@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { Icon, type IconName } from '@renderer/lib/icons'
 import { cn } from '@renderer/lib/ui'
 import { useRunTodos } from '../hooks/useRunTodos'
-import { pickCurrentTask, type TodoParsed } from '../toolUi/parsers/todo'
+import { pickCurrentTask, type TodoParsed, type TodoStatus } from '../toolUi/parsers/todo'
 import { TodoStatusIcon } from './TodoChecklist'
 import { TodoProgressBar } from './TasksCeilingBand'
 
@@ -14,25 +14,40 @@ const CARD_WIDTH_FALLBACK_PX = 288
 const CARD_HEIGHT_FALLBACK_PX = 180
 const VIEWPORT_PAD_PX = 12
 const CARD_GAP_PX = 8
+/** Capture-phase scroll listener: passive (never preventDefault) + capturing. */
+const SCROLL_LISTENER: AddEventListenerOptions = { capture: true, passive: true }
 
 type CardCoords = { top: number; left: number }
 
+/** Constrained card width: shrinks on narrow windows, capped at w-72. */
+const cardWidthClass = 'w-[min(18rem,calc(100vw-1.5rem))]'
+
 /**
  * The live plan control itself: status icon + done/total badge, with the
- * full task list streaming in a hover pop-up card. Todo data is passed in
+ * full task list streaming in a pop-up card. Todo data is passed in
  * so the rail's single poll feeds both the icon and the card.
+ *
+ * The card opens on hover as before, and also opens itself when the host
+ * signals that the agent just created todos (see PlanRailRow's transition
+ * detection — a rail that mounted onto an existing run never pops the card).
  */
 export function TasksRailButton({
   data,
   running = false,
+  autoOpen = false,
   onOpenPlan,
+  pressed,
   labelSuffix,
   className
 }: {
   data: TodoParsed | null
   running?: boolean
+  /** Momentary signal: the host saw todos appear (agent created them). */
+  autoOpen?: boolean
   onOpenPlan: () => void
-  /** Appended to the accessible name, e.g. " · Show plan panel". */
+  /** True while the plan dock panel is open (rail hosts that stay visible). */
+  pressed?: boolean
+  /** Appended to the accessible name, e.g. " · Show plan panel (Alt+6)". */
   labelSuffix?: string
   className?: string
 }) {
@@ -48,17 +63,21 @@ export function TasksRailButton({
   const done = data?.done ?? 0
   const total = data?.total ?? 0
   const cancelled = items.filter((item) => item.status === 'cancelled').length
-  const allDone = total > 0 && done === total
+  // Finished means nothing left to do: every task completed or skipped, with
+  // at least one completion so an all-cancelled (interrupted) run stays neutral.
+  const allDone = total > 0 && done > 0 && done + cancelled === total
   const current = pickCurrentTask(items)
   const hasActive = current?.status === 'in_progress'
   const count = `${done}/${total}`
 
-  const statusIcon: IconName = hasActive ? 'loader' : allDone ? 'check' : 'listTodo'
-  const statusClass = hasActive
-    ? 'text-accent motion-safe:animate-spin'
+  // Static status glyph — deliberately no spinner in the rail icon.
+  const statusIcon: IconName = hasActive ? 'circleHalf' : allDone ? 'check' : 'listTodo'
+  const statusClass = hasActive ? 'text-accent' : allDone ? 'text-success' : 'text-secondary'
+  const headerStatus: TodoStatus = hasActive
+    ? 'in_progress'
     : allDone
-      ? 'text-success'
-      : 'text-secondary'
+      ? 'completed'
+      : (current?.status ?? 'pending')
 
   const ariaLabel = `Tasks ${done} of ${total}${current ? `. ${current.content}` : ''}${labelSuffix ?? ''}`
 
@@ -128,20 +147,34 @@ export function TasksRailButton({
       if (cardRef.current?.contains(target)) return
       closeNow()
     }
-    const onReposition = (): void => closeNow()
+    const onReposition = (e: Event): void => {
+      const target = e.target
+      if (target instanceof Node) {
+        // The card's own scrollable list and the trigger are not page reflows.
+        if (cardRef.current?.contains(target)) return
+        if (triggerRef.current?.contains(target)) return
+      }
+      closeNow()
+    }
     window.addEventListener('keydown', onKeyDown)
     document.addEventListener('mousedown', onDocMouseDown)
-    window.addEventListener('scroll', onReposition, true)
+    window.addEventListener('scroll', onReposition, SCROLL_LISTENER)
     window.addEventListener('resize', onReposition)
     return () => {
       window.removeEventListener('keydown', onKeyDown)
       document.removeEventListener('mousedown', onDocMouseDown)
-      window.removeEventListener('scroll', onReposition, true)
+      window.removeEventListener('scroll', onReposition, SCROLL_LISTENER)
       window.removeEventListener('resize', onReposition)
     }
   }, [open, closeNow])
 
   useEffect(() => clearTimers, [clearTimers])
+
+  // Auto-open signal from the host: the rail detects the 0 -> N transition,
+  // so re-mounts and app restarts onto an existing batch stay quiet.
+  useEffect(() => {
+    if (autoOpen) setOpen(true)
+  }, [autoOpen])
 
   if (!data || items.length === 0) return null
 
@@ -154,13 +187,16 @@ export function TasksRailButton({
           role="dialog"
           aria-label={`Tasks ${done} of ${total}`}
           data-tasks-popover-card
-          className="pointer-events-auto fixed z-tooltip w-72 rounded-xl border border-border bg-card p-3 shadow-menu animate-tip-in"
+          className={cn(
+            'pointer-events-auto fixed z-tooltip rounded-xl border border-border bg-card p-3 shadow-menu animate-tip-in',
+            cardWidthClass
+          )}
           style={{ top: coords.top, left: coords.left }}
           onPointerEnter={clearTimers}
           onPointerLeave={scheduleClose}
         >
           <div className="flex min-w-0 items-center gap-1.5">
-            <TodoStatusIcon status={current?.status ?? 'pending'} size={14} />
+            <TodoStatusIcon status={headerStatus} size={14} />
             <span className="text-xs font-semibold text-fg">Tasks</span>
             {running ? (
               <span
@@ -191,7 +227,7 @@ export function TasksRailButton({
             </div>
           ) : null}
           <ul
-            className="m-0 mt-2 max-h-56 list-none space-y-1 overflow-y-auto p-0"
+            className="m-0 mt-2 max-h-[min(14rem,max(6rem,calc(100vh-18rem)))] list-none space-y-1 overflow-y-auto p-0"
             data-tasks-popover-list
           >
             {items.map((item, index) => (
@@ -233,6 +269,11 @@ export function TasksRailButton({
 
   return (
     <>
+      {/* Outside the button: role=status is stripped from button descendants
+          (ARIA presentational children), so the announcement must live here. */}
+      <span className="sr-only" role="status" aria-live="polite">
+        {`Tasks ${done} of ${total}${current ? `. ${current.content}` : ''}${running ? '. Run in progress' : ''}`}
+      </span>
       <button
         ref={triggerRef}
         type="button"
@@ -242,9 +283,10 @@ export function TasksRailButton({
         aria-expanded={open}
         aria-controls={open ? cardId : undefined}
         aria-label={ariaLabel}
+        aria-pressed={pressed}
         className={cn(
           'relative inline-grid size-7 place-items-center rounded-md text-muted vy-transition hover:bg-surface hover:text-fg active:bg-surface-2',
-          open && 'bg-surface text-fg',
+          (open || pressed) && 'bg-surface text-fg ring-1 ring-inset ring-border/50',
           className
         )}
         onClick={() => {
@@ -253,12 +295,7 @@ export function TasksRailButton({
         }}
         onPointerEnter={scheduleOpen}
         onPointerLeave={scheduleClose}
-        onFocus={scheduleOpen}
-        onBlur={scheduleClose}
       >
-        <span className="sr-only" role="status" aria-live="polite">
-          {`Tasks ${done} of ${total}${current ? `. ${current.content}` : ''}${running ? '. Run in progress' : ''}`}
-        </span>
         <Icon name={statusIcon} size={16} className={cn('shrink-0', statusClass)} />
         <span
           data-tasks-floating-count

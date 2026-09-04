@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { ChatView } from '@renderer/features/chat/ChatView'
 import { emptySecretStatus } from '@shared/ipc'
 import { TitleBar } from '@renderer/app/TitleBar'
@@ -415,7 +415,9 @@ describe('ChatView composer placement', () => {
 
     await waitForPanel('[data-plan-panel]')
     expect(document.querySelector('[data-chat-side-rail]')).toBeNull()
-    expect(screen.getByRole('tab', { name: /^Plan$/i })).toBeTruthy()
+    // Scope to the dock tablist: the PlanPanel subtab is also role=tab "Plan".
+    const dockTablist = document.querySelector('[data-dock-panel-tablist]') as HTMLElement
+    expect(within(dockTablist).getByRole('tab', { name: /^Plan$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Close Plan/i })).toBeTruthy()
   })
 
@@ -580,8 +582,68 @@ describe('ChatView composer placement', () => {
       />
     )
 
-    expect(await screen.findByRole('tab', { name: /^Plan$/i })).toBeTruthy()
     await waitForPanel('[data-plan-panel]')
+    // Scope to the dock tablist: the PlanPanel subtab is also role=tab "Plan".
+    const autoOpenTablist = document.querySelector('[data-dock-panel-tablist]') as HTMLElement
+    expect(within(autoOpenTablist).getByRole('tab', { name: /^Plan$/i })).toBeTruthy()
+  })
+
+  it('stops polling plan.md after the Plan panel is dismissed', async () => {
+    vi.useFakeTimers()
+    try {
+      const readRunArtifact = vi.fn().mockResolvedValue({
+        ok: true,
+        data: {
+          exists: true,
+          content: minimalReadyPlanMarkdown(),
+          path: '/ws/.vyotiq/runs/run-1/plan.md'
+        }
+      })
+      Object.defineProperty(window, 'vyotiq', {
+        configurable: true,
+        writable: true,
+        value: {
+          ...(window.vyotiq as object),
+          readRunArtifact
+        }
+      })
+
+      render(
+        <ChatView {...baseProps} agentMode="plan" activeRunId="run-1" running items={[]} />
+      )
+      await act(async () => {
+        await Promise.resolve()
+        await Promise.resolve()
+      })
+      // Scope to the dock tablist: the PlanPanel subtab is also role=tab "Plan".
+      const dockTablist = document.querySelector('[data-dock-panel-tablist]') as HTMLElement
+      expect(within(dockTablist).getByRole('tab', { name: /^Plan$/i })).toBeTruthy()
+
+      // While mounted, plan.md polls continue (PlanPanel owns the cadence).
+      const planCalls = () =>
+        readRunArtifact.mock.calls.filter(
+          (c) => (c[0] as { name?: string } | undefined)?.name === 'plan.md'
+        ).length
+      await act(async () => {
+        vi.advanceTimersByTime(2500)
+        await Promise.resolve()
+      })
+      expect(planCalls()).toBeGreaterThan(0)
+
+      fireEvent.click(screen.getByRole('button', { name: /Close Plan/i }))
+
+      // After dismissal the auto-open poll must stop entirely — no interval
+      // may fire without any possible effect.
+      readRunArtifact.mockClear()
+      await act(async () => {
+        vi.advanceTimersByTime(4500)
+        await Promise.resolve()
+      })
+      expect(planCalls()).toBe(0)
+      expect(screen.queryByRole('tab', { name: /^Plan$/i })).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
     it('shows tasks under the owning user prompt in transcript order', async () => {

@@ -2,16 +2,18 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, rmSync, wri
 import { readFile, readdir, open } from 'fs/promises'
 import { join, basename } from 'path'
 import { atomicWriteFile, atomicWriteFileAsync, atomicWriteJson } from '../storage/atomicWrite'
-import { enqueueEventAppend, flushEventAppends, listEventArchives } from './eventAppendQueue'
+import { enqueueEventAppend, flushEventAppends, listEventArchives, listEventArchivesSync, removeEventArchives } from './eventAppendQueue'
 import {
   enqueueMessageAppend,
   enqueueMessageRewrite,
   flushMessageAppends,
   listMessageArchives,
   listMessageArchivesSync,
+  removeMessageArchives,
+  removeMessageArchivesSync,
   takeMessageAppendFailureNotice
 } from './messageAppendQueue'
-import { enqueueStatusPatch, flushStatusWrites, writeStatusImmediate } from './statusWriteQueue'
+import { enqueueStatusPatch, flushStatusWrites, writeStatusImmediate, clearStatusWritesForDir } from './statusWriteQueue'
 import { getCachedListRuns, invalidateListRunsCache } from './runListCache'
 import {
   ChatMessageSchema,
@@ -220,6 +222,10 @@ export function ensureUserMessageAt(
 export function syncMessages(dir: string, messages: ChatMessage[]): void {
   const body = messages.map((m) => JSON.stringify(m)).join('\n')
   atomicWriteFile(join(dir, 'messages.jsonl'), body ? `${body}\n` : '')
+  // The rewritten live file is authoritative and callers pass stitched content;
+  // stale archive heads would otherwise be re-prepended by stitched readers and
+  // duplicate history on every resume.
+  removeMessageArchivesSync(dir)
 }
 
 /** Await pending async appends, then rewrite messages.jsonl (authoritative).
@@ -229,6 +235,8 @@ export async function syncMessagesAsync(dir: string, messages: ChatMessage[]): P
   await flushMessageAppends(dir)
   const body = messages.map((m) => JSON.stringify(m)).join('\n')
   await atomicWriteFileAsync(join(dir, 'messages.jsonl'), body ? `${body}\n` : '')
+  // Same archive reconciliation as syncMessages — see the comment there.
+  await removeMessageArchives(dir)
 }
 
 export function appendMessage(dir: string, message: ChatMessage): Promise<void> {
@@ -310,6 +318,10 @@ export async function syncEventsAsync(dir: string, events: unknown[]): Promise<v
     )
     .join('\n')
   atomicWriteFile(join(dir, 'events.jsonl'), body ? `${body}\n` : '')
+  // The rewritten live file is authoritative and callers pass the stitched
+  // (archive + live) history; stale archive heads would resurrect truncated
+  // events for stitched readers (rewind, step-usage totals).
+  await removeEventArchives(dir)
 }
 
 export async function updateStatus(
@@ -690,10 +702,23 @@ export function loadEvents(
   if (!existsSync(p)) return []
   const inferredRunId = runId ?? basename(dir)
   const limit = options?.limit
-  const text =
-    limit != null && limit > 0
-      ? readFileTailSync(p, eventsTailByteBudget(limit))
-      : readFileSync(p, 'utf8')
+  let text: string
+  if (limit != null && limit > 0) {
+    text = readFileTailSync(p, eventsTailByteBudget(limit))
+  } else {
+    // Full history: stitch rotated archive heads (oldest first) into the live
+    // file so receipts/forensics see events that rotation dropped from the tail.
+    const parts: string[] = []
+    for (const name of listEventArchivesSync(dir)) {
+      try {
+        parts.push(readFileSync(join(dir, name), 'utf8'))
+      } catch {
+        // skip unreadable archive — the live file still carries the recent tail
+      }
+    }
+    parts.push(readFileSync(p, 'utf8'))
+    text = parts.join('')
+  }
   return parseEventsFromText(text, inferredRunId, options)
 }
 
@@ -707,10 +732,23 @@ export async function loadEventsAsync(
   if (!existsSync(p)) return []
   const inferredRunId = runId ?? basename(dir)
   const limit = options?.limit
-  const text =
-    limit != null && limit > 0
-      ? readFileTailSync(p, eventsTailByteBudget(limit))
-      : await readFile(p, 'utf8')
+  let text: string
+  if (limit != null && limit > 0) {
+    text = readFileTailSync(p, eventsTailByteBudget(limit))
+  } else {
+    // Full history: stitch rotated archive heads (oldest first) so run receipts,
+    // rewind truncation, and event replays see the complete record.
+    const parts: string[] = []
+    for (const name of await listEventArchives(dir)) {
+      try {
+        parts.push(await readFile(join(dir, name), 'utf8'))
+      } catch {
+        // skip unreadable archive — the live file still carries the recent tail
+      }
+    }
+    parts.push(await readFile(p, 'utf8'))
+    text = parts.join('')
+  }
   return parseEventsFromText(text, inferredRunId, options)
 }
 
@@ -1036,9 +1074,12 @@ export async function buildRunMarkdownExport(
 
 /** Persist failure stubs for tool calls that never received a result before interrupt. */
 function appendOrphanToolStubs(dir: string, runId: string): void {
-  const messagesPath = join(dir, 'messages.jsonl')
-  if (!existsSync(messagesPath)) return
-  const messages = parseMessagesJsonl(readFileSync(messagesPath, 'utf8'))
+  // Stitch rotated archive heads: an assistant tool_use from an archived head
+  // still needs its stub, and the repair rewrite replaces the live file with
+  // stitched content (syncMessages removes the now-redundant archives).
+  const content = stitchedMessagesContentSync(dir)
+  if (content == null) return
+  const messages = parseMessagesJsonl(content)
   const completedIds = new Set<string>()
   for (const message of messages) {
     if (message.role === 'tool' && message.toolCallId) completedIds.add(message.toolCallId)
@@ -1088,9 +1129,11 @@ export async function patchLatestTodoWriteMessage(
   // Queued behind pending appends: the terminal error paths flush a partial
   // assistant message without awaiting, and an unserialized rewrite would drop it.
   await enqueueMessageRewrite(dir, () => {
-    const messagesPath = join(dir, 'messages.jsonl')
-    if (!existsSync(messagesPath)) return
-    const messages = parseMessagesJsonl(readFileSync(messagesPath, 'utf8'))
+    // Stitched content: the rewrite replaces the live file wholesale and
+    // syncMessages removes archives, so archive heads must be folded in first.
+    const content = stitchedMessagesContentSync(dir)
+    if (content == null) return
+    const messages = parseMessagesJsonl(content)
     let changed = false
     for (let index = 0; index < messages.length; index += 1) {
       const message = messages[index]
@@ -1196,6 +1239,9 @@ async function interruptRunningRunOnDisk(
   dir: string,
   status: RunStatus
 ): Promise<void> {
+  // Drain pending appends first so the stitched orphan-stub repair below reads
+  // and rewrites the complete transcript rather than racing the append chain.
+  await flushMessageAppends(dir)
   appendOrphanToolStubs(dir, runId)
   finalizeInterruptedTodos(dir)
   await patchLatestTodoWriteMessage(dir, 'cancelled')
@@ -1315,6 +1361,7 @@ export async function deleteRun(
         })
       }
       if (existsSync(childDir)) {
+        await drainRunWritersBeforeDelete(childDir)
         rmSync(childDir, { recursive: true, force: true })
       }
       dismissRunLifecycleInbox(child.runId)
@@ -1324,6 +1371,7 @@ export async function deleteRun(
   if (status?.inlineInstance && status.worktreePath) {
     await finalizeInlineInstanceWorktreeBestEffort(workspacePath, status)
   }
+  await drainRunWritersBeforeDelete(dir)
   rmSync(dir, { recursive: true, force: true })
   dismissRunLifecycleInbox(runId)
   invalidateListRunsCache(workspacePath)
@@ -1339,7 +1387,35 @@ export async function deleteRun(
 const GOAL_SECTION_RE = /(## Goal\s*\n)([\s\S]*?)(\n## )/
 export { GOAL_SECTION_RE }
 
-export function renameRun(workspacePath: string, runId: string, goal: string): RunSummary {
+/**
+ * Drain pending run-file writers ahead of a directory delete so queued appends
+ * or a debounced status flush cannot re-create the deleted run directory
+ * (a phantom run containing only status.json in the sidebar).
+ */
+async function drainRunWritersBeforeDelete(dir: string): Promise<void> {
+  try {
+    await flushMessageAppends(dir)
+  } catch {
+    // best effort — the delete proceeds regardless
+  }
+  try {
+    await flushEventAppends(dir)
+  } catch {
+    // best effort
+  }
+  try {
+    await flushStatusWrites(dir)
+  } catch {
+    // best effort
+  }
+  clearStatusWritesForDir(dir)
+}
+
+export async function renameRun(
+  workspacePath: string,
+  runId: string,
+  goal: string
+): Promise<RunSummary> {
   if (isActive(runId)) {
     throw new Error('Cancel run first')
   }
@@ -1354,11 +1430,6 @@ export function renameRun(workspacePath: string, runId: string, goal: string): R
   if (!parsed.success) {
     throw new Error('Invalid run status')
   }
-  const next: RunStatus = {
-    ...parsed.data,
-    goal: goalText,
-    updatedAt: new Date().toISOString()
-  }
   const contractPath = join(dir, 'contract.md')
   if (existsSync(contractPath)) {
     const contract = readFileSync(contractPath, 'utf8')
@@ -1367,13 +1438,17 @@ export function renameRun(workspacePath: string, runId: string, goal: string): R
       : contract
     atomicWriteFile(contractPath, updated)
   }
-  atomicWriteJson(statusPath, next)
+  // Serialize through the per-dir status chain. The previous raw read-modify-
+  // write raced the debounced flusher (readStatusFile → atomicWriteJsonAsync
+  // window) and the in-flight flush silently reverted the rename.
+  await updateStatus(dir, { goal: goalText }, { sync: true })
+  const saved = loadStatus(dir)
   invalidateListRunsCache(workspacePath)
 
   return {
     runId,
-    status: next.status,
-    updatedAt: next.updatedAt,
+    status: saved?.status ?? parsed.data.status,
+    updatedAt: saved?.updatedAt ?? parsed.data.updatedAt,
     goal: goalText
   }
 }

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AppInfo, UpdaterStatus } from '@shared/ipc'
+import { UpdaterStatusSchema } from '@shared/ipc/schemas/updater'
 import { VyotiqLockup } from '@renderer/lib/brand'
 import { Button, Switch } from '@renderer/lib/ui'
 import { copyText } from '@renderer/lib/markdown/copyText'
@@ -107,7 +108,10 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
       .getUpdaterStatus()
       .then((res) => {
         if (cancelled) return
-        if (res.ok) setUpdater(res.data)
+        // Same zod gate the push-event path applies: never render an
+        // out-of-contract status shape from the invoke path.
+        const parsed = res.ok ? UpdaterStatusSchema.safeParse(res.data) : null
+        if (parsed?.success) setUpdater(parsed.data)
       })
       .catch((err: unknown) => {
         if (!cancelled) setErrorRef.current(err instanceof Error ? err.message : String(err))
@@ -124,7 +128,11 @@ export function AboutSection({ form }: { form: SettingsFormState }) {
   const dash = '—'
   const year = new Date().getFullYear()
   const state = updater?.state
-  const canCheck = state !== 'dev' && state !== 'checking' && state !== 'downloading'
+  // 'ready' is excluded: a re-check while an update sits downloaded flips the
+  // status through checking/none and hides the "Restart to install" affordance
+  // until the re-download completes.
+  const canCheck =
+    state !== 'dev' && state !== 'checking' && state !== 'downloading' && state !== 'ready'
   const canDownload = state === 'available'
   const canInstall = state === 'ready'
   const updateVersionShown =

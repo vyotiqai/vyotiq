@@ -126,8 +126,12 @@ export function useComposerDraft({
   audioRef.current = audio
   const setText = useCallback(
     (next: string): void => {
-      textRef.current = next
-      rawSetText(next)
+      // Whitespace-only drafts carry no sendable content — normalize to empty so
+      // invisible blank lines (typing, dictation, paste) can never stretch the
+      // composer body or wedge the primary action behind phantom content.
+      const normalized = next.trim() === '' ? '' : next
+      textRef.current = normalized
+      rawSetText(normalized)
     },
     [rawSetText]
   )

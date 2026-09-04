@@ -8,6 +8,8 @@ import {
   hasTypeScriptProject,
   parseDiagnosticLines,
   parseEslintJsonDiagnostics,
+  runSafeCommand,
+  MAX_STREAM_BYTES,
   toolDiagnosticsAsync
 } from '../../../src/main/agent/tools/diagnostics'
 
@@ -166,4 +168,30 @@ describe('hasJavaScriptProject / lint skip', () => {
     expect(result.ok).toBe(true)
     expect(result.content).toContain('lint skipped')
   })
+})
+
+describe('runSafeCommand stream cap', () => {
+  it('caps captured stdout with a truncation marker and preserves the tail', async () => {
+    // Generate the payload at runtime — a half-megabyte argv would exceed the
+    // OS argument limit (spawn ENAMETOOLONG).
+    const tail = 'TAIL-MARKER-END'
+    const res = await runSafeCommand(
+      'node',
+      ['-e', `process.stdout.write('x' + 'y'.repeat(${MAX_STREAM_BYTES + 100_000}) + ${JSON.stringify(tail)})`],
+      { cwd: tmpdir(), env: process.env }
+    )
+    expect(res.exitCode).toBe(0)
+    expect(res.stdout).toContain('earlier output truncated')
+    expect(res.stdout.length).toBeLessThanOrEqual(MAX_STREAM_BYTES + 256)
+    expect(res.stdout.endsWith(tail)).toBe(true)
+  }, 30_000)
+
+  it('leaves small outputs untouched', async () => {
+    const res = await runSafeCommand('node', ['-e', "process.stdout.write('small')"], {
+      cwd: tmpdir(),
+      env: process.env
+    })
+    expect(res.stdout).toBe('small')
+    expect(res.stdout).not.toContain('earlier output truncated')
+  }, 30_000)
 })

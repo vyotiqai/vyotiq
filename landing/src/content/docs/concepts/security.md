@@ -15,7 +15,7 @@ Agent V uses layered controls. No single control makes agent output or third-par
 
 ## Mode boundary
 
-Ask exposes read-only built-ins and browse-only browser actions. Plan adds todos, diagnostics, run_tests, and writes only to run plan.md and contract.md (plus .hermes/plans/<id>.md plan artifacts). Agent exposes the full built-in catalog. MCP server calls are Agent-only because server annotations cannot be trusted as a security gate.
+Ask exposes read-only built-ins and browse-only browser actions. Plan adds todos, diagnostics, run_tests, and writes only to run plan.md and contract.md. Agent exposes the full built-in catalog. MCP server calls are Agent-only because server annotations cannot be trusted as a security gate.
 
 Automatic mode switching is off by default. When it is off, only the user can change modes.
 

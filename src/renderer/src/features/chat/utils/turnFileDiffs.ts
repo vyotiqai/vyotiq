@@ -50,12 +50,8 @@ export function mergeCheckpointChangedFiles(
       if (!existing.action) delete existing.action
       continue
     }
-    map.set(key, {
-      path: key,
-      added: 0,
-      removed: cp.action === 'deleted' ? 1 : 0,
-      action: cp.action
-    })
+    // No tool-arg diff exists for this path — do not invent line counts.
+    map.set(key, { path: key, action: cp.action })
   }
   return [...map.values()].sort((a, b) => a.path.localeCompare(b.path))
 }
@@ -71,12 +67,8 @@ export function checkpointOnlyChangedFiles(
     .filter((cp) => !toolPaths.has(normalizeRelPath(cp.path)))
     .map((cp) => {
       const key = normalizeRelPath(cp.path)
-      return {
-        path: key,
-        added: 0,
-        removed: cp.action === 'deleted' ? 1 : 0,
-        action: cp.action
-      }
+      // No tool-arg diff exists for this path — do not invent line counts.
+      return { path: key, action: cp.action }
     })
     .sort((a, b) => a.path.localeCompare(b.path))
 }
@@ -195,7 +187,7 @@ export function collectSessionChangedFiles(items: UiItem[]): ChangedFile[] {
       const key = normalizeRelPath(path)
       const existing = totals.get(key)
       if (existing) {
-        existing.removed += 1
+        existing.removed = (existing.removed ?? 0) + 1
         existing.action = mergeChangedFileAction(existing.action, 'deleted')
         if (!existing.action) delete existing.action
       } else {
@@ -214,8 +206,8 @@ export function collectSessionChangedFiles(items: UiItem[]): ChangedFile[] {
       const key = normalizeRelPath(change.path)
       const existing = totals.get(key)
       if (existing) {
-        existing.added += change.added
-        existing.removed += change.removed
+        existing.added = (existing.added ?? 0) + change.added
+        existing.removed = (existing.removed ?? 0) + change.removed
         existing.action = mergeChangedFileAction(existing.action, change.action)
         if (!existing.action) delete existing.action
       } else {

@@ -5,6 +5,7 @@ import { MessageList } from './components/MessageList'
 import { AgentBrowserPanel } from './components/AgentBrowserPanel'
 import type { WorkspaceFileOpenRequest } from './components/FilesPanel'
 import { ChangesPanel } from './components/ChangesPanel'
+import { ConfirmFileList } from './components/ConfirmFileList'
 import { PlanPanel } from './components/PlanPanel'
 import { ChatSideRail } from './components/ChatSideRail'
 import { DockTabBar, AGENT_DOCK_TAB, defaultDockTab } from './components/DockTabBar'
@@ -664,12 +665,14 @@ const runGoal = useRunGoal({
   const { confirm, dialog: confirmDialog } = useConfirm()
 
   const discardAllWrites = useCallback(async () => {
+    const files = writeCheckpointFiles ?? []
     const ok = await confirm(
       'Undo all agent edits? Every listed file is restored to its state before the agent ran. Files you edited yourself are untouched.',
       {
         title: 'Undo all agent edits',
         confirmLabel: 'Undo all',
-        danger: true
+        danger: true,
+        ...(files.length > 0 ? { details: <ConfirmFileList files={files} /> } : {})
       }
     )
     if (!ok) return
@@ -678,7 +681,7 @@ const runGoal = useRunGoal({
       notifyGitMutated()
       pushToast('All agent edits were undone.', 'success')
     }
-  }, [onUndoWrites, notifyGitMutated, confirm])
+  }, [onUndoWrites, notifyGitMutated, confirm, writeCheckpointFiles])
 
   // Prefer the shared mutating-tool revision (same clock as composer chrome), not
   // a per-done-tool + fileCount formula that over-fetches and races the status cache.
@@ -960,8 +963,16 @@ const runGoal = useRunGoal({
   // activity (agent terminal output stays in the transcript).
   // While the plan dock is already mounted, PlanPanel owns the plan.md polling;
   // this effect then stops so the artifact is never fetched twice per tick.
+  // A dismissed panel must also stop the poll — tryAutoOpenPanel would no-op,
+  // so the interval would fire forever without any possible effect.
   useEffect(() => {
-    if (!workspacePath || !activeRunId || agentMode !== 'plan' || mountedPanels.includes('plan')) {
+    if (
+      !workspacePath ||
+      !activeRunId ||
+      agentMode !== 'plan' ||
+      mountedPanels.includes('plan') ||
+      dismissedPanelsRef.current.has('plan')
+    ) {
       return
     }
     let cancelled = false

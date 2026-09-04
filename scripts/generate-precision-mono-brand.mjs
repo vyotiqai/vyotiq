@@ -249,8 +249,7 @@ const assets = [
 ]
 
 for (const [name, source, width] of assets) {
-  const png = writeAsset(name, source, width)
-  if (name === 'vyotiq-app-icon') writeFileSync(join(root, 'resources', 'icon.png'), png)
+  writeAsset(name, source, width)
 }
 
 console.log(`[generate-precision-mono-brand] wrote ${assets.length * 2} assets to ${outDir}`)

@@ -104,7 +104,7 @@ async function sync() {
   }
 
   console.log(
-    `[sync-landing-brand] synced ${identityCopies.length + providerLogos.length + 3} files`
+    `[sync-landing-brand] synced ${identityCopies.length + providerLogos.length + 2} files`
   )
 }
 

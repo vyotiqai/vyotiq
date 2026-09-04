@@ -313,6 +313,9 @@ describe('Composer dictation', () => {
     const toolbar = document.querySelector('[data-composer-toolbar]')
     expect(toolbar).toBeTruthy()
     expect(toolbar?.getAttribute('data-dictation-session')).toBe('listening')
+    // Dictation replaces the input — the toolbar fills the row so the waveform
+    // expands and the actions right-align.
+    expect(toolbar?.className).toMatch(/\bflex-1\b/)
     expect(screen.getByRole('button', { name: /^Stop dictation$/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: /^Cancel dictation$/i })).toBeTruthy()
     expect(document.querySelector('[data-composer-git-leading]')).toBeNull()

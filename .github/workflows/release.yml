@@ -79,7 +79,14 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-        run: pnpm exec electron-builder ${{ matrix.builder_args }} --publish always ${{ matrix.name == 'macOS' && secrets.CSC_LINK == '' && '--config.mac.identity=null' || '' }} ${{ matrix.name == 'macOS' && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' && '--config.mac.notarize=true' || '' }}
+        # --publish always only on real tag pushes: a manual dispatch on a
+        # branch would otherwise target the release derived from package.json's
+        # version and re-upload identically-named assets onto it.
+        run: >-
+          pnpm exec electron-builder ${{ matrix.builder_args }}
+          ${{ startsWith(github.ref, 'refs/tags/') && '--publish always' || '--publish never' }}
+          ${{ matrix.name == 'macOS' && secrets.CSC_LINK == '' && '--config.mac.identity=null' || '' }}
+          ${{ matrix.name == 'macOS' && secrets.APPLE_ID != '' && secrets.APPLE_APP_SPECIFIC_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' && '--config.mac.notarize=true' || '' }}
 
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

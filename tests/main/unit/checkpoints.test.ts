@@ -21,7 +21,7 @@ import {
   getWriteCheckpoint,
   getWriteCheckpointMeta,
   resetWriteCheckpointsForTests,
-  undoWrites,
+  planRewindWrites,
   resolveWrites,
   rewindWritesFrom
 } from '@main/agent/checkpoints'
@@ -70,8 +70,11 @@ describe('write checkpoints', async () => {
       })
     ])
 
-    const undone = undoWrites(runDir, workspace, meta!.id)
-    expect(undone.restored).toEqual(['a.txt'])
+    const undone = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'discard'
+    })
+    expect(undone.discarded).toEqual(['a.txt'])
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('hello\n')
   })
 
@@ -89,7 +92,7 @@ describe('write checkpoints', async () => {
     expect(meta!.files[0]?.action).toBe('created')
     expect(existsSync(join(workspace, 'new.txt'))).toBe(true)
 
-    undoWrites(runDir, workspace)
+    resolveWrites(runDir, workspace, { action: 'discard' })
     expect(existsSync(join(workspace, 'new.txt'))).toBe(false)
   })
 
@@ -101,7 +104,7 @@ describe('write checkpoints', async () => {
     writeFileSync(join(workspace, 'a.txt'), 'end\n', 'utf8')
     const meta = finalizeWriteCheckpoint(runDir)
     expect(meta!.files).toHaveLength(1)
-    undoWrites(runDir, workspace, meta!.id)
+    resolveWrites(runDir, workspace, { checkpointId: meta!.id, action: 'discard' })
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('hello\n')
   })
 
@@ -122,8 +125,11 @@ describe('write checkpoints', async () => {
 
     // Undo recreates the file (and thus the directory tree).
     rmSync(join(workspace, 'dir'), { recursive: true, force: true })
-    const undone = undoWrites(runDir, workspace, meta!.id)
-    expect(undone.restored).toContain('dir/x.txt')
+    const undone = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'discard'
+    })
+    expect(undone.discarded).toContain('dir/x.txt')
     expect(readFileSync(join(workspace, 'dir', 'x.txt'), 'utf8')).toBe('x')
   })
 
@@ -342,7 +348,7 @@ describe('write checkpoints', async () => {
     expect(existsSync(join(workspace, 'sub.txt'))).toBe(false)
   })
 
-  it('leaves checkpoint unresolved when undo hits I/O failures', async () => {
+  it('leaves checkpoint unresolved when a restore fails (missing prior blob)', async () => {
     writeFileSync(join(workspace, 'b.txt'), 'beta\n', 'utf8')
     const cp = beginWriteCheckpoint(runDir, workspace)
     await cp.recordPrior('a.txt', 'write')
@@ -354,9 +360,13 @@ describe('write checkpoints', async () => {
 
     rmSync(join(runDir, 'checkpoints', meta!.id, 'files', 'a.txt'), { force: true })
 
-    const result = undoWrites(runDir, workspace, meta!.id)
-    expect(result.restored).toEqual(['b.txt'])
+    const result = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'discard'
+    })
+    expect(result.discarded).toEqual(['b.txt'])
     expect(result.skipped).toContain('a.txt')
+    expect(result.fullyResolved).toBe(false)
 
     const persisted = getWriteCheckpointMeta(runDir, meta!.id)
     expect(persisted?.resolved).not.toBe(true)
@@ -377,7 +387,7 @@ describe('write checkpoints', async () => {
     expect(getWriteCheckpointMeta(runDir, result.checkpointId)).toBeNull()
   })
 
-  it('stores a post-write hash and skips undo when current content differs', async () => {
+  it('stores a post-write hash and reports a conflict when current content differs', async () => {
     const cp = beginWriteCheckpoint(runDir, workspace)
     await cp.recordPrior('a.txt', 'write')
     writeFileSync(join(workspace, 'a.txt'), 'agent\n', 'utf8')
@@ -385,14 +395,18 @@ describe('write checkpoints', async () => {
     expect(meta!.files[0]?.hash).toMatch(/^[a-f0-9]{64}$/)
 
     writeFileSync(join(workspace, 'a.txt'), 'user-edit\n', 'utf8')
-    const result = undoWrites(runDir, workspace, meta!.id)
-    expect(result.restored).toEqual([])
-    expect(result.skipped).toEqual(['a.txt'])
+    const result = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'discard'
+    })
+    expect(result.discarded).toEqual([])
+    expect(result.conflicted).toEqual(['a.txt'])
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('user-edit\n')
 
     const persisted = getWriteCheckpointMeta(runDir, meta!.id)
     expect(persisted?.resolved).not.toBe(true)
     expect(persisted?.undone).not.toBe(true)
+    expect(persisted?.files.find((f) => f.path === 'a.txt')?.conflicted).toBe(true)
   })
 
   it('rewindWritesFrom leaves the checkpoint unresolved on an undoable restore failure', async () => {
@@ -430,8 +444,11 @@ describe('write checkpoints', async () => {
 
     // Simulate the agent having removed the tree.
     rmSync(join(workspace, 'tree'), { recursive: true, force: true })
-    const undone = undoWrites(runDir, workspace, meta!.id)
-    expect(undone.restored.sort()).toEqual(['tree/sub/nested.txt', 'tree/top.txt'])
+    const undone = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'discard'
+    })
+    expect(undone.discarded.sort()).toEqual(['tree/sub/nested.txt', 'tree/top.txt'])
     expect(readFileSync(join(workspace, 'tree', 'top.txt'), 'utf8')).toBe('t')
     expect(readFileSync(join(workspace, 'tree', 'sub', 'nested.txt'), 'utf8')).toBe('n')
   })
@@ -446,8 +463,11 @@ describe('write checkpoints', async () => {
     rmSync(join(workspace, 'a.txt'), { force: true })
     expect(existsSync(join(workspace, 'a.txt'))).toBe(false)
 
-    const undone = undoWrites(runDir, workspace, meta!.id)
-    expect(undone.restored).toEqual(['a.txt'])
+    const undone = resolveWrites(runDir, workspace, {
+      checkpointId: meta!.id,
+      action: 'discard'
+    })
+    expect(undone.discarded).toEqual(['a.txt'])
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('hello\n')
   })
 
@@ -496,6 +516,7 @@ describe('write checkpoints', async () => {
     // The checkpoint stays unresolved so the UI can surface the conflict.
     const disk = getWriteCheckpointMeta(runDir, meta!.id)
     expect(disk?.files.find((f) => f.path === 'new.txt')?.resolved).toBeUndefined()
+    expect(disk?.files.find((f) => f.path === 'new.txt')?.conflicted).toBe(true)
   })
 
   it('reports a conflict for a modified file edited after the agent write', async () => {
@@ -513,5 +534,64 @@ describe('write checkpoints', async () => {
     expect(result.discarded).toEqual([])
     expect(result.conflicted).toEqual(['a.txt'])
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('user-edit\n')
+  })
+
+  it('planRewindWrites previews the exact rewind set without mutating anything', async () => {
+    writeFileSync(join(workspace, 'b.txt'), 'b0\n', 'utf8')
+
+    const first = beginWriteCheckpoint(runDir, workspace, 0)
+    await first.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'a1\n', 'utf8')
+    const meta1 = finalizeWriteCheckpoint(runDir)
+
+    const second = beginWriteCheckpoint(runDir, workspace, 2)
+    await second.recordPrior('a.txt', 'write')
+    await second.recordPrior('b.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'a2\n', 'utf8')
+    writeFileSync(join(workspace, 'b.txt'), 'b2\n', 'utf8')
+    const meta2 = finalizeWriteCheckpoint(runDir)
+
+    const plan = planRewindWrites(runDir, 2)
+    expect(plan.checkpointIds).toEqual([meta2!.id])
+    expect(plan.files.map((f) => f.path).sort()).toEqual(['a.txt', 'b.txt'])
+    // Newest checkpoint wins per path.
+    expect(plan.files.find((f) => f.path === 'a.txt')).toMatchObject({
+      action: 'modified',
+      undoable: true
+    })
+
+    // Planning is read-only: no disk mutation, no resolution stamping.
+    const again = planRewindWrites(runDir, 2)
+    expect(again).toEqual(plan)
+    expect(getWriteCheckpointMeta(runDir, meta2!.id)?.resolved).not.toBe(true)
+    expect(getWriteCheckpointMeta(runDir, meta1!.id)?.resolved).not.toBe(true)
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('a2\n')
+    expect(readFileSync(join(workspace, 'b.txt'), 'utf8')).toBe('b2\n')
+
+    // Rewind at the full-user-message index still includes the older checkpoint.
+    const earlier = planRewindWrites(runDir, 0)
+    expect(earlier.checkpointIds).toEqual([meta2!.id, meta1!.id])
+  })
+
+  it('planRewindWrites matches rewindWritesFrom selection for legacy unanchored checkpoints', async () => {
+    writeFileSync(join(workspace, 'b.txt'), 'b0\n', 'utf8')
+
+    const legacy = beginWriteCheckpoint(runDir, workspace)
+    await legacy.recordPrior('a.txt', 'write')
+    writeFileSync(join(workspace, 'a.txt'), 'legacy\n', 'utf8')
+    finalizeWriteCheckpoint(runDir)
+
+    const later = beginWriteCheckpoint(runDir, workspace, 2)
+    await later.recordPrior('b.txt', 'write')
+    writeFileSync(join(workspace, 'b.txt'), 'b2\n', 'utf8')
+    const metaLater = finalizeWriteCheckpoint(runDir)
+
+    const mid = planRewindWrites(runDir, 2)
+    expect(mid.checkpointIds).toEqual([metaLater!.id])
+    expect(mid.files.map((f) => f.path).sort()).toEqual(['b.txt'])
+
+    const full = planRewindWrites(runDir, 0)
+    expect(full.checkpointIds).toHaveLength(2)
+    expect(full.files.map((f) => f.path).sort()).toEqual(['a.txt', 'b.txt'])
   })
 })

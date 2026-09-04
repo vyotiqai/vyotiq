@@ -1,4 +1,4 @@
-import { readdirSync } from 'fs'
+import { readdirSync, unlinkSync } from 'fs'
 import { appendFile, open, readdir, rename, stat, unlink, writeFile } from 'fs/promises'
 import { basename, join } from 'path'
 import { logger } from '../../shared/logger'
@@ -148,6 +148,28 @@ export function listMessageArchivesSync(dir: string): string[] {
       .sort()
   } catch {
     return []
+  }
+}
+
+/** Sync archive removal after a whole-file rewrite that already stitched them in. */
+export function removeMessageArchivesSync(dir: string): void {
+  for (const name of listMessageArchivesSync(dir)) {
+    try {
+      unlinkSync(join(dir, name))
+    } catch {
+      // best effort — an undeletable archive must not fail the rewrite
+    }
+  }
+}
+
+/** Async archive removal after a whole-file rewrite that already stitched them in. */
+export async function removeMessageArchives(dir: string): Promise<void> {
+  for (const name of await listMessageArchives(dir)) {
+    try {
+      await unlink(join(dir, name))
+    } catch {
+      // best effort — an undeletable archive must not fail the rewrite
+    }
   }
 }
 

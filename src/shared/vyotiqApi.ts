@@ -19,8 +19,8 @@ import type {
   ChatRewindAndStartRequest,
   ChatRewindRequest,
   ChatRewindResult,
+  ChatRewindPreviewResult,
   CompactRunResult,
-  UndoWritesResult,
   ResolveWritesResult,
   ReadRunArtifactResult,
   RunArtifactName,
@@ -90,6 +90,9 @@ import type {
   WorkspaceSettingsOverride,
   WorkspacesState,
   WorkspaceUiState,
+  ComposerAttachmentsClearRequest,
+  ComposerAttachmentsGetResult,
+  ComposerAttachmentsSetRequest,
   WorkspaceFileListRequest,
   WorkspaceFileListResult,
   WorkspaceFileReadRequest,
@@ -149,6 +152,10 @@ export interface VyotiqApi {
   updateWorkspaceUiState: (path: string, ui: WorkspaceUiState) => Promise<IpcResult<true>>
   /** Fire-and-forget UI state flush (e.g. beforeunload). */
   updateWorkspaceUiStateSync: (path: string, ui: WorkspaceUiState) => void
+  /** Persisted composer attachment buckets for a workspace (per run key). */
+  getComposerAttachments: (workspacePath: string) => Promise<IpcResult<ComposerAttachmentsGetResult>>
+  setComposerAttachments: (payload: ComposerAttachmentsSetRequest) => Promise<IpcResult<true>>
+  clearComposerAttachments: (payload: ComposerAttachmentsClearRequest) => Promise<IpcResult<true>>
   setWorkspaceSettingsOverride: (
     path: string,
     override: WorkspaceSettingsOverride | null
@@ -173,6 +180,10 @@ export interface VyotiqApi {
   chatUiSubscribeAdd: (payload: ChatUiSubscribeAddRequest) => Promise<IpcResult<true>>
   chatRewindAndStart: (payload: ChatRewindAndStartRequest) => Promise<IpcResult<ChatStartResult>>
   chatRewind: (payload: ChatRewindRequest) => Promise<IpcResult<ChatRewindResult>>
+  /** Read-only preview of which files chatRewind would restore. */
+  chatRewindPreview: (
+    payload: ChatRewindRequest
+  ) => Promise<IpcResult<ChatRewindPreviewResult>>
   chatCancel: (runId: string) => Promise<IpcResult<true>>
   chatFollowUp: (payload: ChatFollowUpRequest) => Promise<IpcResult<ChatFollowUpResult>>
   chatFollowUpRemove: (
@@ -190,11 +201,6 @@ export interface VyotiqApi {
     runId: string,
     focus?: string
   ) => Promise<IpcResult<CompactRunResult>>
-  undoWrites: (
-    workspacePath: string,
-    runId: string,
-    checkpointId?: string
-  ) => Promise<IpcResult<UndoWritesResult>>
   resolveWrites: (payload: {
     workspacePath: string
     runId: string

@@ -122,7 +122,7 @@ describe('executeTool run-artifact remap', () => {
     expect(readFileSync(join(workspace, 'src.ts'), 'utf8')).toBe('export {}\n')
   })
 
-  it('Agent mode delete remaps contract.md into the run directory', async () => {
+  it('Agent mode blocks delete of the run contract (run artifacts are protected)', async () => {
     setup()
     writeFileSync(join(workspace, 'contract.md'), 'workspace contract\n', 'utf8')
     const signal = new AbortController().signal
@@ -133,8 +133,9 @@ describe('executeTool run-artifact remap', () => {
       signal,
       { runDir, agentMode: 'agent' }
     )
-    expect(result.ok).toBe(true)
-    expect(existsSync(join(runDir, 'contract.md'))).toBe(false)
+    expect(result.ok).toBe(false)
+    expect(result.content).toMatch(/cannot be deleted/)
+    expect(existsSync(join(runDir, 'contract.md'))).toBe(true)
     expect(readFileSync(join(workspace, 'contract.md'), 'utf8')).toBe('workspace contract\n')
   })
 

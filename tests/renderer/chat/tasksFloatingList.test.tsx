@@ -141,7 +141,7 @@ describe('TasksRailChip', () => {
 })
 
 describe('live plan icon', () => {
-  it('shows a spinning status and count while a task is in progress', () => {
+  it('shows a static accent status and count while a task is in progress', () => {
     const { container } = render(
       <TasksRailButton
         data={parsedData([
@@ -155,7 +155,8 @@ describe('live plan icon', () => {
     const chip = container.querySelector('[data-tasks-floating-chip]') as HTMLElement
     expect(chip).toBeTruthy()
     expect(screen.getByText('1/2')).toBeTruthy()
-    expect(chip.querySelector('svg')?.getAttribute('class')).toMatch(/animate-spin/)
+    expect(chip.querySelector('svg')?.getAttribute('class')).toMatch(/text-accent/)
+    expect(chip.querySelector('svg')?.getAttribute('class')).not.toMatch(/animate-spin/)
     expect(chip.getAttribute('aria-haspopup')).toBe('dialog')
     expect(chip.getAttribute('aria-expanded')).toBe('false')
   })
@@ -174,6 +175,54 @@ describe('live plan icon', () => {
     expect(chip.querySelector('svg')?.getAttribute('class')).toMatch(/text-success/)
     expect(chip.querySelector('svg')?.getAttribute('class')).not.toMatch(/animate-spin/)
     expect(screen.getByText('2/2')).toBeTruthy()
+  })
+
+  it('shows a completed status once every task is done or skipped', () => {
+    const { container } = render(
+      <TasksRailButton
+        data={parsedData([
+          { id: '1', content: 'Map project', status: 'completed' },
+          { id: '2', content: 'Run tests', status: 'completed' },
+          { id: '3', content: 'Write report', status: 'cancelled' }
+        ])}
+        onOpenPlan={vi.fn()}
+      />
+    )
+    const chip = container.querySelector('[data-tasks-floating-chip]') as HTMLElement
+    expect(chip.querySelector('svg')?.getAttribute('class')).toMatch(/text-success/)
+    expect(chip.querySelector('svg')?.getAttribute('class')).not.toMatch(/animate-spin/)
+    expect(screen.getByText('2/3')).toBeTruthy()
+  })
+
+  it('keeps a neutral status when nothing was completed', () => {
+    const { container } = render(
+      <TasksRailButton
+        data={parsedData([
+          { id: '1', content: 'Map project', status: 'cancelled' },
+          { id: '2', content: 'Run tests', status: 'cancelled' }
+        ])}
+        onOpenPlan={vi.fn()}
+      />
+    )
+    const chip = container.querySelector('[data-tasks-floating-chip]') as HTMLElement
+    expect(chip.querySelector('svg')?.getAttribute('class')).toMatch(/text-secondary/)
+    expect(chip.querySelector('svg')?.getAttribute('class')).not.toMatch(/text-success/)
+    expect(screen.getByText('0/2')).toBeTruthy()
+  })
+
+  it('announces progress from a live region outside the button', () => {
+    const { container } = render(
+      <TasksRailButton
+        data={parsedData([{ id: '1', content: 'Ship', status: 'in_progress' }])}
+        running
+        onOpenPlan={vi.fn()}
+      />
+    )
+    const status = container.querySelector('[role="status"]')
+    expect(status).toBeTruthy()
+    const chip = container.querySelector('[data-tasks-floating-chip]') as HTMLElement
+    expect(chip.contains(status as Node)).toBe(false)
+    expect(status?.textContent).toContain('Ship')
   })
 
   it('shows the checklist status when tasks are only pending', () => {
@@ -250,6 +299,37 @@ describe('TasksRailChip hover card', () => {
     act(() => {
       vi.advanceTimersByTime(150)
     })
+    expect(document.querySelector('[data-tasks-popover-card]')).toBeNull()
+  })
+
+  it('keeps the card open while scrolling its own task list', async () => {
+    vi.useFakeTimers()
+    const many = Array.from({ length: 14 }, (_, i) => ({
+      id: String(i + 1),
+      content: `Task ${i + 1}`,
+      status: i === 13 ? 'in_progress' : 'pending'
+    }))
+    readRunArtifact.mockResolvedValue(todosPayload(many))
+    render(
+      <TasksRailChip workspacePath="/ws" runId="run-1" running onOpenPlan={vi.fn()} />
+    )
+    await act(async () => {
+      await Promise.resolve()
+    })
+    fireEvent.pointerEnter(screen.getByRole('button', { name: /Tasks 0 of 14/ }))
+    act(() => {
+      vi.advanceTimersByTime(150)
+    })
+    const card = document.querySelector('[data-tasks-popover-card]') as HTMLElement
+    expect(card).toBeTruthy()
+    const list = card.querySelector('[data-tasks-popover-list]') as HTMLElement
+
+    // Scrolling INSIDE the card must not dismiss it.
+    fireEvent.scroll(list)
+    expect(document.querySelector('[data-tasks-popover-card]')).toBeTruthy()
+
+    // Scrolling the page/transcript outside the card still dismisses it.
+    fireEvent.scroll(window)
     expect(document.querySelector('[data-tasks-popover-card]')).toBeNull()
   })
 

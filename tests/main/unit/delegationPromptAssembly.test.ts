@@ -64,8 +64,8 @@ describe('delegation prompt assembly (harness + mode section + catalog)', () => 
     expect(prompt).toMatch(/Delegate independent, self-contained workstreams to child agent instances/)
     expect(prompt).toMatch(/child sees nothing of this conversation/)
 
-    // Mode section (root, not inline): trigger + anti-overuse balance.
-    expect(prompt).toMatch(/2\+ independent workstreams/)
+    // Mode section (root, not inline): default-on decompose trigger + anti-overuse balance.
+    expect(prompt).toMatch(/decompose the plan into a structured set/)
     expect(prompt).toMatch(/batch independent tool calls within a step first/i)
 
     // Catalog: the five instance tools with operational lifecycle text.
@@ -95,7 +95,7 @@ describe('delegation prompt assembly (harness + mode section + catalog)', () => 
     // Children still get the generic workstream-brief principle from the spine…
     expect(prompt).toMatch(/Delegate independent, self-contained workstreams/)
     // …but no parent-only delegation trigger or instance lifecycle.
-    expect(prompt).not.toMatch(/2\+ independent workstreams/)
+    expect(prompt).not.toMatch(/decompose the plan into a structured set/)
     expect(prompt).not.toMatch(/spawn_agent_instance/)
     expect(prompt).not.toMatch(/merge_agent_instance/)
   })

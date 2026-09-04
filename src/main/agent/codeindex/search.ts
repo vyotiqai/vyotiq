@@ -1,5 +1,6 @@
 import { openSync, readSync, closeSync, fstatSync, promises as fsp } from 'fs'
 import { basename, join } from 'path'
+import { isAbortError } from '../../../shared/errors'
 import { cosineSimilarity, type Embedder } from './embed'
 import { reciprocalRankFusion } from './rrf'
 import type { CodeIndexStore } from './store'
@@ -244,11 +245,19 @@ export async function searchCodeIndex(
   const useLexical = mode === 'lexical' || mode === 'hybrid' || !useDense
 
   if (useDense) {
-    const [qVec] = await embedder.embed([q], { role: 'query', signal: opts.signal })
-    throwIfAborted(opts.signal)
-    if (qVec) {
-      const top = await streamDenseTopK(store, qVec, candidateCap, opts.signal)
-      for (const s of top) denseIds.push(String(s.id))
+    try {
+      const [qVec] = await embedder.embed([q], { role: 'query', signal: opts.signal })
+      throwIfAborted(opts.signal)
+      if (qVec) {
+        const top = await streamDenseTopK(store, qVec, candidateCap, opts.signal)
+        for (const s of top) denseIds.push(String(s.id))
+      }
+    } catch (err) {
+      // Dense query embedder unavailable (weights not on disk, session load
+      // failed, utility RPC error). Hybrid/lexical already rank without
+      // denseIds — degrade to lexical hits instead of failing the whole
+      // search. Aborts rethrow.
+      if (isAbortError(err) || opts.signal?.aborted) throw err
     }
   }
 

@@ -25,6 +25,7 @@ import {
   streamRetryBackoffMsFor as streamRetryBackoffMs
 } from './streamRetry'
 import { isRetriableProviderMessage } from './providers/fetchWithRetry'
+import { providerHttpErrorCode } from './providers/httpErrors'
 import { circuitKeyProvider, isCircuitOpenError } from './circuitBreaker'
 import {
   QUOTA_EXHAUSTED_STOP_CODE,
@@ -60,6 +61,7 @@ import {
 } from '../../shared/domain/contextBudget'
 import { executeStepToolCalls } from './executeStepTools'
 import { mergeOpenAiCompatToolArgDelta } from './toolArgWire'
+import { mergeStreamedToolName } from '../../shared/utils/toolName'
 import { loadHarness } from './harness'
 import {
   combineLoopHints,
@@ -152,6 +154,7 @@ import {
   patchLatestTodoWriteMessage,
   GOAL_SECTION_RE
 } from './state'
+import { enqueueMessageRewrite } from './messageAppendQueue'
 import { atomicWriteFile } from '../storage/atomicWrite'
 import { writeRunReceiptBestEffort } from './runReceipt'
 import { writeTrajectoryArtifactsBestEffort } from './runTrajectory'
@@ -245,6 +248,19 @@ function loopHintWhenContextStillLarge(
  * is worth retrying. Guards against re-folding an unchanged tail every step.
  */
 const AUTO_COMPACT_MIN_REGROWTH_RATIO = 0.1
+
+/**
+ * Automatic (proactive/overflow) LLM compaction is disabled: the agent loop
+ * never folds history on its own. Manual compaction (/compact, menu) is
+ * unaffected. Overflow without a manual fold stops the run with
+ * `context_overflow` instead of force-folding.
+ */
+let autoCompactionEnabled = false
+
+/** @internal — test hook: re-enable the auto compaction ignition points. */
+export function setAutoCompactionForTests(enabled: boolean): void {
+  autoCompactionEnabled = enabled
+}
 
 const CONTEXT_OVERFLOW_VERIFY_FAILED =
   'Context still exceeds the model window. Compaction produced a summary that failed verification and was not applied. Start a new chat or compact manually.'
@@ -500,15 +516,16 @@ function lastReasoningState(messages: ChatMessage[]): ProviderReasoningState | u
   return undefined
 }
 
-/** Persist and emit one user follow-up drained from the run registry. */
+/** Persist and emit one user follow-up drained from the run registry.
+ * @returns true when an entry was applied (callers close the turn otherwise). */
 function* applyDrainedFollowUps(
   runId: string,
   runDir: string,
   messages: ChatMessage[],
   mode: 'ready' | 'next' = 'ready'
-): Generator<AgentEvent> {
+): Generator<AgentEvent, boolean> {
   const entry = mode === 'next' ? takeNextFollowUp(runId) : takeNextReadyFollowUp(runId)
-  if (!entry) return
+  if (!entry) return false
   const message = ensureUserMessageAt(entry.message)
   messages.push(message)
   appendMessage(runDir, message)
@@ -520,7 +537,15 @@ function* applyDrainedFollowUps(
   }
   appendEvent(runDir, ev)
   yield ev
-  syncFollowUpsToDisk(runDir, runId)
+  // Serialize the followups.json rewrite behind the queued messages.jsonl
+  // append: the entry is already removed from the registry, so a crash between
+  // the disk-queue rewrite and the append-chain flush would otherwise lose the
+  // acknowledged follow-up from BOTH stores.
+  const remaining = peekFollowUps(runId)
+  void enqueueMessageRewrite(runDir, () => {
+    saveFollowUps(runDir, remaining)
+  })
+  return true
 }
 
 /** Seed plan.md with the Goal / Steps / Done when stub — at run start and on mid-run switch to Plan. */
@@ -649,6 +674,13 @@ function* emitTerminalRunError(opts: {
   code?: string
   emitErrorEvent?: boolean
   dropFollowUpsReason?: string
+  /**
+   * Keep the queued follow-ups for the next continue instead of orphan-dropping
+   * them in the run finally. Used by stops whose own message invites a
+   * "continue" (runaway-step ceiling, budget exhaustion) — the user's queued
+   * tasks must survive to be applied by that continue.
+   */
+  preserveFollowUps?: boolean
   /** When true, skip flushWriteCheckpoint (caller already flushed). */
   skipCheckpoint?: boolean
   /** Mark the run resumable so a later resume restores the loop checkpoint. */
@@ -660,6 +692,8 @@ function* emitTerminalRunError(opts: {
   const emitError = opts.emitErrorEvent !== false && code != null
   if (opts.dropFollowUpsReason) {
     yield* dropPendingFollowUps(runId, runDir, opts.dropFollowUpsReason)
+  } else if (opts.preserveFollowUps) {
+    yield* dropPendingFollowUps(runId, runDir, 'run_ended', { preserveOnDisk: true })
   }
   if (emitError) {
     yield { type: 'error', runId, invokeId, message, code }
@@ -723,7 +757,10 @@ function accumulateStreamedToolDelta(
   delta: { name?: string; arguments?: string }
 ): void {
   const existing = streamed.get(toolCallId) ?? { id: toolCallId, name: '', arguments: '' }
-  if (delta.name) existing.name += delta.name
+  // Same merge rule as the provider layer: hosts that re-send the full name per
+  // delta must not glue into `get_weatherget_weather` (visible on interrupt/
+  // cancel flushes where no completed tool_call chunk corrects it).
+  if (delta.name) existing.name = mergeStreamedToolName(existing.name, delta.name)
   if (delta.arguments) {
     existing.arguments = mergeOpenAiCompatToolArgDelta(existing.arguments, delta.arguments).arguments
   }
@@ -813,6 +850,58 @@ function logReasoningQuarantine(runId: string, step: number): void {
     correlationId: runId,
     step
   })
+}
+
+/**
+ * Rebuild an in-flight assistant answer from the last durable stream_snapshot
+ * after a hard kill. During a healthy stream the assistant message reaches
+ * messages.jsonl only at step end, so a power loss / SIGKILL mid-stream leaves
+ * the answer the user watched only in events.jsonl snapshots. Appends the
+ * snapshot text as an assistant message when:
+ *  - the snapshot is the last one and no terminal status event follows it
+ *    (orderly interrupt/error paths always append status after flushing), and
+ *  - the transcript does not already contain that text (the step's own persist
+ *    may have landed before the crash; snapshots repeat the full buffer).
+ */
+async function reconstructStreamSnapshotAssistant(
+  runDir: string,
+  runId: string,
+  messages: ChatMessage[]
+): Promise<void> {
+  if (messages.length === 0) return
+  const events = await loadEventsAsync(runDir, runId, { limit: 400 })
+  let snapshot: string | null = null
+  let terminalAfterSnapshot = false
+  for (const row of events) {
+    const ev = row.event as { type?: unknown; text?: unknown; status?: unknown } | null
+    if (!ev || typeof ev !== 'object') continue
+    if (ev.type === 'stream_snapshot' && typeof ev.text === 'string' && ev.text.trim()) {
+      snapshot = ev.text
+      terminalAfterSnapshot = false
+      continue
+    }
+    if (
+      snapshot &&
+      ev.type === 'status' &&
+      (ev.status === 'done' || ev.status === 'cancelled' || ev.status === 'error')
+    ) {
+      terminalAfterSnapshot = true
+    }
+  }
+  if (!snapshot || terminalAfterSnapshot) return
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]
+    if (message.role !== 'assistant') continue
+    const content = message.content
+    if (typeof content === 'string' && (content === snapshot || content.includes(snapshot))) {
+      return
+    }
+    break
+  }
+  const recovered: ChatMessage = { role: 'assistant', content: snapshot }
+  messages.push(recovered)
+  appendMessage(runDir, recovered)
+  appendEvent(runDir, { type: 'assistant_message', runId, content: snapshot })
 }
 
 export async function* runAgent(input: {
@@ -985,6 +1074,10 @@ export async function* runAgent(input: {
       } else {
         messages = diskMessages.map((m) => ({ ...m }))
       }
+      // A hard kill mid-stream leaves the in-flight answer only as
+      // stream_snapshot events; rebuild it so the transcript the user resumes
+      // shows the answer they watched stream.
+      await reconstructStreamSnapshotAssistant(runDir, runId, messages)
       await syncMessagesAsync(runDir, messages)
       // Seed cumulative billed totals. Prefer the durable loopCheckpoint
       // usageTotals: events.jsonl archives rotate (oldest deleted), so
@@ -1656,6 +1749,7 @@ export async function* runAgent(input: {
           runDir,
           message: `This turn reached ${MAX_STEPS_PER_TURN} agent steps and was stopped as a runaway-loop guard. Send "continue" to keep going, or break the task into smaller steps.`,
           code: 'LOOP_SAFETY',
+          preserveFollowUps: true,
           flushWriteCheckpoint,
           writeStatus
         })
@@ -1669,6 +1763,7 @@ export async function* runAgent(input: {
           runDir,
           message: budgetStop,
           code: 'BUDGET_EXHAUSTED',
+          preserveFollowUps: true,
           flushWriteCheckpoint,
           writeStatus
         })
@@ -1832,7 +1927,8 @@ export async function* runAgent(input: {
         providerInputTokens
       )
       const needsAutoCompact =
-        assembled.overflow || (proactiveDecision.trigger && !proactiveSuppressed)
+        autoCompactionEnabled &&
+        (assembled.overflow || (proactiveDecision.trigger && !proactiveSuppressed))
 
       const reloadCompactionWatermark = (): void => {
         if (!runDir) return
@@ -1960,7 +2056,8 @@ export async function* runAgent(input: {
       }
 
       if (assembled.overflow) {
-        if (!overflowRetryUsed) {
+        // Auto retry shares the kill switch; disabled → overflow stop below.
+        if (!overflowRetryUsed && autoCompactionEnabled) {
           overflowRetryUsed = true
           persistLoopCheckpoint()
           logger.warn('Context overflow after auto compact — retrying with same keep-recent', {
@@ -2507,13 +2604,18 @@ export async function* runAgent(input: {
             }
           } else if (chunk.type === 'error') {
             const message = chunk.error ?? 'Provider error'
+            // 401/402/403 must arrive pre-mapped to PROVIDER_AUTH / PROVIDER_BILLING
+            // (see providerHttpErrorCode): they are permanent user-action failures,
+            // and leaving them on the retryable PROVIDER_HTTP code would render a
+            // Retry affordance that can never succeed.
             const errorCode =
-              chunk.errorCode === 'PROVIDER_HTTP' ||
-              chunk.errorCode === 'PROVIDER_NETWORK' ||
-              chunk.errorCode === 'PROVIDER_TIMEOUT' ||
-              chunk.errorCode === 'CIRCUIT_OPEN'
-                ? chunk.errorCode
-                : 'PROVIDER_STREAM'
+              chunk.errorCode === 'PROVIDER_HTTP'
+                ? providerHttpErrorCode(chunk.httpStatus)
+                : chunk.errorCode === 'PROVIDER_NETWORK' ||
+                    chunk.errorCode === 'PROVIDER_TIMEOUT' ||
+                    chunk.errorCode === 'CIRCUIT_OPEN'
+                  ? chunk.errorCode
+                  : 'PROVIDER_STREAM'
             lastStreamFailureHttpStatus = chunk.httpStatus
             if (isQuotaExhaustedMessage(message)) {
               stepQuotaExhausted = true
@@ -2981,6 +3083,10 @@ export async function* runAgent(input: {
 
         if (incomplete === 'empty_response' && !controller.signal.aborted) {
           emptyResponseContinues += 1
+          // Persist immediately (matches truncationContinues): this continue
+          // path bypasses the post-tool checkpoint write, so a crash would
+          // otherwise restore a stale count and re-burn empty steps.
+          persistLoopCheckpoint()
           if (emptyResponseContinues > MAX_EMPTY_RESPONSE_CONTINUES) {
             logger.warn('Stopping auto-continue after repeated empty response', {
               scope: 'agent',
@@ -3099,12 +3205,18 @@ export async function* runAgent(input: {
         // TOCTOU window between hasPendingFollowUps and markRunTurnComplete.
         const closeTurn = tryBeginRunClosing(runId, invokeId)
         if (closeTurn === 'has_followups') {
-          checkpointFlushed = false
-          // Anchor AFTER draining so the checkpoint covers the follow-up turn's
-          // own prompt (rewind/edit of that prompt must restore its writes).
-          yield* applyDrainedFollowUps(runId, runDir, messages, 'next')
-          beginWriteCheckpoint(runDir, toolWorkspace, lastUserAnchorIndex(messages, foldedMessages))
-          continue
+          const applied = yield* applyDrainedFollowUps(runId, runDir, messages, 'next')
+          if (applied) {
+            checkpointFlushed = false
+            // Anchor AFTER draining so the checkpoint covers the follow-up turn's
+            // own prompt (rewind/edit of that prompt must restore its writes).
+            beginWriteCheckpoint(runDir, toolWorkspace, lastUserAnchorIndex(messages, foldedMessages))
+            continue
+          }
+          // The queued follow-up was removed between tryBeginRunClosing and the
+          // take — close the turn and fall through to done instead of re-
+          // streaming an unchanged transcript (a duplicated answer + tokens).
+          markRunTurnComplete(runId, invokeId)
         }
         if (!incomplete && !isInlineInstance && closeTurn === 'closed') {
           const activeGoal = readGoal(runDir)
@@ -3628,6 +3740,20 @@ export async function* runAgent(input: {
         err: flushErr
       })
       if (runDir) {
+        // Direct retry for the terminal status: once this generator has ended
+        // nothing re-enqueues a parked patch, and a dropped terminal write
+        // leaves status.json "running" — a zombie the orphan sweep later
+        // converts to "Cancelled".
+        try {
+          await updateStatus(runDir, {}, { sync: true })
+        } catch (retryErr) {
+          logger.error('Terminal status retry after finally flush failure also failed', {
+            scope: 'agent',
+            code: 'AGENT_FINALLY_FLUSH',
+            correlationId: runId,
+            err: retryErr
+          })
+        }
         try {
           appendEvent(runDir, {
             type: 'error',

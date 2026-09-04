@@ -36,7 +36,7 @@ const TAB_TITLE: Record<ArtifactTab, string> = {
 }
 
 const ARTIFACT_TABS: ReadonlyArray<{ id: ArtifactTab; label: string; file: string }> = [
-  { id: 'plan', label: 'Draft', file: 'plan.md' },
+  { id: 'plan', label: 'Plan', file: 'plan.md' },
   { id: 'contract', label: 'Contract', file: 'contract.md' },
   { id: 'receipt', label: 'Receipt', file: 'receipt.json' }
 ]
@@ -280,6 +280,19 @@ function ReceiptSummary({
         <p className="m-0 mt-1.5 text-xs tabular-nums text-fg">
           {receipt.diagnostics.clean}/{receipt.diagnostics.calls} clean
         </p>
+        {receipt.verification ? (
+          <p
+            className={cn(
+              'm-0 mt-1 text-caption',
+              receipt.verification.verifiedAfterLastMutation ? 'text-success' : 'text-warning'
+            )}
+            data-receipt-verification={String(receipt.verification.verifiedAfterLastMutation)}
+          >
+            {receipt.verification.verifiedAfterLastMutation
+              ? 'Verified after last file mutation'
+              : 'File mutations after last successful check (unverified)'}
+          </p>
+        ) : null}
       </section>
 
       <PathList
@@ -641,7 +654,7 @@ export const PlanPanel = memo(function PlanPanel({
             {planOutline ? (
               <>
                 {planOutline.headings.length > 0 ||
-                planOutline.checked + planOutline.unchecked > 0 ? (
+                (!hasTodos && planOutline.checked + planOutline.unchecked > 0) ? (
                   <nav
                     className="mb-3 rounded-md border border-border/40 bg-surface px-2.5 py-2"
                     aria-label="Plan outline"
@@ -649,7 +662,12 @@ export const PlanPanel = memo(function PlanPanel({
                     <p className="m-0 text-2xs font-medium uppercase tracking-[var(--vy-tracking-caps)] text-muted">
                       Outline
                     </p>
-                    {planOutline.checked + planOutline.unchecked > 0 ? (
+                    {/*
+                      Markdown checkboxes are the draft's static record; the
+                      Tasks section above is the live source of truth. Show
+                      this count only when no todos.json exists for the run.
+                    */}
+                    {!hasTodos && planOutline.checked + planOutline.unchecked > 0 ? (
                       <p className="m-0 mt-1 text-caption text-muted">
                         Checklist {planOutline.checked}/
                         {planOutline.checked + planOutline.unchecked}

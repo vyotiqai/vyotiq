@@ -19,7 +19,7 @@ export const DOC_SECTION_INTRO: Record<DocSection, string> = {
   customize: 'Configure providers, models, MCP servers, skills, rules, and packages.',
   tools: 'Use the files editor, terminal, browser, Git surfaces, indexing, memory, and voice.',
   concepts: 'Understand what Agent V is, how runs and state work, and how privacy and security apply.',
-  reference: 'Look up settings, shortcuts, tools, attachments, layout, and storage paths.',
+  reference: 'Look up settings, shortcuts, tools, attachments, and storage paths.',
   troubleshooting:
     'Recover from failed runs, provider issues, Marketplace and MCP problems, and Git or indexing errors.'
 }

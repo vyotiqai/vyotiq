@@ -42,7 +42,7 @@ Optional cookieless analytics uses PUBLIC_ANALYTICS_SRC and PUBLIC_ANALYTICS_DOM
 
 ## Brand sync
 
-Brand files under landing/public/brand/ are copied from resources/branding/ by pnpm sync:landing-brand (runs automatically before landing:dev / landing:build). That sync copies the canonical transparent mark and wordmark for chrome, the stacked dark board as og.png, the app icon as favicon, and maintained Mono provider marks (the same glyphs as the composer picker) into landing/src/assets/providers/.
+Brand files under landing/public/brand/ are copied from resources/branding/ by pnpm sync:landing-brand (runs automatically before landing:dev / landing:build). That sync copies the canonical transparent mark and wordmark for chrome, the purpose-built monochrome social card as og.png, the app icon as favicon, and maintained Mono provider marks (the same glyphs as the composer picker) into landing/src/assets/providers/.
 
 ## Hosting (deferred)
 

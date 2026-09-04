@@ -147,7 +147,10 @@ export async function* iterateSseData(
         if (line === '') {
           const data = flush()
           if (data === null) continue
-          if (data === '[DONE]') return
+          // Trim: hosts send `data: [DONE]` with trailing whitespace/CR
+          // variants; an un-trimmed compare fell through to JSON.parse and
+          // counted the terminator as a dropped frame.
+          if (data.trim() === '[DONE]') return
           yield data
           continue
         }
@@ -168,7 +171,7 @@ export async function* iterateSseData(
     }
 
     const data = flush()
-    if (data !== null && data !== '[DONE]') yield data
+    if (data !== null && data.trim() !== '[DONE]') yield data
   } finally {
     if (!finished) {
       await reader.cancel().catch(() => undefined)
@@ -198,19 +201,34 @@ export type SseDropCounter = { dropped: number }
  * value followed by junk (`{…}{…}` / proxy garbage) or a stream cut after a
  * complete value with containers still open (missing `]`/`}` — hosts that flush
  * early). Truncation inside a string never parses as complete, so it is not
- * fabricated content.
+ * fabricated content. The remainder after a recovered prefix is returned so the
+ * caller can account for it — it used to be discarded silently, which turned a
+ * corrupted stream into a plausible-looking short answer with no drop count.
  */
-function salvageSseJson(text: string): Record<string, unknown> | undefined {
+function salvageSseJson(
+  text: string
+): { value: Record<string, unknown>; remainder: string } | undefined {
   if (text[0] !== '{' && text[0] !== '[') return undefined
-  for (const candidate of [completeJsonPrefix(text), closeUnterminatedJson(text)]) {
-    if (!candidate) continue
+  const prefix = completeJsonPrefix(text)
+  if (prefix) {
     try {
-      const parsed = JSON.parse(candidate) as unknown
+      const parsed = JSON.parse(prefix) as unknown
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>
+        return { value: parsed as Record<string, unknown>, remainder: text.slice(prefix.length).trim() }
       }
     } catch {
-      // next candidate
+      // fall through to the unterminated candidate
+    }
+  }
+  const closed = closeUnterminatedJson(text)
+  if (closed) {
+    try {
+      const parsed = JSON.parse(closed) as unknown
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { value: parsed as Record<string, unknown>, remainder: '' }
+      }
+    } catch {
+      // unsalvageable
     }
   }
   return undefined
@@ -234,7 +252,24 @@ export async function* iterateSseJson(
     const salvaged = salvageSseJson(text)
     if (salvaged) {
       logProviderFailure('sse', 'parse', { bytes: text.length, message: 'frame salvaged' })
-      yield salvaged
+      yield salvaged.value
+      const rest = salvaged.remainder
+      if (rest) {
+        try {
+          const second = JSON.parse(rest) as unknown
+          if (second && typeof second === 'object' && !Array.isArray(second)) {
+            yield second as Record<string, unknown>
+            continue
+          }
+        } catch {
+          // remainder is not a complete frame — count it below
+        }
+        if (drops) drops.dropped++
+        logProviderFailure('sse', 'parse', {
+          bytes: rest.length,
+          message: 'salvage remainder dropped'
+        })
+      }
       continue
     }
     if (drops) drops.dropped++

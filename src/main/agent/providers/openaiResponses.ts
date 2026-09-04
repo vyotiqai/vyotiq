@@ -362,6 +362,12 @@ export async function* streamOpenAiResponses(
   const pending = new Map<string, ToolCall>()
   const yieldedToolCalls = new Set<string>()
   const itemIdToCallId = new Map<string, string>()
+  /**
+   * Argument deltas that arrived before (or without) their `output_item.added`
+   * mapping, keyed by item_id. Dropped silently, a mid-run tool call would
+   * vanish or execute with empty arguments.
+   */
+  const argsByItemId = new Map<string, string>()
   const outputItems: unknown[] = []
   let responseId: string | undefined
   let thinkingText = ''
@@ -422,6 +428,12 @@ export async function* streamOpenAiResponses(
           name: String(item.name ?? ''),
           arguments: ''
         }
+        // Attach any argument deltas that streamed in before this mapping.
+        const carried = itemId ? argsByItemId.get(itemId) : undefined
+        if (carried) {
+          call.arguments = mergeOpenAiCompatToolArgDelta(call.arguments, carried).arguments
+          if (itemId) argsByItemId.delete(itemId)
+        }
         pending.set(callId, call)
         // Emit immediately so UI can show tool chrome before argument deltas.
         yield* emitThinkingDoneIfNeeded()
@@ -467,10 +479,17 @@ export async function* streamOpenAiResponses(
     }
 
     if (type === 'response.function_call_arguments.delta') {
-      const callId = String(
-        event.call_id ?? itemIdToCallId.get(String(event.item_id ?? '')) ?? ''
-      )
+      const rawItemId = String(event.item_id ?? '')
+      const callId = String(event.call_id ?? itemIdToCallId.get(rawItemId) ?? '')
       const delta = event.delta as string | undefined
+      if (!callId && delta && rawItemId) {
+        // Mapping not arrived yet (its output_item.added frame was dropped or
+        // is late): accumulate by item_id and migrate when it lands instead of
+        // silently discarding the tool call's arguments.
+        const prev = argsByItemId.get(rawItemId) ?? ''
+        argsByItemId.set(rawItemId, mergeOpenAiCompatToolArgDelta(prev, delta).arguments)
+        continue
+      }
       if (callId && delta) {
         yield* emitThinkingDoneIfNeeded()
         const existing = pending.get(callId) ?? { id: callId, name: '', arguments: '' }
@@ -481,12 +500,19 @@ export async function* streamOpenAiResponses(
           type: 'tool_call_delta',
           toolCallDelta: { index: indexForCall(callId), id: callId, arguments: merged.yieldDelta }
         }
+      } else if (delta) {
+        drops.dropped++
       }
     }
 
     if (type === 'response.incomplete' || type === 'response.failed') {
       const details = response?.incomplete_details as Record<string, unknown> | undefined
       stopReason = normalizeStopReason(details?.reason) ?? (type === 'response.failed' ? 'error' : 'unknown')
+      // `response.incomplete` (length-capped output) carries usage just like
+      // `response.completed`; skipping it reported zero tokens for exactly the
+      // longest, truncated steps.
+      const incompleteUsage = parseOpenAiResponsesUsage(response?.usage)
+      if (incompleteUsage) lastUsage = incompleteUsage
       if (type === 'response.failed') {
         const errObj = response?.error as { message?: string } | undefined
         const message = errObj?.message ?? 'OpenAI response failed'
@@ -507,6 +533,10 @@ export async function* streamOpenAiResponses(
   }
 
   if (thinkingText && !thinkingDoneEmitted) yield { type: 'thinking_done', text: thinkingText }
+
+  // item_id buckets that never received their mapping — count rather than
+  // silently discard.
+  if (argsByItemId.size > 0) drops.dropped += argsByItemId.size
 
   // Flush tool calls that only received argument deltas (no output_item.done).
   for (const [callId, call] of pending) {

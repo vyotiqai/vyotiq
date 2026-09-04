@@ -17,6 +17,7 @@ import {
 } from './state'
 import { resolveRunDir } from '../storage/paths'
 import { clearFollowUps } from './runRegistry'
+import { clearFollowUps as clearFollowUpsOnDisk } from './followUpStore'
 import { logger } from '../../shared/logger'
 import { writeRunReceiptBestEffort } from './runReceipt'
 import { writeTrajectoryArtifactsBestEffort } from './runTrajectory'
@@ -89,6 +90,10 @@ export async function prepareRewindAndReplaceUserMessage(input: {
   }
 
   clearFollowUps(runId)
+  // The queue is persisted at enqueue time; without the disk clear the
+  // pre-rewind follow-ups resurrect on the next chatStart(resume) and execute
+  // against the rewound transcript.
+  clearFollowUpsOnDisk(runDir)
 
   const diskMessages = await loadMessagesAsync(workspacePath, runId)
   if (editMessageIndex < 0 || editMessageIndex >= diskMessages.length) {
@@ -197,6 +202,8 @@ export async function prepareRewindToUserMessage(input: {
   }
 
   clearFollowUps(runId)
+  // Same disk clear as the edit-and-resend rewind — see the comment there.
+  clearFollowUpsOnDisk(runDir)
 
   const diskMessages = await loadMessagesAsync(workspacePath, runId)
   if (userMessageIndex < 0 || userMessageIndex >= diskMessages.length) {

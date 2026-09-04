@@ -470,8 +470,8 @@ export const ChangesPanel = memo(function ChangesPanel({
     }
     return {
       agent: {
-        added: agentFiles.reduce((s, f) => s + f.added, 0),
-        removed: agentFiles.reduce((s, f) => s + f.removed, 0)
+        added: agentFiles.reduce((s, f) => s + (f.added ?? 0), 0),
+        removed: agentFiles.reduce((s, f) => s + (f.removed ?? 0), 0)
       },
       uncommitted: sumSide(gitFiles, 'all'),
       staged: sumSide(gitFiles.filter((f) => f.staged), 'staged'),
@@ -514,8 +514,8 @@ export const ChangesPanel = memo(function ChangesPanel({
     if (displayScope === 'agent') {
       return {
         files: agentFiles.length,
-        added: agentFiles.reduce((s, f) => s + f.added, 0),
-        removed: agentFiles.reduce((s, f) => s + f.removed, 0)
+        added: agentFiles.reduce((s, f) => s + (f.added ?? 0), 0),
+        removed: agentFiles.reduce((s, f) => s + (f.removed ?? 0), 0)
       }
     }
     if (displayScope === 'staged' || displayScope === 'unstaged' || displayScope === 'uncommitted') {

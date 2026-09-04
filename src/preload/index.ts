@@ -33,6 +33,10 @@ const api: VyotiqApi = {
     ipcRenderer.invoke(IPC.workspacesUpdateUiState, { path, ui }),
   updateWorkspaceUiStateSync: (path, ui) =>
     ipcRenderer.send(IPC.workspacesUpdateUiStateSync, { path, ui }),
+  getComposerAttachments: (workspacePath) =>
+    ipcRenderer.invoke(IPC.composerAttachmentsGet, { workspacePath }),
+  setComposerAttachments: (payload) => ipcRenderer.invoke(IPC.composerAttachmentsSet, payload),
+  clearComposerAttachments: (payload) => ipcRenderer.invoke(IPC.composerAttachmentsClear, payload),
   setWorkspaceSettingsOverride: (path, override) =>
     ipcRenderer.invoke(IPC.workspacesSetSettingsOverride, { path, override }),
   getSettings: () => ipcRenderer.invoke(IPC.getSettings),
@@ -68,6 +72,7 @@ const api: VyotiqApi = {
   chatUiSubscribeAdd: (payload) => ipcRenderer.invoke(IPC.chatUiSubscribeAdd, payload),
   chatRewindAndStart: (payload) => ipcRenderer.invoke(IPC.chatRewindAndStart, payload),
   chatRewind: (payload) => ipcRenderer.invoke(IPC.chatRewind, payload),
+  chatRewindPreview: (payload) => ipcRenderer.invoke(IPC.chatRewindPreview, payload),
   chatCancel: (runId) => ipcRenderer.invoke(IPC.chatCancel, { runId }),
   chatFollowUp: (payload) => ipcRenderer.invoke(IPC.chatFollowUp, payload),
   chatFollowUpRemove: (payload) => ipcRenderer.invoke(IPC.chatFollowUpRemove, payload),
@@ -79,12 +84,6 @@ const api: VyotiqApi = {
       workspacePath,
       runId,
       ...(focus?.trim() ? { focus: focus.trim() } : {})
-    }),
-  undoWrites: (workspacePath, runId, checkpointId) =>
-    ipcRenderer.invoke(IPC.runsUndoWrites, {
-      workspacePath,
-      runId,
-      ...(checkpointId ? { checkpointId } : {})
     }),
   resolveWrites: (payload) => ipcRenderer.invoke(IPC.runsResolveWrites, payload),
   readRunArtifact: (payload) => ipcRenderer.invoke(IPC.runsReadArtifact, payload),

@@ -277,13 +277,17 @@ function enqueueWrite(fn: () => Promise<void>): Promise<void> {
   return next
 }
 
-async function ensureChildSession(signal?: AbortSignal): Promise<LoadedSession> {
+async function ensureChildSession(signal?: AbortSignal, allowDownload = true): Promise<LoadedSession> {
   if (session) return session
   for (const art of NEURAL_ARTIFACTS) {
     if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
     const modelDir = codeIndexModelDir(art.artifactId)
     let present = modelFilesPresent(modelDir, art.files)
-    if (!present && art.allowAutoDownload) {
+    // Read lanes must never download weights inside an RPC: that channel has a
+    // hard idle timeout and no progress events, so a cold download is always
+    // killed mid-flight and every retry restarts from scratch. Weights are
+    // acquired by the write chain (sync) before read RPCs are issued.
+    if (!present && allowDownload && art.allowAutoDownload) {
       present = await downloadModelFiles(modelDir, art.files, { signal, hardError: false })
     }
     if (!present) continue
@@ -317,7 +321,9 @@ async function resolveSyncEmbedder(msg: UtilityRequest): Promise<Embedder> {
     },
     dimensions: session?.dimensions ?? msg.dimensions ?? LIGHTON_DENSE_DIM,
     async embed(texts, opts) {
-      const s = session ?? (await ensureChildSession(opts?.signal))
+      // searchCode is a read lane: fail fast when weights are absent so main
+      // can serve lexical hits instead of blocking on a doomed download.
+      const s = session ?? (await ensureChildSession(opts?.signal, msg.op !== 'searchCode'))
       return s.embed(texts, opts?.role ?? 'document', opts?.signal)
     }
   }

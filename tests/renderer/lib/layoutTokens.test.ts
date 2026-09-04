@@ -3,6 +3,7 @@ import {
   CHAT_COLUMN,
   CHAT_COLUMN_MAX,
   CHAT_GUTTER,
+  COMPOSER_FLOAT_FADE,
   CHAT_STAGE_INSET,
   MICRO_LABEL,
   MICRO_LABEL_CAPS,
@@ -46,6 +47,11 @@ describe('layout typography and spacing tokens', () => {
     expect(USER_PROMPT_SURFACE).toContain('leading-relaxed')
     expect(USER_PROMPT_SURFACE).toContain('tracking-[var(--vy-tracking-body)]')
     expect(USER_PROMPT_SURFACE).toContain('vy-chrome')
+  })
+
+  it('fades the composer dock into the stage background, not the composer surface', () => {
+    expect(COMPOSER_FLOAT_FADE).toContain('from-[var(--vy-bg)]')
+    expect(COMPOSER_FLOAT_FADE).not.toContain('--vy-chrome-surface')
   })
 
   it('exports micro label tokens', () => {

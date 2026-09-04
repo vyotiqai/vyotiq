@@ -234,6 +234,7 @@ export function ComposerToolbar({
   variant,
   disabled,
   locked,
+  className,
   providers,
   optionsByProvider,
   seedsByProvider,
@@ -276,6 +277,8 @@ export function ComposerToolbar({
   variant: ComposerVariant
   disabled?: boolean
   locked: boolean
+  /** Row-fit override — the dock passes `flex-1` while a dictation session replaces the input. */
+  className?: string
   providers: ProviderId[]
   optionsByProvider: Record<ProviderId, ModelPickerOption[]>
   seedsByProvider: Record<ProviderId, ModelPickerOption[]>
@@ -355,11 +358,13 @@ export function ComposerToolbar({
   // Empty idle draft: the mic IS the primary action. Once the draft has any content,
   // Send takes the primary slot and the mic moves beside it instead of disappearing.
   const micIsPrimary = dictationAllowed && !running && !hasContent
+  // Single-accent invariant: exactly one filled control per state. When the mic
+  // is not the primary action it drops to quiet chrome beside Send/Stop.
   const micButton = (
     <Tooltip content={dictationMicTooltip(dictationPhase, dictationEngineHint)}>
       <button
         type="button"
-        className={cn(iconCtl, 'bg-accent text-accent-fg hover:bg-fg-strong')}
+        className={cn(iconCtl, micIsPrimary && 'bg-accent text-accent-fg hover:bg-fg-strong')}
         aria-label={dictationMicLabel(dictationPhase)}
         onMouseDown={(e) => e.preventDefault()}
         onClick={onDictationToggle}
@@ -467,7 +472,7 @@ export function ComposerToolbar({
 
   return (
     <div
-      className={chromeRow}
+      className={cn(chromeRow, className)}
       data-composer-toolbar
       data-dictation-session={dictationKind ?? undefined}
       aria-busy={dictationBusy || undefined}

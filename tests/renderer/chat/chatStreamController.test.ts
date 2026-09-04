@@ -426,7 +426,7 @@ describe('createChatStreamController', () => {
     ])
 
     const ok = await controller.revertToUserMessage(0)
-    expect(ok).toBe(true)
+    expect(ok).toEqual({ restored: ['a.ts'], skipped: [] })
     expect(chatRewind).toHaveBeenCalledWith({
       workspacePath: '/ws',
       runId: 'r1',

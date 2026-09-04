@@ -161,12 +161,73 @@ function caretSerializedOffset(root: HTMLElement): number {
   const sel = window.getSelection()
   if (!sel || sel.rangeCount === 0) return serializeDom(root).length
   const range = sel.getRangeAt(0)
-  const pre = document.createRange()
-  pre.selectNodeContents(root)
-  pre.setEnd(range.startContainer, range.startOffset)
-  const walkerRoot = document.createElement('div')
-  walkerRoot.appendChild(pre.cloneContents())
-  return serializeDom(walkerRoot).length
+  // Count serialized units on the live DOM instead of cloning the selection
+  // prefix into a scratch element: cloneContents + subtree serialization ran
+  // on every input/keyup/click (5.7s of UpdateStyleAndLayout in the
+  // paste-freeze trace). The rules below mirror segmentsFromDom exactly,
+  // including the clone's truncated text node and DIV/P trailing-newline
+  // behavior, so offsets stay identical to the values this used to return.
+  const container = range.startContainer
+  const offset = range.startOffset
+  let count = 0
+  let stopped = false
+  let lastEndedNewline = false
+
+  const visit = (node: Node): void => {
+    if (stopped) return
+    if (node === container) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        const truncated = (node.textContent ?? '').slice(0, offset)
+        count += truncated.length
+        lastEndedNewline = truncated.endsWith('\n')
+        stopped = true
+        return
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) {
+        stopped = true
+        return
+      }
+      const children = Array.from(node.childNodes)
+      for (let i = 0; i < offset && i < children.length; i++) {
+        const child = children[i]
+        if (child) visit(child)
+      }
+      stopped = true
+      return
+    }
+    if (node.nodeType === Node.TEXT_NODE) {
+      const value = node.textContent ?? ''
+      count += value.length
+      lastEndedNewline = value.endsWith('\n')
+      return
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return
+    const el = node as HTMLElement
+    if (el.dataset.mention) {
+      const decoded = decodeMentionPayload(el.dataset.mention)
+      if (decoded) {
+        count += mentionMarker(decoded).length
+        lastEndedNewline = false
+      }
+      return
+    }
+    if (el.tagName === 'BR') {
+      count += 1
+      lastEndedNewline = true
+      return
+    }
+    for (const child of Array.from(node.childNodes)) {
+      if (stopped) break
+      visit(child)
+    }
+    if ((el.tagName === 'DIV' || el.tagName === 'P') && el !== root && !lastEndedNewline) {
+      count += 1
+      lastEndedNewline = true
+    }
+  }
+
+  visit(root)
+  return count
 }
 
 function setCaretSerializedOffset(root: HTMLElement, target: number): void {
@@ -232,6 +293,63 @@ function setCaretSerializedOffset(root: HTMLElement, target: number): void {
     sel.removeAllRanges()
     sel.addRange(range)
   }
+}
+
+/**
+ * Single-pass plain-text insertion for the paste path.
+ *
+ * `document.execCommand('insertText')` runs a full TypingCommand per inserted
+ * character with a layout pass between them — the paste-freeze trace measured
+ * one 8.3s `TypingCommand::InsertText` on a multi-KB paste. Inserting one
+ * fragment (text nodes + `<br>` for newlines) with a Range produces the same
+ * DOM in one pass. Returns true when anything was inserted.
+ */
+function insertPlainText(root: HTMLElement | null, text: string): boolean {
+  if (!root || !text) return false
+  const sel = window.getSelection()
+  const range =
+    sel && sel.rangeCount > 0
+      ? sel.getRangeAt(0)
+      : (() => {
+          const fallback = document.createRange()
+          fallback.selectNodeContents(root)
+          fallback.collapse(false)
+          return fallback
+        })()
+  // A selection that starts or ends outside the composer must never leak into
+  // the draft — re-anchor to the editor end, like a focus-then-paste.
+  if (
+    !root.contains(range.startContainer) ||
+    (range.startContainer !== range.endContainer && !root.contains(range.endContainer))
+  ) {
+    range.selectNodeContents(root)
+    range.collapse(false)
+  }
+  range.deleteContents()
+  const frag = document.createDocumentFragment()
+  let last: Node | null = null
+  text.split('\n').forEach((part, i, parts) => {
+    if (part) {
+      const node = document.createTextNode(part)
+      frag.appendChild(node)
+      last = node
+    }
+    if (i < parts.length - 1) {
+      const br = document.createElement('br')
+      frag.appendChild(br)
+      last = br
+    }
+  })
+  if (!last) return false
+  range.insertNode(frag)
+  if (sel) {
+    const caret = document.createRange()
+    caret.setStartAfter(last)
+    caret.collapse(true)
+    sel.removeAllRanges()
+    sel.addRange(caret)
+  }
+  return true
 }
 
 export const ComposerMentionInput = forwardRef<
@@ -325,6 +443,17 @@ export const ComposerMentionInput = forwardRef<
     const el = elRef.current
     if (!el) return
     const next = serializeDom(el)
+    // Whitespace-only documents carry no sendable content. Clear the DOM in
+    // place and emit an empty value: the parent normalizes to '' and React
+    // bails out when the controlled value does not change, so without this the
+    // invisible blank lines would persist and stretch the composer body.
+    if (next.trim() === '') {
+      if (el.childNodes.length) el.replaceChildren()
+      lastValueRef.current = ''
+      onChange('')
+      onCaretChange?.(0)
+      return
+    }
     lastValueRef.current = next
     onChange(next)
     onCaretChange?.(caretSerializedOffset(el))
@@ -408,7 +537,12 @@ export const ComposerMentionInput = forwardRef<
           const files = filesFromDataTransfer(e.clipboardData)
           if (files.length) onPasteFiles?.(files)
           const text = e.clipboardData.getData('text/plain')
-          if (text) document.execCommand('insertText', false, text)
+          if (text && insertPlainText(elRef.current, text)) {
+            // Manual Range insertion fires no native `input` event (canceling
+            // `paste` suppresses the browser's own insert+input pair), so
+            // serialize and emit here — typing still flows in via onInput.
+            emitFromDom()
+          }
         }}
       />
     </div>

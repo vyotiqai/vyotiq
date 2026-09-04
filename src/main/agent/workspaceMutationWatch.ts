@@ -155,9 +155,11 @@ export async function startWatch(workspaceRoot: string): Promise<WorkspaceSnapsh
         blobPath = undefined
       }
     }
-    // Larger files are hash-only (change detected, not directly revertible);
-    // anything beyond SNAPSHOT_HASH_MAX_BYTES is mtime/size diffed only.
-    if (!blobPath && fp.size <= SNAPSHOT_HASH_MAX_BYTES) {
+    // Hash everything small enough to hash cheaply — including files that got
+    // a revert blob. A same-size in-place rewrite of a small file changes no
+    // mtime/size, so without a contentHash the diff misses it entirely
+    // (build runners / installers touch files exactly this way).
+    if (fp.size <= SNAPSHOT_HASH_MAX_BYTES) {
       contentHash = await hashFile(fp.full)
     }
     files.set(fp.rel, { ...fp, blobPath, contentHash })

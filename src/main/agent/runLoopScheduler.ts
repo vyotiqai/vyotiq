@@ -23,6 +23,17 @@ function nowIso(): string {
 
 const timers = new Map<string, ReturnType<typeof setTimeout>>()
 const meta = new Map<string, { workspacePath: string; runDir: string }>()
+/** Delivery-retry counter per run — prompt-loop ticks are not to be lost. */
+const tickRetries = new Map<string, number>()
+
+/**
+ * A tick that lands inside a run's finish/unwind window, while RUN_LIMIT is
+ * reached, or while no window is ready cannot deliver its prompt. Advancing
+ * nextAt anyway silently skipped whole loop intervals; retry on a short delay
+ * instead and only skip after repeated failure.
+ */
+const LOOP_TICK_RETRY_MS = 5_000
+const LOOP_TICK_MAX_RETRIES = 6
 
 export function readLoop(runDir: string): RunLoop | null {
   const path = loopPath(runDir)
@@ -121,11 +132,32 @@ async function onTick(runId: string): Promise<void> {
     message: { role: 'user', content: loop.prompt }
   })
   if (!launched.ok) {
-    logger.warn('Loop tick could not deliver prompt', {
+    const retries = (tickRetries.get(runId) ?? 0) + 1
+    if (retries <= LOOP_TICK_MAX_RETRIES) {
+      tickRetries.set(runId, retries)
+      logger.warn('Loop tick could not deliver prompt; retrying shortly', {
+        scope: 'loop',
+        correlationId: runId,
+        retries,
+        err: launched.error
+      })
+      const retry: RunLoop = {
+        ...loop,
+        nextAt: new Date(Date.now() + LOOP_TICK_RETRY_MS).toISOString()
+      }
+      writeLoop(info.runDir, retry)
+      schedule(runId, retry)
+      return
+    }
+    logger.warn('Loop tick delivery kept failing; skipping this interval', {
       scope: 'loop',
       correlationId: runId,
+      retries,
       err: launched.error
     })
+    tickRetries.delete(runId)
+  } else {
+    tickRetries.delete(runId)
   }
   const next: RunLoop = {
     ...loop,

@@ -204,8 +204,15 @@ function writeWorkspacesAtomic(state: WorkspacesState): void {
 }
 
 let workspacesCache: WorkspacesState | null = null
-/** Last accepted UI writeGeneration per workspace path (stale IPC guard). */
-const lastUiWriteGenerationByPath = new Map<string, number>()
+/**
+ * Last accepted UI write epoch + generation per workspace path (stale IPC
+ * guard). A changed epoch means the renderer reloaded and its generation
+ * counter restarted from 0 — the incoming write is accepted and re-seeds the
+ * guard. Keying only on the generation silently dropped EVERY UI-state save
+ * after an in-app reload (dev Ctrl+R, crash-recovery reload) until the fresh
+ * counter happened to climb past the pre-reload generation.
+ */
+const lastUiWriteGenerationByPath = new Map<string, { epoch: string; gen: number }>()
 /** Serializes async workspace mutations that may await between read and write. */
 let workspacesMutationChain: Promise<unknown> = Promise.resolve()
 
@@ -478,8 +485,20 @@ export function readWorkspacesState(): WorkspacesState {
   }
 }
 
-export function saveWorkspacesState(state: WorkspacesState): WorkspacesState {
-  let next = WorkspacesStateSchema.parse(pruneMissingOpenWorkspaces(normalizeActivePath(repairHomeWorkspacePaths(state))))
+export function saveWorkspacesState(
+  state: WorkspacesState,
+  opts?: { pruneMissing?: boolean }
+): WorkspacesState {
+  // Prune-missing is for structural saves (add/remove/setActive). The
+  // high-frequency UI-state save must not run it: a momentary existsSync
+  // hiccup (OneDrive placeholder, network share) on an unrelated scroll/draft
+  // write would permanently remove the workspace's open tab.
+  const shouldPrune = opts?.pruneMissing ?? true
+  let next = WorkspacesStateSchema.parse(
+    shouldPrune
+      ? pruneMissingOpenWorkspaces(normalizeActivePath(repairHomeWorkspacePaths(state)))
+      : normalizeActivePath(repairHomeWorkspacePaths(state))
+  )
   if (next.openPaths.length === 0) {
     next = WorkspacesStateSchema.parse(normalizeActivePath(ensureHomeWorkspace(next)))
   }
@@ -619,19 +638,23 @@ export function updateWorkspaceUiState(path: string, ui: WorkspaceUiState): true
   const key = findOpenPath(state, path) ?? canonicalizeWorkspacePath(path)
   const incomingGen = parsed.writeGeneration
   if (incomingGen !== undefined) {
-    const last = lastUiWriteGenerationByPath.get(key) ?? -1
-    if (incomingGen < last) {
+    const incomingEpoch = parsed.writeEpoch ?? ''
+    const last = lastUiWriteGenerationByPath.get(key)
+    if (last && last.epoch === incomingEpoch && incomingGen < last.gen) {
       return true
     }
-    lastUiWriteGenerationByPath.set(key, incomingGen)
+    lastUiWriteGenerationByPath.set(key, { epoch: incomingEpoch, gen: incomingGen })
   }
-  saveWorkspacesState({
-    ...state,
-    uiStateByPath: {
-      ...state.uiStateByPath,
-      [key]: parsed
-    }
-  })
+  saveWorkspacesState(
+    {
+      ...state,
+      uiStateByPath: {
+        ...state.uiStateByPath,
+        [key]: parsed
+      }
+    },
+    { pruneMissing: false }
+  )
   return true
 }
 
@@ -651,7 +674,12 @@ export function setWorkspaceSettingsOverride(
       const check = validateCustomOpenAiBaseUrl(override.customOpenAiBaseUrl)
       if (!check.ok) throw new Error(check.error)
     }
-    settingsOverridesByPath[key] = override
+    // Merge into the stored override instead of replacing it. The renderer
+    // builds its payload from a React snapshot; two writes in quick succession
+    // (composer model pick + Settings thinking toggle) otherwise resurrect the
+    // first write's stale model/thinking fields.
+    const existing = settingsOverridesByPath[key]
+    settingsOverridesByPath[key] = existing ? { ...existing, ...override } : override
   }
   return saveWorkspacesState({ ...state, settingsOverridesByPath })
 }

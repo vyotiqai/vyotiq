@@ -19,6 +19,7 @@ import {
   unreadExistingEditPaths
 } from './loopPolicy'
 import { parseDiagnosticLines } from './tools/diagnostics'
+import { parseTestResultHeader } from './tools/runTests'
 import { logger } from '../../shared/logger'
 import { stepUsageTotalsFromPersistedEvents } from '../../shared/utils/runTelemetry'
 import { parseTerminalOutput } from '../../shared/utils/terminalFormat'
@@ -55,33 +56,6 @@ function toolStatsFromMessages(messages: readonly SeedToolMessage[]): RunReceipt
     byName[msg.toolName] = entry
   }
   return { totalCalls, ok, failed, byName }
-}
-
-/** Extract codebase_search semantic-health stamps from tool result headers. */
-export function codebaseSearchHealthFromMessages(
-  messages: readonly SeedToolMessage[]
-): {
-  calls: number
-  lexicalOnly: number
-  hashFallback: number
-  queryModels: string[]
-} {
-  let calls = 0
-  let lexicalOnly = 0
-  let hashFallback = 0
-  const queryModels = new Set<string>()
-  for (const msg of messages) {
-    if (msg.role !== 'tool' || msg.toolName !== 'codebase_search') continue
-    if (msg.ok === false) continue
-    calls++
-    const content = contentToText(msg.content ?? '')
-    const header = content.split('\n')[0] ?? ''
-    if (header.includes('fallback=hash')) hashFallback++
-    else if (header.includes('lexical-only')) lexicalOnly++
-    const model = header.match(/model=([^\s·]+)/)?.[1]
-    if (model) queryModels.add(model)
-  }
-  return { calls, lexicalOnly, hashFallback, queryModels: [...queryModels].slice(0, 8) }
 }
 
 /** Normalize em/en dashes and common UTF-8 mojibake to ASCII `-` for stable cluster keys. */
@@ -342,6 +316,72 @@ function countDiagnosticsCalls(messages: readonly ChatMessage[]): {
   return { calls, ok, clean }
 }
 
+/** run_tests aggregate: call counts plus the latest parsed pass/fail summary. */
+function testStatsFromMessages(messages: readonly ChatMessage[]): {
+  calls: number
+  ok: number
+  failed: number
+  lastPassed?: number
+  lastFailed?: number
+} {
+  let calls = 0
+  let ok = 0
+  let failed = 0
+  let lastPassed: number | undefined
+  let lastFailed: number | undefined
+  for (const msg of messages) {
+    if (msg.role !== 'tool' || msg.toolName !== 'run_tests') continue
+    calls++
+    if (msg.ok === false) failed++
+    else ok++
+    const parsed = parseTestResultHeader(contentToText(msg.content ?? ''))
+    if (parsed) {
+      lastPassed = parsed.passed
+      lastFailed = parsed.failed
+    }
+  }
+  return {
+    calls,
+    ok,
+    failed,
+    ...(lastPassed != null ? { lastPassed } : {}),
+    ...(lastFailed != null ? { lastFailed } : {})
+  }
+}
+
+/**
+ * Was the work verified? Compares the last successful diagnostics/run_tests
+ * tool_result against the last writes_checkpoint. Informational only — the
+ * loop never blocks on it.
+ */
+function verificationFromEvents(events: readonly PersistedEvent[]): {
+  lastMutationAt?: string
+  lastCheckAt?: string
+  verifiedAfterLastMutation: boolean
+} | undefined {
+  let lastMutationAt: string | undefined
+  let lastCheckAt: string | undefined
+  for (const row of events) {
+    const ev = row.event as { type?: string; name?: string; ok?: boolean } | undefined
+    if (ev?.type === 'writes_checkpoint' && row.at) lastMutationAt = row.at
+    if (
+      ev?.type === 'tool_result' &&
+      (ev.name === 'diagnostics' || ev.name === 'run_tests') &&
+      ev.ok === true &&
+      row.at
+    ) {
+      lastCheckAt = row.at
+    }
+  }
+  if (lastMutationAt == null && lastCheckAt == null) return undefined
+  return {
+    ...(lastMutationAt ? { lastMutationAt } : {}),
+    ...(lastCheckAt ? { lastCheckAt } : {}),
+    verifiedAfterLastMutation:
+      lastCheckAt != null && (lastMutationAt == null || lastCheckAt >= lastMutationAt)
+  }
+}
+
 export function buildRunReceipt(input: {
   runId: string
   status: RunStatus
@@ -352,6 +392,8 @@ export function buildRunReceipt(input: {
 }): RunReceipt {
   const incomplete = lastIncompleteFromEvents(input.events, input.status.invokeId)
   const tokenUsage = tokenUsageFromEvents(input.events)
+  const testStats = testStatsFromMessages(input.messages)
+  const verification = verificationFromEvents(input.events)
 
   const receipt: RunReceipt = {
     version: RUN_RECEIPT_VERSION,
@@ -367,9 +409,6 @@ export function buildRunReceipt(input: {
     ...(tokenUsage ? { tokenUsage } : {}),
     compactionCount: compactionCountFromEvents(input.events),
     toolStats: toolStatsFromMessages(input.messages),
-    ...(codebaseSearchHealthFromMessages(input.messages).calls > 0
-      ? { codebaseSearch: codebaseSearchHealthFromMessages(input.messages) }
-      : {}),
     failureClusters: failureClustersFromMessages(input.messages),
     ...(maxConsecutiveToolFailuresFromMessages(input.messages) > 0
       ? { maxConsecutiveToolFailures: maxConsecutiveToolFailuresFromMessages(input.messages) }
@@ -377,6 +416,8 @@ export function buildRunReceipt(input: {
     unreadEditPaths: unreadEditPathsFromMessages(input.messages),
     wroteFiles: wroteFilesFromEvents(input.events),
     diagnostics: countDiagnosticsCalls(input.messages),
+    ...(testStats.calls > 0 ? { tests: testStats } : {}),
+    ...(verification ? { verification } : {}),
     contractExcerpt: contractExcerpt(input.contract)
   }
   return RunReceiptSchema.parse(receipt)

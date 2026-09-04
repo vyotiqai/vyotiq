@@ -12,6 +12,11 @@ on:
       - 'scripts/sync-landing-brand.mjs'
       - 'scripts/sync-app-icon.mjs'
       - 'scripts/generate-precision-mono-brand.mjs'
+      - 'resources/branding/**'
+      - 'resources/icon.png'
+      - 'resources/icon.ico'
+      - 'src/shared/domain/providers.ts'
+      - 'src/shared/ipc/schemas/providers.ts'
       - 'package.json'
       - 'pnpm-lock.yaml'
       - '.github/workflows/deploy-landing.yml'
@@ -54,6 +59,11 @@ jobs:
         run: pnpm landing:build
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Gate the deploy on the same Astro check CI runs, so a type error in the
+      # site cannot reach production ahead of CI's verdict.
+      - name: Check landing site
+        run: pnpm landing:check
 
       - name: Deploy to Cloudflare Pages
         # Deployed via the wrangler CLI instead of cloudflare/wrangler-action:

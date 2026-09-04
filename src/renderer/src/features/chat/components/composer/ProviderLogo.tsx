@@ -51,13 +51,8 @@ function BrandMark({
   }, [slug])
 
   if (!brand) {
-    return (
-      <span
-        className={cn('inline-block shrink-0', className)}
-        style={{ width: size, height: size }}
-        aria-hidden="true"
-      />
-    )
+    // Letter tile while loading or on failure — never a blank gap.
+    return <GenericIcon size={size} className={className} letter={slug.slice(0, 1)} />
   }
 
   const color = resolveProviderBrandColor(brand.colorPrimary, theme)

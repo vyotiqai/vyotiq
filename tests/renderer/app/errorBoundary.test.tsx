@@ -1,9 +1,10 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, expect, it, vi, afterEach } from 'vitest'
+import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest'
 import { cleanup, render, screen, fireEvent } from '@testing-library/react'
 import { ErrorBoundary } from '@renderer/lib/ErrorBoundary'
+import { resetStaleChunkReloadFlagForTests, takeStaleChunkReload } from '@renderer/lib/staleChunk'
 
 afterEach(() => {
   cleanup()
@@ -14,6 +15,10 @@ function Boom(): never {
 }
 
 describe('ErrorBoundary', () => {
+  beforeEach(() => {
+    resetStaleChunkReloadFlagForTests()
+  })
+
   it('renders recovery UI on child throw', () => {
     // @ts-expect-error test bridge
     window.vyotiq = {
@@ -58,5 +63,55 @@ describe('ErrorBoundary', () => {
 
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getByText('recovered')).toBeTruthy()
+  })
+
+  it('reloads the window once when a child throws a stale-chunk failure', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const reload = vi.fn()
+    Object.defineProperty(window, 'location', {
+      value: { reload },
+      configurable: true,
+      writable: true
+    })
+    function StaleBoom(): never {
+      throw new TypeError(
+        'Failed to fetch dynamically imported module: file:///C:/app/out/renderer/assets/FilesPanel-B-tydSMi.js'
+      )
+    }
+    render(
+      <ErrorBoundary>
+        <StaleBoom />
+      </ErrorBoundary>
+    )
+    spy.mockRestore()
+
+    // Reload fires during componentDidCatch; the fallback state is already
+    // committed (getDerivedStateFromError runs first) — the real window
+    // navigates before it is ever seen.
+    expect(reload).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows recovery UI instead of reloading twice (loop guard)', () => {
+    // Simulate the allowance already consumed earlier in this window session.
+    expect(takeStaleChunkReload()).toBe(true)
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    const reload = vi.fn()
+    Object.defineProperty(window, 'location', {
+      value: { reload },
+      configurable: true,
+      writable: true
+    })
+    function StaleBoom(): never {
+      throw new TypeError('Failed to fetch dynamically imported module: x.js')
+    }
+    render(
+      <ErrorBoundary>
+        <StaleBoom />
+      </ErrorBoundary>
+    )
+    spy.mockRestore()
+
+    expect(reload).not.toHaveBeenCalled()
+    expect(screen.getByRole('alert')).toBeTruthy()
   })
 })

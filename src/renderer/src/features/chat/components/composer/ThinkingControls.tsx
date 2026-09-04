@@ -270,7 +270,7 @@ export function ThinkingControls({
       </Tooltip>
       {showSuggestLower ? (
         <span
-          className="inline-flex h-7 max-w-[11rem] shrink-0 items-center gap-0.5 overflow-hidden rounded-md border border-warning/40 bg-warning/10 px-1 text-2xs leading-tight text-warning @max-[560px]:hidden"
+          className="inline-flex h-7 max-w-[11rem] shrink-0 items-center gap-0.5 overflow-hidden rounded-md text-2xs leading-tight text-warning @max-[560px]:hidden"
           role="status"
         >
           <button

@@ -103,7 +103,8 @@ describe('SSE frame parsing', () => {
       out.push(ev)
     }
     expect(out).toEqual([{ choices: [{ delta: { content: 'hi' } }] }])
-    expect(drops.dropped).toBe(0)
+    // Trailing junk after a salvaged prefix is counted as dropped, not silently discarded.
+    expect(drops.dropped).toBe(1)
   })
 
   it('closes containers the host cut before the frame ended', async () => {

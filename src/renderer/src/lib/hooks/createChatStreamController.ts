@@ -4,6 +4,7 @@ import type {
   AttachedFile,
   ComposerSendExtras,
   ChatMessage,
+  ChatRewindPreviewResult,
   IncompleteReason,
   PersistedEvent,
   ToolApprovalDecision,
@@ -796,6 +797,12 @@ export type WriteCheckpointState = {
   files: WriteCheckpointFileState[]
 }
 
+/** Files a revert actually restored (main's post-execution result). */
+export type RevertWritesOutcome = {
+  restored: string[]
+  skipped: string[]
+}
+
 function incompleteFromPersisted(events: PersistedEvent[]): IncompleteTurnState | null {
   let incomplete: IncompleteTurnState | null = null
   for (const row of events) {
@@ -839,7 +846,8 @@ function writeCheckpointFromPersisted(events: PersistedEvent[]): WriteCheckpoint
       path: f.path,
       action: f.action,
       undoable: f.undoable,
-      ...(f.resolved ? { resolved: f.resolved } : {})
+      ...(f.resolved ? { resolved: f.resolved } : {}),
+      ...(f.conflicted ? { conflicted: f.conflicted } : {})
     }))
     const fullyResolved =
       files.length > 0 && files.every((f) => Boolean(f.resolved) || !f.undoable)
@@ -864,7 +872,8 @@ function writeCheckpointFromPersisted(events: PersistedEvent[]): WriteCheckpoint
         path: f.path,
         action: f.action,
         undoable: f.undoable,
-        ...(f.resolved ? { resolved: f.resolved } : {})
+        ...(f.resolved ? { resolved: f.resolved } : {}),
+        ...(f.conflicted ? { conflicted: f.conflicted } : {})
       })
     }
   }
@@ -1147,7 +1156,9 @@ export type ChatStreamController = ChatStreamState & {
     extras?: ComposerSendExtras
   ) => Promise<boolean>
   /** Rewind to a past user message: restore files, truncate later turns, no re-run. */
-  revertToUserMessage: (userMessageIndex: number) => Promise<boolean>
+  revertToUserMessage: (userMessageIndex: number) => Promise<RevertWritesOutcome | false>
+  /** Read-only preview of the files a revertToUserMessage would restore (null = unavailable). */
+  previewRewindToUserMessage: (userMessageIndex: number) => Promise<ChatRewindPreviewResult | null>
   /** Drop a still-queued mid-run follow-up before the loop applies it. */
   removeFollowUp: (id: string) => Promise<boolean>
   /** Update queued follow-up text before the loop applies it. */
@@ -1308,6 +1319,20 @@ export function createChatStreamController(
   let usageTotals: StepUsageTotals = emptyStepUsageTotals()
   let turnUsageSlots: StepUsageTotals[] = []
   let streamPatchRaf: number | null = null
+  /** Timer fallback paint for hidden windows, where Chromium pauses rAF. */
+  let streamPatchTimer: ReturnType<typeof setTimeout> | null = null
+  const STREAM_PATCH_HIDDEN_FALLBACK_MS = 32
+
+  const cancelScheduledStreamPatch = (): void => {
+    if (streamPatchRaf != null) {
+      cancelAnimationFrame(streamPatchRaf)
+      streamPatchRaf = null
+    }
+    if (streamPatchTimer != null) {
+      clearTimeout(streamPatchTimer)
+      streamPatchTimer = null
+    }
+  }
   /** Coalesce reasoning deltas — markdown/shiki is skipped but DOM still updates. */
   let thinkingPatchTimer: ReturnType<typeof setTimeout> | null = null
   const THINKING_PATCH_MS = 100
@@ -1617,15 +1642,23 @@ export function createChatStreamController(
   const flushStreamingPatches = (): void => {
     flushThinkingPatchTimer()
     flushToolPatchTimer()
-    if (streamPatchRaf != null) {
-      cancelAnimationFrame(streamPatchRaf)
-      streamPatchRaf = null
-    }
+    cancelScheduledStreamPatch()
     applyStreamingPatches()
   }
 
   const scheduleStreamingPatch = (): void => {
-    if (streamPatchRaf != null) return
+    if (streamPatchRaf != null || streamPatchTimer != null) return
+    // Chromium pauses requestAnimationFrame for hidden/occluded windows. Every
+    // 100ms thinking/tool timer re-armed and bailed on the pending rAF, so a
+    // minimized window froze mid-stream and dumped everything at restore. Use
+    // a timer paint while the document is hidden.
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
+      streamPatchTimer = setTimeout(() => {
+        streamPatchTimer = null
+        applyStreamingPatches()
+      }, STREAM_PATCH_HIDDEN_FALLBACK_MS)
+      return
+    }
     streamPatchRaf = requestAnimationFrame(() => {
       streamPatchRaf = null
       applyStreamingPatches()
@@ -1808,10 +1841,7 @@ export function createChatStreamController(
     pendingToolProgress = []
     flushThinkingPatchTimer()
     flushToolPatchTimer()
-    if (streamPatchRaf != null) {
-      cancelAnimationFrame(streamPatchRaf)
-      streamPatchRaf = null
-    }
+    cancelScheduledStreamPatch()
   }
 
   const setUiSuspended = (suspended: boolean): void => {
@@ -2325,6 +2355,12 @@ export function createChatStreamController(
       pendingTextDelta = ''
       pendingThinkingDelta = ''
       pendingToolCallDeltas = []
+      // Main clears its streamed tool calls before re-streaming; this map must
+      // follow or the first new delta merges onto the PREVIOUS attempt's full
+      // args (ids like `gemini_${i}` / `pending_${i}` repeat across attempts),
+      // corrupting the args preview for the whole retry.
+      pendingToolArgsFull.clear()
+      startedToolCallIds.clear()
       flushStreamingPatches()
       const reconnectIds = new Set([assistantId, reasoningId].filter((id): id is string => !!id))
       const nextItems = state.items
@@ -2410,7 +2446,8 @@ export function createChatStreamController(
         path: f.path,
         action: f.action,
         undoable: f.undoable,
-        ...(f.resolved ? { resolved: f.resolved } : {})
+        ...(f.resolved ? { resolved: f.resolved } : {}),
+        ...(f.conflicted ? { conflicted: f.conflicted } : {})
       }))
       const fullyResolved =
         files.length > 0 && files.every((f) => Boolean(f.resolved) || !f.undoable)
@@ -3111,7 +3148,34 @@ export function createChatStreamController(
     return true
   }
 
-  const revertToUserMessage = async (userMessageIndex: number): Promise<boolean> => {
+  const previewRewindToUserMessage = async (
+    userMessageIndex: number
+  ): Promise<ChatRewindPreviewResult | null> => {
+    if (state.transcriptLoading || !workspacePath) return null
+    const id = runId ?? contentRunId
+    if (!id) return null
+    if (
+      userMessageIndex < 0 ||
+      userMessageIndex >= state.messages.length ||
+      state.messages[userMessageIndex]?.role !== 'user'
+    ) {
+      return null
+    }
+    if (state.messages.length <= userMessageIndex + 1) return null
+    if (state.running || state.pendingRun) return null
+    try {
+      const res = await window.vyotiq.chatRewindPreview({
+        workspacePath,
+        runId: id,
+        userMessageIndex
+      })
+      return res.ok ? res.data : null
+    } catch {
+      return null
+    }
+  }
+
+  const revertToUserMessage = async (userMessageIndex: number): Promise<RevertWritesOutcome | false> => {
     if (state.transcriptLoading) return false
     if (!workspacePath) {
       patch({ error: 'Pick a workspace before reverting.' })
@@ -3218,7 +3282,7 @@ export function createChatStreamController(
       writeCheckpoint: null,
       turnUsage: turnUsageSlots
     })
-    return true
+    return { restored: res.data.restored, skipped: res.data.skipped }
   }
 
   const canQueueFollowUp = (): boolean =>
@@ -4260,6 +4324,7 @@ export function createChatStreamController(
     resumeInterrupted,
     editAndResend,
     revertToUserMessage,
+    previewRewindToUserMessage,
     removeFollowUp,
     editFollowUp,
     sendFollowUpNow,

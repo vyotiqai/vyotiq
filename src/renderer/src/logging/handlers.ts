@@ -6,6 +6,7 @@ import {
   errorMessageFromUnknown,
   isReactMaxUpdateDepth
 } from './reactMaxUpdateDepth'
+import { isStaleChunkFailure, reloadWindow, takeStaleChunkReload } from '@renderer/lib/staleChunk'
 
 let installed = false
 
@@ -45,6 +46,16 @@ export function installRendererErrorHandlers(): void {
 
   window.addEventListener('unhandledrejection', (event) => {
     const reason = event.reason
+    if (isStaleChunkFailure(reason) && takeStaleChunkReload()) {
+      // Rebuild replaced out/ under the running window — reload onto the
+      // fresh entry chunk instead of logging a fatal and dying.
+      logger.warn('Stale renderer chunk after rebuild — reloading window', {
+        scope: 'renderer',
+        code: 'STALE_CHUNK'
+      })
+      reloadWindow()
+      return
+    }
     const err = reason instanceof Error ? reason : new Error(String(reason))
     const message = errorMessageFromUnknown(reason) || err.message
     const componentStack = componentStackFromUnknown(reason)

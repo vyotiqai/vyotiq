@@ -19,6 +19,7 @@ import { compileUserRegex } from './safeUserRegex'
 import { workspacePathIsInside, workspacePathsEqual } from '../../../shared/workspacePath'
 import type { TerminalShell } from '../../../shared/ipc'
 import { lowerProcessPriority } from '../processPriority'
+import { logger } from '../../../shared/logger'
 
 export type TerminalSessionStatus = 'running' | 'done' | 'timeout' | 'pattern_matched' | 'aborted'
 
@@ -59,6 +60,48 @@ type TerminalSession = {
 }
 
 const sessions = new Map<string, TerminalSession>()
+
+/**
+ * Deferred work keyed by session id, run when the session's process exits.
+ * Background commands keep mutating the workspace after the tool's poll window
+ * returns; the terminal tool registers a final diff here so those late
+ * mutations still reach the write checkpoint and cache invalidation.
+ */
+const exitFinalizers = new Map<string, Array<() => Promise<void> | void>>()
+
+/**
+ * Register work to run when this session's process exits.
+ * @returns false when the session is unknown or already finished — the caller
+ * must then run its finalize synchronously.
+ */
+export function registerTerminalSessionExitFinalize(
+  sessionId: string,
+  finalize: () => Promise<void> | void
+): boolean {
+  const session = sessions.get(sessionId)
+  if (!session || !session.running) return false
+  const list = exitFinalizers.get(sessionId) ?? []
+  list.push(finalize)
+  exitFinalizers.set(sessionId, list)
+  return true
+}
+
+/** Run and clear the deferred finalizers for a session (idempotent). */
+async function runExitFinalizers(sessionId: string): Promise<void> {
+  const list = exitFinalizers.get(sessionId)
+  if (!list) return
+  exitFinalizers.delete(sessionId)
+  for (const fn of list) {
+    try {
+      await fn()
+    } catch (err) {
+      logger.warn('Terminal session exit finalizer failed', {
+        scope: 'agent',
+        err
+      })
+    }
+  }
+}
 
 function notifySessionWaiters(session: TerminalSession): void {
   if (session.waiters.size === 0) return
@@ -122,6 +165,7 @@ export function disposeTerminalSession(id: string): void {
   if (session.status === 'running') session.status = 'aborted'
   notifySessionWaiters(session)
   sessions.delete(id)
+  void runExitFinalizers(id)
 }
 
 export function resetTerminalSessionsForTests(): void {
@@ -281,6 +325,8 @@ export type StartBackgroundTerminalOpts = {
    */
   killOnTimeout?: boolean
   onOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
+  /** Forwarded to the inner poll — fired when the process outlives the wait window. */
+  onStillRunning?: (sessionId: string) => void
 }
 
 export async function startBackgroundTerminal(
@@ -378,6 +424,7 @@ export async function startBackgroundTerminal(
     session.finishedAt ??= Date.now()
     session.status = 'aborted'
     notifySessionWaiters(session)
+    void runExitFinalizers(id)
   }
   if (opts.signal.aborted) onAbort()
   else opts.signal.addEventListener('abort', onAbort, { once: true })
@@ -414,6 +461,7 @@ export async function startBackgroundTerminal(
     session.status = 'done'
     session.exitCode = 1
     notifySessionWaiters(session)
+    void runExitFinalizers(id)
   })
   child.on('close', (code) => {
     session.running = false
@@ -424,6 +472,7 @@ export async function startBackgroundTerminal(
     }
     opts.signal.removeEventListener('abort', onAbort)
     notifySessionWaiters(session)
+    void runExitFinalizers(id)
   })
 
   return await pollTerminalSession({
@@ -433,7 +482,8 @@ export async function startBackgroundTerminal(
     blockUntilMs: opts.blockUntilMs,
     pattern: opts.pattern,
     signal: opts.signal,
-    killOnTimeout: opts.killOnTimeout
+    killOnTimeout: opts.killOnTimeout,
+    onStillRunning: opts.onStillRunning
   })
 }
 
@@ -449,6 +499,12 @@ export type PollTerminalSessionOpts = {
   /** Hard-kill (exit_code 124) instead of leaving the process running on timeout. */
   killOnTimeout?: boolean
   onOutput?: (chunk: { text: string; stream: 'stdout' | 'stderr' }) => void
+  /**
+   * The wait window elapsed with the process still running (tool returned
+   * before completion). Register deferred work (checkpoint diff) for the
+   * session's eventual exit here.
+   */
+  onStillRunning?: (sessionId: string) => void
 }
 
 export async function pollTerminalSession(opts: PollTerminalSessionOpts): Promise<string> {
@@ -507,6 +563,7 @@ export async function pollTerminalSession(opts: PollTerminalSessionOpts): Promis
       return formatSession(session)
     }
     // Timed out waiting; leave process running for further polls.
+    opts.onStillRunning?.(session.id)
     return formatSession({ ...session, status: 'timeout' })
   }
   return formatSession(session)

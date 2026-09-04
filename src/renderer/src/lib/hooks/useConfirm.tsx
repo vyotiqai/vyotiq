@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type JSX } from 'react'
+import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } from 'react'
 import { Dialog } from '@renderer/lib/a11y/Dialog'
 
 type ConfirmState = {
   message: string
+  /** Optional rich content (e.g. the file list a revert will restore). */
+  details?: ReactNode
   title: string
   confirmLabel: string
   danger: boolean
@@ -34,6 +36,7 @@ export function useConfirm(): {
       resolverRef.current = null
       setState({
         message,
+        ...(options.details ? { details: options.details } : {}),
         title: options.title ?? 'Confirm action',
         confirmLabel: options.confirmLabel ?? 'Confirm',
         danger: options.danger ?? false
@@ -63,6 +66,7 @@ export function useConfirm(): {
     >
       <div className="flex flex-col gap-4">
         <p className="m-0 text-sm text-fg">{state?.message}</p>
+        {state?.details ? <div className="min-h-0">{state.details}</div> : null}
         <div className="flex justify-end gap-2">
           <button
             type="button"

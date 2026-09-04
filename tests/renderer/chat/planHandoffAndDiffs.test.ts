@@ -110,6 +110,11 @@ describe('mergeCheckpointChangedFiles', () => {
     ]
     const merged = mergeCheckpointChangedFiles(toolFiles, checkpoint)
     expect(merged.some((f) => f.path === 'dist/out.js')).toBe(true)
+    // Checkpoint-only paths carry no invented line counts.
+    expect(merged.find((f) => f.path === 'dist/out.js')).toEqual({
+      path: 'dist/out.js',
+      action: 'created'
+    })
     expect(checkpointOnlyChangedFiles(toolFiles, checkpoint).map((f) => f.path)).toEqual([
       'dist/out.js'
     ])

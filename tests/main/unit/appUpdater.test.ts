@@ -208,11 +208,48 @@ describe('app updater', () => {
   it('reports check failures as an error status', async () => {
     const updater = await loadUpdater()
     updater.initAutoUpdater()
+    // Flush the startup check's in-flight window: the concurrent-check guard
+    // is held until its microtasks settle, and this test issues its own call.
+    await vi.advanceTimersByTimeAsync(0)
     autoUpdater.checkForUpdates.mockRejectedValueOnce(new Error('network down'))
 
     const result = await updater.checkForAppUpdates()
 
     expect(result.state).toBe('error')
     expect(result.message).toContain('network down')
+  })
+
+  it('coalesces concurrent manual and periodic checks into one request', async () => {
+    const updater = await loadUpdater()
+    updater.initAutoUpdater()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(1)
+
+    const manual = updater.checkForAppUpdates()
+    const overlapping = updater.checkForAppUpdates()
+    const [first, second] = await Promise.all([manual, overlapping])
+
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(2)
+    // The bare mock emits no updater events, so the cached state stays 'idle';
+    // the assertion proves the second call rode the in-flight guard.
+    expect(first.state).toBe('idle')
+    expect(second.state).toBe('idle')
+  })
+
+  it('recovers from a hung check via the action timeout', async () => {
+    const updater = await loadUpdater()
+    updater.initAutoUpdater()
+    await vi.advanceTimersByTimeAsync(0)
+    autoUpdater.checkForUpdates.mockImplementationOnce(() => new Promise(() => {}))
+
+    void updater.checkForAppUpdates()
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    expect(updater.updaterStatus().state).toBe('error')
+    expect(updater.updaterStatus().message).toContain('timed out')
+
+    // The in-flight guard is released, so checking works again afterwards.
+    await updater.checkForAppUpdates()
+    expect(autoUpdater.checkForUpdates).toHaveBeenCalledTimes(3)
   })
 })

@@ -8,7 +8,7 @@ import {
   statSync
 } from 'fs'
 import { copyFile, mkdir, readdir, stat } from 'fs/promises'
-import { dirname, join, relative } from 'path'
+import { basename, dirname, join, relative } from 'path'
 import { createHash, randomUUID } from 'crypto'
 import { realpathIfExists, resolveInsideWorkspace } from '../workspace/safePath'
 import { atomicWriteFile, atomicWriteJson } from '@main/storage/atomicWrite'
@@ -32,6 +32,8 @@ export type CheckpointFileEntry = {
   hash?: string
   /** Set when the user Keep/Discard resolves this path. */
   resolved?: CheckpointFileResolution
+  /** Revert was refused because the file was edited after the agent wrote it. */
+  conflicted?: boolean
 }
 
 export type WriteCheckpointMeta = {
@@ -202,10 +204,12 @@ export class InvokeWriteCheckpoint {
     if (!opts?.recursiveDir && !isPlausibleWorkspaceFilePath(rel)) return
     if (this.files.has(rel) || this.pendingRels.has(rel)) return
     this.pendingRels.add(rel)
+    const filesBefore = this.files.size
     try {
       await this.snapshotPrior(resolved, rel, kind, opts)
     } finally {
       this.pendingRels.delete(rel)
+      if (this.files.size > filesBefore) this.persistIncremental()
     }
   }
 
@@ -315,6 +319,7 @@ export class InvokeWriteCheckpoint {
     if (!isPlausibleWorkspaceFilePath(rel)) return
     if (this.files.has(rel) || this.pendingRels.has(rel)) return
     this.pendingRels.add(rel)
+    const filesBefore = this.files.size
     try {
       if (kind === 'created') {
         this.files.set(rel, { path: rel, action: 'created', undoable: true })
@@ -349,6 +354,7 @@ export class InvokeWriteCheckpoint {
       })
     } finally {
       this.pendingRels.delete(rel)
+      if (this.files.size > filesBefore) this.persistIncremental()
     }
   }
 
@@ -362,6 +368,41 @@ export class InvokeWriteCheckpoint {
       } catch {
         // Leave unhashed; restore falls back to unguarded copy/delete.
       }
+    }
+  }
+
+  /**
+   * Persist the in-progress checkpoint (meta + index entry) so a crash or power
+   * loss mid-turn cannot erase the turn's undo data. Post-write hashes are only
+   * stamped by finalize(); the incremental meta restores the pre-crash content
+   * without user-edit conflict detection, which is the best available outcome
+   * after an unorderly death.
+   */
+  private persistIncremental(): void {
+    if (this.finalized) return
+    if (this.files.size === 0) return
+    const meta: WriteCheckpointMeta = {
+      id: this.id,
+      createdAt: this.createdAt,
+      ...(this.anchorUserMessageIndex !== undefined
+        ? { anchorUserMessageIndex: this.anchorUserMessageIndex }
+        : {}),
+      files: [...this.files.values()]
+    }
+    try {
+      saveMeta(this.runDir, meta)
+      const index = loadIndex(this.runDir)
+      if (!index.checkpoints.some((c) => c.id === this.id)) {
+        index.checkpoints.push({ id: meta.id, createdAt: meta.createdAt })
+        saveIndex(this.runDir, index)
+      }
+    } catch (err) {
+      logger.warn('Failed to persist incremental write checkpoint', {
+        scope: 'agent',
+        correlationId: basename(this.runDir),
+        checkpointId: this.id,
+        err
+      })
     }
   }
 
@@ -382,11 +423,14 @@ export class InvokeWriteCheckpoint {
     }
     saveMeta(this.runDir, meta)
     const index = loadIndex(this.runDir)
-    index.checkpoints.push({
-      id: meta.id,
-      createdAt: meta.createdAt
-    })
-    saveIndex(this.runDir, index)
+    // Incremental persistence may already have registered this id mid-turn.
+    if (!index.checkpoints.some((c) => c.id === meta.id)) {
+      index.checkpoints.push({
+        id: meta.id,
+        createdAt: meta.createdAt
+      })
+      saveIndex(this.runDir, index)
+    }
     return meta
   }
 }
@@ -418,12 +462,6 @@ export function finalizeWriteCheckpoint(runDir: string): WriteCheckpointMeta | n
 /** Drop an open session without persisting (e.g. tests). */
 export function discardWriteCheckpoint(runDir: string): void {
   activeSessions.delete(runDir)
-}
-
-export type UndoWritesResult = {
-  checkpointId: string
-  restored: string[]
-  skipped: string[]
 }
 
 export type ResolveWritesResult = {
@@ -463,7 +501,7 @@ function restoreOneFile(
   workspaceRoot: string,
   checkpointDir: string,
   file: CheckpointFileEntry
-): 'restored' | 'skipped' | 'conflict' {
+): 'restored' | 'skipped' | 'conflict' | 'failed' {
   if (!file.undoable) return 'skipped'
   const resolved = resolveInsideWorkspace(workspaceRoot, file.path)
   try {
@@ -485,7 +523,7 @@ function restoreOneFile(
       return 'restored'
     }
     const blob = blobPathFor(checkpointDir, file.path)
-    if (!existsSync(blob)) return 'skipped'
+    if (!existsSync(blob)) return 'failed'
 
     if (file.action === 'modified' && file.hash) {
       const current = hashExistingFile(resolved)
@@ -532,7 +570,7 @@ function restoreOneFile(
       path: file.path,
       err
     })
-    return 'skipped'
+    return 'failed'
   }
 }
 
@@ -544,55 +582,6 @@ function markCheckpointFullyResolved(runDir: string, meta: WriteCheckpointMeta):
   meta.resolved = true
   meta.undone = true
   saveMeta(runDir, meta)
-}
-
-/**
- * Restore files from a checkpoint. If checkpointId is omitted, uses the latest
- * not-yet-undone checkpoint. Skips paths already Keep/Discard resolved.
- */
-export function undoWrites(
-  runDir: string,
-  workspaceRoot: string,
-  checkpointId?: string
-): UndoWritesResult {
-  const id = resolveCheckpointId(runDir, checkpointId)
-  if (!id) {
-    throw new Error('No undoable write checkpoint found for this run')
-  }
-  const meta = loadMeta(runDir, id)
-  if (!meta) throw new Error(`Checkpoint not found: ${id}`)
-  if (meta.undone || meta.resolved) throw new Error('That checkpoint was already undone')
-
-  const checkpointDir = join(runDir, 'checkpoints', id)
-  const restored: string[] = []
-  const skipped: string[] = []
-  let hadIoFailure = false
-
-  for (const file of [...meta.files].reverse()) {
-    if (file.resolved) {
-      skipped.push(file.path)
-      continue
-    }
-    const outcome = restoreOneFile(workspaceRoot, checkpointDir, file)
-    if (outcome === 'restored') {
-      file.resolved = 'discarded'
-      restored.push(file.path)
-    } else if (file.undoable) {
-      // Covers genuine I/O failures and 'conflict' (user edited after the agent
-      // write). Either way we must not mark the checkpoint resolved.
-      hadIoFailure = true
-      skipped.push(file.path)
-    } else {
-      skipped.push(file.path)
-    }
-  }
-
-  if (hadIoFailure) {
-    saveMeta(runDir, meta)
-  } else {
-    markCheckpointFullyResolved(runDir, meta)
-  }
-  return { checkpointId: id, restored, skipped }
 }
 
 /**
@@ -733,7 +722,13 @@ function resolveWritesInCheckpoint(
     } else if (outcome === 'conflict') {
       // User edited the file after the agent wrote it; leave it unresolved and
       // surface it so the UI can explain why it cannot be auto-reverted.
+      file.conflicted = true
       conflicted.push(file.path)
+    } else if (outcome === 'failed') {
+      // Undoable file whose restore failed (missing prior blob / I/O error):
+      // keep it unresolved so the user can retry instead of falsely marking it
+      // as reverted.
+      skipped.push(file.path)
     } else {
       // Non-undoable: still mark discarded so the UI can clear it.
       file.resolved = 'discarded'
@@ -774,6 +769,56 @@ export type RewindWritesResult = {
   undoableRestoreFailed: boolean
 }
 
+export type RewindWritesPlanFile = {
+  path: string
+  action: CheckpointFileAction
+  undoable: boolean
+}
+
+export type RewindWritesPlan = {
+  checkpointIds: string[]
+  files: RewindWritesPlanFile[]
+}
+
+/**
+ * Selection rule for a rewind to `fromUserMessageIndex`, shared by the preview
+ * (planRewindWrites) and execution (rewindWritesFrom) so they can never diverge.
+ * Checkpoints without `anchorUserMessageIndex` (legacy runs) are only rewound
+ * when rewinding to the start of the transcript (`fromUserMessageIndex === 0`).
+ */
+function isRewoundCheckpoint(meta: WriteCheckpointMeta, fromUserMessageIndex: number): boolean {
+  const anchor = meta.anchorUserMessageIndex
+  if (anchor !== undefined) return anchor >= fromUserMessageIndex
+  return fromUserMessageIndex === 0
+}
+
+/** Read-only preview of what rewindWritesFrom would restore; mutates nothing. */
+export function planRewindWrites(runDir: string, fromUserMessageIndex: number): RewindWritesPlan {
+  const index = loadIndex(runDir)
+  const checkpointIds: string[] = []
+  const byPath = new Map<string, RewindWritesPlanFile>()
+  for (let i = index.checkpoints.length - 1; i >= 0; i--) {
+    const entry = index.checkpoints[i]!
+    const meta = loadMeta(runDir, entry.id)
+    if (!meta || !isRewoundCheckpoint(meta, fromUserMessageIndex)) continue
+    checkpointIds.push(meta.id)
+    for (const file of meta.files) {
+      // Newest checkpoint wins per path; older checkpoints never overwrite it.
+      if (!byPath.has(file.path)) {
+        byPath.set(file.path, {
+          path: file.path,
+          action: file.action,
+          undoable: file.undoable
+        })
+      }
+    }
+  }
+  return {
+    checkpointIds,
+    files: [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path))
+  }
+}
+
 /**
  * Force-restore every write checkpoint whose anchor is at or after
  * `fromUserMessageIndex` (newest first). Ignores UI Keep/Discard and prior
@@ -798,13 +843,7 @@ export function rewindWritesFrom(
   for (let i = index.checkpoints.length - 1; i >= 0; i--) {
     const entry = index.checkpoints[i]!
     const meta = loadMeta(runDir, entry.id)
-    if (!meta) continue
-    const anchor = meta.anchorUserMessageIndex
-    if (anchor !== undefined) {
-      if (anchor < fromUserMessageIndex) continue
-    } else if (fromUserMessageIndex > 0) {
-      continue
-    }
+    if (!meta || !isRewoundCheckpoint(meta, fromUserMessageIndex)) continue
 
     const checkpointDir = join(runDir, 'checkpoints', entry.id)
     let hadIoFailure = false

@@ -29,31 +29,40 @@ export const RunIdSchema = z
   .regex(/^[A-Za-z0-9._-]+$/, 'Invalid run id')
   .refine((value) => value !== '.' && value !== '..', 'Invalid run id')
 
+const AttachmentImagePartSchema = z.object({
+  type: z.literal('image_url'),
+  url: z.string().min(1).max(MAX_IMAGE_DATA_URL_CHARS)
+})
+
+/** A document the user attached, already reduced to text in the main process. */
+export const AttachmentFilePartSchema = z.object({
+  type: z.literal('file'),
+  name: z.string().min(1).max(400),
+  mime: z.string().max(200),
+  text: z.string().max(MAX_ATTACHMENT_CHARS)
+})
+
+/** Inline audio for providers that accept audio data URLs / inline bytes. */
+export const AttachmentAudioPartSchema = z.object({
+  type: z.literal('audio'),
+  url: z.string().min(1).max(MAX_AUDIO_DATA_URL_CHARS),
+  mime: z.string().max(200).optional()
+})
+
+/** Native document bytes for providers that accept PDF/file on the wire. */
+export const AttachmentNativeFilePartSchema = z.object({
+  type: z.literal('file_native'),
+  name: z.string().min(1).max(400),
+  mime: z.string().max(200),
+  data: z.string().min(1).max(MAX_NATIVE_FILE_DATA_CHARS)
+})
+
 export const ContentPartSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text'), text: z.string() }),
-  z.object({
-    type: z.literal('image_url'),
-    url: z.string().min(1).max(MAX_IMAGE_DATA_URL_CHARS)
-  }),
-  z.object({
-    /** A document the user attached, already reduced to text in the main process. */
-    type: z.literal('file'),
-    name: z.string().min(1).max(400),
-    mime: z.string().max(200),
-    text: z.string().max(MAX_ATTACHMENT_CHARS)
-  }),
-  z.object({
-    type: z.literal('audio'),
-    url: z.string().min(1).max(MAX_AUDIO_DATA_URL_CHARS),
-    mime: z.string().max(200).optional()
-  }),
-  z.object({
-    /** Native document bytes for providers that accept PDF/file on the wire. */
-    type: z.literal('file_native'),
-    name: z.string().min(1).max(400),
-    mime: z.string().max(200),
-    data: z.string().min(1).max(MAX_NATIVE_FILE_DATA_CHARS)
-  })
+  AttachmentImagePartSchema,
+  AttachmentFilePartSchema,
+  AttachmentAudioPartSchema,
+  AttachmentNativeFilePartSchema
 ])
 export type ContentPart = z.infer<typeof ContentPartSchema>
 
@@ -450,6 +459,8 @@ const AgentEventUnionSchema = z.discriminatedUnion('type', [
         action: z.enum(['created', 'modified', 'deleted']),
         undoable: z.boolean(),
         resolved: z.enum(['kept', 'discarded']).optional(),
+        /** Revert was refused: the file was edited after the agent wrote it. */
+        conflicted: z.boolean().optional(),
         hash: z
           .string()
           .regex(/^[a-f0-9]{64}$/)
@@ -699,6 +710,18 @@ export const ChatRewindResultSchema = z.object({
 })
 export type ChatRewindResult = z.infer<typeof ChatRewindResultSchema>
 
+/** Read-only preview of which files chatRewind to userMessageIndex would restore. */
+export const ChatRewindPreviewResultSchema = z.object({
+  files: z.array(
+    z.object({
+      path: z.string().min(1),
+      action: z.enum(['created', 'modified', 'deleted']),
+      undoable: z.boolean()
+    })
+  )
+})
+export type ChatRewindPreviewResult = z.infer<typeof ChatRewindPreviewResultSchema>
+
 export const CancelRunRequestSchema = z.object({
   runId: RunIdSchema
 })
@@ -794,20 +817,6 @@ export const CompactRunResultSchema = z.object({
 })
 export type CompactRunResult = z.infer<typeof CompactRunResultSchema>
 
-export const UndoWritesRequestSchema = z.object({
-  workspacePath: z.string().min(1),
-  runId: RunIdSchema,
-  checkpointId: z.string().min(1).optional()
-})
-export type UndoWritesRequest = z.infer<typeof UndoWritesRequestSchema>
-
-export const UndoWritesResultSchema = z.object({
-  checkpointId: z.string().min(1),
-  restored: z.array(z.string()),
-  skipped: z.array(z.string())
-})
-export type UndoWritesResult = z.infer<typeof UndoWritesResultSchema>
-
 export const ResolveWritesRequestSchema = z.object({
   workspacePath: z.string().min(1),
   runId: RunIdSchema,
@@ -819,7 +828,8 @@ export const ResolveWritesRequestSchema = z.object({
 export type ResolveWritesRequest = z.infer<typeof ResolveWritesRequestSchema>
 
 export const ResolveWritesResultSchema = z.object({
-  checkpointId: z.string().min(1),
+  /** '' when the request was a soft no-op (no actionable checkpoint). */
+  checkpointId: z.string(),
   kept: z.array(z.string()),
   discarded: z.array(z.string()),
   skipped: z.array(z.string()),
@@ -1000,18 +1010,6 @@ export const RunReceiptSchema = z.object({
     failed: z.number().int().min(0),
     byName: z.record(z.string(), RunReceiptToolStatSchema)
   }),
-  /** codebase_search semantic-health stamps mined from tool result headers (v5-tolerant optional). */
-  codebaseSearch: z
-    .object({
-      calls: z.number().int().min(0),
-      /** Results labeled lexical-only (true cross-family model mismatch). */
-      lexicalOnly: z.number().int().min(0),
-      /** Results labeled fallback=hash (neural embedder unavailable). */
-      hashFallback: z.number().int().min(0),
-      /** Distinct resolved query embedder model ids seen in result headers. */
-      queryModels: z.array(z.string()).max(8)
-    })
-    .optional(),
   failureClusters: z.array(
     z.object({
       key: z.string(),
@@ -1025,6 +1023,24 @@ export const RunReceiptSchema = z.object({
     ok: z.number().int().min(0),
     clean: z.number().int().min(0).default(0)
   }),
+  /** run_tests aggregate: call counts plus the latest parsed pass/fail summary. */
+  tests: z
+    .object({
+      calls: z.number().int().min(0),
+      ok: z.number().int().min(0),
+      failed: z.number().int().min(0),
+      lastPassed: z.number().int().min(0).optional(),
+      lastFailed: z.number().int().min(0).optional()
+    })
+    .optional(),
+  /** Was the work verified? Last successful check vs last file mutation. */
+  verification: z
+    .object({
+      lastMutationAt: z.string().optional(),
+      lastCheckAt: z.string().optional(),
+      verifiedAfterLastMutation: z.boolean()
+    })
+    .optional(),
   contractExcerpt: z.string()
 })
 export type RunReceipt = z.infer<typeof RunReceiptSchema>

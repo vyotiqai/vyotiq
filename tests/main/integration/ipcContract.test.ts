@@ -40,6 +40,9 @@ const VYOTIQ_INVOKE_MAP: Record<
   setActiveWorkspace: IPC.workspacesSetActive,
   updateWorkspaceUiState: IPC.workspacesUpdateUiState,
   setWorkspaceSettingsOverride: IPC.workspacesSetSettingsOverride,
+  getComposerAttachments: IPC.composerAttachmentsGet,
+  setComposerAttachments: IPC.composerAttachmentsSet,
+  clearComposerAttachments: IPC.composerAttachmentsClear,
   getSettings: IPC.getSettings,
   getAccessibilitySupportState: IPC.accessibilitySupportState,
   setSettings: IPC.setSettings,
@@ -59,7 +62,7 @@ const VYOTIQ_INVOKE_MAP: Record<
   chatFollowUpPromote: IPC.chatFollowUpPromote,
   chatQueueMode: IPC.chatQueueMode,
   chatCompact: IPC.chatCompact,
-  undoWrites: IPC.runsUndoWrites,
+  chatRewindPreview: IPC.chatRewindPreview,
   resolveWrites: IPC.runsResolveWrites,
   readRunArtifact: IPC.runsReadArtifact,
   setGoalStatus: IPC.runsSetGoalStatus,
@@ -300,7 +303,7 @@ describe('main/renderer IPC contract', () => {
       expect(channels.has(channel)).toBe(true)
       expect(PUSH_CHANNELS.has(channel)).toBe(false)
     }
-    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(186)
+    expect(Object.keys(VYOTIQ_INVOKE_MAP)).toHaveLength(189)
   })
 
   it('maps every VyotiqApi push listener to a push channel', () => {

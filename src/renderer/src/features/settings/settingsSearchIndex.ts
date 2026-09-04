@@ -128,6 +128,36 @@ export const SETTINGS_SEARCH_INDEX: SettingsSearchEntry[] = [
     section: 'agent'
   },
   {
+    id: 'agent-autonomous-mode',
+    title: 'Autonomous mode',
+    keywords: ['autonomous', 'unattended', 'auto-approve', 'background'],
+    section: 'agent'
+  },
+  {
+    id: 'agent-autonomous-questions',
+    title: 'Questions in autonomous mode',
+    keywords: ['autonomous', 'questions', 'ask', 'skip'],
+    section: 'agent'
+  },
+  {
+    id: 'agent-offline-wait',
+    title: 'Offline wait budget',
+    keywords: ['offline', 'wait', 'network', 'autonomous', 'budget'],
+    section: 'agent'
+  },
+  {
+    id: 'agent-run-spend-limit',
+    title: 'Run spend limit',
+    keywords: ['spend', 'cost', 'usd', 'budget', 'limit', 'run'],
+    section: 'agent'
+  },
+  {
+    id: 'agent-run-token-limit',
+    title: 'Run token limit',
+    keywords: ['tokens', 'budget', 'limit', 'run', 'usage'],
+    section: 'agent'
+  },
+  {
     id: 'agent-persona',
     title: 'Persona',
     keywords: ['persona', 'identity', 'name', 'assistant'],

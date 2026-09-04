@@ -1,4 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import sharp from 'sharp'
@@ -35,21 +36,26 @@ function iconDirectory(images) {
   return Buffer.concat([header, entries, ...images.map(({ data }) => data)])
 }
 
+if (!existsSync(sourcePath)) {
+  throw new Error(`[sync-app-icon] missing identity source: ${path.relative(root, sourcePath)}`)
+}
 const source = await readFile(sourcePath)
 const runtimePng = await sharp(source).resize(1024, 1024, { fit: 'cover' }).png().toBuffer()
+// Generate every format BEFORE writing any: a png2icons failure must not leave
+// a half-updated icon set (stale .icns beside a fresh .png/.ico).
 const images = await Promise.all(
   sizes.map(async (size) => ({
     size,
     data: await sharp(source).resize(size, size, { fit: 'cover' }).png().toBuffer()
   }))
 )
-
-await writeFile(runtimePath, runtimePng)
-await writeFile(outputPath, iconDirectory(images))
 // icns is built from the same 1024px master; png2icons emits the full Retina
 // mip ladder (16-1024) so electron-builder packs the macOS bundle deterministically.
 const icns = png2icons.createICNS(runtimePng, png2icons.BILINEAR, 0)
 if (!icns) throw new Error('[sync-app-icon] png2icons produced no ICNS output')
+
+await writeFile(runtimePath, runtimePng)
+await writeFile(outputPath, iconDirectory(images))
 await writeFile(icnsPath, icns)
 console.log(
   `[sync-app-icon] synced identity artwork to ${path.relative(root, runtimePath)}, ${path.relative(root, outputPath)}, and ${path.relative(root, icnsPath)}`

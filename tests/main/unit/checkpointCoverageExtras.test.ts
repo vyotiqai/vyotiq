@@ -6,7 +6,7 @@ import {
   beginWriteCheckpoint,
   finalizeWriteCheckpoint,
   resetWriteCheckpointsForTests,
-  undoWrites
+  resolveWrites
 } from '@main/agent/checkpoints'
 import { extractTerminalWritePaths, needsOpaqueWatch, recordTerminalCommandPriors } from '@main/agent/tools/terminalCheckpoint'
 import { recordMcpFilesystemPriors, applyMcpFilesystemMutations, mcpFilesystemWriteToolsForTests } from '@main/agent/tools/mcpCheckpoint'
@@ -67,7 +67,7 @@ describe('terminalCheckpoint path parser', () => {
       expect(meta!.files).toEqual([
         expect.objectContaining({ path: 'a.txt', action: 'modified', undoable: true })
       ])
-      undoWrites(runDir, workspace, meta!.id)
+      resolveWrites(runDir, workspace, { checkpointId: meta!.id, action: 'discard' })
       expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('old\n')
     } finally {
       resetWriteCheckpointsForTests()
@@ -100,7 +100,7 @@ describe('mcpCheckpoint known paths', () => {
       writeFileSync(join(workspace, 'f.txt'), 'after\n', 'utf8')
       const meta = finalizeWriteCheckpoint(runDir)
       expect(meta!.files[0]).toMatchObject({ path: 'f.txt', action: 'modified' })
-      undoWrites(runDir, workspace, meta!.id)
+      resolveWrites(runDir, workspace, { checkpointId: meta!.id, action: 'discard' })
       expect(readFileSync(join(workspace, 'f.txt'), 'utf8')).toBe('before\n')
     } finally {
       resetWriteCheckpointsForTests()
@@ -201,7 +201,7 @@ describe('workspaceMutationWatch', () => {
     expect(meta!.files).toEqual([
       expect.objectContaining({ path: 'opaque.txt', action: 'created', undoable: true })
     ])
-    undoWrites(runDir, workspace, meta!.id)
+    resolveWrites(runDir, workspace, { checkpointId: meta!.id, action: 'discard' })
     expect(existsSync(join(workspace, 'opaque.txt'))).toBe(false)
   })
 
@@ -215,7 +215,7 @@ describe('workspaceMutationWatch', () => {
     await applyWatchDiffToCheckpoint(snap, diff, { runDir })
     disposeWatch(snap)
     const meta = finalizeWriteCheckpoint(runDir)
-    undoWrites(runDir, workspace, meta!.id)
+    resolveWrites(runDir, workspace, { checkpointId: meta!.id, action: 'discard' })
     expect(readFileSync(join(workspace, 'm.txt'), 'utf8')).toBe('before\n')
   })
 
@@ -234,7 +234,7 @@ describe('workspaceMutationWatch', () => {
       expect.objectContaining({ path: 'big.bin', action: 'modified', undoable: true })
     ])
     // And it actually restores to the prior content.
-    undoWrites(runDir, workspace, meta!.id)
+    resolveWrites(runDir, workspace, { checkpointId: meta!.id, action: 'discard' })
     expect(readFileSync(largePath).equals(Buffer.alloc(1_100_000, 1))).toBe(true)
   })
 

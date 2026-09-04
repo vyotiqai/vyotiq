@@ -71,6 +71,20 @@ export function useSettingsForm({
   const [keyDraft, setKeyDraft] = useState('')
   const [ollamaUrl, setOllamaUrl] = useState(settings.ollamaBaseUrl)
   const [customUrl, setCustomUrl] = useState(settings.customOpenAiBaseUrl)
+  // Persona & style drafts (Settings → Agent). Same draft-then-commit pattern
+  // as the URL fields: edits stay local until blur, and unmount flushes.
+  // Persisted values are mirrored locally so a re-blur right after a save
+  // doesn't re-fire before the parent settings propagate.
+  const derivedPersona = effectiveChatSettings?.agentPersona ?? settings.agentPersona ?? ''
+  const [personaPersisted, setPersonaPersisted] = useState(derivedPersona)
+  const [personaDraft, setPersonaDraft] = useState(derivedPersona)
+  const derivedTone = effectiveChatSettings?.agentTone ?? settings.agentTone ?? ''
+  const [tonePersisted, setTonePersisted] = useState(derivedTone)
+  const [toneDraft, setToneDraft] = useState(derivedTone)
+  const derivedLanguage =
+    effectiveChatSettings?.responseLanguage ?? settings.responseLanguage ?? ''
+  const [languagePersisted, setLanguagePersisted] = useState(derivedLanguage)
+  const [languageDraft, setLanguageDraft] = useState(derivedLanguage)
   const [error, setError] = useState<string | null>(null)
   const [errorField, setErrorField] = useState<SettingsErrorField>(null)
   const [modelsInfo, setModelsInfo] = useState<string | null>(null)
@@ -107,7 +121,9 @@ export function useSettingsForm({
       customUrl: 'custom-url-error',
       apikey: 'apikey-error',
       keepTurns: 'keep-turns-error',
-      autoCompactThreshold: 'auto-compact-threshold-error'
+      autoCompactThreshold: 'auto-compact-threshold-error',
+      runSpendLimit: 'run-spend-limit-error',
+      runTokenLimit: 'run-token-limit-error'
     }
     const id = idByField[errorField]
     if (!id) return {}
@@ -163,6 +179,39 @@ export function useSettingsForm({
       }
     }
     return runUpdate(patch)
+  }
+
+  /** Trim-on-save commit for the Persona draft; reverts the field on failure. */
+  const persistPersona = async (): Promise<boolean> => {
+    const next = personaDraft.trim()
+    if (next !== personaDraft) setPersonaDraft(next)
+    if (next === personaPersisted) return true
+    const ok = await runAgentUpdate({ agentPersona: next })
+    if (ok) setPersonaPersisted(next)
+    else setPersonaDraft(personaPersisted)
+    return ok
+  }
+
+  /** Trim-on-save commit for the Tone draft; reverts the field on failure. */
+  const persistTone = async (): Promise<boolean> => {
+    const next = toneDraft.trim()
+    if (next !== toneDraft) setToneDraft(next)
+    if (next === tonePersisted) return true
+    const ok = await runAgentUpdate({ agentTone: next })
+    if (ok) setTonePersisted(next)
+    else setToneDraft(tonePersisted)
+    return ok
+  }
+
+  /** Trim-on-save commit for the Response language draft; reverts on failure. */
+  const persistLanguage = async (): Promise<boolean> => {
+    const next = languageDraft.trim()
+    if (next !== languageDraft) setLanguageDraft(next)
+    if (next === languagePersisted) return true
+    const ok = await runAgentUpdate({ responseLanguage: next })
+    if (ok) setLanguagePersisted(next)
+    else setLanguageDraft(languagePersisted)
+    return ok
   }
 
   /** Commit a bounded numeric setting, reverting and explaining when the value is out of range. */
@@ -251,6 +300,21 @@ export function useSettingsForm({
   useEffect(() => {
     setCustomUrl(settings.customOpenAiBaseUrl)
   }, [settings.customOpenAiBaseUrl])
+
+  useEffect(() => {
+    setPersonaPersisted(derivedPersona)
+    setPersonaDraft(derivedPersona)
+  }, [derivedPersona])
+
+  useEffect(() => {
+    setTonePersisted(derivedTone)
+    setToneDraft(derivedTone)
+  }, [derivedTone])
+
+  useEffect(() => {
+    setLanguagePersisted(derivedLanguage)
+    setLanguageDraft(derivedLanguage)
+  }, [derivedLanguage])
 
   useEffect(() => {
     let cancelled = false
@@ -529,6 +593,22 @@ export function useSettingsForm({
     return () => flushUrlDraftsRef.current()
   }, [])
 
+  // Closing Settings must not silently drop uncommitted persona/tone/language
+  // text: flush the changed (trimmed) value on unmount. Trim-on-save keeps
+  // edge whitespace out of the prompt even when the user never blurs.
+  const flushPersonaToneRef = useRef<() => void>(() => {})
+  flushPersonaToneRef.current = () => {
+    const persona = personaDraft.trim()
+    if (persona !== personaPersisted) void runAgentUpdate({ agentPersona: persona })
+    const tone = toneDraft.trim()
+    if (tone !== tonePersisted) void runAgentUpdate({ agentTone: tone })
+    const language = languageDraft.trim()
+    if (language !== languagePersisted) void runAgentUpdate({ responseLanguage: language })
+  }
+  useEffect(() => {
+    return () => flushPersonaToneRef.current()
+  }, [])
+
   const setErrorMessage = (message: string): void => {
     setError(message)
   }
@@ -540,6 +620,18 @@ export function useSettingsForm({
     keyProvider,
     keyDraft,
     setKeyDraft,
+    personaDraft,
+    setPersonaDraft,
+    persistPersona,
+    personaDirty: personaDraft !== personaPersisted,
+    toneDraft,
+    setToneDraft,
+    persistTone,
+    toneDirty: toneDraft !== tonePersisted,
+    languageDraft,
+    setLanguageDraft,
+    persistLanguage,
+    languageDirty: languageDraft !== languagePersisted,
     ollamaUrl,
     setOllamaUrl,
     customUrl,

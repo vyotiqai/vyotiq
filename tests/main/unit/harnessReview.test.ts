@@ -169,6 +169,38 @@ describe('harnessReview', () => {
 
 
 
+  it('mines verification staleness, diagnostics rate, and test outcomes', () => {
+    const stale = sampleReceipt({
+      runId: 'run-stale',
+      verification: {
+        lastMutationAt: '2026-07-30T12:00:00.000Z',
+        lastCheckAt: '2026-07-30T11:00:00.000Z',
+        verifiedAfterLastMutation: false
+      },
+      diagnostics: { calls: 2, ok: 2, clean: 1 },
+      tests: { calls: 2, ok: 1, failed: 1, lastPassed: 18, lastFailed: 2 }
+    })
+    const summary = summarizeWeaknesses([{ runId: 'run-stale', receipt: stale }])
+    expect(
+      summary.bullets.some((b) =>
+        /1 run\(s\) ended with file mutations after the last successful check/.test(b)
+      )
+    ).toBe(true)
+    expect(summary.bullets.some((b) => /Diagnostics: 1\/2 clean/.test(b))).toBe(true)
+    expect(
+      summary.bullets.some((b) =>
+        /run_tests: 1\/2 exited clean; latest run: 18 passed, 2 failed/.test(b)
+      )
+    ).toBe(true)
+    expect(
+      summary.evidenceBuckets.some(
+        (b) =>
+          b.component === 'tool_policy' &&
+          b.evidence.some((e) => /successful diagnostics\/run_tests check/.test(e))
+      )
+    ).toBe(true)
+  })
+
   it('reports consecutive tool-failure streaks from receipt metrics', () => {
     const sessions = workspaceSessionsRoot(workspace)
     const runs: Array<{ runId: string; streak?: number }> = [

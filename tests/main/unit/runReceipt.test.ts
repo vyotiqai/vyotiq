@@ -13,7 +13,7 @@ import { RunReceiptSchema } from '@shared/ipc'
 import type { ChatMessage, PersistedEvent, RunStatus } from '@shared/ipc'
 
 describe('runReceipt', () => {
-  it('stamps codebase_search semantic health from result headers', () => {
+  it('does not stamp codebase_search health into the receipt', () => {
     const messages: ChatMessage[] = [
       {
         role: 'assistant',
@@ -73,17 +73,8 @@ describe('runReceipt', () => {
       events: [],
       contract: '## Goal\n\ncbs health\n'
     })
-    expect(receipt.codebaseSearch).toEqual({
-      calls: 3,
-      lexicalOnly: 1,
-      hashFallback: 1,
-      queryModels: [
-        'lightonai/mDenseOn@onnx-int8',
-        'onnx-community/DenseOn@onnx-int8',
-        'local-hash-v1'
-      ]
-    })
-    expect(RunReceiptSchema.parse(receipt).codebaseSearch?.calls).toBe(3)
+    expect(receipt.codebaseSearch).toBeUndefined()
+    expect(RunReceiptSchema.parse(receipt).codebaseSearch).toBeUndefined()
   })
 
   it('aggregates tool stats, failures, unread edits, and diagnostics', () => {
@@ -587,6 +578,137 @@ describe('runReceipt', () => {
     expect(receipt.toolStats.failed).toBe(3)
     expect(receipt.failureClusters).toEqual([{ key: 'edit: boom', count: 2 }])
     expect(receipt.maxConsecutiveToolFailures).toBe(1)
+  })
+
+  it('aggregates run_tests calls and the latest pass/fail summary', () => {
+    const receipt = buildRunReceipt({
+      runId: 'tests-agg',
+      status: { status: 'done', step: 2, updatedAt: new Date().toISOString() },
+      messages: [
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 't1', name: 'run_tests', arguments: '{}' }]
+        },
+        {
+          role: 'tool',
+          toolCallId: 't1',
+          toolName: 'run_tests',
+          ok: false,
+          content: 'command: pnpm test\nexit: 1\nTests: 18 passed, 2 failed (exit 1)\noutput'
+        },
+        {
+          role: 'assistant',
+          content: '',
+          toolCalls: [{ id: 't2', name: 'run_tests', arguments: '{}' }]
+        },
+        {
+          role: 'tool',
+          toolCallId: 't2',
+          toolName: 'run_tests',
+          ok: true,
+          content: 'command: pnpm test\nTests: 20 passed, 0 failed (exit 0)\noutput'
+        }
+      ],
+      events: [],
+      contract: ''
+    })
+    expect(receipt.tests).toEqual({
+      calls: 2,
+      ok: 1,
+      failed: 1,
+      lastPassed: 20,
+      lastFailed: 0
+    })
+    expect(RunReceiptSchema.parse(receipt).tests?.lastPassed).toBe(20)
+  })
+
+  it('omits the tests aggregate when run_tests was never called', () => {
+    const receipt = buildRunReceipt({
+      runId: 'no-tests',
+      status: { status: 'done', step: 1, updatedAt: new Date().toISOString() },
+      messages: [{ role: 'assistant', content: 'done' }],
+      events: [],
+      contract: ''
+    })
+    expect(receipt.tests).toBeUndefined()
+  })
+
+  it('computes the verification signal from checks vs mutations', () => {
+    const base = { status: 'done' as const, step: 1, updatedAt: new Date().toISOString() }
+    // Check AFTER mutation → verified.
+    const verified = buildRunReceipt({
+      runId: 'v1',
+      status: base,
+      messages: [],
+      events: [
+        {
+          at: '2026-09-03T10:00:00.000Z',
+          event: {
+            type: 'writes_checkpoint',
+            runId: 'v1',
+            files: [{ path: 'a.ts', action: 'modified', undoable: true }]
+          }
+        },
+        {
+          at: '2026-09-03T10:01:00.000Z',
+          event: {
+            type: 'tool_result',
+            runId: 'v1',
+            toolCallId: 'd1',
+            name: 'diagnostics',
+            summary: '0 problems',
+            ok: true
+          }
+        }
+      ],
+      contract: ''
+    })
+    expect(verified.verification).toEqual({
+      lastMutationAt: '2026-09-03T10:00:00.000Z',
+      lastCheckAt: '2026-09-03T10:01:00.000Z',
+      verifiedAfterLastMutation: true
+    })
+
+    // Mutation AFTER check → stale.
+    const stale = buildRunReceipt({
+      runId: 'v2',
+      status: base,
+      messages: [],
+      events: [
+        {
+          at: '2026-09-03T10:00:00.000Z',
+          event: {
+            type: 'tool_result',
+            runId: 'v2',
+            toolCallId: 'd1',
+            name: 'run_tests',
+            summary: 'ok',
+            ok: true
+          }
+        },
+        {
+          at: '2026-09-03T10:02:00.000Z',
+          event: {
+            type: 'writes_checkpoint',
+            runId: 'v2',
+            files: [{ path: 'b.ts', action: 'modified', undoable: true }]
+          }
+        }
+      ],
+      contract: ''
+    })
+    expect(stale.verification?.verifiedAfterLastMutation).toBe(false)
+
+    // Neither checks nor mutations → signal omitted.
+    const none = buildRunReceipt({
+      runId: 'v3',
+      status: base,
+      messages: [],
+      events: [],
+      contract: ''
+    })
+    expect(none.verification).toBeUndefined()
   })
 
   it('writes receipt.json atomically', () => {

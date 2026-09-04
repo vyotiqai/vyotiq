@@ -11,7 +11,6 @@ import {
   beginWriteCheckpoint,
   finalizeWriteCheckpoint,
   getWriteCheckpointMeta,
-  undoWrites,
   resolveWrites,
   rewindWritesFrom,
   resetWriteCheckpointsForTests,
@@ -57,8 +56,8 @@ describe('write checkpoint semantics (audit coverage)', () => {
     const meta = finalizeWriteCheckpoint(runDir)
     expect(meta).not.toBeNull()
     rmSync(join(workspace, 'a.txt'))
-    const res = undoWrites(runDir, workspace)
-    expect(res.restored).toEqual(['a.txt'])
+    const res = resolveWrites(runDir, workspace, { action: 'discard' })
+    expect(res.discarded).toEqual(['a.txt'])
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('original\n')
   })
 
@@ -108,7 +107,7 @@ describe('write checkpoint semantics (audit coverage)', () => {
     clearLoopCheckpoint(runDir)
   })
 
-  it('undo with mixed undoable + non-undoable files resolves cleanly', async () => {
+  it('discard-all with mixed undoable + non-undoable files resolves cleanly', async () => {
     writeFileSync(join(workspace, 'keep.txt'), 'keep\n', 'utf8')
     const cp = beginWriteCheckpoint(runDir, workspace, 0)
     await cp.recordPrior('keep.txt', 'write')
@@ -117,10 +116,10 @@ describe('write checkpoint semantics (audit coverage)', () => {
     writeFileSync(join(workspace, 'opaque.bin'), 'opaque\n', 'utf8')
     const meta = finalizeWriteCheckpoint(runDir)
     expect(meta).not.toBeNull()
-    const res = undoWrites(runDir, workspace)
-    expect(res.restored).toContain('keep.txt')
-    // Observed 'created' mutation is undoable: undo deletes the agent-created file.
-    expect(res.restored).toContain('opaque.bin')
+    const res = resolveWrites(runDir, workspace, { action: 'discard' })
+    expect(res.discarded).toContain('keep.txt')
+    // Observed 'created' mutation is undoable: discard deletes the agent-created file.
+    expect(res.discarded).toContain('opaque.bin')
     const after = persisted(meta)
     expect(after?.undone).toBe(true)
     expect(after?.resolved).toBe(true)
@@ -166,8 +165,8 @@ describe('write checkpoint semantics (audit coverage)', () => {
     const meta = finalizeWriteCheckpoint(runDir)
     expect(meta).not.toBeNull()
     expect(meta?.files.map((f) => f.path).sort()).toEqual(['pkg/a.txt', 'pkg/sub/b.txt'])
-    const res = undoWrites(runDir, workspace)
-    expect(res.restored.sort()).toEqual(['pkg/a.txt', 'pkg/sub/b.txt'])
+    const res = resolveWrites(runDir, workspace, { action: 'discard' })
+    expect(res.discarded.sort()).toEqual(['pkg/a.txt', 'pkg/sub/b.txt'])
     expect(readFileSync(join(workspace, 'pkg', 'a.txt'), 'utf8')).toBe('A\n')
     expect(readFileSync(join(workspace, 'pkg', 'sub', 'b.txt'), 'utf8')).toBe('B\n')
   })

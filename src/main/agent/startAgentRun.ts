@@ -20,7 +20,7 @@ import {
 import { resolveRunDir } from '@main/storage/paths'
 import { logger } from '../../shared/logger'
 import { appendEvent, loadStatus } from './state'
-import { hydrateFollowUpsFromDisk } from './followUpStore'
+import { hydrateFollowUpsFromDisk, loadFollowUps, saveFollowUps } from './followUpStore'
 import { registerParentInstanceEmitter, registerRunIpcSender, handleInlineInstanceFinished } from './agentInstances'
 import { runAgent } from './loop'
 import {
@@ -33,8 +33,10 @@ import {
 } from './agentQuestion'
 import { publishLifecycleNotification } from '../notifications/bus'
 import {
+  followUpPreview,
   isActive,
   markRunTurnComplete,
+  seedFollowUps,
   takeLateFollowUpDropped,
   takeLateWriteCheckpoint
 } from './runRegistry'
@@ -173,10 +175,6 @@ export function startAgentRunInBackground(input: StartAgentRunInput): void {
         batcher.push(ev as AgentEvent)
         if (terminal) markRunTurnComplete(runId, invokeId)
       }
-      const lateCheckpoint = takeLateWriteCheckpoint(runId)
-      if (lateCheckpoint) batcher.push(lateCheckpoint)
-      const lateDropped = takeLateFollowUpDropped(runId)
-      if (lateDropped) batcher.push(lateDropped)
     } catch (err) {
       if (isAbortError(err)) {
         logger.warn('Chat run aborted', {
@@ -219,6 +217,14 @@ export function startAgentRunInBackground(input: StartAgentRunInput): void {
         terminalStatus = 'error'
       }
     } finally {
+      // Forward the loop finally's late events (writes_checkpoint,
+      // follow_up_dropped) on EVERY exit path. Taking them only on the happy
+      // path meant an abort/crash exit left the renderer without the final
+      // checkpoint card and the registry buffers holding the entries.
+      const lateCheckpoint = takeLateWriteCheckpoint(runId)
+      if (lateCheckpoint) batcher.push(lateCheckpoint)
+      const lateDropped = takeLateFollowUpDropped(runId)
+      if (lateDropped) batcher.push(lateDropped)
       batcher.flush()
       batcher.dispose()
       if (process.env.VYOTIQ_PERF === '1') {
@@ -353,6 +359,26 @@ export function startAgentRunInBackground(input: StartAgentRunInput): void {
   })
 }
 
-export function hydrateRunFollowUps(workspacePath: string, runId: string): void {
-  hydrateFollowUpsFromDisk(resolveRunDir(workspacePath, runId), runId)
+export function hydrateRunFollowUps(
+  workspacePath: string,
+  runId: string,
+  dedupeAgainst?: ChatMessage[]
+): void {
+  const runDir = resolveRunDir(workspacePath, runId)
+  if (dedupeAgainst && dedupeAgainst.length > 0) {
+    // A crash after enqueue but before apply, followed by a manual resend of
+    // the same text, would otherwise apply the message twice — once as the
+    // turn message and again from the hydrated queue. Drop queued duplicates
+    // before seeding.
+    const newTexts = new Set(
+      dedupeAgainst.filter((m) => m.role === 'user').map((m) => followUpPreview(m))
+    )
+    const entries = loadFollowUps(runDir).filter(
+      (entry) => !newTexts.has(followUpPreview(entry.message))
+    )
+    if (entries.length > 0) seedFollowUps(runId, entries)
+    saveFollowUps(runDir, entries)
+    return
+  }
+  hydrateFollowUpsFromDisk(runDir, runId)
 }

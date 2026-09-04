@@ -85,6 +85,12 @@ export function workspaceBrowserArtifactsDir(workspacePath: string): string {
   return workspaceMetaDir(workspaceId(canonical))
 }
 
+/** Persisted composer-attachment sidecar dir (user state, never in the project tree). */
+export function workspaceAttachmentsDir(workspacePath: string): string {
+  const canonical = canonicalizeWorkspacePath(workspacePath)
+  return join(workspaceMetaDir(workspaceId(canonical)), 'attachments')
+}
+
 export function readWorkspaceMeta(workspacePath: string): WorkspaceMeta | null {
   const canonical = canonicalizeWorkspacePath(workspacePath)
   const id = workspaceId(canonical)

@@ -236,6 +236,28 @@ function disposeTerminalSessionsNow(runId: string, invokeId: number): void {
   }
 }
 
+/**
+ * Drop the persisted follow-up queue for a cancelled run (lazy require avoids
+ * cycle). Enqueue persists followups.json; cancel clears the in-memory queue
+ * here, so without the disk clear a later chatStart(resume) re-hydrates and
+ * executes follow-ups the user already cancelled.
+ */
+function clearFollowUpsOnDiskNow(runId: string): void {
+  try {
+    const workspacePath = getRunWorkspace(runId)
+    if (!workspacePath) return
+    const { resolveRunDir } = require('../storage/paths') as {
+      resolveRunDir: (workspacePath: string, runId: string) => string
+    }
+    const { clearFollowUps: clearDisk } = require('./followUpStore') as {
+      clearFollowUps: (runDir: string) => void
+    }
+    clearDisk(resolveRunDir(workspacePath, runId))
+  } catch {
+    // ignore if modules unavailable in early boot / tests
+  }
+}
+
 function cancelRunCore(runId: string, cascadeChildren = true): boolean {
   if (cascadeChildren) {
     for (const childId of getActiveInlineChildRunIds(runId)) {
@@ -251,6 +273,7 @@ function cancelRunCore(runId: string, cascadeChildren = true): boolean {
   entry.controller.abort()
   cancelPendingGateWaiters(runId)
   disposeTerminalSessionsNow(runId, entry.invokeId)
+  clearFollowUpsOnDiskNow(runId)
   return true
 }
 

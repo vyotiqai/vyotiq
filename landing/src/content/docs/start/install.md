@@ -26,7 +26,7 @@ From the repository root:
 pnpm install
 ```
 
-For day-to-day development without an installer, pnpm dev is enough. Continue with the first useful run.
+For day-to-day development without an installer, pnpm dev is enough. Continue with [the first useful run](/docs/start/quickstart).
 
 ## Pack an installer
 
@@ -76,4 +76,4 @@ The packaged application targets the system architecture used for the pack. Ther
 
 Open Settings → About. The page shows the Vyotiq version, Electron, Chromium, Node.js, platform, and architecture. Copy copies that build information for support.
 
-Continue with the first useful run. If the app opens but a run cannot start, use Provider and model issues.
+Continue with the first useful run. If the app opens but a run cannot start, use [Provider and model issues](/docs/troubleshooting/providers-models).

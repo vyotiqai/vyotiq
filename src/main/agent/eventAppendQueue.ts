@@ -1,3 +1,4 @@
+import { readdirSync } from 'fs'
 import { appendFile, open, readdir, rename, stat, unlink, writeFile } from 'fs/promises'
 import { basename, join } from 'path'
 import { logger } from '../../shared/logger'
@@ -62,6 +63,28 @@ export async function listEventArchives(dir: string): Promise<string[]> {
   return names
     .filter((name) => name.startsWith(EVENT_ARCHIVE_PREFIX) && name.endsWith('.jsonl'))
     .sort()
+}
+
+/** Sync variant for sync stitched loaders. */
+export function listEventArchivesSync(dir: string): string[] {
+  try {
+    return readdirSync(dir)
+      .filter((name) => name.startsWith(EVENT_ARCHIVE_PREFIX) && name.endsWith('.jsonl'))
+      .sort()
+  } catch {
+    return []
+  }
+}
+
+/** Archive removal after a whole-file rewrite that already stitched them in. */
+export async function removeEventArchives(dir: string): Promise<void> {
+  for (const name of await listEventArchives(dir)) {
+    try {
+      await unlink(join(dir, name))
+    } catch {
+      // best effort — an undeletable archive must not fail the rewrite
+    }
+  }
 }
 
 async function enforceArchiveCap(dir: string): Promise<void> {

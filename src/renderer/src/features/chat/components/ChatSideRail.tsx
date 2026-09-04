@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import { IconButton, cn } from '@renderer/lib/ui'
 import type { IconName } from '@renderer/lib/icons'
 import { shortcutLabel, type ShortcutId } from '@renderer/lib/shortcuts'
@@ -41,13 +42,33 @@ function PlanRailRow({
   running: boolean
   onSelectPanel: (panel: ChatRightPanelId) => void
 }) {
-  const { data } = useRunTodos({
+  const { data, loaded } = useRunTodos({
     workspacePath,
     runId,
     running,
     active: Boolean(workspacePath && runId),
     live: true
   })
+
+  // The agent just created todos: empty -> non-empty across poll loads, with
+  // the first completed load acting as the baseline. A rail that mounts onto
+  // an existing run (app restart, lazy rail) loads todos with items on its
+  // first observation — that is NOT a creation, so the card stays closed.
+  const baselineRef = useRef<boolean | null>(null)
+  const prevHadItemsRef = useRef(false)
+  const [justCreated, setJustCreated] = useState(false)
+  useEffect(() => {
+    if (!loaded) return
+    const has = (data?.items.length ?? 0) > 0
+    if (baselineRef.current === null) {
+      baselineRef.current = has
+      prevHadItemsRef.current = has
+      return
+    }
+    if (has && !prevHadItemsRef.current) setJustCreated(true)
+    else if (!has && prevHadItemsRef.current) setJustCreated(false)
+    prevHadItemsRef.current = has
+  }, [data, loaded])
 
   if (!data || data.items.length === 0) {
     return (
@@ -68,8 +89,10 @@ function PlanRailRow({
     <TasksRailButton
       data={data}
       running={running}
+      autoOpen={justCreated}
+      pressed={open}
       onOpenPlan={() => onSelectPanel('plan')}
-      labelSuffix={` · ${baseLabel}`}
+      labelSuffix={` · ${title}`}
     />
   )
 }
@@ -132,7 +155,7 @@ export function ChatSideRail({
             )
           }
           return (
-            <div key={item.id} className="relative" data-plan-rail-row>
+            <div key={item.id} data-plan-rail-row>
               <PlanRailRow
                 open={open}
                 baseLabel={baseLabel}

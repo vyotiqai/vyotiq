@@ -3,6 +3,7 @@
  * Interactive search/ensure runs ahead of background warm/reindex.
  * In-flight warm is preempted when interactive work enqueues (then re-queued).
  */
+import { logger } from '../../shared/logger'
 
 export type IndexJobPriority = 'interactive' | 'reindex' | 'warm'
 
@@ -145,6 +146,10 @@ function preemptActiveWarmIfNeeded(incoming: IndexJobPriority): void {
   if (!activeJob || activeJob.priority !== 'warm') return
   if (!activeJob.preemptController || activeJob.preemptController.signal.aborted) return
   activeJob.preemptRequested = true
+  logger.warn('Warm index job preempted by interactive request — requeued', {
+    scope: 'indexJobQueue',
+    coalesceKey: activeJob.coalesceKey
+  })
   activeJob.preemptController.abort()
 }
 

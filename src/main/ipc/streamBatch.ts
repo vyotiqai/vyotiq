@@ -23,15 +23,30 @@ type PendingSegment =
       invokeId?: number
     }
 
+/** Composite pending-usage key: step + kind (0 = step_usage, 1 = context_usage). */
+function usageKey(type: string, step: number): string {
+  return `${step}:${type === 'context_usage' ? 1 : 0}`
+}
+
+function parseUsageKey(key: string): { step: number; kind: number } {
+  const sep = key.lastIndexOf(':')
+  const step = Number(key.slice(0, sep))
+  const kind = Number(key.slice(sep + 1))
+  return { step: Number.isFinite(step) ? step : 0, kind: Number.isFinite(kind) ? kind : 0 }
+}
+
 type RunSlot = {
   workspacePath: string
   send: (ev: AgentEvent) => void
   pendingSegments: PendingSegment[]
   /**
-   * Background coalesce: latest usage event per step so inactive workspaces do
-   * not lose earlier step meters when several arrive before activate.
+   * Background coalesce: latest usage event per (type, step) so inactive
+   * workspaces do not lose earlier step meters when several arrive before
+   * activate. Keyed by type AND step — a step_usage and a context_usage for
+   * the same step are different signals; keying by step alone dropped one of
+   * them (the token meter under-reported that step).
    */
-  pendingUsageByStep: Map<number, AgentEvent>
+  pendingUsageByStep: Map<string, AgentEvent>
   /** Number of ChatEventBatcher owners; detach only when this hits 0. */
   attachCount: number
   /** Earliest time this run's pending segments may flush; 0 = none scheduled. */
@@ -331,10 +346,11 @@ export class ChatEventDispatcher {
 
     if (ev.type === 'step_usage' || ev.type === 'context_usage') {
       if (!isActiveWorkspace(slot.workspacePath)) {
-        // Keep latest usage per step so background workspaces retain meters.
-        const prev = slot.pendingUsageByStep.get(ev.step)
+        // Keep latest usage per (type, step) so background workspaces retain meters.
+        const key = usageKey(ev.type, ev.step)
+        const prev = slot.pendingUsageByStep.get(key)
         if (prev) stats.usageCoalesced += 1
-        slot.pendingUsageByStep.set(ev.step, ev)
+        slot.pendingUsageByStep.set(key, ev)
         this.notePendingDepth()
         this.schedule(slot)
         return
@@ -368,10 +384,16 @@ export class ChatEventDispatcher {
 
   private flushPendingUsageEvents(slot: RunSlot): void {
     if (slot.pendingUsageByStep.size === 0) return
-    const steps = [...slot.pendingUsageByStep.keys()].sort((a, b) => a - b)
-    for (const step of steps) {
-      const usageEv = slot.pendingUsageByStep.get(step)
-      if (usageEv) this.emit(slot, usageEv)
+    // Rebuild emission order: step asc; step_usage before context_usage within
+    // a step (matches the loop's emission order).
+    const ordered = [...slot.pendingUsageByStep.entries()].sort((a, b) => {
+      const ka = parseUsageKey(a[0])
+      const kb = parseUsageKey(b[0])
+      if (ka.step !== kb.step) return ka.step - kb.step
+      return ka.kind - kb.kind
+    })
+    for (const [, usageEv] of ordered) {
+      this.emit(slot, usageEv)
     }
     slot.pendingUsageByStep.clear()
   }

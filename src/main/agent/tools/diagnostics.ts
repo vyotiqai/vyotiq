@@ -9,6 +9,8 @@ import { abortError } from '../../../shared/errors'
 import { sanitizedTerminalEnv } from './terminal'
 
 const DIAG_TIMEOUT_MS = 120_000
+/** Per-stream capture cap (kept tail) so a chatty command cannot grow memory unboundedly. */
+export const MAX_STREAM_BYTES = 262_144
 
 export type DiagnosticsKind = 'typecheck' | 'lint'
 
@@ -185,24 +187,50 @@ export function runSafeCommand(
     const stderr: Buffer[] = []
     let stdoutTotal = 0
     let stderrTotal = 0
+    let stdoutTrimmed = false
+    let stderrTrimmed = false
     let killed = false
 
-    function kill(reason: 'aborted' | 'timeout' | 'maxBuffer'): void {
+    function kill(reason: 'aborted' | 'timeout'): void {
       if (killed) return
       killed = true
-      child.kill(reason === 'timeout' ? 'SIGTERM' : 'SIGTERM')
+      child.kill('SIGTERM')
     }
 
-    function appendBuffer(chunks: Buffer[], total: number, chunk: Buffer): number {
+    /** Keep only the last MAX_STREAM_BYTES per stream so a chatty command
+     *  cannot grow memory unboundedly; the dropped prefix is marked. */
+    function appendBuffer(
+      chunks: Buffer[],
+      total: number,
+      chunk: Buffer
+    ): { total: number; trimmed: boolean } {
       chunks.push(chunk)
-      return total + chunk.length
+      let next = total + chunk.length
+      let trimmed = false
+      let drop = next - MAX_STREAM_BYTES
+      while (drop > 0 && chunks.length > 0) {
+        trimmed = true
+        const head = chunks[0]!
+        if (head.length <= drop) {
+          chunks.shift()
+          drop -= head.length
+        } else {
+          chunks[0] = head.subarray(drop)
+          drop = 0
+        }
+      }
+      return { total: Math.min(next, MAX_STREAM_BYTES), trimmed }
     }
 
     child.stdout?.on('data', (chunk: Buffer) => {
-      stdoutTotal = appendBuffer(stdout, stdoutTotal, chunk)
+      const res = appendBuffer(stdout, stdoutTotal, chunk)
+      stdoutTotal = res.total
+      stdoutTrimmed = stdoutTrimmed || res.trimmed
     })
     child.stderr?.on('data', (chunk: Buffer) => {
-      stderrTotal = appendBuffer(stderr, stderrTotal, chunk)
+      const res = appendBuffer(stderr, stderrTotal, chunk)
+      stderrTotal = res.total
+      stderrTrimmed = stderrTrimmed || res.trimmed
     })
 
     const onAbort = (): void => kill('aborted')
@@ -222,9 +250,10 @@ export function runSafeCommand(
     child.on('close', (exitCode) => {
       if (timeout) clearTimeout(timeout)
       options.signal?.removeEventListener('abort', onAbort)
+      const TRIM_MARK = '…[earlier output truncated — kept last 256KB]…'
       resolve({
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
+        stdout: (stdoutTrimmed ? `${TRIM_MARK}\n` : '') + Buffer.concat(stdout).toString('utf8'),
+        stderr: (stderrTrimmed ? `${TRIM_MARK}\n` : '') + Buffer.concat(stderr).toString('utf8'),
         exitCode: exitCode ?? null,
         killed
       })
@@ -419,7 +448,7 @@ export async function toolDiagnosticsAsync(
     if (killed) {
       return {
         ok: false,
-        content: [`command: ${command}`, 'Diagnostics command was killed (timeout or output too large)', output]
+        content: [`command: ${command}`, 'Diagnostics command was killed (timeout)', output]
           .filter(Boolean)
           .join('\n')
       }

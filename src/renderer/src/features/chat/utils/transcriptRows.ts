@@ -52,8 +52,9 @@ export type TranscriptRow =
 
 export type ChangedFile = {
   path: string
-  added: number
-  removed: number
+  /** Line counts when known from tool args; absent for checkpoint-only paths. */
+  added?: number
+  removed?: number
   action?: 'created' | 'modified' | 'deleted'
 }
 
@@ -411,7 +412,7 @@ export function transcriptRowFingerprint(row: TranscriptRow): string {
       ].join(':')
     }
     case 'changes':
-      return `changes:${row.id}:${row.files.map((f) => `${f.path}:${f.added}:${f.removed}:${f.action ?? ''}`).join('|')}`
+      return `changes:${row.id}:${row.files.map((f) => `${f.path}:${f.added ?? 0}:${f.removed ?? 0}:${f.action ?? ''}`).join('|')}`
     case 'approval':
       return `approval:${row.id}:${row.approval.requestId}`
     case 'question': {
@@ -526,8 +527,8 @@ function withChangeSummaries(
           const key = normalizeRelPath(change.path)
           const existing = totals.get(key)
           if (existing) {
-            existing.added += change.added
-            existing.removed += change.removed
+            existing.added = (existing.added ?? 0) + (change.added ?? 0)
+            existing.removed = (existing.removed ?? 0) + (change.removed ?? 0)
             existing.action = mergeChangedFileAction(existing.action, change.action)
             if (!existing.action) delete existing.action
           } else {

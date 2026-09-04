@@ -153,11 +153,19 @@ function scheduleStatusRetry(dir: string): void {
   const entry = pendingByDir.get(dir)
   if (!entry || entry.timer) return
   if (Object.keys(entry.patch).length === 0) return
-  entry.flushFailures += 1
-  if (entry.flushFailures > MAX_STATUS_FLUSH_RETRIES) return
+  // Terminal patches (done/error/cancelled) must never be parked by the retry
+  // cap: once the run generator has ended nothing re-enqueues them, and a
+  // parked terminal patch leaves status.json "running" — a zombie run that the
+  // startup orphan-interrupt later flips to "Cancelled". Retry those until the
+  // patch lands (backoff caps at STATUS_FLUSH_RETRY_MAX_MS); non-terminal step
+  // ticks keep the bounded retry budget.
+  if (!isTerminalPatch(entry.patch)) {
+    entry.flushFailures += 1
+    if (entry.flushFailures > MAX_STATUS_FLUSH_RETRIES) return
+  }
   const delay = Math.min(
     STATUS_FLUSH_RETRY_MAX_MS,
-    STATUS_FLUSH_MS * 2 ** (entry.flushFailures - 1)
+    STATUS_FLUSH_MS * 2 ** (Math.min(entry.flushFailures, 8) - 1)
   )
   entry.timer = setTimeout(() => {
     entry.timer = null
@@ -226,6 +234,21 @@ export async function flushStatusWrites(dir?: string): Promise<void> {
     )
   )
   if (errors.length > 0) throw errors[0]
+}
+
+/**
+ * Drop any coalesced/queued status writes for a run dir (deleteRun). Without
+ * this a debounced patch flushed after the rmSync re-creates the deleted run
+ * directory containing only a status.json — a phantom run in the sidebar.
+ */
+export function clearStatusWritesForDir(dir: string): void {
+  const entry = pendingByDir.get(dir)
+  if (!entry) return
+  if (entry.timer) {
+    clearTimeout(entry.timer)
+    entry.timer = null
+  }
+  pendingByDir.delete(dir)
 }
 
 /** Immediate write — serialized through the per-dir chain (createRun / orphan interrupt). */

@@ -93,7 +93,7 @@ import {
   waitForText,
   handleDialog
 } from '@main/app/agentBrowser'
-import { startBackgroundTerminal, pollTerminalSession } from './terminalSessions'
+import { startBackgroundTerminal, pollTerminalSession, registerTerminalSessionExitFinalize } from './terminalSessions'
 import { buildSearchUrl } from '../../../shared/utils/searchEngine'
 import { getWriteCheckpoint } from '../checkpoints'
 import { needsOpaqueWatch, recordTerminalCommandPriors } from './terminalCheckpoint'
@@ -428,6 +428,43 @@ async function withTerminalCheckpointWatch<T>(
       await applyWatchDiffToCheckpoint(snap, await diffSince(snap), context)
       disposeWatch(snap)
     }
+  }
+}
+
+/**
+ * Background-terminal variant: the poll window can return while the shell
+ * keeps running, so the final diff runs when the session's process exits (via
+ * the session exit-finalizer hook) instead of at tool return. Otherwise later
+ * mutations escape the write checkpoint and the scoped-commit mutation paths.
+ */
+async function withBackgroundTerminalCheckpointWatch(
+  workspace: string,
+  command: string,
+  context: CheckpointWatchContext,
+  run: (registerExitFinalize: (sessionId: string) => void) => Promise<string>
+): Promise<string> {
+  await recordTerminalCommandPriors(workspace, command, context)
+  const snap =
+    !context.skipWriteCheckpoint && context.runDir && command.trim() && needsOpaqueWatch(command)
+      ? await startWatch(workspace)
+      : null
+  let deferred = false
+  const diffAndDispose = async (): Promise<void> => {
+    if (!snap) return
+    try {
+      await applyWatchDiffToCheckpoint(snap, await diffSince(snap), context)
+      invalidateAfterWorkspaceMutation(workspace)
+    } finally {
+      disposeWatch(snap)
+    }
+  }
+  try {
+    return await run((sessionId) => {
+      if (!snap) return
+      deferred = registerTerminalSessionExitFinalize(sessionId, diffAndDispose)
+    })
+  } finally {
+    if (!deferred) await diffAndDispose()
   }
 }
 
@@ -1504,20 +1541,25 @@ export const BUILTIN_HANDLERS: Record<AgentToolName, ToolHandler> = {
             runSignal: context.runSignal,
             onOutput
           })
-        : await withTerminalCheckpointWatch(workspace, command, watchCtx, () =>
-            startBackgroundTerminal({
-              runId,
-              invokeId,
-              workspaceRoot: workspace,
-              cwd,
-              command,
-              signal,
-              shell,
-              pattern,
-              blockUntilMs,
-              killOnTimeout: defaultWait,
-              onOutput
-            })
+        : await withBackgroundTerminalCheckpointWatch(
+            workspace,
+            command,
+            watchCtx,
+            (registerExitFinalize) =>
+              startBackgroundTerminal({
+                runId,
+                invokeId,
+                workspaceRoot: workspace,
+                cwd,
+                command,
+                signal,
+                shell,
+                pattern,
+                blockUntilMs,
+                killOnTimeout: defaultWait,
+                onOutput,
+                onStillRunning: registerExitFinalize
+              })
           )
       // New background command may mutate the tree; pure session polls do not.
       if (!sessionId) {
@@ -2134,6 +2176,9 @@ export async function executeTool(
 
   // Remap run artifacts to the run directory (not the workspace root):
   // Plan: plan.md + contract.md; Agent: contract.md + existing plan.md.
+  // Ask: read-only remap of the same artifacts so `read plan.md` resolves to
+  // the run artifact instead of a workspace-root lookalike (Ask cannot run
+  // edit/delete, so read is the only reachable consumer).
   let effectiveWorkspace = workspace
   let effectiveArgs = validatedArgs
   let effectiveContext = context
@@ -2147,6 +2192,15 @@ export async function executeTool(
       isRunPlanPath(pathArg) &&
       context.runDir &&
       existsSync(join(context.runDir, 'plan.md'))
+    ) {
+      return true
+    }
+    if (
+      agentMode === 'ask' &&
+      (isRunContractPath(pathArg) ||
+        (isRunPlanPath(pathArg) &&
+          context.runDir &&
+          existsSync(join(context.runDir, 'plan.md'))))
     ) {
       return true
     }
@@ -2198,9 +2252,16 @@ export async function executeTool(
       if (!context.runDir) {
         return toolFail(name, summary, 'Run artifacts require an active run directory')
       }
+      if (name === 'delete') {
+        return toolFail(
+          name,
+          summary,
+          'plan.md and contract.md are run artifacts and cannot be deleted. Edit or recreate the file instead.'
+        )
+      }
       effectiveWorkspace = context.runDir
       effectiveArgs = { ...args, path: remapPathArg(pathArg) }
-      if (name === 'edit' || name === 'str_replace' || name === 'delete') {
+      if (name === 'edit' || name === 'str_replace') {
         effectiveContext = { ...context, skipWriteCheckpoint: true }
       }
     }

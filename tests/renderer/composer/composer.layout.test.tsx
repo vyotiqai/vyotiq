@@ -63,10 +63,13 @@ describe('Composer layout', () => {
     expect(toolbar?.contains(textarea)).toBe(false)
     expect(form?.contains(textarea)).toBe(true)
     // Input and controls share one row — no full-width chrome rows.
+    // Bottom-aligned so controls anchor to the draft as it grows multiline.
     const row = toolbar?.parentElement
     expect(row?.hasAttribute('data-composer-row')).toBe(true)
-    expect(row?.className).toMatch(/\bitems-center\b/)
+    expect(row?.className).toMatch(/\bitems-end\b/)
     expect(row?.firstElementChild?.className).toMatch(/\bflex-1\b/)
+    // Without a dictation session the toolbar shrink-wraps beside the input.
+    expect(toolbar?.className).not.toMatch(/\bflex-1\b/)
     expect(textarea.className).toMatch(/\bmin-h-7\b/)
     expect(toolbar?.className).toMatch(/\bh-7\b/)
     expect(toolbar?.className).toMatch(/(?:^|\s)gap-1(?:\s|$)/)
@@ -78,6 +81,32 @@ describe('Composer layout', () => {
     expect(primary.className).not.toMatch(/\brounded-xl\b/)
 
     expect(textarea.compareDocumentPosition(primary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('stacks the controls under a full-width input once the draft is multiline', () => {
+    render(<Composer {...composerProps} />)
+
+    const ta = screen.getByRole('combobox', { name: /^Message$/i })
+    ta.textContent = '09:16:33.326 > [agent] token cost step {\n  provider: \'ollama\',\n}'
+    fireEvent.input(ta)
+
+    const toolbar = document.querySelector('[data-composer-toolbar]')!
+    const row = toolbar.parentElement as HTMLElement
+    const inputWrapper = row.firstElementChild as HTMLElement
+    expect(row.hasAttribute('data-composer-stacked')).toBe(true)
+    expect(row.className).toMatch(/\bflex-col\b/)
+    // Input claims the full width; the toolbar owns its own row below it.
+    expect(inputWrapper.className).toMatch(/(?:^|\s)w-full(?:\s|$)/)
+    expect(inputWrapper.className).not.toMatch(/\bflex-1\b/)
+    expect(toolbar.className).toMatch(/(?:^|\s)w-full(?:\s|$)/)
+
+    // Deleting back to a single line restores the inline row.
+    ta.textContent = 'one line'
+    fireEvent.input(ta)
+    expect(row.hasAttribute('data-composer-stacked')).toBe(false)
+    expect(row.className).toMatch(/\bitems-end\b/)
+    expect(inputWrapper.className).toMatch(/\bflex-1\b/)
+    expect(toolbar.className).not.toMatch(/(?:^|\s)w-full(?:\s|$)/)
   })
 
   it('keeps multiline text full width instead of a side column', () => {

@@ -145,6 +145,41 @@ describe('PlanPanel', () => {
     expect(document.getElementById('findings')).toBeTruthy()
   })
 
+  it('hides the outline checklist count when the run has todos', async () => {
+    window.vyotiq.readRunArtifact = vi.fn().mockImplementation(async (req: { name?: string }) => {
+      if (req.name === 'todos.json') {
+        return {
+          ok: true,
+          data: {
+            name: 'todos.json',
+            exists: true,
+            content: JSON.stringify({
+              updatedAt: '2026-01-01T00:00:00.000Z',
+              todos: [{ id: '1', content: 'Ship it', status: 'in_progress' }]
+            })
+          }
+        }
+      }
+      return {
+        ok: true,
+        data: {
+          name: 'plan.md',
+          exists: true,
+          content: `${minimalReadyPlanMarkdown()}\n## Scope\n\nDocument the verified scope thoroughly.\n\n## Findings\n\n- [x] first checklist item here\n- [ ] second checklist item here\n`
+        }
+      }
+    })
+
+    render(<PlanPanel workspacePath="/ws" runId="run-outline-todos" running={false} />)
+
+    await waitFor(() => {
+      expect(screen.getByText('Ship it')).toBeTruthy()
+    })
+    expect(screen.getByLabelText('Plan outline')).toBeTruthy()
+    // The Tasks section is the live count; the markdown-checkbox count is hidden.
+    expect(screen.queryByText(/Checklist /)).toBeNull()
+  })
+
   it('loads and renders receipt.json summary', async () => {
     window.vyotiq.readRunArtifact = vi.fn().mockResolvedValue({
       ok: true,
@@ -190,6 +225,50 @@ describe('PlanPanel', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'AGENTS.md' }))
     expect(openFile).toHaveBeenCalledWith('AGENTS.md')
+  })
+
+  it('shows the verification state on the receipt summary', async () => {
+    window.vyotiq.readRunArtifact = vi.fn().mockImplementation(async (req: { name?: string }) => {
+      if (req.name !== 'receipt.json') {
+        return { ok: true, data: { name: req.name ?? '', exists: false, content: null } }
+      }
+      return {
+        ok: true,
+        data: {
+          name: 'receipt.json',
+          exists: true,
+          content: JSON.stringify({
+            version: 5,
+            writtenAt: '2026-07-30T00:00:00.000Z',
+            runId: 'run-verify',
+            status: 'done',
+            step: 3,
+            compactionCount: 0,
+            toolStats: { totalCalls: 2, ok: 2, failed: 0, byName: {} },
+            failureClusters: [],
+            unreadEditPaths: [],
+            wroteFiles: ['a.ts'],
+            diagnostics: { calls: 1, ok: 1, clean: 1 },
+            verification: {
+              lastMutationAt: '2026-07-30T00:01:00.000Z',
+              lastCheckAt: '2026-07-30T00:00:00.000Z',
+              verifiedAfterLastMutation: false
+            },
+            contractExcerpt: ''
+          })
+        }
+      }
+    })
+
+    render(<PlanPanel workspacePath="/ws" runId="run-verify" running={false} />)
+    fireEvent.click(screen.getByRole('tab', { name: 'Receipt' }))
+
+    await waitFor(() => {
+      expect(screen.getByText(/File mutations after last successful check/)).toBeTruthy()
+    })
+    const badge = screen.getByText(/File mutations after last successful check/)
+    expect(badge.getAttribute('data-receipt-verification')).toBe('false')
+    expect(badge.className).toMatch(/text-warning/)
   })
 
   it('ignores stale tab responses when switching tabs quickly', async () => {

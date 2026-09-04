@@ -622,19 +622,28 @@ export const anthropicProvider: LlmProvider = {
           yield { type: 'thinking_delta', text: delta.thinking }
         }
         if (delta?.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
-          const existing = toolCalls.get(currentIndex)
+          // Route by the event's own block index: relying on the mutable
+          // currentIndex silently discarded every argument delta when the
+          // matching content_block_start frame was dropped or interleaved.
+          const blockIndex = typeof event.index === 'number' ? event.index : currentIndex
+          const existing = toolCalls.get(blockIndex)
           if (existing) {
             existing.arguments += delta.partial_json
-            toolCalls.set(currentIndex, existing)
+            toolCalls.set(blockIndex, existing)
             yield {
               type: 'tool_call_delta',
               toolCallDelta: {
-                index: currentIndex,
+                index: blockIndex,
                 id: existing.id,
                 name: existing.name,
                 arguments: delta.partial_json
               }
             }
+          } else {
+            // No matching tool block (its content_block_start was dropped or
+            // malformed). Count it — surfaced via droppedFrames below — instead
+            // of silently losing the arguments.
+            drops.dropped += 1
           }
         }
         if (delta?.type === 'compaction_delta' && typeof delta.text === 'string') {

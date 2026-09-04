@@ -2,7 +2,8 @@ import type { ChatMessage } from '../../../shared/ipc'
 import { createHash } from 'crypto'
 import { contentToText, providerContentParts } from '../../../shared/ipc'
 import { formatError } from '../../../shared/errors'
-import { wireToolCallArguments } from '../toolArgWire'
+import { wireToolCallArguments, mergeOpenAiCompatToolArgDelta } from '../toolArgWire'
+import { mergeStreamedToolName } from '../../../shared/utils/toolName'
 import {
   normalizeEffortForGeminiInteractions,
   statefulContinuationMessages,
@@ -293,13 +294,17 @@ export async function* streamGeminiInteractions(
         const fn = delta.function_call as Record<string, unknown> | undefined
         if (fn) {
           const callId = String(fn.id ?? fn.call_id ?? `call_${pending.size}`)
-          const call: ToolCall = {
-            id: callId,
-            name: String(fn.name ?? ''),
-            arguments: serializeToolArgs(fn.args ?? fn.arguments)
+          // Merge (not replace) so streamed argument fragments accumulate;
+          // each delta previously overwrote the pending call and dropped the
+          // earlier fragment bytes.
+          const existing = pending.get(callId) ?? { id: callId, name: '', arguments: '' }
+          if (fn.name) existing.name = mergeStreamedToolName(existing.name, String(fn.name))
+          const incoming = serializeToolArgs(fn.args ?? fn.arguments)
+          if (incoming) {
+            existing.arguments = mergeOpenAiCompatToolArgDelta(existing.arguments, incoming).arguments
           }
-          pending.set(callId, call)
-          yield { type: 'tool_call', toolCall: call }
+          pending.set(callId, existing)
+          yield { type: 'tool_call', toolCall: existing }
         }
       }
     }

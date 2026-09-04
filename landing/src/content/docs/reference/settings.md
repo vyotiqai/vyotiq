@@ -70,7 +70,7 @@ See Security and approval, Browser, and Terminal. `Tool approval`, MCP tools pro
 
 ## Shortcuts
 
-Read-only list of chords. They are not rebindable. Full list: Shortcuts.
+Read-only list of chords. They are not rebindable. Full list: [Shortcuts](/docs/reference/shortcuts).
 
 ## About
 
